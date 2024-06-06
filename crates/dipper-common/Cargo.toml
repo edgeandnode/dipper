@@ -1,0 +1,17 @@
+[package]
+name = "dipper-common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bincode = { workspace = true }
+pyo3 = { workspace = true }
+ethers-rs = { workspace = true }
+serde = { workspace = true, features = ["derive"] }  
+sled = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+smol = { workspace = true }
+tempfile = { workspace = true }
+smol-potat = "1.1.2"

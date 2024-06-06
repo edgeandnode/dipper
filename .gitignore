@@ -1,0 +1,4 @@
+/target
+
+# sled db dirs
+**/*.db
