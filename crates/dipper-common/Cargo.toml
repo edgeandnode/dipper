@@ -4,14 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bincode = { workspace = true }
-pyo3 = { workspace = true }
-ethers-rs = { workspace = true }
+bincode.workspace = true
+pyo3 = { workspace = true, features = ["auto-initialize"] }
 serde = { workspace = true, features = ["derive"] }  
-sled = { workspace = true }
-thiserror = { workspace = true }
+sled.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
-smol = { workspace = true }
-tempfile = { workspace = true }
+smol.workspace = true
+tempfile.workspace = true
 smol-potat = "1.1.2"

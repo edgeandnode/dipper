@@ -11,6 +11,7 @@ class IndexerSelector:
     # TODO better Python 3.7+ type hinting
     """This class is responsible for selecting the indexers for the subgraph."""
     def __init__(self, subgraph_info: dict):
+        print("subgraph info", dict)
         self.subgraph_info = subgraph_info
 
     def get_indexer_selections(self):

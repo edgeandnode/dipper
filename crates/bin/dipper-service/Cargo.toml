@@ -6,16 +6,17 @@ edition = "2021"
 [dependencies]
 dipper-common = { path = "../../dipper-common" }
 
-anyhow = { workspace = true }
-# async-tls = { workspace = true }
-async-select = { workspace = true }
-async-signal = { workspace = true }
+anyhow.workspace = true
+# todo: tls, keys, etc
+# async-tls.workspace = true
+async-select.workspace = true
+async-signal.workspace = true
 clap = { workspace = true, features = ["derive"] }
-futures-lite = { workspace = true }
-log = { workspace = true }
+futures-lite.workspace = true
+log.workspace = true
 serde = { workspace = true, features = ["derive"] }
-serde_yaml = { workspace = true }
-smol = { workspace = true }
-thiserror = { workspace = true }
-tide = { workspace = true }
-simple_logger = { workspace = true }
+serde_yaml.workspace = true
+smol.workspace = true
+thiserror.workspace = true
+tide.workspace = true
+simple_logger.workspace = true

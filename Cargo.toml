@@ -7,10 +7,6 @@ members = [
 , "xtask"]
 
 [workspace.dependencies]
-# local
-gateway-common = { path = "../gateway/gateway-common" }
-
-# external
 anyhow = "1.0"
 async-trait = "0.1"
 async-tls = "0.13"
