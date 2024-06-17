@@ -1,3 +1,8 @@
+## IDEs and editors
+/.idea
+/.vscode
+
+## Rust
 /target
 
 # sled db dirs

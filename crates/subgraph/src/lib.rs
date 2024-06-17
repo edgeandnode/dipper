@@ -1,8 +1,7 @@
+use dipper_common::models::Indexer;
 use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
 use thegraph_core::client::Client;
-
-use dipper_common::models::Indexer;
 
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {

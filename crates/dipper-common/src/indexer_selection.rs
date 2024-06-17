@@ -1,8 +1,6 @@
-use std::fs;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
-use pyo3::prelude::*;
-use pyo3::types::IntoPyDict;
+use pyo3::{prelude::*, types::IntoPyDict};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -85,8 +83,9 @@ impl<'a> IndexerSelector<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[test]
     fn test_indexer_selector() {
