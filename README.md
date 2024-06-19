@@ -8,3 +8,18 @@ Directory structure:
 - `crates/bin/dipper-service`: The main entry point for the dipper service.
 - `crates/bin/dipper-cli`: Cli utility for manipulation of the service.
 - `crates/dipper-common`: Common code shared between the service and the cli.
+
+
+## Integration tests
+To run the integration tests, you need to have local-network running, and you can invoke the integration tests crate like this:
+
+An `xtask` script is provided to run the integration tests. You can run the integration tests like this:
+
+```bash
+cargo xtask integration-tests
+```
+
+Alternatively, you can run the integration tests directly like this:
+```bash
+cargo test -p integration-tests --feature "integration-tests" -- --nocapture
+```

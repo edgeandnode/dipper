@@ -1,10 +1,13 @@
+use axum::{
+    async_trait, body::Body, extract::FromRequest, http::Request, routing::get, Extension, Router,
+};
+use log::{info, LevelFilter};
+
 use dipper_common::{
     db::DbHandle,
     models::{Indexer, Key},
 };
-use dipper_service::{config::StartArgs, AppSignal};
-use log::LevelFilter;
-use tide::{convert::json, Request};
+use dipper_service::config::StartArgs;
 
 #[derive(Clone)]
 struct AppState {
@@ -17,33 +20,51 @@ impl AppState {
     }
 }
 
-fn main() -> anyhow::Result<()> {
+#[async_trait]
+impl<S> FromRequest<S> for AppState
+where
+    S: Send + Sync,
+{
+    type Rejection = ();
+
+    async fn from_request(req: Request<Body>, _: &S) -> Result<Self, Self::Rejection> {
+        let db = req.extensions().get::<AppState>().unwrap().db.clone();
+        Ok(AppState::new(db))
+    }
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let opts = StartArgs::parse_and_merge()?;
     simple_logger::SimpleLogger::new()
-        .with_level(opts.log_level.unwrap_or(LevelFilter::Info))
+        .with_level(opts.log_level.unwrap_or_else(|| LevelFilter::Info))
         .init()?;
 
     log::info!("starting dipper-service");
-    smol::block_on(async move {
-        let db = DbHandle::load_at(&opts.db_path.unwrap()).await.unwrap();
-        let app_state = AppState::new(db);
-        let mut app = tide::with_state(app_state);
-        app.at("/").get(get_indexers);
+    let db = DbHandle::load_at(&opts.db_path.unwrap()).await.unwrap();
+    let app_state = AppState::new(db);
+    let app = Router::new()
+        .route(
+            "/",
+            get(|extension: Extension<AppState>| async {
+                info!("dipper GET /");
+                let Extension(app_state) = extension;
+                let indexers: Option<Vec<Indexer>> = app_state
+                    .db
+                    .get(Key::from_str("indexers"))
+                    .expect("db error");
+                axum::Json(indexers.unwrap_or_default())
+            }),
+        )
+        .layer(tower::ServiceBuilder::new().layer(Extension(app_state)));
 
-        let app_task = app.listen("localhost:9091");
-        let signal_task = dipper_service::signal_task();
-        async_select::select! {
-            _ = app_task => {},
-            Ok(AppSignal::Shutdown) = signal_task => {
-                log::info!("received shutdown signal");
-            }
-        }
-    });
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:9091").await.unwrap();
+
+    let signal_task = async {
+        let _signal = dipper_service::signal_task().await.unwrap();
+    };
+    let _app_task = axum::serve(listener, app)
+        .with_graceful_shutdown(signal_task)
+        .await;
     Ok(())
-}
-
-async fn get_indexers(req: Request<AppState>) -> tide::Result {
-    let state = req.state();
-    let indexers: Option<Vec<Indexer>> = state.db.get(Key::from_str("indexers"))?;
-    Ok(json!(indexers).into())
 }

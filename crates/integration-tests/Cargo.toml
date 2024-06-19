@@ -1,0 +1,13 @@
+[package]
+name = "integration-tests"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+integration-tests = []
+
+[dependencies]
+tokio.workspace = true
+
+[dev-dependencies]
+subgraph = { path = "../subgraph" }

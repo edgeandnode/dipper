@@ -17,5 +17,6 @@ impl Key {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Indexer {
-    address: String,
+    id: String,
+    url: String,
 }

@@ -1,6 +1,5 @@
 use async_signal::{Signal, Signals};
 use futures_lite::StreamExt;
-use smol::io;
 use thiserror::Error;
 
 pub mod config;
@@ -12,7 +11,7 @@ pub enum AppSignal {
 #[derive(Error, Debug)]
 pub enum SignalHandlerError {
     #[error("Failed to create signal receiver")]
-    SignalReceiverError(io::Error),
+    SignalReceiverError(std::io::Error),
 }
 
 pub async fn signal_task() -> Result<AppSignal, SignalHandlerError> {

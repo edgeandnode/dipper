@@ -1,0 +1,15 @@
+[package]
+name = "subgraph"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dipper-common = { path = "../dipper-common" }
+
+thegraph-core.workspace = true
+
+bytes.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+serde.workspace = true
