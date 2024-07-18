@@ -1,13 +1,12 @@
 use axum::{
     async_trait, body::Body, extract::FromRequest, http::Request, routing::get, Extension, Router,
 };
-use log::{info, LevelFilter};
-
 use dipper_common::{
     db::DbHandle,
     models::{Indexer, Key},
 };
 use dipper_service::config::StartArgs;
+use log::LevelFilter;
 
 #[derive(Clone)]
 struct AppState {
@@ -37,7 +36,7 @@ where
 async fn main() -> anyhow::Result<()> {
     let opts = StartArgs::parse_and_merge()?;
     simple_logger::SimpleLogger::new()
-        .with_level(opts.log_level.unwrap_or_else(|| LevelFilter::Info))
+        .with_level(opts.log_level.unwrap_or(LevelFilter::Info))
         .init()?;
 
     log::info!("starting dipper-service");
@@ -47,12 +46,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/",
             get(|extension: Extension<AppState>| async {
-                info!("dipper GET /");
+                log::info!("dipper GET /");
                 let Extension(app_state) = extension;
-                let indexers: Option<Vec<Indexer>> = app_state
-                    .db
-                    .get(Key::from_str("indexers"))
-                    .expect("db error");
+                let indexers: Option<Vec<Indexer>> =
+                    app_state.db.get(Key::from("indexers")).expect("db error");
                 axum::Json(indexers.unwrap_or_default())
             }),
         )

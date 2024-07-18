@@ -1,0 +1,51 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [ "main" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  RUSTFLAGS: '-C link-arg=-fuse-ld=lld'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache Cargo build files
+        uses: Leafwing-Studios/cargo-cache@4deea66cb7f21307071dfb99e1e29bf1a74caeb4 # v2
+
+      - name: Prepare build env
+        run: sudo apt-get install -y lld
+
+      - run: cargo clippy -- -D warnings --force-warn deprecated --force-warn dead-code
+
+      ## Test
+      - name: Run tests
+        run: cargo test
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly
+          components: rustfmt
+
+      - run: cargo +nightly fmt --all -- --check

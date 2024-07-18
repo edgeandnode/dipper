@@ -31,13 +31,13 @@ impl DbHandle {
     {
         let value_serialized = bincode::serialize(value).map_err(DbError::Bincode)?;
         self.inner
-            .insert(&key.0, value_serialized)
+            .insert(key, value_serialized)
             .map_err(DbError::Sled)?;
         Ok(())
     }
 
     pub fn get<T: DeserializeOwned>(&self, key: Key) -> Result<Option<T>, DbError> {
-        let value = self.inner.get(key.0).map_err(DbError::Sled)?;
+        let value = self.inner.get(key).map_err(DbError::Sled)?;
         let value = match value {
             Some(value) => value,
             None => return Ok(None),
@@ -55,14 +55,15 @@ impl DbHandle {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
+
+    use super::*;
 
     #[smol_potat::test]
     async fn test_db() {
         let dir = tempdir().unwrap();
         let db = DbHandle::load_at(dir.path()).await.unwrap();
-        let key = Key::from_str("key");
+        let key = Key::new("key");
         let value = "value";
         db.insert(&key, &value).unwrap();
         let result: Option<String> = db.get(key.clone()).unwrap();

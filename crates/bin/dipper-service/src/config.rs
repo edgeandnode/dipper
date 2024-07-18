@@ -55,7 +55,7 @@ impl StartArgs {
     pub fn parse_and_merge() -> Result<Self, StartArgsError> {
         let default = StartArgs::parse();
         let config = StartArgs::from_yaml(
-            &default
+            default
                 .config_path
                 .as_ref()
                 .ok_or(StartArgsError::MissingConfigPath)?,
