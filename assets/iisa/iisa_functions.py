@@ -1,7 +1,18 @@
-#!/usr/bin/env python
-# coding: utf-8
+import socket
+from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
-# In[1]:
+import bigframes.pandas as bpd
+import numpy as np
+import pandas as pd
+import requests
+from numpy.linalg import pinv
+from sklearn.compose import ColumnTransformer
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from tabulate import tabulate
 
 
 def derive_timestamps(num_days):
@@ -14,9 +25,6 @@ def derive_timestamps(num_days):
     start_ts = self.start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
     end_ts = self.end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
     return start_date, end_date, start_ts, end_ts
-
-
-# In[2]:
 
 
 def get_initial_query(start_date, num_days):
@@ -48,18 +56,12 @@ def get_initial_query(start_date, num_days):
     """
 
 
-# In[3]:
-
-
 def fetch_initial_query_results(initial_query, project):
     """
     Fetch the initial query results.
     """
     initial_query_results_pandas = bpd.read_gbq(initial_query, project_id=project).to_pandas()
     return initial_query_results_pandas.sort_values(by="num_rows", ascending=False)
-
-
-# In[4]:
 
 
 def adjust_rows(initial_query_results_pandas, target_rows):
@@ -82,27 +84,25 @@ def adjust_rows(initial_query_results_pandas, target_rows):
     x = 1000  # Starting estimate for the number of rows to record for each ['deployment_hash', 'indexer'] combination.
     initial_query_results_pandas["num_rows_restricted"] = initial_query_results_pandas["num_rows"].clip(upper=x)
     tolerance = target_rows * 0.01  # 1% tolerance range
-    max_iterations = 1000 # Maximum number of iterations to avoid infinite loops
+    max_iterations = 1000  # Maximum number of iterations to avoid infinite loops
     iteration = 0
 
-    while not (target_rows - tolerance <= initial_query_results_pandas["num_rows_restricted"].sum() <= target_rows + tolerance):
+    while not (target_rows - tolerance <= initial_query_results_pandas
+    ["num_rows_restricted"].sum() <= target_rows + tolerance):
         current_sum = initial_query_results_pandas["num_rows_restricted"].sum()
         if current_sum > target_rows:
             x = int(x * 0.99)  # Decrease x by 1%
         elif current_sum < target_rows:
-            x = int(x * 1.01)  # Increase x by 1%
+            x = int(x * 1.01)
 
         initial_query_results_pandas["num_rows_restricted"] = initial_query_results_pandas["num_rows"].clip(upper=x)
         iteration += 1
-        
+
         # Break the loop if the difference between the current sum and the target is within the tolerance range or if the maximum number of iterations is reached.
         if abs(current_sum - target_rows) <= tolerance or iteration >= max_iterations:
             break
 
     return initial_query_results_pandas["num_rows_restricted"].max()
-
-
-# In[5]:
 
 
 def get_combined_query(start_date, num_days, rows_to_use):
@@ -259,17 +259,11 @@ def get_combined_query(start_date, num_days, rows_to_use):
     """
 
 
-# In[6]:
-
-
 def fetch_combined_query_results(combined_query, project):
     """
     Fetch the combined query results.
     """
     return bpd.read_gbq(combined_query, project_id=project).to_pandas()
-
-
-# In[7]:
 
 
 def get_url_query(start_date, num_days):
@@ -290,17 +284,11 @@ def get_url_query(start_date, num_days):
     """
 
 
-# In[8]:
-
-
 def fetch_url_data(url_query, project):
     """
     Fetch the url query results.
     """
     return bpd.read_gbq(url_query, project_id=project).to_pandas()
-
-
-# In[9]:
 
 
 def apply_location_details(unique_urls_indexers_pandas):
@@ -313,11 +301,9 @@ def apply_location_details(unique_urls_indexers_pandas):
     Returns:
     DataFrame: DataFrame with additional columns for location details.
     """
-    unique_urls_indexers_pandas[['location', 'org', 'loc', 'ip']] = unique_urls_indexers_pandas['url'].apply(extract_location_and_details)
+    unique_urls_indexers_pandas[['location', 'org', 'loc', 'ip']] = unique_urls_indexers_pandas['url'].apply \
+        (extract_location_and_details)
     return unique_urls_indexers_pandas
-
-
-# In[10]:
 
 
 def extract_location_and_details(url):
@@ -334,9 +320,6 @@ def extract_location_and_details(url):
     return pd.Series(get_location_and_details_from_ip(ip))
 
 
-# In[11]:
-
-
 def url_to_ip(url):
     """
     This function will figure our the IP address of the host pc for the URL that the indexer reports.
@@ -349,9 +332,6 @@ def url_to_ip(url):
         return socket.gethostbyname(hostname)
     except socket.gaierror:
         return None
-
-
-# In[12]:
 
 
 def get_location_and_details_from_ip(ip):
@@ -379,9 +359,6 @@ def get_location_and_details_from_ip(ip):
         return {"location": "Unknown", "org": "Unknown", "loc": "Unknown", "ip": "Unknown"}
 
 
-# In[13]:
-
-
 def merge_dataframes(combined_query_pandas, unique_urls_indexers_pandas):
     """
     Merge the information contained inside unique_urls_indexers_pandas with combined_query_pandas.
@@ -396,12 +373,10 @@ def merge_dataframes(combined_query_pandas, unique_urls_indexers_pandas):
     return pd.merge(
         left=combined_query_pandas,
         right=unique_urls_indexers_pandas,
-        how='left',  # Meaning that all rows from the left df will be in the merged df. Columns are merged together as expected.
+        how='left',
+        # Meaning that all rows from the left df will be in the merged df. Columns are merged together as expected.
         on=['indexer', 'day_partition', 'url']
     )
-
-
-# In[14]:
 
 
 def extract_iata_codes(df):
@@ -415,11 +390,9 @@ def extract_iata_codes(df):
     Returns:
     DataFrame: A DataFrame with IATA codes and their counts.
     """
-    iata_df = df.groupby(df['query_id'].str[-3:]).agg(count=('query_id', 'nunique')).reset_index().rename(columns={'query_id': 'IATA_code'})
+    iata_df = df.groupby(df['query_id'].str[-3:]).agg(count=('query_id', 'nunique')).reset_index().rename \
+        (columns={'query_id': 'IATA_code'})
     return iata_df
-
-
-# In[15]:
 
 
 def apply_iata_details(iata_df):
@@ -436,9 +409,6 @@ def apply_iata_details(iata_df):
     result = iata_df["IATA_code"].apply(get_location_and_details_from_iata)
     iata_df[["latitude", "longitude", "country"]] = result
     return iata_df
-
-
-# In[16]:
 
 
 def get_location_and_details_from_iata(iata):
@@ -473,9 +443,6 @@ def get_location_and_details_from_iata(iata):
         return pd.Series({"latitude": None, "longitude": None, "country": None})
 
 
-# In[17]:
-
-
 def extract_iata_code(df):
     """
     Extract the last 3 characters from the 'query_id' column as a new column 'IATA_code'.
@@ -488,9 +455,6 @@ def extract_iata_code(df):
     """
     df['IATA_code'] = df['query_id'].str[-3:]
     return df
-
-
-# In[18]:
 
 
 def merge_iata_info(combined_query_pandas, iata_df):
@@ -513,9 +477,6 @@ def merge_iata_info(combined_query_pandas, iata_df):
     return merged_df
 
 
-# In[19]:
-
-
 def process_combined_query_pandas(df):
     """
     Rename columns, drop old columns, and add an indexer count.
@@ -528,13 +489,13 @@ def process_combined_query_pandas(df):
     """
     # Add an indexer count
     df['indexer_count'] = df.groupby('indexer')['indexer'].transform('count')
-    
+
     # Rename columns
     df.rename(columns={'loc': 'destination_loc', 'country': 'origin_country'}, inplace=True)
-    
+
     # Create 'origin_loc' column
     df['origin_loc'] = df[['latitude', 'longitude']].astype(str).agg(','.join, axis=1)  # vectorized for speed
-    
+
     # Drop 'latitude' and 'longitude' columns
     df.drop(columns=['latitude', 'longitude'], inplace=True)
 
@@ -542,11 +503,8 @@ def process_combined_query_pandas(df):
     df.dropna(subset=['origin_loc', 'destination_loc'], inplace=True)
     df = df[~df['origin_loc'].str.contains('nan,nan', na=False)]
     df = df[~df['destination_loc'].str.contains('nan,nan', na=False)]
-    
+
     return df
-
-
-# In[20]:
 
 
 def split_locations(df):
@@ -562,9 +520,6 @@ def split_locations(df):
     df[['origin_lat', 'origin_lon']] = df['origin_loc'].str.split(',', expand=True).astype(float)
     df[['dest_lat', 'dest_lon']] = df['destination_loc'].str.split(',', expand=True).astype(float)
     return df
-
-
-# In[21]:
 
 
 def calculate_distances(df):
@@ -584,9 +539,6 @@ def calculate_distances(df):
     return df
 
 
-# In[22]:
-
-
 def haversine_vectorized(lon1, lat1, lon2, lat2):
     """
     Calculate the great circle distance between two points on the earth (specified in decimal degrees).
@@ -600,13 +552,10 @@ def haversine_vectorized(lon1, lat1, lon2, lat2):
     lon1, lat1, lon2, lat2 = np.radians([lon1, lat1, lon2, lat2])
     dlon = lon2 - lon1
     dlat = lat2 - lat1
-    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
     c = 2 * np.arcsin(np.sqrt(a))
     r = 3956  # Radius of earth in miles
     return c * r
-
-
-# In[23]:
 
 
 def drop_intermediate_columns(df):
@@ -623,9 +572,6 @@ def drop_intermediate_columns(df):
     return df
 
 
-# In[24]:
-
-
 def filter_status(df):
     """
     Filter the DataFrame to only include rows where status is '200 OK'.
@@ -637,9 +583,6 @@ def filter_status(df):
     DataFrame: The filtered DataFrame.
     """
     return df[df["status"] == "200 OK"].copy()
-
-
-# In[25]:
 
 
 def apply_round_distance(df):
@@ -656,9 +599,6 @@ def apply_round_distance(df):
     return df
 
 
-# In[26]:
-
-
 def round_distance(value):
     """
     Round the distance to the nearest 250 miles.
@@ -670,9 +610,6 @@ def round_distance(value):
     float: The rounded distance.
     """
     return round(value / 250) * 250
-
-
-# In[27]:
 
 
 def filter_columns(df, all_columns):
@@ -687,9 +624,6 @@ def filter_columns(df, all_columns):
     DataFrame: The filtered DataFrame.
     """
     return df[all_columns]
-
-
-# In[28]:
 
 
 def iterative_filter(df, a, b, c, d):
@@ -734,9 +668,6 @@ def iterative_filter(df, a, b, c, d):
     return df
 
 
-# In[29]:
-
-
 def strategic_sample(df, rows_to_use, cap_per_indexer=None):
     """
     Sample query_id's in a way that creates balanced representation across indexers on each subgraph.
@@ -750,13 +681,13 @@ def strategic_sample(df, rows_to_use, cap_per_indexer=None):
     DataFrame: The sampled DataFrame.
     int: The square root of the number of sampled IDs.
     """
-    
+
     # Calculate number of unique indexers per subgraph.
     # Then calculate how many queries to sample for each indexer, subgraph combination.
     if cap_per_indexer is None:
         indexers_per_subgraph = df.groupby('deployment_hash')['indexer'].nunique()
         cap_per_indexer = indexers_per_subgraph.map(lambda x: rows_to_use // x if x else 0).to_dict()
-    
+
     # Create a DataFrame that contains the info above
     query_counts = df.groupby(['deployment_hash', 'indexer'])[
         'query_id'].agg(lambda x: list(x.unique())).reset_index(name='unique_query_ids')
@@ -769,7 +700,8 @@ def strategic_sample(df, rows_to_use, cap_per_indexer=None):
 
     # Apply sampling function
     query_counts['sampled_query_ids'] = query_counts.apply(lambda x: sample_queries(x[
-        'unique_query_ids'], x['cap']), axis=1)
+                                                                                        'unique_query_ids'], x['cap']),
+                                                           axis=1)
 
     # Filter the df with the sampled id's
     sampled_ids = set(np.concatenate(query_counts['sampled_query_ids'].values))
@@ -779,9 +711,6 @@ def strategic_sample(df, rows_to_use, cap_per_indexer=None):
     integer_root = int(np.sqrt(len(sampled_ids)))
 
     return df, integer_root
-
-
-# In[30]:
 
 
 def hash_sampled_queries(df, integer_root):
@@ -798,9 +727,6 @@ def hash_sampled_queries(df, integer_root):
     df.loc[df['sampled_query_id'].notna(), 'sampled_query_id_hashed_mod_integer_root'] = df[
         'sampled_query_id'].apply(lambda x: hash(x) % integer_root)
     return df
-
-
-# In[31]:
 
 
 def perform_linear_regression(df):
@@ -830,9 +756,6 @@ def perform_linear_regression(df):
     indexer_rankings = calculate_robust_normalized_coefficients(results_df)
 
     return df, indexer_rankings
-
-
-# In[32]:
 
 
 def preprocess_data_for_regression(df, predictor, categorical, numeric):
@@ -870,9 +793,6 @@ def preprocess_data_for_regression(df, predictor, categorical, numeric):
     return X, y, preprocessor
 
 
-# In[33]:
-
-
 def perform_regression(X, y, preprocessor):
     """
     Perform linear regression on the given data.
@@ -897,9 +817,6 @@ def perform_regression(X, y, preprocessor):
     y_pred = pipeline.predict(X)
 
     return pipeline, y_pred
-
-
-# In[34]:
 
 
 def analyze_regression_results(pipeline, X, y, y_pred):
@@ -962,9 +879,6 @@ def analyze_regression_results(pipeline, X, y, y_pred):
     return results_df
 
 
-# In[35]:
-
-
 def calculate_robust_normalized_coefficients(results_df):
     """
     Calculate robust normalized coefficients for the indexers.
@@ -975,16 +889,18 @@ def calculate_robust_normalized_coefficients(results_df):
     Returns:
     indexer_rankings (DataFrame): DataFrame containing indexer rankings based on the robust normalized coefficients.
     """
-    indexer_rankings = results_df[results_df["Variable"].str.startswith("one_hot__indexer_")].sort_values(by="Coefficient")
+    indexer_rankings = results_df[results_df["Variable"].str.startswith("one_hot__indexer_")].sort_values(
+        by="Coefficient")
     indexer_rankings.reset_index(inplace=True)
     indexer_rankings.drop(columns=["index"], inplace=True)
     indexer_rankings["Variable"] = indexer_rankings["Variable"].str.replace('one_hot__indexer_network_', '')
     indexer_rankings["Variable"] = indexer_rankings["Variable"].str.replace('one_hot__indexer_', '')
     indexer_rankings = indexer_rankings[indexer_rankings["Variable"] != "mainnet"]
-    indexer_rankings.rename(columns={"Variable":"indexer"}, inplace=True)
+    indexer_rankings.rename(columns={"Variable": "indexer"}, inplace=True)
     indexer_rankings.dropna(subset=["Coefficient", "Standard Error", "p-value"], inplace=True)
 
-    indexer_rankings["Coefficient + 1.5 SE"] = indexer_rankings["Coefficient"] + 1.5 * indexer_rankings["Standard Error"]
+    indexer_rankings["Coefficient + 1.5 SE"] = indexer_rankings["Coefficient"] + 1.5 * indexer_rankings[
+        "Standard Error"]
 
     # Calculate the median and IQR
     median_val = indexer_rankings['Coefficient + 1.5 SE'].median()
@@ -993,12 +909,10 @@ def calculate_robust_normalized_coefficients(results_df):
     iqr_val = q3 - q1
 
     # Normalize the values using median and IQR
-    indexer_rankings['Robust Normalized Coefficient + 1.5 SE'] = (indexer_rankings['Coefficient + 1.5 SE'] - median_val) / iqr_val
+    indexer_rankings['Robust Normalized Coefficient + 1.5 SE'] = (indexer_rankings[
+                                                                      'Coefficient + 1.5 SE'] - median_val) / iqr_val
 
     return indexer_rankings
-
-
-# In[36]:
 
 
 def calculate_indexer_success_rate(df):
@@ -1014,12 +928,10 @@ def calculate_indexer_success_rate(df):
     DataFrame: Data frame with indexer and their success rates.
     """
     df_filtered = df[["indexer", "status"]].copy()
-    df_filtered['status_numeric'] = df_filtered['status'].apply(lambda x: 1 if x in ["200 OK", "Unavailable(MissingBlock)"] else 0)
+    df_filtered['status_numeric'] = df_filtered['status'].apply \
+        (lambda x: 1 if x in ["200 OK", "Unavailable(MissingBlock)"] else 0)
     indexer_success_rate = df_filtered.groupby('indexer').agg(average_status=('status_numeric', 'mean')).reset_index()
     return indexer_success_rate.sort_values(by='average_status', ascending=True)
-
-
-# In[37]:
 
 
 def calculate_indexer_uptime(df, threshold_seconds=120):
@@ -1036,60 +948,66 @@ def calculate_indexer_uptime(df, threshold_seconds=120):
     df_copy = df.copy()
     df_copy['timestamp'] = pd.to_datetime(df_copy['timestamp'])
     df_copy.sort_values(by=['indexer', 'timestamp'], inplace=True)
-    
+
     # Calculate next and previous timestamps for each query
     df_copy['next_timestamp'] = df_copy.groupby('indexer')['timestamp'].shift(-1)
     df_copy['previous_timestamp'] = df_copy.groupby('indexer')['timestamp'].shift(1)
-    
+
     # Calculate the seconds to the next/previous timestamps.
     df_copy['gap_to_next_query'] = (df_copy['next_timestamp'] - df_copy['timestamp']).dt.total_seconds()
     df_copy['gap_to_previous_query'] = (df_copy['timestamp'] - df_copy['previous_timestamp']).dt.total_seconds()
-    
+
     # Set next_midpoint as the current timestamp plus half the gap to the next query
     # If a query represents the final query in the data for the indexer then next_midpoint is just equal to timestamp
     df_copy['next_midpoint'] = df_copy['timestamp'] + pd.to_timedelta(df_copy['gap_to_next_query'] / 2, unit='s')
     df_copy['next_midpoint'] = df_copy['next_midpoint'].fillna(df_copy['timestamp'])
-    
+
     # Set previous_midpoint as the current timestamp minus half the gap to the prior query
     # If a query represents the first query in the data for the indexer then previous_midpoint is just equal to timestamp
-    df_copy['previous_midpoint'] = df_copy['timestamp'] - pd.to_timedelta(df_copy['gap_to_previous_query'] / 2, unit='s')
+    df_copy['previous_midpoint'] = df_copy['timestamp'] - pd.to_timedelta(df_copy['gap_to_previous_query'] / 2,
+                                                                          unit='s')
     df_copy['previous_midpoint'] = df_copy['previous_midpoint'].fillna(df_copy['timestamp'])
-    
+
     # Use query response status to inform weather an indexer is online/offline.
     df_copy['is_up'] = (df_copy['status'] == '200 OK') | (df_copy['status'] == 'Unavailable(MissingBlock)')
-    
+
     # Calculate uptime durations using next/prior midpoints, when the indexer was up
-    df_copy['uptime_duration_full'] = (df_copy['next_midpoint'] - df_copy['previous_midpoint']).dt.total_seconds().where(df_copy['is_up'], 0)
-    df_copy['uptime_duration_restricted'] = np.minimum((df_copy['next_midpoint'] - df_copy['previous_midpoint']).dt.total_seconds().where(df_copy['is_up'], 0), threshold_seconds)
-    
+    df_copy['uptime_duration_full'] = \
+        (df_copy['next_midpoint'] - df_copy['previous_midpoint']).dt.total_seconds().where(df_copy['is_up'], 0)
+    df_copy['uptime_duration_restricted'] = np.minimum(
+        (df_copy['next_midpoint'] - df_copy['previous_midpoint']).dt.total_seconds().where(df_copy['is_up'], 0),
+        threshold_seconds)
+
     # Calculate observed durations using next/prior midpoints
     df_copy['observed_duration_full'] = (df_copy['next_midpoint'] - df_copy['previous_midpoint']).dt.total_seconds()
-    df_copy['observed_duration_restricted'] = np.minimum((df_copy['next_midpoint'] - df_copy['previous_midpoint']).dt.total_seconds(), threshold_seconds)
-    
+    df_copy['observed_duration_restricted'] = np.minimum(
+        (df_copy['next_midpoint'] - df_copy['previous_midpoint']).dt.total_seconds(), threshold_seconds)
+
     # Save each indexers uptime.
     uptime_duration_full = df_copy.groupby("indexer")["uptime_duration_full"].sum()
     uptime_duration_restricted = df_copy.groupby("indexer")["uptime_duration_restricted"].sum()
-    
+
     # Save each indexers total observed time.
     observed_duration_full = df_copy.groupby("indexer")["observed_duration_full"].sum()
     observed_duration_restricted = df_copy.groupby("indexer")["observed_duration_restricted"].sum()
-    
+
     # Merge and Calculate "% up" for the "full" version
     merged_uptime_full = pd.merge(observed_duration_full, uptime_duration_full, on="indexer", how="left").reset_index()
-    merged_uptime_full["% up"] = round(merged_uptime_full["uptime_duration_full"] / merged_uptime_full["observed_duration_full"] * 100, 3)
+    merged_uptime_full["% up"] = round(
+        merged_uptime_full["uptime_duration_full"] / merged_uptime_full["observed_duration_full"] * 100, 3)
     merged_uptime_full = merged_uptime_full.sort_values(by="% up", ascending=False)
-    
+
     # Merge and Calculate "% up" for the "restricted" version
-    merged_uptime_restricted = pd.merge(observed_duration_restricted, uptime_duration_restricted, on="indexer", how="left").reset_index()
-    merged_uptime_restricted["% up"] = round(merged_uptime_restricted["uptime_duration_restricted"] / merged_uptime_restricted["observed_duration_restricted"] * 100, 3)
+    merged_uptime_restricted = pd.merge(observed_duration_restricted, uptime_duration_restricted, on="indexer",
+                                        how="left").reset_index()
+    merged_uptime_restricted["% up"] = round(
+        merged_uptime_restricted["uptime_duration_restricted"] / merged_uptime_restricted[
+            "observed_duration_restricted"] * 100, 3)
     merged_uptime_restricted = merged_uptime_restricted.sort_values(by="% up", ascending=False)
-    
+
     # Final merge
     merged_uptime_both = pd.merge(merged_uptime_restricted, merged_uptime_full, on="indexer", how="left")
     return merged_uptime_both
-
-
-# In[38]:
 
 
 def get_initial_stake_to_fees_query():
@@ -1108,9 +1026,6 @@ def get_initial_stake_to_fees_query():
     """
 
 
-# In[39]:
-
-
 def calculate_stake_to_fees(initial_stake_query):
     """
     Calculate the stake to fees ratio.
@@ -1126,9 +1041,6 @@ def calculate_stake_to_fees(initial_stake_query):
     iqr = q3 - q1
     stake_to_fees['stake_to_fees_iqr_deviation'] = (stake_to_fees['stake_to_fees'] - median_stake_to_fees) / iqr
     return stake_to_fees
-
-
-# In[40]:
 
 
 def aggregate_indexer_info(df):
@@ -1157,9 +1069,6 @@ def aggregate_indexer_info(df):
     return agg_df
 
 
-# In[41]:
-
-
 def merge_and_prepare_dataframes(indexer_uptime, indexer_rankings, agg_df, indexer_success_rate, stake_to_fees):
     """
     Merge and prepare dataframes.
@@ -1176,63 +1085,56 @@ def merge_and_prepare_dataframes(indexer_uptime, indexer_rankings, agg_df, index
     """
     # Merge df's together
     merged = pd.merge(indexer_uptime, indexer_rankings, on="indexer", how="left")
-    
+
     # Drop unnecessary columns
     merged = merged.drop(columns=["observed_duration_full", "uptime_duration_full", "% up_y", "% up_x"])
     merged = merged.dropna(subset=["Coefficient", "Standard Error", "p-value"])
-    
+
     # Merge df's together
     merged = pd.merge(merged, agg_df, on="indexer", how="left")
-    
+
     # Merge df's together
     merged = pd.merge(merged, indexer_success_rate, on="indexer", how="left")
-    
+
     # Merge df's together
     merged = pd.merge(merged, stake_to_fees, on="indexer", how="left")
-    
+
     # Add new columns
     merged["existing_dips_agreements"] = 0
     merged["avg_sync_duration"] = np.nan
     return merged
 
 
-# In[48]:
-
-
 def normalize_metrics(merged):
     # Normalise linear regression score:
     merged['norm_lin_reg_coefficient'] = (
-        1 - normalize_generic(merged['Coefficient + 1.5 SE']))       # lower is better
+            1 - normalize_generic(merged['Coefficient + 1.5 SE']))  # lower is better
 
     # Normalise uptime score:
-    merged['norm_uptime_score']        = (
-        normalize_uptime_and_success_rate(merged['up_x']))           # higher is better
+    merged['norm_uptime_score'] = (
+        normalize_uptime_and_success_rate(merged['up_x']))  # higher is better
 
     # Normalise the number of indexing agreements each indexer has:
     merged['norm_existing_dips_agreements'] = (
-        1 - normalize_generic(merged['existing_dips_agreements']))   # lower is better
+            1 - normalize_generic(merged['existing_dips_agreements']))  # lower is better
 
     # Normalise stake to fees ratio:
     merged['norm_stake_to_fees_iqr_deviation'] = (
-        normalize_generic(merged['stake_to_fees_iqr_deviation']))    # higher is better
+        normalize_generic(merged['stake_to_fees_iqr_deviation']))  # higher is better
 
     # Normalise success rate score:
     merged['norm_success_rate'] = (
-        normalize_uptime_and_success_rate(merged['average_status'])) # higher is better
+        normalize_uptime_and_success_rate(merged['average_status']))  # higher is better
 
     # Needs attention:
     merged['norm_avg_sync_duration'] = (
-        1 - normalize_generic(merged['avg_sync_duration']))          # lower is better
+            1 - normalize_generic(merged['avg_sync_duration']))  # lower is better
 
-    #### new code end of day 10/07/2024 ###
     merged['norm_indexing_agreement_acceptance_latency'] = (
         normalize_indexing_agreement_acceptance_latency(
             merged['indexing_agreement_acceptance_latency']))
-    
+
     return merged
-
-
-# In[44]:
 
 
 # Function to normalize other metrics
@@ -1240,26 +1142,14 @@ def normalize_generic(series):
     return (series - series.min()) / (series.max() - series.min())
 
 
-# In[45]:
-
-
 # Function to normalize uptime/succes rate
 def normalize_uptime_and_success_rate(series):
     return series.apply(lambda x: max(0, (x - 0.97) / 0.03))
 
 
-# In[46]:
-
-
 # Function to Normalize acceptance latency
 def normalize_indexing_agreement_acceptance_latency(latency, L=1, k=0.5, x0=12):
     return L / (1 + np.exp(k * (latency - x0)))
-
-
-### new code 10/07/2024 ###
-
-
-# In[47]:
 
 
 def calculate_weighted_score(row, weights):
@@ -1271,24 +1161,5 @@ def calculate_weighted_score(row, weights):
             weight_total += weight
     if weight_total == 0:
         return np.nan
-    
+
     return weighted_sum / weight_total
-
-
-# In[ ]:
-
-
-
-
-
-# In[51]:
-
-
-get_ipython().system('jupyter nbconvert --to script iisa_functions.ipynb')
-
-
-# In[ ]:
-
-
-
-
