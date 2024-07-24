@@ -14,7 +14,7 @@ env:
   RUSTFLAGS: '-C link-arg=-fuse-ld=lld'
 
 jobs:
-  test:
+  test-rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
@@ -37,7 +37,7 @@ jobs:
       - name: Run tests
         run: cargo test
 
-  format:
+  format-rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
@@ -49,3 +49,25 @@ jobs:
           components: rustfmt
 
       - run: cargo +nightly fmt --all -- --check
+
+  test-python:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
+
+    - name: Check Python code (ruff)
+      uses: chartboost/ruff-action@491342200cdd1cf4d5132a30ddc546b3b5bc531b # v1
+      with:
+        args: 'check'
+        src: 'assets'
+
+  format-python:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
+
+    - name: Check Python code formatting (ruff)
+      uses: chartboost/ruff-action@491342200cdd1cf4d5132a30ddc546b3b5bc531b # v1
+      with:
+        args: 'format --check'
+        src: 'assets'
