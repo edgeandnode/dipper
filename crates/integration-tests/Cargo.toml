@@ -7,7 +7,5 @@ edition = "2021"
 integration-tests = []
 
 [dependencies]
+dipper = { version = "0.1.0", path = "../dipper" }
 tokio.workspace = true
-
-[dev-dependencies]
-subgraph = { path = "../subgraph" }

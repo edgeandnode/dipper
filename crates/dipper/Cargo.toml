@@ -1,13 +1,15 @@
 [package]
-name = "dipper-common"
+name = "dipper"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 bincode.workspace = true
 pyo3 = { workspace = true, features = ["auto-initialize"] }
+reqwest.workspace = true
 serde = { workspace = true, features = ["derive"] }  
 sled.workspace = true
+thegraph-core = { workspace = true, features = ["subgraph-client"] }
 thiserror.workspace = true
 
 [dev-dependencies]

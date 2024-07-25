@@ -1,3 +1,16 @@
+//! Dipper service configuration.
+//!
+//! This module contains the configuration for the Dipper service. The configuration is loaded from
+//! a YAML file, and can be overridden by command line arguments.
+//!
+//! Configuration parameters:
+//! - HTTP server configuration (port, etc.)
+//! - DB path: Database path for state persistence
+//! - Log level
+//! - BigQuery config (credentials, etc.) - PY
+//! - IP address resolution config (credentials, etc.) - PY?
+//! - Network subgraph client config (credentials, etc.)
+
 use std::{
     fs::File,
     io::Read,

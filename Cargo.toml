@@ -3,14 +3,12 @@ resolver = "2"
 members = [
     "crates/bin/dipper-cli",
     "crates/bin/dipper-service",
-    "crates/dipper-common", "crates/integration-tests",
-    "crates/subgraph", 
+    "crates/dipper",
+    "crates/integration-tests",
     "xtask"
 ]
 
 [workspace.dependencies]
-thegraph-core = { git = "https://github.com/edgeandnode/toolshed.git", features = ["subgraph-client"] } 
-
 anyhow = "1.0"
 async-select = "0.2"
 async-signal = "0.2"
@@ -26,7 +24,7 @@ duct = "0.13"
 ethers-rs = "0.2"
 futures-lite = "2.3"
 log = { version = "0.4", features = ["serde"] }
-pyo3 = "0.21"
+pyo3 = "0.22.2"
 serde = { version = "1.0", features = ["derive"] } 
 serde_yaml = "0.9"
 simple_logger = "5"
@@ -34,6 +32,7 @@ sled = "0.34"
 smol = "2"
 reqwest = "0.12"
 tempfile = "3"
+thegraph-core = "0.5.7"
 thiserror = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 tower = "0.4"
