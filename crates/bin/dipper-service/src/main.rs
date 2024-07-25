@@ -1,12 +1,16 @@
+use async_signal::{Signal, Signals};
 use axum::{
     async_trait, body::Body, extract::FromRequest, http::Request, routing::get, Extension, Router,
 };
-use dipper_common::{
+use dipper::{
     db::DbHandle,
     models::{Indexer, Key},
 };
-use dipper_service::config::StartArgs;
+use futures_lite::StreamExt;
 use log::LevelFilter;
+use thiserror::Error;
+
+mod config;
 
 #[derive(Clone)]
 struct AppState {
@@ -34,7 +38,7 @@ where
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let opts = StartArgs::parse_and_merge()?;
+    let opts = config::StartArgs::parse_and_merge()?;
     simple_logger::SimpleLogger::new()
         .with_level(opts.log_level.unwrap_or(LevelFilter::Info))
         .init()?;
@@ -58,10 +62,34 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind("0.0.0.0:9091").await.unwrap();
 
     let signal_task = async {
-        let _signal = dipper_service::signal_task().await.unwrap();
+        let _signal = signal_task().await.unwrap();
     };
     let _app_task = axum::serve(listener, app)
         .with_graceful_shutdown(signal_task)
         .await;
     Ok(())
+}
+
+pub enum AppSignal {
+    Shutdown,
+}
+
+#[derive(Error, Debug)]
+pub enum SignalHandlerError {
+    #[error("Failed to create signal receiver")]
+    SignalReceiverError(std::io::Error),
+}
+
+pub async fn signal_task() -> Result<AppSignal, SignalHandlerError> {
+    let signal_list = &[Signal::Term, Signal::Int, Signal::Quit, Signal::Abort];
+    let mut signals = Signals::new(signal_list).map_err(SignalHandlerError::SignalReceiverError)?;
+    while let Some(Ok(signal)) = signals.next().await {
+        match signal {
+            s if signal_list.contains(&s) => return Ok(AppSignal::Shutdown),
+            _ => {}
+        }
+    }
+
+    // fallthrough
+    Ok(AppSignal::Shutdown)
 }

@@ -1,7 +1,8 @@
-use dipper_common::models::Indexer;
-use reqwest::Client as ReqwestClient;
+use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use thegraph_core::client::Client;
+
+use crate::models::Indexer;
 
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {
@@ -20,7 +21,7 @@ pub struct NetworkSubgraphQueryResult {
 
 impl NetworkSubgraph {
     pub fn new(api_key: String, url: String) -> Self {
-        let client = ReqwestClient::builder().build().unwrap();
+        let client = HttpClient::builder().build().unwrap();
         let url = url.parse().unwrap();
         let client = Client::builder(client, url)
             .with_auth_token(Some(api_key.clone()))
