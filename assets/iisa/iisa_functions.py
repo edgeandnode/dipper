@@ -110,7 +110,7 @@ def adjust_rows(initial_query_results_pandas, target_rows):
         )
         iteration += 1
 
-        # Break the loop if the difference between the current sum and the target is within the 
+        # Break the loop if the difference between the current sum and the target is within the
         # tolerance range or if the maximum number of iterations is reached.
         if abs(current_sum - target_rows) <= tolerance or iteration >= max_iterations:
             break

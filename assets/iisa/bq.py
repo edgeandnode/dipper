@@ -1,18 +1,19 @@
 """
 The "BigQuery" provider.
 """
+
 from datetime import date
 from typing import NewType
 
 from bigframes import pandas as bpd
 from bigframes.pandas import DataFrame
 
-QueryStr = NewType('QueryStr', str)
+QueryStr = NewType("QueryStr", str)
 
-StakeToFeesDataFrame = NewType('StakeToFeesDataFrame', DataFrame)
-CombinedQueryResultsDataFrame = NewType('CombinedQueryResultsDataFrame', DataFrame)
-UrlDataFrame = NewType('UrlDataFrame', DataFrame)
-InitialQueryResultsDataFrame = NewType('InitialQueryResultDataFrame', DataFrame)
+StakeToFeesDataFrame = NewType("StakeToFeesDataFrame", DataFrame)
+CombinedQueryResultsDataFrame = NewType("CombinedQueryResultsDataFrame", DataFrame)
+UrlDataFrame = NewType("UrlDataFrame", DataFrame)
+InitialQueryResultsDataFrame = NewType("InitialQueryResultDataFrame", DataFrame)
 
 
 class BigQueryProvider:
@@ -40,8 +41,9 @@ class BigQueryProvider:
         dataframe = self._read_gbq_dataframe(query)
         return StakeToFeesDataFrame(dataframe)
 
-    def fetch_combined_query_results(self, start_date: date, num_days: int,
-                                     rows_to_use: int) -> CombinedQueryResultsDataFrame:
+    def fetch_combined_query_results(
+        self, start_date: date, num_days: int, rows_to_use: int
+    ) -> CombinedQueryResultsDataFrame:
         """
         Fetch the combined query results.
         """
@@ -57,7 +59,9 @@ class BigQueryProvider:
         dataframe = self._read_gbq_dataframe(query)
         return UrlDataFrame(dataframe)
 
-    def fetch_initial_query_results(self, start_date: date, num_days: int) -> InitialQueryResultsDataFrame:
+    def fetch_initial_query_results(
+        self, start_date: date, num_days: int
+    ) -> InitialQueryResultsDataFrame:
         """
         Fetch the initial query results.
         """

@@ -579,32 +579,32 @@ if __name__ == "__main__":
     # Create a DataManager instance:
     data_manager = DataManager("graph-mainnet", "US", 28)
 
-    data_manager.update_and_fetch_data()  # Fetch fresh data whenever needed, e.g once per day.
+    data_manager.update_and_fetch_data()  # Fetch fresh data whenever needed, e.g. once per day.
     data = data_manager.get_data()  # Extract the data from the class.
     data_indexer_rankings = (
         data_manager.get_indexer_rankings()
     )  # df containing indexer rankings/normalised coefficients
 
     # Create a DataProcessor instance:
-    # DataProcessor takes: 
+    # DataProcessor takes:
     # (data, subgraph_id, prices, existing_agreements=None, pending_agreements=None, blacklist=None,)
     data_processor = DataProcessor(
-        data_manager.get_data(), # data
-        [], # subgraph_id
-        [], # prices
-        [], # existing_agreements
-        [], # pending_agreements
-        [], # blacklist
+        data_manager.get_data(),  # data
+        [],  # subgraph_id
+        [],  # prices
+        [],  # existing_agreements
+        [],  # pending_agreements
+        [],  # blacklist
     )
 
     # Update prices and agreements dynamically
     # (new_data, new_prices, new_existing_agreements, new_pending_agreements, new_blacklist)
     data_processor._update_data(
-        [], # new_data
-        [], # new_prices
-        [], # new_existing_agreements
-        [], # new_pending_agreements
-        [], # new_blacklist
+        [],  # new_data
+        [],  # new_prices
+        [],  # new_existing_agreements
+        [],  # new_pending_agreements
+        [],  # new_blacklist
     )
 
     data_processor._process_data()
