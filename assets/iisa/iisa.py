@@ -27,22 +27,27 @@ class DataManager:
     def __init__(self, project, location, num_days):
         self.project = project
         self.location = location
-        bpd.options.bigquery.project = project
-        bpd.options.bigquery.location = location
         self.num_days = num_days
 
+        # Configure BigQuery project and location
+        bpd.options.bigquery.project = project
+        bpd.options.bigquery.location = location
+        
+        # Initialize timestamps
         (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
             iisa_functions.derive_timestamps(self.num_days)
-        )  # Call derive_timestamps to fetch the data immediately upon instantiation of the class.
+        )
 
+        # Initialize data attributes
         self.bigquery_data = None
         self.indexer_rankings = None
         self.indexer_success_rate = None
         self.indexer_uptime = None
         self.stake_to_fees = None
+
+        # Fetch initial data upon instantiation
         self.fetch_bigquery_data()
 
-    # Method 1
     def fetch_bigquery_data(self):
         """
         Fetch data from BigQuery and cache it for the application's runtime.
@@ -186,8 +191,10 @@ class DataManager:
         """
         Update timestamps and fetch the latest data from BigQuery.
         """
-        self.derive_timestamps()  # Imported externally
-        self.fetch_bigquery_data()  # Defined above
+        (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
+            iisa_functions.derive_timestamps(self.num_days)
+        )  
+        self.fetch_bigquery_data()
 
     def get_data(self):
         """
@@ -258,11 +265,30 @@ class DataProcessor:
         )
         self.blacklist = blacklist if blacklist is not None else []
 
-        # Initialize the current group of indexers for the subgraph to an empty list
-        self.current_group = []
+        # initialize the current group and initial group
+        self.current_group = self._get_current_group()
+        self.initial_group = list(self.current_group)
 
         # Begin the process of assigning/replacing indexers for the subgraph
         self._process_data()
+
+        # After processing, store the results
+        self.added_indexers, self.cancelled_indexers = self.get_indexer_selections()
+
+    def get_indexer_selections(self):
+        """
+        Returns the indexer-subgraph pairs that have recently been assigned or cancelled.
+        This method should be called after data processing to fetch any updates.
+        """
+        # Compare initial and current groups to determine changes
+        added = set(self.current_group) - set(self.initial_group)
+        cancelled = set(self.initial_group) - set(self.current_group)
+
+        # Format results as pairs
+        added_pairs = [(indexer, self.subgraph_id) for indexer in added]
+        cancelled_pairs = [(indexer, self.subgraph_id) for indexer in cancelled]
+
+        return added_pairs, cancelled_pairs
 
     def _process_data(self):
         """
@@ -273,29 +299,16 @@ class DataProcessor:
 
         # Get the current group of indexers for the subgraph using '_get_current_group'
         self.current_group = self._get_current_group()
+        self.initial_group = list(self.current_group)
 
-        # Normalize metrics assessing indexer quality with normalisation function.
-        self.data = iisa_functions.normalize_metrics(self.data)
-
-        # Calculate overall indexer weighted score using predefined weights
-        weights = {
-            "lin_reg_coefficient": 0.2424,
-            "uptime_score": 0.1667,
-            "existing_dips_agreements": 0.1212,
-            "stake_to_fees_iqr_deviation": 0.1023,
-            "success_rate": 0.0625,
-            "avg_sync_duration": 0.0625,
-            "indexing_agreement_acceptance_latency": 0.2424,
-        }
-        self.data["weighted_score"] = self.data.apply(
-            iisa_functions.calculate_weighted_score, axis=1, weights=weights
-        )
+        # Normalize metrics and calculate scores
+        self.data = self._normalize_and_score()
 
         # Sort data by weighted score
         self.data.sort_values(by="weighted_score", ascending=True, inplace=True)
 
         # Call _assign_indexers_to_subgraph to assign/replace an indexer on the subgraph.
-        self._assign_indexers_to_subgraph()  # <----------------------
+        self._assign_indexers_to_subgraph()
 
     def _fetch_number_of_indexer_agreements(self):
         """
@@ -311,6 +324,35 @@ class DataProcessor:
             ] = self.existing_agreements[indexer]
 
         return self.data
+    
+    def _get_current_group(self):
+        """
+        Get the current group of indexers assigned to a subgraph (data from self.existing_agreements).
+        """
+        # Return a list of indexers currently assigned to 'self.subgraph_id'
+        return [
+            indexer
+            for indexer, subgraphs in self.existing_agreements.items()
+            if self.subgraph_id in subgraphs
+        ]
+    
+    def _normalize_and_score(self):
+        """
+        Normalize metrics assessing indexer quality and calculate weighted scores.
+        """
+        self.data = iisa_functions.normalize_metrics(self.data)
+        weights = {
+            "lin_reg_coefficient": 0.2424,
+            "uptime_score": 0.1667,
+            "existing_dips_agreements": 0.1212,
+            "stake_to_fees_iqr_deviation": 0.1023,
+            "success_rate": 0.0625,
+            "avg_sync_duration": 0.0625,
+            "indexing_agreement_acceptance_latency": 0.2424,
+        }
+        self.data["weighted_score"] = self.data.apply(
+            iisa_functions.calculate_weighted_score, axis=1, weights=weights
+        )
 
     def _assign_indexers_to_subgraph(self):
         """
@@ -326,17 +368,6 @@ class DataProcessor:
         # Otherwise, call '_replace_underperforming_indexers' which will search for a suitable replacement
         else:
             self._replace_underperforming_indexers()
-
-    def _get_current_group(self):
-        """
-        Get the current group of indexers assigned to a subgraph (data from self.existing_agreements).
-        """
-        # Return a list of indexers currently assigned to 'self.subgraph_id'
-        return [
-            indexer
-            for indexer, subgraphs in self.existing_agreements.items()
-            if self.subgraph_id in subgraphs
-        ]
 
     def _add_indexers_to_group(self):
         """
@@ -527,7 +558,7 @@ class DataProcessor:
 
         return score
 
-    def _update_data(
+    def update_and_reprocess_data(
         self,
         new_data=None,
         new_prices=None,
@@ -536,32 +567,46 @@ class DataProcessor:
         new_blacklist=None,
     ):
         """
-        Update the class variables with new data, prices, existing agreements, and blacklist in real-time.
+        Update the class variables with new data, prices, existing agreements, pending agreements
+        and blacklist in real-time. If new data comes in then call _process_data a second time using 
+        the new data.
         """
+        updated = False
+
         # Update live data from DataManager class as it comes in, in real-time.
         if new_data is not None:
+            updated = True
             self.data = pd.DataFrame(new_data)
 
         # Update live indexer prices
         if new_prices is not None:
+            updated = True
             self.prices = new_prices
 
         # Update live existing agreements
         if new_existing_agreements is not None:
+            updated = True
             self.existing_agreements = new_existing_agreements
 
         # Update live pending agreements
         if new_pending_agreements is not None:
+            updated = True
             self.pending_agreements = new_pending_agreements
 
-        # Update live blacklist
+        # Manage live blacklist updates
         if new_blacklist is not None:
-            self.blacklist = new_blacklist
-
-            # Cancel indexing agreements for newly blacklisted indexers
+            updated = True
+            # Capture newly blacklisted indexers before updating the class attribute
             newly_blacklisted = set(new_blacklist) - set(self.blacklist)
+            self.blacklist = new_blacklist
+            
+            # Cancel indexing agreements for newly blacklisted indexers
             for indexer in newly_blacklisted:
                 self._cancel_indexing_agreements(indexer)
+
+        # Reprocess the data if there was an update
+        if updated:
+            self._process_data()
 
     def _cancel_indexing_agreements(self, indexer):
         """
@@ -579,17 +624,17 @@ if __name__ == "__main__":
     # Create a DataManager instance:
     data_manager = DataManager("graph-mainnet", "US", 28)
 
-    data_manager.update_and_fetch_data()  # Fetch fresh data whenever needed, e.g. once per day.
-    data = data_manager.get_data()  # Extract the data from the class.
-    data_indexer_rankings = (
-        data_manager.get_indexer_rankings()
-    )  # df containing indexer rankings/normalised coefficients
+    # Fetch fresh data whenever needed, e.g. once per day.
+    data_manager.update_and_fetch_data()
+
+    # Extract the data from the class.
+    data = data_manager.get_data()
 
     # Create a DataProcessor instance:
     # DataProcessor takes:
     # (data, subgraph_id, prices, existing_agreements=None, pending_agreements=None, blacklist=None,)
     data_processor = DataProcessor(
-        data_manager.get_data(),  # data
+        data,  # data
         [],  # subgraph_id
         [],  # prices
         [],  # existing_agreements
@@ -597,9 +642,9 @@ if __name__ == "__main__":
         [],  # blacklist
     )
 
-    # Update prices and agreements dynamically
+    # Update with new data, prices, agreements, pending agreements and blacklist dynamically
     # (new_data, new_prices, new_existing_agreements, new_pending_agreements, new_blacklist)
-    data_processor._update_data(
+    data_processor.update_and_reprocess_data(
         [],  # new_data
         [],  # new_prices
         [],  # new_existing_agreements
@@ -607,4 +652,6 @@ if __name__ == "__main__":
         [],  # new_blacklist
     )
 
-    data_processor._process_data()
+    # Access the results immediately after instantiation
+    added_indexers = data_processor.added_indexers
+    cancelled_indexers = data_processor.cancelled_indexers
