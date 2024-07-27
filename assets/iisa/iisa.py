@@ -32,7 +32,7 @@ class DataManager:
         # Configure BigQuery project and location
         bpd.options.bigquery.project = project
         bpd.options.bigquery.location = location
-        
+
         # Initialize timestamps
         (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
             iisa_functions.derive_timestamps(self.num_days)
@@ -193,7 +193,7 @@ class DataManager:
         """
         (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
             iisa_functions.derive_timestamps(self.num_days)
-        )  
+        )
         self.fetch_bigquery_data()
 
     def get_data(self):
@@ -324,7 +324,7 @@ class DataProcessor:
             ] = self.existing_agreements[indexer]
 
         return self.data
-    
+
     def _get_current_group(self):
         """
         Get the current group of indexers assigned to a subgraph (data from self.existing_agreements).
@@ -335,7 +335,7 @@ class DataProcessor:
             for indexer, subgraphs in self.existing_agreements.items()
             if self.subgraph_id in subgraphs
         ]
-    
+
     def _normalize_and_score(self):
         """
         Normalize metrics assessing indexer quality and calculate weighted scores.
@@ -568,7 +568,7 @@ class DataProcessor:
     ):
         """
         Update the class variables with new data, prices, existing agreements, pending agreements
-        and blacklist in real-time. If new data comes in then call _process_data a second time using 
+        and blacklist in real-time. If new data comes in then call _process_data a second time using
         the new data.
         """
         updated = False
@@ -599,7 +599,7 @@ class DataProcessor:
             # Capture newly blacklisted indexers before updating the class attribute
             newly_blacklisted = set(new_blacklist) - set(self.blacklist)
             self.blacklist = new_blacklist
-            
+
             # Cancel indexing agreements for newly blacklisted indexers
             for indexer in newly_blacklisted:
                 self._cancel_indexing_agreements(indexer)
