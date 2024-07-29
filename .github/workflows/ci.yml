@@ -56,7 +56,7 @@ jobs:
     - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
 
     - name: Check Python code (ruff)
-      uses: chartboost/ruff-action@491342200cdd1cf4d5132a30ddc546b3b5bc531b # v1
+      uses: chartboost/ruff-action@e18ae971ccee1b2d7bbef113930f00c670b78da4 # v1
       with:
         args: 'check'
         src: 'assets'
@@ -67,7 +67,7 @@ jobs:
     - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
 
     - name: Check Python code formatting (ruff)
-      uses: chartboost/ruff-action@491342200cdd1cf4d5132a30ddc546b3b5bc531b # v1
+      uses: chartboost/ruff-action@e18ae971ccee1b2d7bbef113930f00c670b78da4 # v1
       with:
         args: 'format --check'
         src: 'assets'
