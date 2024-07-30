@@ -21,8 +21,13 @@ class BigQueryProvider:
     A class that provides read access to Google BigQuery DB.
     """
 
-    def __init__(self, project_id: str):
-        self.project_id = project_id
+    def __init__(self, project: str, location: str):
+        self.project_id = project
+        self.location = location
+
+        # Configure BigQuery project and location
+        bpd.options.bigquery.project = project
+        bpd.options.bigquery.location = location
 
     def _read_gbq_dataframe(self, query: QueryStr) -> DataFrame:
         """

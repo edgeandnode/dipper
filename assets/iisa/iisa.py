@@ -1,5 +1,5 @@
-import bigframes.pandas as bpd
 import pandas as pd
+from .bq import BigQueryProvider
 
 import iisa_functions
 
@@ -24,14 +24,9 @@ class DataManager:
       This allows passing the instance of the class (self) to the external method for it to operate on.
     """
 
-    def __init__(self, project, location, num_days):
-        self.project = project
-        self.location = location
+    def __init__(self, num_days, bigquery: BigQueryProvider):
         self.num_days = num_days
-
-        # Configure BigQuery project and location
-        bpd.options.bigquery.project = project
-        bpd.options.bigquery.location = location
+        self.bigquery = bigquery
 
         # Initialize timestamps
         (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
@@ -48,16 +43,16 @@ class DataManager:
         # Fetch initial data upon instantiation
         self.fetch_bigquery_data()
 
+    def update_network_topology(self, indexers):
+        self.indexers = indexers
+
     def fetch_bigquery_data(self):
         """
         Fetch data from BigQuery and cache it for the application's runtime.
         """
-        # Get the initial query
-        initial_query = iisa_functions.get_initial_query(self.start_date, self.num_days)
-
         # Fetch the initial query results using the initial query as input
-        initial_query_results_pandas = iisa_functions.fetch_initial_query_results(
-            initial_query, self.project
+        initial_query_results_pandas = self.bigquery.fetch_initial_query_results(
+            self.start_date, self.num_days
         )
 
         # Figure out how many queries to take from each [indexer, subgraph] combination to target n queries overall
@@ -65,22 +60,14 @@ class DataManager:
             initial_query_results_pandas, target_rows=20000000
         )
 
-        # Get the combined query
-        combined_query = iisa_functions.get_combined_query(
+        # Fetch the combined query results using the combined query as input
+        self.bigquery_data = self.bigquery.fetch_combined_query_results(
             self.start_date, self.num_days, rows_to_use
         )
 
-        # Fetch the combined query results using the combined query as input
-        self.bigquery_data = iisa_functions.fetch_combined_query_results(
-            combined_query, self.project
-        )
-
-        # Get the URL data query
-        url_query = iisa_functions.get_url_query(self.start_date, self.num_days)
-
         # Fetch the URL data query results using the URL query as input
-        unique_urls_indexers_pandas = iisa_functions.fetch_url_data(
-            url_query, self.project
+        unique_urls_indexers_pandas = self.bigquery.fetch_url_data(
+            self.start_date, self.num_days
         )
 
         # Extract location/org details from the URL data. We should then have a df containing
@@ -170,10 +157,12 @@ class DataManager:
         )
 
         # Get the initial stake to fees query
-        initial_stake_query = iisa_functions.get_initial_stake_to_fees_query()
+        initial_stake_query_pandas = self.bigquery.fetch_initial_stake_to_fees()
 
         # Calculate stake to fees ratio
-        self.stake_to_fees = iisa_functions.calculate_stake_to_fees(initial_stake_query)
+        self.stake_to_fees = iisa_functions.calculate_stake_to_fees(
+            initial_stake_query_pandas
+        )
 
         # Group by 'indexer' and aggregate unique 'org' and 'destination_loc' values
         agg_df = iisa_functions.aggregate_indexer_info(self.bigquery_data)
@@ -622,7 +611,8 @@ class DataProcessor:
 
 if __name__ == "__main__":
     # Create a DataManager instance:
-    data_manager = DataManager("graph-mainnet", "US", 28)
+    bigqueryprovider = BigQueryProvider("graph-mainnet", "US")
+    data_manager = DataManager(28, bigqueryprovider)
 
     # Fetch fresh data whenever needed, e.g. once per day.
     data_manager.update_and_fetch_data()
