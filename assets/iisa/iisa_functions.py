@@ -1131,14 +1131,14 @@ def get_initial_stake_to_fees_query():
     """
 
 
-def calculate_stake_to_fees(initial_stake_query):
+def calculate_stake_to_fees(stake_query_pandas):
     """
     Calculate the stake to fees ratio.
 
     Returns:
     DataFrame: Data frame with stake to fees ratio.
     """
-    stake_query_pandas = bpd.read_gbq(initial_stake_query).to_pandas()
+
     stake_to_fees = stake_query_pandas[["indexer", "stake_to_fees"]].copy()
     median_stake_to_fees = stake_to_fees["stake_to_fees"].median()
     q1 = stake_to_fees["stake_to_fees"].quantile(0.25)
