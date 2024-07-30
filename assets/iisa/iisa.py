@@ -51,7 +51,9 @@ class DataManager:
         Fetch data from BigQuery and cache it for the application's runtime.
         """
         # Fetch the initial query results using the initial query as input
-        initial_query_results_pandas = self.bigquery.fetch_initial_query_results(self.start_date, self.num_days)
+        initial_query_results_pandas = self.bigquery.fetch_initial_query_results(
+            self.start_date, self.num_days
+        )
 
         # Figure out how many queries to take from each [indexer, subgraph] combination to target n queries overall
         rows_to_use = iisa_functions.adjust_rows(
@@ -59,10 +61,14 @@ class DataManager:
         )
 
         # Fetch the combined query results using the combined query as input
-        self.bigquery_data = self.bigquery.fetch_combined_query_results(self.start_date, self.num_days, rows_to_use)
+        self.bigquery_data = self.bigquery.fetch_combined_query_results(
+            self.start_date, self.num_days, rows_to_use
+        )
 
         # Fetch the URL data query results using the URL query as input
-        unique_urls_indexers_pandas = self.bigquery.fetch_url_data(self.start_date, self.num_days)
+        unique_urls_indexers_pandas = self.bigquery.fetch_url_data(
+            self.start_date, self.num_days
+        )
 
         # Extract location/org details from the URL data. We should then have a df containing
         # [['location', 'org', 'loc', 'ip']]  = [["country/reigon/city", "org", "lat,long", "ip"]]
@@ -154,7 +160,9 @@ class DataManager:
         initial_stake_query_pandas = self.bigquery.fetch_initial_stake_to_fees()
 
         # Calculate stake to fees ratio
-        self.stake_to_fees = iisa_functions.calculate_stake_to_fees(initial_stake_query_pandas)
+        self.stake_to_fees = iisa_functions.calculate_stake_to_fees(
+            initial_stake_query_pandas
+        )
 
         # Group by 'indexer' and aggregate unique 'org' and 'destination_loc' values
         agg_df = iisa_functions.aggregate_indexer_info(self.bigquery_data)
