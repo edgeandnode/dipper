@@ -1266,7 +1266,15 @@ def normalize_generic(series):
 
 # Function to normalize uptime/succes rate
 def normalize_uptime_and_success_rate(series):
-    return series.apply(lambda x: max(0, (x - 0.97) / 0.03))
+    # Find the best uptime/success rate score in the series first
+    best = series.max()
+
+    # Threshold whereby indexers that have less uptime/success rate than this get no score
+    threshold = best - 0.03  # e.g best was 90% so threshold is 87%
+
+    # Linear score between the threshold and the best.
+    # e.g 88.5% gets a score of 50% in this example.
+    return series.apply(lambda x: max(0, min(1, (x - threshold) / 0.03)))
 
 
 # Function to Normalize acceptance latency

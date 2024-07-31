@@ -156,8 +156,15 @@ class DataManager:
             self.bigquery_data
         )
 
-        # Get the initial stake to fees query
-        initial_stake_query_pandas = self.bigquery.fetch_initial_stake_to_fees()
+        # Get the initial stake to fees query results as a dataframe
+        # df headers are:
+        # "indexer",
+        # "recent_slashable_stake",
+        # "total_query_fees_sum",
+        # "stake_to_fees"
+        initial_stake_query_pandas = self.bigquery.fetch_initial_stake_to_fees(
+            self.start_ts
+        )
 
         # Calculate stake to fees ratio
         self.stake_to_fees = iisa_functions.calculate_stake_to_fees(
@@ -227,6 +234,7 @@ class DataProcessor:
         data,
         subgraph_id,
         prices,
+        bigquery: BigQueryProvider,
         existing_agreements=None,
         pending_agreements=None,
         blacklist=None,
@@ -253,6 +261,15 @@ class DataProcessor:
             pending_agreements if pending_agreements is not None else []
         )
         self.blacklist = blacklist if blacklist is not None else []
+        self.bigquery = bigquery
+
+        # Initialize timestamps
+        (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
+            iisa_functions.derive_timestamps(self.num_days)
+        )
+
+        # Fetch indexers active longer than the thaw period
+        self.active_indexers = self.fetch_active_indexers()
 
         # initialize the current group and initial group
         self.current_group = self._get_current_group()
@@ -263,6 +280,14 @@ class DataProcessor:
 
         # After processing, store the results
         self.added_indexers, self.cancelled_indexers = self.get_indexer_selections()
+
+    # I don't like how this would need to be run every single time we're adding an indexer
+    def fetch_active_indexers(self):
+        """
+        Fetch and store active indexers list from BigQuery.
+        """
+        active_indexers_df = self.bigquery.fetch_active_indexers(self.start_ts)
+        return active_indexers_df
 
     def get_indexer_selections(self):
         """
@@ -379,13 +404,16 @@ class DataProcessor:
 
     def _select_next_best_indexer(self):
         """
-        Select the next best indexer based on weighted scores and diversity requirements.
+        Select the next best indexer based on weighted scores and diversity requirements,
+        and after confirming that they have been active at some point in the month before
+        the thawing period = num_days (28 days)
         """
         # Iterate through the DataFrame to find the best indexer based on scores/diversity requirements.
         for index, row in self.data.iterrows():
             if (
                 row["indexer"] not in self.current_group
                 and row["indexer"] not in self.blacklist
+                and row["indexer"] in self.active_indexers
             ):
                 if self._meets_diversity_requirements(row["indexer"]):
                     return row["indexer"]
@@ -470,6 +498,7 @@ class DataProcessor:
     def _find_best_replacement(self, indexer_to_replace):
         """
         Find the best replacement for an indexer in the group.
+        Indexer must be "active".
         """
         # Filter out candidates that are already in the group, on the blacklist, or have pending agreements that they
         # have not yet accepted.
@@ -479,6 +508,7 @@ class DataProcessor:
                 + list(self.blacklist)
                 + list(self.pending_agreements)
             )
+            & self.data["indexer"].isin(self.active_indexers)
         ].copy()
 
         # Sort the remaining candidates by weighted score, highest score first.
@@ -627,6 +657,7 @@ if __name__ == "__main__":
         data,  # data
         [],  # subgraph_id
         [],  # prices
+        bigqueryprovider,
         [],  # existing_agreements
         [],  # pending_agreements
         [],  # blacklist
