@@ -1,7 +1,7 @@
 import pandas as pd
 from .bq import BigQueryProvider
 
-import iisa_functions
+from . import iisa_functions
 
 
 class DataManager:
@@ -39,6 +39,7 @@ class DataManager:
         self.indexer_success_rate = None
         self.indexer_uptime = None
         self.stake_to_fees = None
+        self.filtered_bigquery_data = None
 
         # Fetch initial data upon instantiation
         self.fetch_bigquery_data()
@@ -57,7 +58,8 @@ class DataManager:
 
         # Figure out how many queries to take from each [indexer, subgraph] combination to target n queries overall
         rows_to_use = iisa_functions.adjust_rows(
-            initial_query_results_pandas, target_rows=20000000
+            initial_query_results_pandas,
+            target_rows=20_000_000,
         )
 
         # Fetch the combined query results using the combined query as input
@@ -122,28 +124,50 @@ class DataManager:
         all_columns = predictor + categorical + numeric
 
         # Filter the DataFrame to include only the specified columns for regression
-        self.bigquery_data = iisa_functions.filter_columns(
+        self.filtered_bigquery_data = iisa_functions.filter_columns(
             self.bigquery_data, all_columns
         )
 
-        # Apply iterative filtering
-        self.bigquery_data = iisa_functions.iterative_filter(
-            self.bigquery_data, 1, 1, 1, 1
+        # Filter the DataFrame to include only the rows that have non nan values for numeric columns such as 'distance_miles'
+        self.filtered_bigquery_data = self.filtered_bigquery_data.dropna(subset=numeric)
+
+        # Apply iterative filtering iterative_filter(df, a, b, c, d)
+        # `df`: DataFrame to filter.
+        # `a`: Each deployment must be served by at least a indexers.
+        # `b`: Each indexer must serve at least b deployments.
+        # `c`: Each indexer must serve at least c queries.
+        # `d`: Each subgraph deployment must be queried at least d times.
+        self.filtered_bigquery_data = iisa_functions.iterative_filter(
+            self.filtered_bigquery_data, # `df`
+            2, # `a`
+            1, # `b`
+            250, # `c`
+            250, # `d`
         )
 
         # Sample the query IDs to create a balanced representation across indexers
-        self.bigquery_data, integer_root = iisa_functions.strategic_sample(
-            self.bigquery_data, rows_to_use
+        self.filtered_bigquery_data, integer_root = iisa_functions.strategic_sample(
+            self.filtered_bigquery_data, rows_to_use
         )
 
         # Hash the sampled query IDs to the hash mod of the integer root
-        self.bigquery_data = iisa_functions.hash_sampled_queries(
-            self.bigquery_data, integer_root
+        self.filtered_bigquery_data = iisa_functions.hash_sampled_queries(
+            self.filtered_bigquery_data, integer_root
         )
 
+        # update categorical to use the hashed query id's instead of the raw query id's
+        categorical = [
+            "indexer",
+            "deployment_hash",
+            "indexer_network",
+            "sampled_query_id_hashed_mod_integer_root",
+        ]
+
         # Perform linear regression on the results from the combined query
-        self.bigquery_data, self.indexer_rankings = (
-            iisa_functions.perform_linear_regression(self.bigquery_data)
+        self.filtered_bigquery_data, self.indexer_rankings = (
+            iisa_functions.perform_linear_regression(
+                self.filtered_bigquery_data, predictor, categorical, numeric
+            )
         )
 
         # Calculate indexer query success rate
@@ -205,13 +229,6 @@ class DataManager:
         return self.indexer_rankings
 
 
-# things to address:
-#         temp group
-#         blacklisted indexers get dropped from all indexing agreements they have already
-#
-# Notes:
-#     any methods not intended to be called externally can start with a _
-#
 class DataProcessor:
     """
     DataProcessor is responsible for processing the data from the DataManager class,
@@ -234,6 +251,7 @@ class DataProcessor:
         data,
         subgraph_id,
         prices,
+        num_days,
         bigquery: BigQueryProvider,
         existing_agreements=None,
         pending_agreements=None,
@@ -255,21 +273,19 @@ class DataProcessor:
         self.subgraph_id = subgraph_id
         self.prices = prices
         self.existing_agreements = (
-            existing_agreements if existing_agreements is not None else []
+            existing_agreements if existing_agreements is not None else {}
         )
         self.pending_agreements = (
-            pending_agreements if pending_agreements is not None else []
+            pending_agreements if pending_agreements is not None else {}
         )
         self.blacklist = blacklist if blacklist is not None else []
         self.bigquery = bigquery
+        self.num_days = num_days
 
         # Initialize timestamps
         (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
             iisa_functions.derive_timestamps(self.num_days)
         )
-
-        # Fetch indexers active longer than the thaw period
-        self.active_indexers = self.fetch_active_indexers()
 
         # initialize the current group and initial group
         self.current_group = self._get_current_group()
@@ -280,14 +296,6 @@ class DataProcessor:
 
         # After processing, store the results
         self.added_indexers, self.cancelled_indexers = self.get_indexer_selections()
-
-    # I don't like how this would need to be run every single time we're adding an indexer
-    def fetch_active_indexers(self):
-        """
-        Fetch and store active indexers list from BigQuery.
-        """
-        active_indexers_df = self.bigquery.fetch_active_indexers(self.start_ts)
-        return active_indexers_df
 
     def get_indexer_selections(self):
         """
@@ -368,6 +376,8 @@ class DataProcessor:
             iisa_functions.calculate_weighted_score, axis=1, weights=weights
         )
 
+        return self.data
+
     def _assign_indexers_to_subgraph(self):
         """
         Assign indexers to subgraph based on weighted scores and diversity requirements.
@@ -391,12 +401,12 @@ class DataProcessor:
         while len(self.current_group) < 3:
             next_indexer = self._select_next_best_indexer()
 
-            # Add the best indexer to the group and update the DataFrame.
+            # Add the best indexer to the group
             if next_indexer:
                 self.current_group.append(next_indexer)
-                self.data.loc[self.data["indexer"] == next_indexer, "subgraph"] = (
-                    self.subgraph_id
-                )
+
+                # Removed... kept commented out incase needs to be reinstated later.
+                # self.data.loc[self.data["indexer"] == next_indexer, "subgraph"] = self.subgraph_id
 
             # If there are no indexers available, do nothing.
             else:
@@ -404,16 +414,13 @@ class DataProcessor:
 
     def _select_next_best_indexer(self):
         """
-        Select the next best indexer based on weighted scores and diversity requirements,
-        and after confirming that they have been active at some point in the month before
-        the thawing period = num_days (28 days)
+        Select the next best indexer based on weighted scores and diversity requirements.
         """
         # Iterate through the DataFrame to find the best indexer based on scores/diversity requirements.
-        for index, row in self.data.iterrows():
+        for _, row in self.data.iterrows():
             if (
                 row["indexer"] not in self.current_group
                 and row["indexer"] not in self.blacklist
-                and row["indexer"] in self.active_indexers
             ):
                 if self._meets_diversity_requirements(row["indexer"]):
                     return row["indexer"]
@@ -445,6 +452,8 @@ class DataProcessor:
     def _replace_underperforming_indexers(self):
         """
         Replace underperforming indexers if the group score can be improved by more than 10%.
+        This method updates the current_group but does not modify the DataFrame, as the
+        DataProcessor instance is short-lived and the DataFrame state isn't used after processing.
         """
         worst_indexer = None
         worst_score_improvement = None
@@ -490,15 +499,14 @@ class DataProcessor:
         if best_replacement and worst_indexer:
             self.current_group.remove(worst_indexer)
             self.current_group.append(best_replacement)
-            self.data.loc[self.data["indexer"] == worst_indexer, "subgraph"] = None
-            self.data.loc[self.data["indexer"] == best_replacement, "subgraph"] = (
-                self.subgraph_id
-            )
+
+            # Removed... kept commented out incase needs to be reinstated later.
+            # self.data.loc[self.data["indexer"] == worst_indexer, "subgraph"] = None
+            # self.data.loc[self.data["indexer"] == best_replacement, "subgraph"] = self.subgraph_id
 
     def _find_best_replacement(self, indexer_to_replace):
         """
         Find the best replacement for an indexer in the group.
-        Indexer must be "active".
         """
         # Filter out candidates that are already in the group, on the blacklist, or have pending agreements that they
         # have not yet accepted.
@@ -508,7 +516,6 @@ class DataProcessor:
                 + list(self.blacklist)
                 + list(self.pending_agreements)
             )
-            & self.data["indexer"].isin(self.active_indexers)
         ].copy()
 
         # Sort the remaining candidates by weighted score, highest score first.
@@ -642,36 +649,41 @@ class DataProcessor:
 if __name__ == "__main__":
     # Create a DataManager instance:
     bigqueryprovider = BigQueryProvider("graph-mainnet", "US")
-    data_manager = DataManager(28, bigqueryprovider)
+
+    # Inject bigqueryprovider dependency into DataManager class
+    data_manager = DataManager(
+        28, bigqueryprovider
+    )  # DataManager(num_days (used when assessing how many days worth of data to bring in from BigQuery), bigqueryprovider (injected dependency))
 
     # Fetch fresh data whenever needed, e.g. once per day.
-    data_manager.update_and_fetch_data()
+    # data_manager.update_and_fetch_data()
 
     # Extract the data from the class.
     data = data_manager.get_data()
 
     # Create a DataProcessor instance:
     # DataProcessor takes:
-    # (data, subgraph_id, prices, existing_agreements=None, pending_agreements=None, blacklist=None,)
+    # (data, subgraph_id, prices, num_days, bigqueryprovider, existing_agreements=None, pending_agreements=None, blacklist=None,)
     data_processor = DataProcessor(
         data,  # data
         [],  # subgraph_id
         [],  # prices
+        28,  # num_days
         bigqueryprovider,
-        [],  # existing_agreements
-        [],  # pending_agreements
+        {},  # existing_agreements
+        {},  # pending_agreements
         [],  # blacklist
     )
 
     # Update with new data, prices, agreements, pending agreements and blacklist dynamically
     # (new_data, new_prices, new_existing_agreements, new_pending_agreements, new_blacklist)
-    data_processor.update_and_reprocess_data(
-        [],  # new_data
-        [],  # new_prices
-        [],  # new_existing_agreements
-        [],  # new_pending_agreements
-        [],  # new_blacklist
-    )
+    # data_processor.update_and_reprocess_data(
+    #    [],  # new_data
+    #    [],  # new_prices
+    #    [],  # new_existing_agreements
+    #    [],  # new_pending_agreements
+    #    [],  # new_blacklist
+    # )
 
     # Access the results immediately after instantiation
     added_indexers = data_processor.added_indexers
