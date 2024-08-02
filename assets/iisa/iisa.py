@@ -138,11 +138,11 @@ class DataManager:
         # `c`: Each indexer must serve at least c queries.
         # `d`: Each subgraph deployment must be queried at least d times.
         self.filtered_bigquery_data = iisa_functions.iterative_filter(
-            self.filtered_bigquery_data, # `df`
-            2, # `a`
-            1, # `b`
-            250, # `c`
-            250, # `d`
+            self.filtered_bigquery_data,  # `df`
+            2,  # `a`
+            1,  # `b`
+            250,  # `c`
+            250,  # `d`
         )
 
         # Sample the query IDs to create a balanced representation across indexers
