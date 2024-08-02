@@ -10,6 +10,7 @@ from bigframes.pandas import DataFrame
 
 QueryStr = NewType("QueryStr", str)
 
+ActiveIndexersDataframe = NewType("ActiveIndexersDataframe", DataFrame)
 StakeToFeesDataFrame = NewType("StakeToFeesDataFrame", DataFrame)
 CombinedQueryResultsDataFrame = NewType("CombinedQueryResultsDataFrame", DataFrame)
 UrlDataFrame = NewType("UrlDataFrame", DataFrame)
@@ -36,7 +37,15 @@ class BigQueryProvider:
         :param query: The query string
         :return: The read dataset
         """
-        return bpd.read_gbq(query).to_pandas()
+        return bpd.read_gbq(query, project_id=self.project_id).to_pandas()
+
+    def fetch_active_indexers(self, start_ts: str) -> ActiveIndexersDataframe:
+        """
+        Execute query to fetch active indexers from BigQuery, then return the results as a DataFrame.
+        """
+        query = self._get_active_indexers_query(start_ts)
+        dataframe = self._read_gbq_dataframe(query)
+        return ActiveIndexersDataframe(dataframe)
 
     def fetch_initial_stake_to_fees(self, start_ts: str) -> StakeToFeesDataFrame:
         """
@@ -132,7 +141,7 @@ def _get_combined_query(start_date: date, num_days: int, rows_to_use: int) -> Qu
         AND deployment_hash <> ''
         ORDER BY number_of_unique_indexer_networks DESC
     ),
-
+    
     combined_indexer_dimensions AS (
         WITH indexer_dimensions AS (
             SELECT
@@ -170,7 +179,7 @@ def _get_combined_query(start_date: date, num_days: int, rows_to_use: int) -> Qu
         GROUP BY day_partition, indexer, url, indexer_network
         ORDER BY day_partition
     ),
-
+    
     metrics_indexer_attempts AS (
         WITH BasicFilter AS (
             SELECT
@@ -181,7 +190,7 @@ def _get_combined_query(start_date: date, num_days: int, rows_to_use: int) -> Qu
                 CAST(blocks_behind AS INT64) AS blocks_behind,
                 SAFE_CAST(response_time_ms AS INT64) AS response_time_ms,
                 indexer,
-                status,
+                statushistory,
                 day_partition,
                 RAND() as rnd
             FROM internal_metrics.metrics_indexer_attempts
@@ -207,7 +216,7 @@ def _get_combined_query(start_date: date, num_days: int, rows_to_use: int) -> Qu
         FROM FilteredRows
         WHERE row_num <= {rows_to_use}
     )
-
+    
     SELECT
         m.query_id,
         m.deployment_hash,
@@ -297,3 +306,20 @@ def _get_initial_stake_to_fees_query(start_ts: str) -> QueryStr:
         ) as aggregated_data
         GROUP BY indexer, recent_slashable_stake;
         """)
+
+
+def _get_active_indexers_query(start_ts: str) -> QueryStr:
+    """
+    Construct the initial query to fetch the indexers that have been active more more than the thawind period
+    """
+    return QueryStr(f"""
+    SELECT DISTINCT indexer_wallet AS indexer
+    FROM (
+        SELECT
+            indexer_wallet,
+            MIN(staked_tokens) OVER (PARTITION BY indexer_wallet) AS min_staked_tokens
+        FROM internal_metrics.indexer_dimensions_arbitrum_daily
+        WHERE TIMESTAMP(day) BETWEEN TIMESTAMP_SUB(TIMESTAMP('{start_ts}'), INTERVAL 1 MONTH) AND TIMESTAMP('{start_ts}')
+    ) AS subquery
+    WHERE min_staked_tokens > 0;
+    """)

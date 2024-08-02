@@ -10,12 +10,10 @@ from scipy.stats import t
 from numpy.linalg import pinv
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error
-
-# from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
-# from tabulate import tabulate
+from tabulate import tabulate
 
 
 def derive_timestamps(num_days):
@@ -88,12 +86,12 @@ def adjust_rows(initial_query_results_pandas, target_rows):
     Returns:
     int: The adjusted upper limit for the number of rows per group.
     """
-    x = 1_000  # Starting estimate for the number of rows to record for each ['deployment_hash', 'indexer'] combination.
+    x = 1000  # Starting estimate for the number of rows to record for each ['deployment_hash', 'indexer'] combination.
     initial_query_results_pandas["num_rows_restricted"] = initial_query_results_pandas[
         "num_rows"
     ].clip(upper=x)
     tolerance = target_rows * 0.01  # 1% tolerance range
-    max_iterations = 1_000  # Maximum number of iterations to avoid infinite loops
+    max_iterations = 1000  # Maximum number of iterations to avoid infinite loops
     iteration = 0
 
     while not (
@@ -543,7 +541,7 @@ def process_combined_query_pandas(df):
 
 def split_locations(df):
     """
-    Split origin_loc and destination_loc into latitude and longitude. Handles non-numeric entries by converting them to NaN.
+    Split origin_loc and destination_loc into latitude and longitude.
 
     Parameters:
     df (DataFrame): The DataFrame containing 'origin_loc' and 'destination_loc' columns.
@@ -551,18 +549,12 @@ def split_locations(df):
     Returns:
     DataFrame: The DataFrame with new 'origin_lat', 'origin_lon', 'dest_lat', and 'dest_lon' columns.
     """
-
-    # Function to safely convert values to float
-    def safe_convert(coords):
-        try:
-            return [float(x) for x in coords.split(",")]
-        except ValueError:
-            return [float("nan"), float("nan")]  # Convert non-numeric entries to NaN
-
-    # Apply safe conversion to both origin and destination columns
-    df[["origin_lat", "origin_lon"]] = df["origin_loc"].apply(safe_convert).tolist()
-    df[["dest_lat", "dest_lon"]] = df["destination_loc"].apply(safe_convert).tolist()
-
+    df[["origin_lat", "origin_lon"]] = (
+        df["origin_loc"].str.split(",", expand=True).astype(float)
+    )
+    df[["dest_lat", "dest_lon"]] = (
+        df["destination_loc"].str.split(",", expand=True).astype(float)
+    )
     return df
 
 
@@ -781,11 +773,10 @@ def hash_sampled_queries(df, integer_root):
     df.loc[
         df["sampled_query_id"].notna(), "sampled_query_id_hashed_mod_integer_root"
     ] = df["sampled_query_id"].apply(lambda x: hash(x) % integer_root)
-
     return df
 
 
-def perform_linear_regression(df, predictor, categorical, numeric):
+def perform_linear_regression(df):
     """
     Perform linear regression on the given data.
 
@@ -796,9 +787,7 @@ def perform_linear_regression(df, predictor, categorical, numeric):
     DataFrame: The original data with an added 'predicted_score' column containing regression predictions.
     """
     # Preprocess the data
-    X, y, preprocessor = preprocess_data_for_regression(
-        df, predictor, categorical, numeric
-    )
+    X, y, preprocessor = preprocess_data_for_regression(df)
 
     # Perform linear regression
     pipeline, y_pred = perform_regression(X, y, preprocessor)
@@ -889,21 +878,21 @@ def analyze_regression_results(pipeline, X, y, y_pred):
     results_df (DataFrame): DataFrame containing regression coefficients and statistics.
     """
     mse = mean_squared_error(y, y_pred)
-    # rmse = np.sqrt(mse)
-    # mae = mean_absolute_error(y, y_pred)
-    # r2 = r2_score(y, y_pred)
-    # adjusted_r2 = 1 - ((1 - r2) * (len(y) - 1) / (len(y) - X.shape[1] - 1))
+    rmse = np.sqrt(mse)
+    mae = mean_absolute_error(y, y_pred)
+    r2 = r2_score(y, y_pred)
+    adjusted_r2 = 1 - ((1 - r2) * (len(y) - 1) / (len(y) - X.shape[1] - 1))
 
     # Print regression model stats
-    # print(f"RMSE: {rmse}")
-    # print(f"MAE: {mae}")
-    # print(f"R²: {r2}")
-    # print(f"Adjusted R²: {adjusted_r2}")
+    print(f"RMSE: {rmse}")
+    print(f"MAE: {mae}")
+    print(f"R²: {r2}")
+    print(f"Adjusted R²: {adjusted_r2}")
 
     # Extract feature names, coefficients, and standard errors from the regression pipeline
     feature_names = pipeline.named_steps["preprocessor"].get_feature_names_out()
     coefficients = pipeline.named_steps["regressor"].coef_
-    # intercept = pipeline.named_steps["regressor"].intercept_
+    intercept = pipeline.named_steps["regressor"].intercept_
 
     # Ensure coefficients are a flat array
     if coefficients.ndim > 1:
@@ -933,8 +922,8 @@ def analyze_regression_results(pipeline, X, y, y_pred):
     )
 
     # Show results
-    # print(f"The regression intercept is: {intercept}")
-    # print(tabulate(results_df, headers="keys", tablefmt="psql", showindex=False))
+    print(f"The regression intercept is: {intercept}")
+    print(tabulate(results_df, headers="keys", tablefmt="psql", showindex=False))
 
     return results_df
 
@@ -1211,7 +1200,7 @@ def merge_and_prepare_dataframes(
 
     # Drop unnecessary columns
     merged = merged.drop(
-        columns=["observed_duration_full", "uptime_duration_full", "% up_y"]
+        columns=["observed_duration_full", "uptime_duration_full", "% up_y", "% up_x"]
     )
     merged = merged.dropna(subset=["Coefficient", "Standard Error", "p-value"])
 
@@ -1227,7 +1216,6 @@ def merge_and_prepare_dataframes(
     # Add new columns
     merged["existing_dips_agreements"] = 0
     merged["avg_sync_duration"] = np.nan
-    merged["indexing_agreement_acceptance_latency"] = np.nan
     return merged
 
 
@@ -1239,7 +1227,7 @@ def normalize_metrics(merged):
 
     # Normalise uptime score:
     merged["norm_uptime_score"] = normalize_uptime_and_success_rate(
-        merged["% up_x"]
+        merged["up_x"]
     )  # higher is better
 
     # Normalise the number of indexing agreements each indexer has:
@@ -1257,12 +1245,11 @@ def normalize_metrics(merged):
         merged["average_status"]
     )  # higher is better
 
-    # Needs future revision:
+    # Needs attention:
     merged["norm_avg_sync_duration"] = 1 - normalize_generic(
         merged["avg_sync_duration"]
     )  # lower is better
 
-    # Normalize if the column exists
     merged["norm_indexing_agreement_acceptance_latency"] = (
         normalize_indexing_agreement_acceptance_latency(
             merged["indexing_agreement_acceptance_latency"]
