@@ -669,7 +669,13 @@ def filter_columns(df, all_columns):
     return df[all_columns]
 
 
-def iterative_filter(df, a, b, c, d):
+def iterative_filter(
+    df,
+    min_deployment_indexers,
+    min_deployments_per_indexer,
+    min_queries_per_indexer,
+    min_queries_per_deployment,
+):
     """
     Iteratively filter the DataFrame based on specified thresholds for indexers, deployments, and queries.
     Apply filtering criteria in rounds, recalculating metrics and adjusting filters in each iteration, until the
@@ -677,10 +683,10 @@ def iterative_filter(df, a, b, c, d):
 
     Parameters:
     `df`: DataFrame to filter.
-    `a`: Each deployment must be served by at least a indexers.
-    `b`: Each indexer must serve at least b deployments.
-    `c`: Each indexer must serve at least c queries.
-    `d`: Each subgraph deployment must be queried at least d times.
+    `min_deployment_indexers`: Each deployment must be served by at least this many indexers.
+    `min_deployments_per_indexer`: Each indexer must serve at least this many deployments.
+    `min_queries_per_indexer`: Each indexer must serve at least this many queries.
+    `min_queries_per_deployment`: Each subgraph deployment must be queried at least this many times.
 
     Returns:
     DataFrame: The filtered DataFrame.
@@ -688,21 +694,28 @@ def iterative_filter(df, a, b, c, d):
     while True:
         initial_len = len(df)
 
-        # Ensure deployments have at least `a` indexers
+        # Ensure deployments have at least `min_deployment_indexers` indexers
         indexer_per_deployment = df.groupby("deployment_hash")["indexer"].nunique()
-        df = df[df["deployment_hash"].map(indexer_per_deployment) >= a]
+        df = df[
+            df["deployment_hash"].map(indexer_per_deployment) >= min_deployment_indexers
+        ]
 
-        # Ensure indexers serve at least `b` deployments
+        # Ensure indexers serve at least `min_deployments_per_indexer` deployments
         deployment_per_indexer = df.groupby("indexer")["deployment_hash"].nunique()
-        df = df[df["indexer"].map(deployment_per_indexer) >= b]
+        df = df[
+            df["indexer"].map(deployment_per_indexer) >= min_deployments_per_indexer
+        ]
 
-        # Ensure indexers serve at least `c` unique queries
+        # Ensure indexers serve at least `min_queries_per_indexer` unique queries
         queries_per_indexer = df.groupby("indexer")["query_id"].nunique()
-        df = df[df["indexer"].map(queries_per_indexer) >= c]
+        df = df[df["indexer"].map(queries_per_indexer) >= min_queries_per_indexer]
 
-        # Ensure deployments have at least `d` queries
+        # Ensure deployments have at least `min_queries_per_deployment` queries
         query_counts_per_deployment = df.groupby("deployment_hash").size()
-        df = df[df["deployment_hash"].map(query_counts_per_deployment) >= d]
+        df = df[
+            df["deployment_hash"].map(query_counts_per_deployment)
+            >= min_queries_per_deployment
+        ]
 
         # Check if no change in DataFrame size, else run the loop again.
         if len(df) == initial_len:

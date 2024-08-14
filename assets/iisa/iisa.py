@@ -1,7 +1,38 @@
+# Import statements
 import pandas as pd
 from .bq import BigQueryProvider
-
 from . import iisa_functions
+
+# Constants
+DATA_MANAGER_NUM_DAYS = 28
+DATA_PROCESSOR_NUM_DAYS = 28
+
+# Constants for iterative filtering
+ITERATIVE_FILTER_MIN_DEPLOYMENT_INDEXERS = 2
+ITERATIVE_FILTER_MIN_DEPLOYMENTS_PER_INDEXER = 1
+ITERATIVE_FILTER_MIN_QUERIES_PER_INDEXER = 250
+ITERATIVE_FILTER_MIN_QUERIES_PER_DEPLOYMENT = 250
+
+
+def initialize_data_manager():
+    bigqueryprovider = BigQueryProvider("graph-mainnet", "US")
+    return DataManager(bigquery=bigqueryprovider)
+
+
+def process_subgraph(
+    data, subgraph_id, prices, existing_agreements, pending_agreements, blacklist
+):
+    bigqueryprovider = BigQueryProvider("graph-mainnet", "US")
+    processor = DataProcessor(
+        data=data,
+        subgraph_id=subgraph_id,
+        prices=prices,
+        bigquery=bigqueryprovider,
+        existing_agreements=existing_agreements,
+        pending_agreements=pending_agreements,
+        blacklist=blacklist,
+    )
+    return processor.added_indexers, processor.cancelled_indexers
 
 
 class DataManager:
@@ -24,9 +55,11 @@ class DataManager:
       This allows passing the instance of the class (self) to the external method for it to operate on.
     """
 
-    def __init__(self, num_days, bigquery: BigQueryProvider):
+    def __init__(
+        self, num_days=DATA_MANAGER_NUM_DAYS, bigquery: BigQueryProvider = None
+    ):
         self.num_days = num_days
-        self.bigquery = bigquery
+        self.bigquery = bigquery or BigQueryProvider("graph-mainnet", "US")
 
         # Initialize timestamps
         (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
@@ -44,8 +77,10 @@ class DataManager:
         # Fetch initial data upon instantiation
         self.fetch_bigquery_data()
 
-    def update_network_topology(self, indexers):
-        self.indexers = indexers
+    @classmethod
+    def initialize(cls):
+        bigqueryprovider = BigQueryProvider("graph-mainnet", "US")
+        return cls(bigquery=bigqueryprovider)
 
     def fetch_bigquery_data(self):
         """
@@ -131,18 +166,13 @@ class DataManager:
         # Filter the DataFrame to include only the rows that have non nan values for numeric columns such as 'distance_miles'
         self.filtered_bigquery_data = self.filtered_bigquery_data.dropna(subset=numeric)
 
-        # Apply iterative filtering iterative_filter(df, a, b, c, d)
-        # `df`: DataFrame to filter.
-        # `a`: Each deployment must be served by at least a indexers.
-        # `b`: Each indexer must serve at least b deployments.
-        # `c`: Each indexer must serve at least c queries.
-        # `d`: Each subgraph deployment must be queried at least d times.
+        # Apply iterative filtering
         self.filtered_bigquery_data = iisa_functions.iterative_filter(
-            self.filtered_bigquery_data,  # `df`
-            2,  # `a`
-            1,  # `b`
-            250,  # `c`
-            250,  # `d`
+            self.filtered_bigquery_data,
+            ITERATIVE_FILTER_MIN_DEPLOYMENT_INDEXERS,
+            ITERATIVE_FILTER_MIN_DEPLOYMENTS_PER_INDEXER,
+            ITERATIVE_FILTER_MIN_QUERIES_PER_INDEXER,
+            ITERATIVE_FILTER_MIN_QUERIES_PER_DEPLOYMENT,
         )
 
         # Sample the query IDs to create a balanced representation across indexers
@@ -251,8 +281,8 @@ class DataProcessor:
         data,
         subgraph_id,
         prices,
-        num_days,
-        bigquery: BigQueryProvider,
+        num_days=DATA_PROCESSOR_NUM_DAYS,
+        bigquery=None,
         existing_agreements=None,
         pending_agreements=None,
         blacklist=None,
@@ -272,15 +302,11 @@ class DataProcessor:
         self.data = pd.DataFrame(data)
         self.subgraph_id = subgraph_id
         self.prices = prices
-        self.existing_agreements = (
-            existing_agreements if existing_agreements is not None else {}
-        )
-        self.pending_agreements = (
-            pending_agreements if pending_agreements is not None else {}
-        )
-        self.blacklist = blacklist if blacklist is not None else []
-        self.bigquery = bigquery
         self.num_days = num_days
+        self.bigquery = bigquery or BigQueryProvider("graph-mainnet", "US")
+        self.existing_agreements = existing_agreements or {}
+        self.pending_agreements = pending_agreements or {}
+        self.blacklist = blacklist or []
 
         # Initialize timestamps
         (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
@@ -405,9 +431,6 @@ class DataProcessor:
             if next_indexer:
                 self.current_group.append(next_indexer)
 
-                # Removed... kept commented out incase needs to be reinstated later.
-                # self.data.loc[self.data["indexer"] == next_indexer, "subgraph"] = self.subgraph_id
-
             # If there are no indexers available, do nothing.
             else:
                 break
@@ -499,10 +522,6 @@ class DataProcessor:
         if best_replacement and worst_indexer:
             self.current_group.remove(worst_indexer)
             self.current_group.append(best_replacement)
-
-            # Removed... kept commented out incase needs to be reinstated later.
-            # self.data.loc[self.data["indexer"] == worst_indexer, "subgraph"] = None
-            # self.data.loc[self.data["indexer"] == best_replacement, "subgraph"] = self.subgraph_id
 
     def _find_best_replacement(self, indexer_to_replace):
         """
@@ -646,45 +665,110 @@ class DataProcessor:
         self._assign_indexers_to_subgraph()
 
 
+# This block serves as a functional test and an example implementation
 if __name__ == "__main__":
-    # Create a DataManager instance:
-    bigqueryprovider = BigQueryProvider("graph-mainnet", "US")
+    try:
+        # Initialize DataManager (done once at project creation)
+        # This also performs the initial data fetch
+        data_manager = initialize_data_manager()
 
-    # Inject bigqueryprovider dependency into DataManager class
-    data_manager = DataManager(
-        28, bigqueryprovider
-    )  # DataManager(num_days (used when assessing how many days worth of data to bring in from BigQuery), bigqueryprovider (injected dependency))
+        # Simulate periodic data update (should be done once every 24 hours)
+        data_manager.update_and_fetch_data()
 
-    # Fetch fresh data whenever needed, e.g. once per day.
-    # data_manager.update_and_fetch_data()
+        # Get the latest data
+        data = data_manager.get_data()
 
-    # Extract the data from the class.
-    data = data_manager.get_data()
+        # Example values
+        subgraph_id = "QmSubgraph1"
+        prices = {"0xIndexer1": 10, "0xIndexer2": 20, "0xIndexer3": 15}
+        existing_agreements = {
+            "0xIndexer1": ["QmSubgraph1", "QmSubgraph2"],
+            "0xIndexer2": ["QmSubgraph3"],
+        }
+        pending_agreements = {"0xIndexer3": ["QmSubgraph4"]}
+        blacklist = ["0xBlacklistedIndexer"]
 
-    # Create a DataProcessor instance:
-    # DataProcessor takes:
-    # (data, subgraph_id, prices, num_days, bigqueryprovider, existing_agreements=None, pending_agreements=None, blacklist=None,)
-    data_processor = DataProcessor(
-        data,  # data
-        [],  # subgraph_id
-        [],  # prices
-        28,  # num_days
-        bigqueryprovider,
-        {},  # existing_agreements
-        {},  # pending_agreements
-        [],  # blacklist
-    )
+        # Process subgraph
+        added, cancelled = process_subgraph(
+            data,
+            subgraph_id,
+            prices,
+            existing_agreements,
+            pending_agreements,
+            blacklist,
+        )
 
-    # Update with new data, prices, agreements, pending agreements and blacklist dynamically
-    # (new_data, new_prices, new_existing_agreements, new_pending_agreements, new_blacklist)
-    # data_processor.update_and_reprocess_data(
-    #    [],  # new_data
-    #    [],  # new_prices
-    #    [],  # new_existing_agreements
-    #    [],  # new_pending_agreements
-    #    [],  # new_blacklist
-    # )
+        print(f"Initial processing - Added: {added}, Cancelled: {cancelled}")
 
-    # Access the results immediately after instantiation
-    added_indexers = data_processor.added_indexers
-    cancelled_indexers = data_processor.cancelled_indexers
+        # Simulate updates with new data:
+        new_subgraph_id = "QmNewSubgraphId"
+        new_prices = {
+            **prices,
+            "0xIndexer2": 22,  # Update existing price
+            "0xIndexer4": 25,  # Add new price
+        }
+        new_existing_agreements = {
+            **existing_agreements,
+            "0xNewIndexer": ["QmNewSubgraph"],  # Add a new agreement
+            "0xIndexer1": existing_agreements["0xIndexer1"]
+            + ["QmNewSubgraph2"],  # Update existing
+        }
+        new_pending_agreements = {
+            **pending_agreements,
+            "0xIndexer4": ["QmSubgraph5"],  # Add a new pending agreement
+        }
+        new_blacklist = [x for x in blacklist if x != "0xBlacklistedIndexer"] + [
+            "0xNewBlacklistedIndexer"
+        ]
+
+        # Process new subgraph
+        added, cancelled = process_subgraph(
+            data,
+            new_subgraph_id,
+            new_prices,
+            new_existing_agreements,
+            new_pending_agreements,
+            new_blacklist,
+        )
+        print(f"New subgraph processing - Added: {added}, Cancelled: {cancelled}")
+
+        # Demonstrate updating an existing subgraph with update_and_reprocess_data
+        updated_data = data_manager.get_data()
+        updated_prices = {**new_prices, "0xIndexer5": 30}
+        updated_existing_agreements = {
+            **new_existing_agreements,
+            "0xIndexer5": ["QmSubgraph6"],
+        }
+        updated_pending_agreements = {
+            **new_pending_agreements,
+            "0xIndexer6": ["QmSubgraph7"],
+        }
+        updated_blacklist = new_blacklist + ["0xAnotherBlacklistedIndexer"]
+
+        # Create a DataProcessor instance for the subgraph we want to update
+        data_processor = DataProcessor(
+            data,
+            new_subgraph_id,
+            new_prices,
+            existing_agreements=new_existing_agreements,
+            pending_agreements=new_pending_agreements,
+            blacklist=new_blacklist,
+        )
+
+        # Update and reprocess data
+        data_processor.update_and_reprocess_data(
+            new_data=updated_data,
+            new_prices=updated_prices,
+            new_existing_agreements=updated_existing_agreements,
+            new_pending_agreements=updated_pending_agreements,
+            new_blacklist=updated_blacklist,
+        )
+
+        # Get the updated results
+        added, cancelled = data_processor.get_indexer_selections()
+        print(
+            f"After update_and_reprocess_data - Added: {added}, Cancelled: {cancelled}"
+        )
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
