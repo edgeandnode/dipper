@@ -36,13 +36,13 @@ class BigQueryProvider:
         :param query: The query string
         :return: The read dataset
         """
-        return bpd.read_gbq(query, project_id=self.project_id).to_pandas()
+        return bpd.read_gbq(query).to_pandas()
 
-    def fetch_initial_stake_to_fees(self) -> StakeToFeesDataFrame:
+    def fetch_initial_stake_to_fees(self, start_ts: str) -> StakeToFeesDataFrame:
         """
         Get the initial stake to fees query
         """
-        query = _get_initial_stake_to_fees_query()
+        query = _get_initial_stake_to_fees_query(start_ts)
         dataframe = self._read_gbq_dataframe(query)
         return StakeToFeesDataFrame(dataframe)
 
@@ -132,7 +132,7 @@ def _get_combined_query(start_date: date, num_days: int, rows_to_use: int) -> Qu
         AND deployment_hash <> ''
         ORDER BY number_of_unique_indexer_networks DESC
     ),
-    
+
     combined_indexer_dimensions AS (
         WITH indexer_dimensions AS (
             SELECT
@@ -170,7 +170,7 @@ def _get_combined_query(start_date: date, num_days: int, rows_to_use: int) -> Qu
         GROUP BY day_partition, indexer, url, indexer_network
         ORDER BY day_partition
     ),
-    
+
     metrics_indexer_attempts AS (
         WITH BasicFilter AS (
             SELECT
@@ -181,7 +181,7 @@ def _get_combined_query(start_date: date, num_days: int, rows_to_use: int) -> Qu
                 CAST(blocks_behind AS INT64) AS blocks_behind,
                 SAFE_CAST(response_time_ms AS INT64) AS response_time_ms,
                 indexer,
-                statushistory,
+                status,
                 day_partition,
                 RAND() as rnd
             FROM internal_metrics.metrics_indexer_attempts
@@ -207,7 +207,7 @@ def _get_combined_query(start_date: date, num_days: int, rows_to_use: int) -> Qu
         FROM FilteredRows
         WHERE row_num <= {rows_to_use}
     )
-    
+
     SELECT
         m.query_id,
         m.deployment_hash,
@@ -277,17 +277,23 @@ def _get_url_query(start_date: date, num_days: int) -> QueryStr:
     """)
 
 
-def _get_initial_stake_to_fees_query() -> QueryStr:
+def _get_initial_stake_to_fees_query(start_ts: str) -> QueryStr:
     """
     Construct the initial query to fetch the stake to fees data.
     """
-    return QueryStr("""
-    SELECT  indexer_wallet AS indexer,
-            GREATEST(available_stake, 0) /
-                CASE
-                    WHEN ROUND((query_fees_collected - query_fee_rebates - delegator_query_fees), 0) = 0
-                    THEN 1
-                    ELSE ROUND((query_fees_collected - query_fee_rebates - delegator_query_fees), 0)
-                END AS stake_to_fees
-    FROM internal_metrics.indexer_dimensions_arbitrum
-    """)
+    return QueryStr(f"""
+        SELECT indexer,
+            recent_slashable_stake,
+            SUM(query_fees_sum) AS total_query_fees_sum,
+            recent_slashable_stake / SUM(query_fees_sum) as stake_to_fees
+        FROM (
+            SELECT  id.indexer_wallet AS indexer,
+                    id.staked_tokens - id.locked_tokens as recent_slashable_stake,
+                    SUM(mia.query_fee) AS query_fees_sum
+            FROM internal_metrics.indexer_dimensions_arbitrum id
+            INNER JOIN internal_metrics.metrics_indexer_attempts mia ON id.indexer_wallet = mia.indexer
+            WHERE TIMESTAMP(mia.day_partition) > '{start_ts}'
+            GROUP BY id.indexer_wallet, id.staked_tokens - id.locked_tokens, mia.day_partition
+        ) as aggregated_data
+        GROUP BY indexer, recent_slashable_stake;
+        """)

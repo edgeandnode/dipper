@@ -10,10 +10,12 @@ from scipy.stats import t
 from numpy.linalg import pinv
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.metrics import mean_squared_error
+
+# from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from tabulate import tabulate
+# from tabulate import tabulate
 
 
 def derive_timestamps(num_days):
@@ -86,12 +88,12 @@ def adjust_rows(initial_query_results_pandas, target_rows):
     Returns:
     int: The adjusted upper limit for the number of rows per group.
     """
-    x = 1000  # Starting estimate for the number of rows to record for each ['deployment_hash', 'indexer'] combination.
+    x = 1_000  # Starting estimate for the number of rows to record for each ['deployment_hash', 'indexer'] combination.
     initial_query_results_pandas["num_rows_restricted"] = initial_query_results_pandas[
         "num_rows"
     ].clip(upper=x)
     tolerance = target_rows * 0.01  # 1% tolerance range
-    max_iterations = 1000  # Maximum number of iterations to avoid infinite loops
+    max_iterations = 1_000  # Maximum number of iterations to avoid infinite loops
     iteration = 0
 
     while not (
@@ -541,7 +543,7 @@ def process_combined_query_pandas(df):
 
 def split_locations(df):
     """
-    Split origin_loc and destination_loc into latitude and longitude.
+    Split origin_loc and destination_loc into latitude and longitude. Handles non-numeric entries by converting them to NaN.
 
     Parameters:
     df (DataFrame): The DataFrame containing 'origin_loc' and 'destination_loc' columns.
@@ -549,12 +551,18 @@ def split_locations(df):
     Returns:
     DataFrame: The DataFrame with new 'origin_lat', 'origin_lon', 'dest_lat', and 'dest_lon' columns.
     """
-    df[["origin_lat", "origin_lon"]] = (
-        df["origin_loc"].str.split(",", expand=True).astype(float)
-    )
-    df[["dest_lat", "dest_lon"]] = (
-        df["destination_loc"].str.split(",", expand=True).astype(float)
-    )
+
+    # Function to safely convert values to float
+    def safe_convert(coords):
+        try:
+            return [float(x) for x in coords.split(",")]
+        except ValueError:
+            return [float("nan"), float("nan")]  # Convert non-numeric entries to NaN
+
+    # Apply safe conversion to both origin and destination columns
+    df[["origin_lat", "origin_lon"]] = df["origin_loc"].apply(safe_convert).tolist()
+    df[["dest_lat", "dest_lon"]] = df["destination_loc"].apply(safe_convert).tolist()
+
     return df
 
 
@@ -661,7 +669,13 @@ def filter_columns(df, all_columns):
     return df[all_columns]
 
 
-def iterative_filter(df, a, b, c, d):
+def iterative_filter(
+    df,
+    min_deployment_indexers,
+    min_deployments_per_indexer,
+    min_queries_per_indexer,
+    min_queries_per_deployment,
+):
     """
     Iteratively filter the DataFrame based on specified thresholds for indexers, deployments, and queries.
     Apply filtering criteria in rounds, recalculating metrics and adjusting filters in each iteration, until the
@@ -669,10 +683,10 @@ def iterative_filter(df, a, b, c, d):
 
     Parameters:
     `df`: DataFrame to filter.
-    `a`: Each deployment must be served by at least a indexers.
-    `b`: Each indexer must serve at least b deployments.
-    `c`: Each indexer must serve at least c queries.
-    `d`: Each subgraph deployment must be queried at least d times.
+    `min_deployment_indexers`: Each deployment must be served by at least this many indexers.
+    `min_deployments_per_indexer`: Each indexer must serve at least this many deployments.
+    `min_queries_per_indexer`: Each indexer must serve at least this many queries.
+    `min_queries_per_deployment`: Each subgraph deployment must be queried at least this many times.
 
     Returns:
     DataFrame: The filtered DataFrame.
@@ -680,21 +694,28 @@ def iterative_filter(df, a, b, c, d):
     while True:
         initial_len = len(df)
 
-        # Ensure deployments have at least `a` indexers
+        # Ensure deployments have at least `min_deployment_indexers` indexers
         indexer_per_deployment = df.groupby("deployment_hash")["indexer"].nunique()
-        df = df[df["deployment_hash"].map(indexer_per_deployment) >= a]
+        df = df[
+            df["deployment_hash"].map(indexer_per_deployment) >= min_deployment_indexers
+        ]
 
-        # Ensure indexers serve at least `b` deployments
+        # Ensure indexers serve at least `min_deployments_per_indexer` deployments
         deployment_per_indexer = df.groupby("indexer")["deployment_hash"].nunique()
-        df = df[df["indexer"].map(deployment_per_indexer) >= b]
+        df = df[
+            df["indexer"].map(deployment_per_indexer) >= min_deployments_per_indexer
+        ]
 
-        # Ensure indexers serve at least `c` unique queries
+        # Ensure indexers serve at least `min_queries_per_indexer` unique queries
         queries_per_indexer = df.groupby("indexer")["query_id"].nunique()
-        df = df[df["indexer"].map(queries_per_indexer) >= c]
+        df = df[df["indexer"].map(queries_per_indexer) >= min_queries_per_indexer]
 
-        # Ensure deployments have at least `d` queries
+        # Ensure deployments have at least `min_queries_per_deployment` queries
         query_counts_per_deployment = df.groupby("deployment_hash").size()
-        df = df[df["deployment_hash"].map(query_counts_per_deployment) >= d]
+        df = df[
+            df["deployment_hash"].map(query_counts_per_deployment)
+            >= min_queries_per_deployment
+        ]
 
         # Check if no change in DataFrame size, else run the loop again.
         if len(df) == initial_len:
@@ -773,10 +794,11 @@ def hash_sampled_queries(df, integer_root):
     df.loc[
         df["sampled_query_id"].notna(), "sampled_query_id_hashed_mod_integer_root"
     ] = df["sampled_query_id"].apply(lambda x: hash(x) % integer_root)
+
     return df
 
 
-def perform_linear_regression(df):
+def perform_linear_regression(df, predictor, categorical, numeric):
     """
     Perform linear regression on the given data.
 
@@ -787,7 +809,9 @@ def perform_linear_regression(df):
     DataFrame: The original data with an added 'predicted_score' column containing regression predictions.
     """
     # Preprocess the data
-    X, y, preprocessor = preprocess_data_for_regression(df)
+    X, y, preprocessor = preprocess_data_for_regression(
+        df, predictor, categorical, numeric
+    )
 
     # Perform linear regression
     pipeline, y_pred = perform_regression(X, y, preprocessor)
@@ -878,21 +902,21 @@ def analyze_regression_results(pipeline, X, y, y_pred):
     results_df (DataFrame): DataFrame containing regression coefficients and statistics.
     """
     mse = mean_squared_error(y, y_pred)
-    rmse = np.sqrt(mse)
-    mae = mean_absolute_error(y, y_pred)
-    r2 = r2_score(y, y_pred)
-    adjusted_r2 = 1 - ((1 - r2) * (len(y) - 1) / (len(y) - X.shape[1] - 1))
+    # rmse = np.sqrt(mse)
+    # mae = mean_absolute_error(y, y_pred)
+    # r2 = r2_score(y, y_pred)
+    # adjusted_r2 = 1 - ((1 - r2) * (len(y) - 1) / (len(y) - X.shape[1] - 1))
 
     # Print regression model stats
-    print(f"RMSE: {rmse}")
-    print(f"MAE: {mae}")
-    print(f"R²: {r2}")
-    print(f"Adjusted R²: {adjusted_r2}")
+    # print(f"RMSE: {rmse}")
+    # print(f"MAE: {mae}")
+    # print(f"R²: {r2}")
+    # print(f"Adjusted R²: {adjusted_r2}")
 
     # Extract feature names, coefficients, and standard errors from the regression pipeline
     feature_names = pipeline.named_steps["preprocessor"].get_feature_names_out()
     coefficients = pipeline.named_steps["regressor"].coef_
-    intercept = pipeline.named_steps["regressor"].intercept_
+    # intercept = pipeline.named_steps["regressor"].intercept_
 
     # Ensure coefficients are a flat array
     if coefficients.ndim > 1:
@@ -922,8 +946,8 @@ def analyze_regression_results(pipeline, X, y, y_pred):
     )
 
     # Show results
-    print(f"The regression intercept is: {intercept}")
-    print(tabulate(results_df, headers="keys", tablefmt="psql", showindex=False))
+    # print(f"The regression intercept is: {intercept}")
+    # print(tabulate(results_df, headers="keys", tablefmt="psql", showindex=False))
 
     return results_df
 
@@ -1200,7 +1224,7 @@ def merge_and_prepare_dataframes(
 
     # Drop unnecessary columns
     merged = merged.drop(
-        columns=["observed_duration_full", "uptime_duration_full", "% up_y", "% up_x"]
+        columns=["observed_duration_full", "uptime_duration_full", "% up_y"]
     )
     merged = merged.dropna(subset=["Coefficient", "Standard Error", "p-value"])
 
@@ -1216,6 +1240,7 @@ def merge_and_prepare_dataframes(
     # Add new columns
     merged["existing_dips_agreements"] = 0
     merged["avg_sync_duration"] = np.nan
+    merged["indexing_agreement_acceptance_latency"] = np.nan
     return merged
 
 
@@ -1227,7 +1252,7 @@ def normalize_metrics(merged):
 
     # Normalise uptime score:
     merged["norm_uptime_score"] = normalize_uptime_and_success_rate(
-        merged["up_x"]
+        merged["% up_x"]
     )  # higher is better
 
     # Normalise the number of indexing agreements each indexer has:
@@ -1245,11 +1270,12 @@ def normalize_metrics(merged):
         merged["average_status"]
     )  # higher is better
 
-    # Needs attention:
+    # Needs future revision:
     merged["norm_avg_sync_duration"] = 1 - normalize_generic(
         merged["avg_sync_duration"]
     )  # lower is better
 
+    # Normalize indexing_agreement_acceptance_latency
     merged["norm_indexing_agreement_acceptance_latency"] = (
         normalize_indexing_agreement_acceptance_latency(
             merged["indexing_agreement_acceptance_latency"]
@@ -1266,7 +1292,15 @@ def normalize_generic(series):
 
 # Function to normalize uptime/succes rate
 def normalize_uptime_and_success_rate(series):
-    return series.apply(lambda x: max(0, (x - 0.97) / 0.03))
+    # Find the best uptime/success rate score in the series first
+    best = series.max()
+
+    # Threshold whereby indexers that have less uptime/success rate than this get no score
+    threshold = best - 0.03  # e.g best was 90% so threshold is 87%
+
+    # Linear score between the threshold and the best.
+    # e.g 88.5% gets a score of 50% in this example.
+    return series.apply(lambda x: max(0, min(1, (x - threshold) / 0.03)))
 
 
 # Function to Normalize acceptance latency
