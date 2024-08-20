@@ -40,7 +40,7 @@ class BigQueryProvider:
         :param query: The query string
         :return: The read dataset
         """
-        return bpd.read_gbq(query, project_id=self.project_id).to_pandas()
+        return bpd.read_gbq(query).to_pandas()
 
     def fetch_initial_stake_to_fees(self, start_ts: str) -> StakeToFeesDataFrame:
         """

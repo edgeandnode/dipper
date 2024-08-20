@@ -2,7 +2,7 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -19,14 +19,13 @@ jobs:
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
 
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@1fbea72663f6d4c03efaab13560c8a24cfd2a7cc # v1
         with:
-          toolchain: stable
           components: clippy
+          cache: false
 
-      - name: Cache Cargo build files
-        uses: Leafwing-Studios/cargo-cache@6c2a159aab4b3ba20f083d241bb1f26b35262b99 # v2
+      - name: Cache rust build files
+        uses: Leafwing-Studios/cargo-cache@8763a8b3c2f500b6c17550b7aed48ff4bc86aee6 # v2
 
       - name: Prepare build env
         run: sudo apt-get install -y lld
@@ -34,8 +33,7 @@ jobs:
       - run: cargo clippy -- -D warnings --force-warn deprecated --force-warn dead-code
 
       ## Test
-      - name: Run tests
-        run: cargo test
+      - run: cargo test
 
   format-rust:
     runs-on: ubuntu-latest
@@ -43,10 +41,11 @@ jobs:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: actions-rust-lang/setup-rust-toolchain@1fbea72663f6d4c03efaab13560c8a24cfd2a7cc # v1
         with:
           toolchain: nightly
           components: rustfmt
+          cache: false
 
       - run: cargo +nightly fmt --all -- --check
 

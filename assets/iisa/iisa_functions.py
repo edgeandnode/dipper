@@ -1824,7 +1824,6 @@ def merge_and_prepare_dataframes(
     merged["existing_dips_agreements"] = 0
     merged["avg_sync_duration"] = np.nan
     merged["indexing_agreement_acceptance_latency"] = np.nan
-
     return merged
 
 
