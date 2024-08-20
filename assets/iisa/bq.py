@@ -4,8 +4,6 @@ The "BigQuery" provider.
 
 from datetime import date
 from typing import NewType
-from google.oauth2.service_account import Credentials
-from google.cloud import bigquery
 from bigframes import pandas as bpd
 from pandas import DataFrame
 
