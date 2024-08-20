@@ -1448,7 +1448,7 @@ class TestApplyIataDetails:
         pd.testing.assert_frame_equal(result, expected_result)
 
     def test_apply_iata_details_logging_on_error(self, caplog):
-        #Test that logging occurs correctly on an error
+        # Test that logging occurs correctly on an error
         with patch(
             "iisa_functions.requests.get",
             side_effect=requests.RequestException("Test exception"),
@@ -3548,4 +3548,3 @@ class TestCalculateWeightedScore:
         row = pd.Series(row_data)
         result = calculate_weighted_score(row, weights)
         assert np.isclose(result, expected)
-
