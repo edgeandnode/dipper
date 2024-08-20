@@ -1,8 +1,4 @@
-import pytest
 from datetime import datetime
-import pandas as pd
-import bigframes.pandas as bpd
-import requests
 from bq import (
     _get_combined_query,
     _get_initial_query,
