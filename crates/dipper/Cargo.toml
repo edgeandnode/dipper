@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow.workspace = true
 bincode.workspace = true
+indoc = "2.0.5"
 pyo3 = { workspace = true, features = ["auto-initialize"] }
 reqwest = { workspace = true, features = ["json"] }
 semver = { version = "1.0.23", features = ["serde"] }
@@ -16,8 +17,12 @@ sled.workspace = true
 thegraph-core = { version = "0.6.0", features = ["subgraph-client", "serde"] }
 thegraph-graphql-http = "0.2.4"
 thiserror.workspace = true
+tracing = "0.1.40"
 
 [dev-dependencies]
 smol.workspace = true
 smol-potat = "1.1.2"
 tempfile.workspace = true
+test-with = { version = "0.13.0", default-features = false }
+tokio = { workspace = true, features = ["rt", "macros"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
