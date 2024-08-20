@@ -4,7 +4,8 @@ The "BigQuery" provider.
 
 from datetime import date
 from typing import NewType
-
+from google.oauth2.service_account import Credentials
+from google.cloud import bigquery
 from bigframes import pandas as bpd
 from bigframes.pandas import DataFrame
 
@@ -25,6 +26,9 @@ class BigQueryProvider:
         self.project_id = project
         self.location = location
 
+        # The client will automatically use the credentials from GOOGLE_APPLICATION_CREDENTIALS
+        self.client = bigquery.Client(project=project, location=location)
+
         # Configure BigQuery project and location
         bpd.options.bigquery.project = project
         bpd.options.bigquery.location = location
@@ -36,7 +40,7 @@ class BigQueryProvider:
         :param query: The query string
         :return: The read dataset
         """
-        return bpd.read_gbq(query).to_pandas()
+        return bpd.read_gbq(query, project_id=self.project_id).to_pandas()
 
     def fetch_initial_stake_to_fees(self, start_ts: str) -> StakeToFeesDataFrame:
         """
@@ -78,7 +82,20 @@ class BigQueryProvider:
 
 def _get_combined_query(start_date: date, num_days: int, rows_to_use: int) -> QueryStr:
     """
-    Construct the combined query to fetch detailed data.
+    Construct a SQL query to fetch detailed data from multiple tables.
+
+    This function generates a complex SQL query that combines data from production_metrics,
+    indexer_dimensions, and metrics_indexer_attempts tables. It includes subquery logic
+    to handle deployment networks, indexer networks, and data sampling.
+
+    Parameters:
+    start_date (datetime): The start date for the query range.
+    num_days (int): The number of days to include in the query range.
+    rows_to_use (int): The maximum number of rows to retrieve per deployment_hash and indexer combination.
+
+    Returns:
+    str: A SQL query string that selects and combines data from multiple tables,
+         applying various filters and transformations.
     """
     return QueryStr(f"""
     WITH production_metrics_gateway_subgraph_queries AS (
@@ -232,7 +249,18 @@ def _get_combined_query(start_date: date, num_days: int, rows_to_use: int) -> Qu
 
 def _get_initial_query(start_date: date, num_days: int) -> QueryStr:
     """
-    Construct the initial query to fetch basic filter data.
+    Construct an initial SQL query to fetch basic filter data from the metrics_indexer_attempts table.
+
+    This function generates a SQL query that counts the number of rows for each combination of
+    deployment hash and indexer within a specified date range.
+
+    Parameters:
+    start_date (datetime): The start date for the query range.
+    num_days (int): The number of days to include in the query range.
+
+    Returns:
+    str: A SQL query string that selects deployment_hash, indexer, and num_rows,
+         filtered by the specified date range.
     """
     return f"""
     WITH BasicFilter AS (
@@ -261,7 +289,18 @@ def _get_initial_query(start_date: date, num_days: int) -> QueryStr:
 
 def _get_url_query(start_date: date, num_days: int) -> QueryStr:
     """
-    Construct the query to fetch IP data.
+    Construct a SQL query to fetch indexer URL data from the indexer_dimensions_arbitrum_daily table.
+
+    This function generates a SQL query that retrieves indexer wallet addresses, URLs, and other
+    relevant information for the Arbitrum network table within a specified date range.
+
+    Parameters:
+    start_date (datetime): The start date for the query range.
+    num_days (int): The number of days to include in the query range.
+
+    Returns:
+    str: A SQL query string that selects day, indexer_wallet, indexer_url, and sets indexer_network
+         as 'arbitrum' for the specified date range.
     """
     return QueryStr(f"""
     SELECT
@@ -279,7 +318,25 @@ def _get_url_query(start_date: date, num_days: int) -> QueryStr:
 
 def _get_initial_stake_to_fees_query(start_ts: str) -> QueryStr:
     """
-    Construct the initial query to fetch the stake to fees data.
+    A SQL query to calculate the stake-to-fees ratio for indexers.
+
+    This function constructs a SQL query that computes the ratio of slashable stake
+    to total query fees each indexer in the Arbitrum network has received, regardless
+    of the collection status, starting from a specified timestamp. In this case the
+    start_ts is a date time string num_days before the current day. This way any historical
+    query fees earned outside of the looked upon window does not effect an indexers
+    current stake-to-fees ratio.
+
+    Parameters:
+    start_ts (str): The starting timestamp for the query, formatted as a string.
+
+    Returns:
+    QueryStr: A SQL query string that calculates stake-to-fees ratios.
+
+    Note:
+    - The query joins data from 'internal_metrics.indexer_dimensions_arbitrum' and
+      'internal_metrics.metrics_indexer_attempts' tables.
+    - The query filters data starting from the provided timestamp.
     """
     return QueryStr(f"""
         SELECT indexer,
