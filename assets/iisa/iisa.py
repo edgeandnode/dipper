@@ -2,7 +2,6 @@
 import pandas as pd
 from bq import BigQueryProvider
 import iisa_functions
-import os
 
 # Constants
 DATA_MANAGER_NUM_DAYS = 28

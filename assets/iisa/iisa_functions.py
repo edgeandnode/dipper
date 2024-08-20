@@ -12,7 +12,6 @@ from requests.exceptions import (
     HTTPError,
     ConnectionError as ReqConnectionError,
 )
-import socket
 import bigframes.pandas as bpd
 import numpy as np
 import pandas as pd

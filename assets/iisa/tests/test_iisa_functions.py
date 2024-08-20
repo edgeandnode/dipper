@@ -2,7 +2,6 @@ import pytest
 from datetime import datetime
 from freezegun import freeze_time
 import pandas as pd
-import bigframes.pandas as bpd
 from unittest.mock import patch
 from requests.exceptions import HTTPError
 import requests
