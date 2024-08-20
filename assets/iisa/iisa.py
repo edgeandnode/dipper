@@ -2,9 +2,9 @@
 from typing import Optional
 
 import pandas as pd
-
-from . import iisa_functions
-from .bq import BigQueryProvider
+from bq import BigQueryProvider
+import iisa_functions
+import os
 
 # Constants
 DATA_MANAGER_NUM_DAYS = 28
@@ -97,14 +97,14 @@ class DataManager:
         )
 
         # Figure out how many queries to take from each [indexer, subgraph] combination to target n queries overall
-        rows_to_use = iisa_functions.adjust_rows(
+        target_rows_per_subgraph = iisa_functions.adjust_rows(
             initial_query_results_pandas,
             target_rows=20_000_000,
         )
 
         # Fetch the combined query results using the combined query as input
         self.bigquery_data = self.bigquery.fetch_combined_query_results(
-            self.start_date, self.num_days, rows_to_use
+            self.start_date, self.num_days, target_rows_per_subgraph
         )
 
         # Fetch the URL data query results using the URL query as input
@@ -133,7 +133,9 @@ class DataManager:
         self.bigquery_data = iisa_functions.extract_iata_code(self.bigquery_data)
 
         # Merge the IATA information with the combined query data
-        self.bigquery_data = iisa_functions.merge_iata_info(self.bigquery_data, iata_df)
+        self.bigquery_data = iisa_functions.right_merge_iata_info(
+            iata_df, self.bigquery_data
+        )
 
         # Process the combined query DataFrame
         self.bigquery_data = iisa_functions.process_combined_query_pandas(
@@ -182,7 +184,7 @@ class DataManager:
 
         # Sample the query IDs to create a balanced representation across indexers
         self.filtered_bigquery_data, integer_root = iisa_functions.strategic_sample(
-            self.filtered_bigquery_data, rows_to_use
+            self.filtered_bigquery_data, target_rows_per_subgraph
         )
 
         # Hash the sampled query IDs to the hash mod of the integer root
@@ -683,6 +685,9 @@ if __name__ == "__main__":
         # Get the latest data
         data = data_manager.get_data()
 
+        # Save the data to a CSV file
+        data.to_csv("DataManager_GetData_DataFrame.csv", index=False)
+
         # Example values
         subgraph_id = "QmSubgraph1"
         prices = {"0xIndexer1": 10, "0xIndexer2": 20, "0xIndexer3": 15}
@@ -694,16 +699,19 @@ if __name__ == "__main__":
         blacklist = ["0xBlacklistedIndexer"]
 
         # Process subgraph
-        added, cancelled = process_subgraph(
-            data,
-            subgraph_id,
-            prices,
-            existing_agreements,
-            pending_agreements,
-            blacklist,
-        )
+        try:
+            added, cancelled = process_subgraph(
+                data,
+                subgraph_id,
+                prices,
+                existing_agreements,
+                pending_agreements,
+                blacklist,
+            )
+            print(f"Initial processing - Added: {added}, Cancelled: {cancelled}")
 
-        print(f"Initial processing - Added: {added}, Cancelled: {cancelled}")
+        except Exception as e:
+            print(f"An error occurred during new subgraph processing: {e}")
 
         # Simulate updates with new data:
         new_subgraph_id = "QmNewSubgraphId"
@@ -727,15 +735,19 @@ if __name__ == "__main__":
         ]
 
         # Process new subgraph
-        added, cancelled = process_subgraph(
-            data,
-            new_subgraph_id,
-            new_prices,
-            new_existing_agreements,
-            new_pending_agreements,
-            new_blacklist,
-        )
-        print(f"New subgraph processing - Added: {added}, Cancelled: {cancelled}")
+        try:
+            added, cancelled = process_subgraph(
+                data,
+                new_subgraph_id,
+                new_prices,
+                new_existing_agreements,
+                new_pending_agreements,
+                new_blacklist,
+            )
+            print(f"New subgraph processing - Added: {added}, Cancelled: {cancelled}")
+
+        except Exception as e:
+            print(f"An error occurred during new subgraph processing: {e}")
 
         # Demonstrate updating an existing subgraph with update_and_reprocess_data
         updated_data = data_manager.get_data()
@@ -751,29 +763,33 @@ if __name__ == "__main__":
         updated_blacklist = new_blacklist + ["0xAnotherBlacklistedIndexer"]
 
         # Create a DataProcessor instance for the subgraph we want to update
-        data_processor = DataProcessor(
-            data,
-            new_subgraph_id,
-            new_prices,
-            existing_agreements=new_existing_agreements,
-            pending_agreements=new_pending_agreements,
-            blacklist=new_blacklist,
-        )
+        try:
+            data_processor = DataProcessor(
+                data,
+                new_subgraph_id,
+                new_prices,
+                existing_agreements=new_existing_agreements,
+                pending_agreements=new_pending_agreements,
+                blacklist=new_blacklist,
+            )
 
-        # Update and reprocess data
-        data_processor.update_and_reprocess_data(
-            new_data=updated_data,
-            new_prices=updated_prices,
-            new_existing_agreements=updated_existing_agreements,
-            new_pending_agreements=updated_pending_agreements,
-            new_blacklist=updated_blacklist,
-        )
+            # Update and reprocess data
+            data_processor.update_and_reprocess_data(
+                new_data=updated_data,
+                new_prices=updated_prices,
+                new_existing_agreements=updated_existing_agreements,
+                new_pending_agreements=updated_pending_agreements,
+                new_blacklist=updated_blacklist,
+            )
 
-        # Get the updated results
-        added, cancelled = data_processor.get_indexer_selections()
-        print(
-            f"After update_and_reprocess_data - Added: {added}, Cancelled: {cancelled}"
-        )
+            # Get the updated results
+            added, cancelled = data_processor.get_indexer_selections()
+            print(
+                f"After update_and_reprocess_data - Added: {added}, Cancelled: {cancelled}"
+            )
+
+        except Exception as e:
+            print(f"An error occurred during data processing update: {e}")
 
     except Exception as e:
         print(f"An error occurred: {e}")
