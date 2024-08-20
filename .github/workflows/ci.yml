@@ -110,5 +110,5 @@ jobs:
 
       - name: Run Python unit tests
         run: |
-          pytest test_iisa_functions.py
-          pytest test_bq.py
+          pytest assets/iisa/tests/test_iisa_functions.py
+          pytest assets/iisa/tests/test_bq.py
