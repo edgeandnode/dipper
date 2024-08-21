@@ -1,7 +1,10 @@
 # Import statements
+from typing import Optional
+
 import pandas as pd
-from .bq import BigQueryProvider
+
 from . import iisa_functions
+from .bq import BigQueryProvider
 
 # Constants
 DATA_MANAGER_NUM_DAYS = 28
@@ -56,7 +59,9 @@ class DataManager:
     """
 
     def __init__(
-        self, num_days=DATA_MANAGER_NUM_DAYS, bigquery: BigQueryProvider = None
+        self,
+        num_days=DATA_MANAGER_NUM_DAYS,
+        bigquery: Optional[BigQueryProvider] = None,
     ):
         self.num_days = num_days
         self.bigquery = bigquery or BigQueryProvider("graph-mainnet", "US")

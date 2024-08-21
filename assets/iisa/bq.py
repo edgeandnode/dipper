@@ -13,7 +13,7 @@ QueryStr = NewType("QueryStr", str)
 StakeToFeesDataFrame = NewType("StakeToFeesDataFrame", DataFrame)
 CombinedQueryResultsDataFrame = NewType("CombinedQueryResultsDataFrame", DataFrame)
 UrlDataFrame = NewType("UrlDataFrame", DataFrame)
-InitialQueryResultsDataFrame = NewType("InitialQueryResultDataFrame", DataFrame)
+InitialQueryResultsDataFrame = NewType("InitialQueryResultsDataFrame", DataFrame)
 
 
 class BigQueryProvider:
@@ -234,7 +234,7 @@ def _get_initial_query(start_date: date, num_days: int) -> QueryStr:
     """
     Construct the initial query to fetch basic filter data.
     """
-    return f"""
+    return QueryStr(f"""
     WITH BasicFilter AS (
         SELECT
             deployment AS deployment_hash,
@@ -256,7 +256,7 @@ def _get_initial_query(start_date: date, num_days: int) -> QueryStr:
         indexer,
         num_rows
     FROM TotalQueries;
-    """
+    """)
 
 
 def _get_url_query(start_date: date, num_days: int) -> QueryStr:
