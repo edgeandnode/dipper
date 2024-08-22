@@ -8,7 +8,7 @@ import requests
 import numpy as np
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
-from iisa_functions import (
+from ..iisa_functions import (
     derive_timestamps,
     get_initial_query,
     fetch_initial_query_results,

@@ -1,5 +1,5 @@
 from datetime import datetime
-from bq import (
+from ..bq import (
     _get_combined_query,
     _get_initial_query,
     _get_url_query,
