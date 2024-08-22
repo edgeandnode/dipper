@@ -80,7 +80,18 @@ jobs:
       uses: chartboost/ruff-action@491342200cdd1cf4d5132a30ddc546b3b5bc531b # v1
       with:
         args: 'check'
-        src: 'assets'
+        src: 'assets/iisa'
+
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.11.5'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - run: mypy assets/iisa
 
   format-python:
     runs-on: ubuntu-latest
@@ -91,4 +102,4 @@ jobs:
       uses: chartboost/ruff-action@491342200cdd1cf4d5132a30ddc546b3b5bc531b # v1
       with:
         args: 'format --check'
-        src: 'assets'
+        src: 'assets/iisa'

@@ -6,7 +6,7 @@ from datetime import date
 from typing import NewType
 
 from bigframes import pandas as bpd
-from bigframes.pandas import DataFrame
+from pandas import DataFrame
 
 QueryStr = NewType("QueryStr", str)
 
