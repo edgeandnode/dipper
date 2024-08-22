@@ -44,7 +44,7 @@ class BigQueryProvider:
         pandas.DataFrame: A DataFrame containing the query results.
         """
         # bpd.read_gbq automatically uses the credentials from GOOGLE_APPLICATION_CREDENTIALS
-        return bpd.read_gbq(query, project_id=self.project_id).to_pandas()
+        return bpd.read_gbq(query).to_pandas()
 
     def fetch_initial_stake_to_fees(self, start_ts: str) -> StakeToFeesDataFrame:
         """
