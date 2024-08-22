@@ -3,7 +3,34 @@ from typing import Optional
 
 import pandas as pd
 from .bq import BigQueryProvider
-import .iisa_functions
+from .iisa_functions import (
+    derive_timestamps,
+    adjust_rows,
+    apply_location_details,
+    merge_dataframes,
+    extract_iata_codes,
+    apply_iata_details,
+    extract_iata_code,
+    right_merge_iata_info,
+    process_combined_query_pandas,
+    split_locations,
+    calculate_distances,
+    drop_intermediate_columns,
+    filter_status,
+    apply_round_distance,
+    filter_columns,
+    iterative_filter,
+    strategic_sample,
+    hash_sampled_queries,
+    perform_linear_regression,
+    calculate_indexer_success_rate,
+    calculate_indexer_uptime,
+    calculate_stake_to_fees,
+    aggregate_indexer_info,
+    merge_and_prepare_dataframes,
+    normalize_metrics,
+    calculate_weighted_score,
+)
 
 # Constants
 DATA_MANAGER_NUM_DAYS = 28
@@ -67,7 +94,7 @@ class DataManager:
 
         # Initialize timestamps
         (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
-            iisa_functions.derive_timestamps(self.num_days)
+            derive_timestamps(self.num_days)
         )
 
         # Initialize data attributes
@@ -96,7 +123,7 @@ class DataManager:
         )
 
         # Figure out how many queries to take from each [indexer, subgraph] combination to target n queries overall
-        target_rows_per_subgraph = iisa_functions.adjust_rows(
+        target_rows_per_subgraph = adjust_rows(
             initial_query_results_pandas,
             target_rows=20_000_000,
         )
@@ -113,50 +140,50 @@ class DataManager:
 
         # Extract location/org details from the URL data. We should then have a df containing
         # [['location', 'org', 'loc', 'ip']]  = [["country/reigon/city", "org", "lat,long", "ip"]]
-        unique_urls_indexers_pandas = iisa_functions.apply_location_details(
+        unique_urls_indexers_pandas = apply_location_details(
             unique_urls_indexers_pandas
         )
 
         # Merge the information contained inside unique_urls_indexers_pandas with combined_query_pandas
-        self.bigquery_data = iisa_functions.merge_dataframes(
+        self.bigquery_data = merge_dataframes(
             self.bigquery_data, unique_urls_indexers_pandas
         )
 
         # Create a DataFrame containing the IATA codes and their counts
-        iata_df = iisa_functions.extract_iata_codes(self.bigquery_data)
+        iata_df = extract_iata_codes(self.bigquery_data)
 
         # Apply location and details extraction to the IATA codes in the DataFrame
-        iata_df = iisa_functions.apply_iata_details(iata_df)
+        iata_df = apply_iata_details(iata_df)
 
         # Extract IATA codes from the combined query data
-        self.bigquery_data = iisa_functions.extract_iata_code(self.bigquery_data)
+        self.bigquery_data = extract_iata_code(self.bigquery_data)
 
         # Merge the IATA information with the combined query data
-        self.bigquery_data = iisa_functions.right_merge_iata_info(
+        self.bigquery_data = right_merge_iata_info(
             iata_df, self.bigquery_data
         )
 
         # Process the combined query DataFrame
-        self.bigquery_data = iisa_functions.process_combined_query_pandas(
+        self.bigquery_data = process_combined_query_pandas(
             self.bigquery_data
         )
 
         # Split origin_loc and destination_loc into latitude and longitude
-        self.bigquery_data = iisa_functions.split_locations(self.bigquery_data)
+        self.bigquery_data = split_locations(self.bigquery_data)
 
         # Apply the vectorized Haversine function
-        self.bigquery_data = iisa_functions.calculate_distances(self.bigquery_data)
+        self.bigquery_data = calculate_distances(self.bigquery_data)
 
         # Drop the intermediate columns
-        self.bigquery_data = iisa_functions.drop_intermediate_columns(
+        self.bigquery_data = drop_intermediate_columns(
             self.bigquery_data
         )
 
         # Filter the data to only include rows where status is '200 OK'
-        self.bigquery_data = iisa_functions.filter_status(self.bigquery_data)
+        self.bigquery_data = filter_status(self.bigquery_data)
 
         # Round the distance in miles
-        self.bigquery_data = iisa_functions.apply_round_distance(self.bigquery_data)
+        self.bigquery_data = apply_round_distance(self.bigquery_data)
 
         # Specify the columns for regression
         predictor = ["response_time_ms"]
@@ -165,7 +192,7 @@ class DataManager:
         all_columns = predictor + categorical + numeric
 
         # Filter the DataFrame to include only the specified columns for regression
-        self.filtered_bigquery_data = iisa_functions.filter_columns(
+        self.filtered_bigquery_data = filter_columns(
             self.bigquery_data, all_columns
         )
 
@@ -173,7 +200,7 @@ class DataManager:
         self.filtered_bigquery_data = self.filtered_bigquery_data.dropna(subset=numeric)
 
         # Apply iterative filtering
-        self.filtered_bigquery_data = iisa_functions.iterative_filter(
+        self.filtered_bigquery_data = iterative_filter(
             self.filtered_bigquery_data,
             ITERATIVE_FILTER_MIN_DEPLOYMENT_INDEXERS,
             ITERATIVE_FILTER_MIN_DEPLOYMENTS_PER_INDEXER,
@@ -182,12 +209,12 @@ class DataManager:
         )
 
         # Sample the query IDs to create a balanced representation across indexers
-        self.filtered_bigquery_data, integer_root = iisa_functions.strategic_sample(
+        self.filtered_bigquery_data, integer_root = strategic_sample(
             self.filtered_bigquery_data, target_rows_per_subgraph
         )
 
         # Hash the sampled query IDs to the hash mod of the integer root
-        self.filtered_bigquery_data = iisa_functions.hash_sampled_queries(
+        self.filtered_bigquery_data = hash_sampled_queries(
             self.filtered_bigquery_data, integer_root
         )
 
@@ -201,18 +228,18 @@ class DataManager:
 
         # Perform linear regression on the results from the combined query
         self.filtered_bigquery_data, self.indexer_rankings = (
-            iisa_functions.perform_linear_regression(
+            perform_linear_regression(
                 self.filtered_bigquery_data, predictor, categorical, numeric
             )
         )
 
         # Calculate indexer query success rate
-        self.indexer_success_rate = iisa_functions.calculate_indexer_success_rate(
+        self.indexer_success_rate = calculate_indexer_success_rate(
             self.bigquery_data
         )
 
         # Calculate indexer uptime
-        self.indexer_uptime = iisa_functions.calculate_indexer_uptime(
+        self.indexer_uptime = calculate_indexer_uptime(
             self.bigquery_data
         )
 
@@ -227,15 +254,15 @@ class DataManager:
         )
 
         # Calculate stake to fees ratio
-        self.stake_to_fees = iisa_functions.calculate_stake_to_fees(
+        self.stake_to_fees = calculate_stake_to_fees(
             initial_stake_query_pandas
         )
 
         # Group by 'indexer' and aggregate unique 'org' and 'destination_loc' values
-        agg_df = iisa_functions.aggregate_indexer_info(self.bigquery_data)
+        agg_df = aggregate_indexer_info(self.bigquery_data)
 
         # Merge all data into the main dataframe
-        self.bigquery_data = iisa_functions.merge_and_prepare_dataframes(
+        self.bigquery_data = merge_and_prepare_dataframes(
             self.indexer_uptime,
             self.indexer_rankings,
             agg_df,
@@ -248,7 +275,7 @@ class DataManager:
         Update timestamps and fetch the latest data from BigQuery.
         """
         (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
-            iisa_functions.derive_timestamps(self.num_days)
+            derive_timestamps(self.num_days)
         )
         self.fetch_bigquery_data()
 
@@ -316,7 +343,7 @@ class DataProcessor:
 
         # Initialize timestamps
         (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
-            iisa_functions.derive_timestamps(self.num_days)
+            derive_timestamps(self.num_days)
         )
 
         # initialize the current group and initial group
@@ -394,7 +421,7 @@ class DataProcessor:
         """
         Normalize metrics assessing indexer quality and calculate weighted scores.
         """
-        self.data = iisa_functions.normalize_metrics(self.data)
+        self.data = normalize_metrics(self.data)
         weights = {
             "lin_reg_coefficient": 0.2424,
             "uptime_score": 0.1667,
@@ -405,7 +432,7 @@ class DataProcessor:
             "indexing_agreement_acceptance_latency": 0.2424,
         }
         self.data["weighted_score"] = self.data.apply(
-            iisa_functions.calculate_weighted_score, axis=1, weights=weights
+            calculate_weighted_score, axis=1, weights=weights
         )
 
         return self.data
@@ -569,9 +596,9 @@ class DataProcessor:
             self.data.loc[
                 self.data["indexer"] == indexer_to_exclude, "existing_dips_agreements"
             ] -= 1
-            self.data = iisa_functions.normalize_metrics(self.data)
+            self.data = normalize_metrics(self.data)
             self.data["weighted_score"] = self.data.apply(
-                iisa_functions.calculate_weighted_score, axis=1, weights=self.weights
+                calculate_weighted_score, axis=1, weights=self.weights
             )
 
         if indexer_to_include:
@@ -579,9 +606,9 @@ class DataProcessor:
             self.data.loc[
                 self.data["indexer"] == indexer_to_include, "existing_dips_agreements"
             ] += 1
-            self.data = iisa_functions.normalize_metrics(self.data)
+            self.data = normalize_metrics(self.data)
             self.data["weighted_score"] = self.data.apply(
-                iisa_functions.calculate_weighted_score, axis=1, weights=self.weights
+                calculate_weighted_score, axis=1, weights=self.weights
             )
 
         # Calculate the average weighted score of the new indexer group
@@ -592,9 +619,9 @@ class DataProcessor:
             self.data.loc[
                 self.data["indexer"] == indexer_to_exclude, "existing_dips_agreements"
             ] += 1
-            self.data = iisa_functions.normalize_metrics(self.data)
+            self.data = normalize_metrics(self.data)
             self.data["weighted_score"] = self.data.apply(
-                iisa_functions.calculate_weighted_score, axis=1, weights=self.weights
+                calculate_weighted_score, axis=1, weights=self.weights
             )
 
         if indexer_to_include:
@@ -602,9 +629,9 @@ class DataProcessor:
             self.data.loc[
                 self.data["indexer"] == indexer_to_include, "existing_dips_agreements"
             ] -= 1
-            self.data = iisa_functions.normalize_metrics(self.data)
+            self.data = normalize_metrics(self.data)
             self.data["weighted_score"] = self.data.apply(
-                iisa_functions.calculate_weighted_score, axis=1, weights=self.weights
+                calculate_weighted_score, axis=1, weights=self.weights
             )
 
         return score
