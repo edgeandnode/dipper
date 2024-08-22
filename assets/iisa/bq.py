@@ -4,7 +4,6 @@ The "BigQuery" provider.
 
 from datetime import date
 from typing import NewType
-from google.cloud import bigquery
 from bigframes import pandas as bpd
 from pandas import DataFrame
 
@@ -25,20 +24,26 @@ class BigQueryProvider:
         self.project_id = project
         self.location = location
 
-        # The client will automatically use the credentials from GOOGLE_APPLICATION_CREDENTIALS
-        self.client = bigquery.Client(project=project, location=location)
-
         # Configure BigQuery project and location
         bpd.options.bigquery.project = project
         bpd.options.bigquery.location = location
 
     def _read_gbq_dataframe(self, query: QueryStr) -> DataFrame:
         """
-        Run read query in Google BigQuery and convert to pandas' DataFrame.
+        Execute a read query on Google BigQuery and return the results as a pandas DataFrame.
 
-        :param query: The query string
-        :return: The read dataset
+        This method uses the bigframes.pandas.read_gbq function to execute the query. It relies on
+        Application Default Credentials (ADC) for authentication, primarily using the
+        GOOGLE_APPLICATION_CREDENTIALS environment variable if set. This variable should point to
+        the JSON file containing the service account key.
+
+        Parameters:
+        query (QueryStr): SQL query string to be executed on BigQuery.
+
+        Returns:
+        pandas.DataFrame: A DataFrame containing the query results.
         """
+        # bpd.read_gbq automatically uses the credentials from GOOGLE_APPLICATION_CREDENTIALS
         return bpd.read_gbq(query, project_id=self.project_id).to_pandas()
 
     def fetch_initial_stake_to_fees(self, start_ts: str) -> StakeToFeesDataFrame:
