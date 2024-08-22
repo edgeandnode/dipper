@@ -159,14 +159,10 @@ class DataManager:
         self.bigquery_data = extract_iata_code(self.bigquery_data)
 
         # Merge the IATA information with the combined query data
-        self.bigquery_data = right_merge_iata_info(
-            iata_df, self.bigquery_data
-        )
+        self.bigquery_data = right_merge_iata_info(iata_df, self.bigquery_data)
 
         # Process the combined query DataFrame
-        self.bigquery_data = process_combined_query_pandas(
-            self.bigquery_data
-        )
+        self.bigquery_data = process_combined_query_pandas(self.bigquery_data)
 
         # Split origin_loc and destination_loc into latitude and longitude
         self.bigquery_data = split_locations(self.bigquery_data)
@@ -175,9 +171,7 @@ class DataManager:
         self.bigquery_data = calculate_distances(self.bigquery_data)
 
         # Drop the intermediate columns
-        self.bigquery_data = drop_intermediate_columns(
-            self.bigquery_data
-        )
+        self.bigquery_data = drop_intermediate_columns(self.bigquery_data)
 
         # Filter the data to only include rows where status is '200 OK'
         self.bigquery_data = filter_status(self.bigquery_data)
@@ -192,9 +186,7 @@ class DataManager:
         all_columns = predictor + categorical + numeric
 
         # Filter the DataFrame to include only the specified columns for regression
-        self.filtered_bigquery_data = filter_columns(
-            self.bigquery_data, all_columns
-        )
+        self.filtered_bigquery_data = filter_columns(self.bigquery_data, all_columns)
 
         # Filter the DataFrame to include only the rows that have non nan values for numeric columns such as 'distance_miles'
         self.filtered_bigquery_data = self.filtered_bigquery_data.dropna(subset=numeric)
@@ -227,21 +219,15 @@ class DataManager:
         ]
 
         # Perform linear regression on the results from the combined query
-        self.filtered_bigquery_data, self.indexer_rankings = (
-            perform_linear_regression(
-                self.filtered_bigquery_data, predictor, categorical, numeric
-            )
+        self.filtered_bigquery_data, self.indexer_rankings = perform_linear_regression(
+            self.filtered_bigquery_data, predictor, categorical, numeric
         )
 
         # Calculate indexer query success rate
-        self.indexer_success_rate = calculate_indexer_success_rate(
-            self.bigquery_data
-        )
+        self.indexer_success_rate = calculate_indexer_success_rate(self.bigquery_data)
 
         # Calculate indexer uptime
-        self.indexer_uptime = calculate_indexer_uptime(
-            self.bigquery_data
-        )
+        self.indexer_uptime = calculate_indexer_uptime(self.bigquery_data)
 
         # Get the initial stake to fees query results as a dataframe
         # df headers are:
@@ -254,9 +240,7 @@ class DataManager:
         )
 
         # Calculate stake to fees ratio
-        self.stake_to_fees = calculate_stake_to_fees(
-            initial_stake_query_pandas
-        )
+        self.stake_to_fees = calculate_stake_to_fees(initial_stake_query_pandas)
 
         # Group by 'indexer' and aggregate unique 'org' and 'destination_loc' values
         agg_df = aggregate_indexer_info(self.bigquery_data)
