@@ -1,13 +1,11 @@
-import pytest
 from datetime import datetime
-from freezegun import freeze_time
-import pandas as pd
 from unittest.mock import patch
-from requests.exceptions import HTTPError
-import requests
+
 import numpy as np
-from sklearn.pipeline import Pipeline
-from sklearn.compose import ColumnTransformer
+import pandas as pd
+import pytest
+import requests
+from freezegun import freeze_time
 from iisa.iisa_functions import (
     derive_timestamps,
     get_initial_query,
@@ -49,6 +47,9 @@ from iisa.iisa_functions import (
     normalize_indexing_agreement_acceptance_latency,
     calculate_weighted_score,
 )
+from requests.exceptions import HTTPError
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
 
 
 @freeze_time("2024-08-05 12:00:00")
@@ -925,14 +926,14 @@ class TestApplyLocationDetails:
 
         # Mock external dependencies to ensure the function's logic is isolated
         mocker.patch(
-            "iisa_functions.url_to_ip",
+            "iisa.iisa_functions.url_to_ip",
             side_effect=lambda url: {
                 "https://example.com": "IP1",
                 "https://test.com": "IP2",
             }.get(url, None),
         )
         mocker.patch(
-            "iisa_functions.get_location_and_details_from_ip",
+            "iisa.iisa_functions.get_location_and_details_from_ip",
             side_effect=lambda ip: {
                 "IP1": {
                     "location": "Location1",
@@ -965,9 +966,9 @@ class TestApplyLocationDetails:
 
     def test_apply_location_details_with_failures(self, mocker, sample_dataframe):
         # Mock failures in URL resolution/API calls
-        mocker.patch("iisa_functions.url_to_ip", return_value=None)
+        mocker.patch("iisa.iisa_functions.url_to_ip", return_value=None)
         mocker.patch(
-            "iisa_functions.get_location_and_details_from_ip",
+            "iisa.iisa_functions.get_location_and_details_from_ip",
             return_value={
                 "location": "Unknown",
                 "org": "Unknown",
@@ -987,7 +988,7 @@ class TestApplyLocationDetails:
         # Introduce invalid URL
         sample_dataframe.loc[0, "url"] = "htp:/invalid-url"
 
-        with patch("iisa_functions.url_to_ip", return_value=None):
+        with patch("iisa.iisa_functions.url_to_ip", return_value=None):
             results = apply_location_details(sample_dataframe)
 
             # Check that there is at least 1 "Unknown" value in the results df, corresponding to the invalid url
@@ -1310,7 +1311,8 @@ class TestApplyIataDetails:
 
         # Use patch to mock the "load_or_create_iata_data" function to return the predefined local DataFrame
         with patch(
-            "iisa_functions.load_or_create_iata_data", return_value=full_local_iata_df
+            "iisa.iisa_functions.load_or_create_iata_data",
+            return_value=full_local_iata_df,
         ):
             # Mock the requests.get to ensure it is not called
             with patch("requests.get") as mock_get:
@@ -1330,7 +1332,7 @@ class TestApplyIataDetails:
         # Patch the CSV writing method to ensure it's called properly
         with patch("pandas.DataFrame.to_csv") as mock_to_csv:
             with patch(
-                "iisa_functions.load_or_create_iata_data",
+                "iisa.iisa_functions.load_or_create_iata_data",
                 return_value=empty_local_iata_df,
             ):
                 result = apply_iata_details(iata_df)
@@ -1353,7 +1355,7 @@ class TestApplyIataDetails:
 
         with patch("pandas.DataFrame.to_csv") as mock_to_csv:
             with patch(
-                "iisa_functions.load_or_create_iata_data",
+                "iisa.iisa_functions.load_or_create_iata_data",
                 return_value=empty_local_iata_df,
             ):
                 result = apply_iata_details(iata_df)
@@ -1442,7 +1444,7 @@ class TestApplyIataDetails:
     def test_apply_iata_details_logging_on_error(self, caplog):
         # Test that logging occurs correctly on an error
         with patch(
-            "iisa_functions.requests.get",
+            "iisa.iisa_functions.requests.get",
             side_effect=requests.RequestException("Test exception"),
         ):
             iata_df = pd.DataFrame({"IATA_code": ["FAIL"], "count": [1]})
@@ -1808,7 +1810,7 @@ class TestCalculateDistances:
         def mock_haversine(lon1, lat1, lon2, lat2):
             return np.array([100.0, 200.0, 300.0])
 
-        monkeypatch.setattr("iisa_functions.haversine_vectorized", mock_haversine)
+        monkeypatch.setattr("iisa.iisa_functions.haversine_vectorized", mock_haversine)
 
         # Compute result
         result = calculate_distances(sample_df)
