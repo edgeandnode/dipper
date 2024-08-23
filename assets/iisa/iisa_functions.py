@@ -1,7 +1,17 @@
+import logging
 import socket
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
-
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
+from requests.exceptions import (
+    HTTPError,
+    ConnectionError as ReqConnectionError,
+)
 import bigframes.pandas as bpd
 import numpy as np
 import pandas as pd
@@ -11,17 +21,42 @@ from numpy.linalg import pinv
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
-
-# from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
-# from tabulate import tabulate
+import gzip
+import json
+
+# Combine exceptions from different modules into a tuple
+ExceptionsToRetry = (ConnectionError, ReqConnectionError, HTTPError, socket.timeout)
+
+# Setup basic logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
-def derive_timestamps(num_days):
+def derive_timestamps(num_days: int):
     """
-    Derive start and end timestamps for the data collection period.
+    Derive start and end timestamps for a data collection period based on the current date.
+
+    This function calculates a date range ending at the current date and starting 'num_days' ago.
+    It returns both datetime objects and formatted string timestamps.
+
+    Parameters:
+    num_days (int): Number of days to look back from the current date. Must be a non-negative integer.
+
+    Returns:
+    tuple: A tuple containing four elements:
+        - start_date (datetime): The start date of the range.
+        - end_date (datetime): The end date of the range (current date).
+        - start_ts (str): Formatted string of the start date (YYYY-MM-DDTHH:MM:SSZ).
+        - end_ts (str): Formatted string of the end date (YYYY-MM-DDTHH:MM:SSZ).
+
+    Raises:
+    ValueError: If num_days is negative or not an integer.
     """
+    if not isinstance(num_days, int) or num_days < 0:
+        raise ValueError("num_days must be a non-negative integer")
+
     today = datetime.today()
 
     end_date = today
@@ -34,7 +69,18 @@ def derive_timestamps(num_days):
 
 def get_initial_query(start_date, num_days):
     """
-    Construct the initial query to fetch basic filter data.
+    Construct an initial SQL query to fetch basic filter data from the metrics_indexer_attempts table.
+
+    This function generates a SQL query that counts the number of rows for each combination of
+    deployment hash and indexer within a specified date range.
+
+    Parameters:
+    start_date (datetime): The start date for the query range.
+    num_days (int): The number of days to include in the query range.
+
+    Returns:
+    str: A SQL query string that selects deployment_hash, indexer, and num_rows,
+         filtered by the specified date range.
     """
     return f"""
     WITH BasicFilter AS (
@@ -61,14 +107,41 @@ def get_initial_query(start_date, num_days):
     """
 
 
+@retry(
+    retry=retry_if_exception_type(ExceptionsToRetry),
+    stop=stop_after_attempt(10),
+    wait=wait_exponential(multiplier=1, max=60),
+    reraise=True,  # (Default) After set number of attempts the decorator will re-raise the issue further up.
+)
 def fetch_initial_query_results(initial_query, project):
     """
-    Fetch the initial query results.
+    Execute the initial query and fetch results, with built-in retry mechanism for network-related errors.
+
+    This function sends the query to BigQuery, retrieves the results, and returns them as a pandas DataFrame.
+    It implements an exponential backoff retry strategy for handling network-related errors.
+
+    Parameters:
+    initial_query (str): The SQL query string to execute.
+    project (str): The BigQuery project ID.
+
+    Returns:
+    pandas.DataFrame: A DataFrame containing the query results, sorted by 'num_rows' in descending order.
+                      Returns an empty DataFrame if no results are found.
     """
-    initial_query_results_pandas = bpd.read_gbq(
-        initial_query, project_id=project
-    ).to_pandas()
-    return initial_query_results_pandas.sort_values(by="num_rows", ascending=False)
+    try:
+        initial_query_results_pandas = bpd.read_gbq(
+            initial_query, project_id=project
+        ).to_pandas()
+
+        # Check if the DataFrame is empty, return it without attempting to sort by num_rows
+        if initial_query_results_pandas.empty:
+            return initial_query_results_pandas
+
+        return initial_query_results_pandas.sort_values(by="num_rows", ascending=False)
+
+    except ExceptionsToRetry as e:
+        logging.error(f"Network-related error when executing query: {e}")
+        raise  # Re-raise the error for the @retry decorator to catch
 
 
 def adjust_rows(initial_query_results_pandas, target_rows):
@@ -88,6 +161,9 @@ def adjust_rows(initial_query_results_pandas, target_rows):
     Returns:
     int: The adjusted upper limit for the number of rows per group.
     """
+    if target_rows < 0:
+        raise ValueError("Target rows must be a non-negative integer")
+
     x = 1_000  # Starting estimate for the number of rows to record for each ['deployment_hash', 'indexer'] combination.
     initial_query_results_pandas["num_rows_restricted"] = initial_query_results_pandas[
         "num_rows"
@@ -122,7 +198,20 @@ def adjust_rows(initial_query_results_pandas, target_rows):
 
 def get_combined_query(start_date, num_days, rows_to_use):
     """
-    Construct the combined query to fetch detailed data.
+    Construct a SQL query to fetch detailed data from multiple tables.
+
+    This function generates a complex SQL query that combines data from production_metrics,
+    indexer_dimensions, and metrics_indexer_attempts tables. It includes subquery logic
+    to handle deployment networks, indexer networks, and data sampling.
+
+    Parameters:
+    start_date (datetime): The start date for the query range.
+    num_days (int): The number of days to include in the query range.
+    rows_to_use (int): The maximum number of rows to retrieve per deployment_hash and indexer combination.
+
+    Returns:
+    str: A SQL query string that selects and combines data from multiple tables,
+         applying various filters and transformations.
     """
     return f"""
     WITH production_metrics_gateway_subgraph_queries AS (
@@ -274,16 +363,54 @@ def get_combined_query(start_date, num_days, rows_to_use):
     """
 
 
+@retry(
+    retry=retry_if_exception_type(ExceptionsToRetry),
+    stop=stop_after_attempt(10),
+    wait=wait_exponential(multiplier=1, max=60),
+    reraise=True,  # (Default) After set number of attempts the decorator will re-raise the issue further up.
+)
 def fetch_combined_query_results(combined_query, project):
     """
-    Fetch the combined query results.
+    Execute the combined query and fetch results, with built-in retry mechanism for network-related errors.
+
+    This function sends the combined query to BigQuery, retrieves the results,
+    and returns them as a pandas DataFrame. It implements an exponential backoff
+    retry strategy for handling network-related errors.
+
+    Parameters:
+    combined_query (str): The SQL query string to execute.
+    project (str): The BigQuery project ID.
+
+    Returns:
+    pandas.DataFrame: A DataFrame containing the query results.
     """
-    return bpd.read_gbq(combined_query, project_id=project).to_pandas()
+    try:
+        # Put the results from the query in a pandas DataFrame
+        combined_query_results_pandas = bpd.read_gbq(
+            combined_query, project_id=project
+        ).to_pandas()
+
+        return combined_query_results_pandas
+
+    except ExceptionsToRetry as e:
+        logging.error(f"Network-related error when executing query: {e}")
+        raise  # Re-raise the error for the @retry decorator to catch
 
 
 def get_url_query(start_date, num_days):
     """
-    Construct the query to fetch IP data.
+    Construct a SQL query to fetch indexer URL data from the indexer_dimensions_arbitrum_daily table.
+
+    This function generates a SQL query that retrieves indexer wallet addresses, URLs, and other
+    relevant information for the Arbitrum network table within a specified date range.
+
+    Parameters:
+    start_date (datetime): The start date for the query range.
+    num_days (int): The number of days to include in the query range.
+
+    Returns:
+    str: A SQL query string that selects day, indexer_wallet, indexer_url, and sets indexer_network
+         as 'arbitrum' for the specified date range.
     """
     return f"""
     SELECT
@@ -299,38 +426,95 @@ def get_url_query(start_date, num_days):
     """
 
 
+@retry(
+    retry=retry_if_exception_type(ExceptionsToRetry),
+    stop=stop_after_attempt(10),
+    wait=wait_exponential(multiplier=1, max=60),
+    reraise=True,  # (Default) After set number of attempts the decorator will re-raise the issue further up.
+)
 def fetch_url_data(url_query, project):
     """
-    Fetch the url query results.
+    Execute the URL query and fetch results, with built-in retry mechanism for network-related errors.
+
+    This function sends the URL query to BigQuery, retrieves the results, and returns them as a
+    pandas DataFrame. It implements an exponential backoff retry strategy for handling network-related errors.
+
+    Parameters:
+    url_query (str): The SQL query string to execute.
+    project (str): The BigQuery project ID.
+
+    Returns:
+    pandas.DataFrame: A DataFrame containing the query results with indexer URL information.
+
     """
-    return bpd.read_gbq(url_query, project_id=project).to_pandas()
+    try:
+        # Put the results from the query in a pandas DataFrame
+        url_query_results_pandas = bpd.read_gbq(
+            url_query, project_id=project
+        ).to_pandas()
+
+        return url_query_results_pandas
+
+    except ExceptionsToRetry as e:
+        logging.error(f"Network-related error when executing query: {e}")
+        raise  # Re-raise the error for the @retry decorator to catch
 
 
 def apply_location_details(unique_urls_indexers_pandas):
     """
-    Apply the function to each URL and expand the results into separate columns.
+    Apply the extract_location_and_details function to each URL and expand the results into separate columns.
+
+    This function applies the extract_location_and_details function to each URL in the input DataFrame,
+    adding columns for location, organization, geographical coordinates, and IP address.
 
     Parameters:
     unique_urls_indexers_pandas (DataFrame): DataFrame containing the unique URLs and indexers.
 
     Returns:
-    DataFrame: DataFrame with additional columns for location details.
+    pandas.DataFrame: The input DataFrame with additional columns:
+                      - 'location': String describing the location (country, region, city)
+                      - 'org': Organization associated with the IP
+                      - 'loc': Geographical coordinates
+                      - 'ip': IP address of the URL
     """
-    unique_urls_indexers_pandas[["location", "org", "loc", "ip"]] = (
-        unique_urls_indexers_pandas["url"].apply(extract_location_and_details)
-    )
-    return unique_urls_indexers_pandas
+    # So long as the DataFrame is not empty, apply the extract_location_and_details function
+    if not unique_urls_indexers_pandas.empty:
+        unique_urls_indexers_pandas[["location", "org", "loc", "ip"]] = (
+            unique_urls_indexers_pandas["url"].apply(extract_location_and_details)
+        )
+
+        # Return the transformed df
+        return unique_urls_indexers_pandas
+
+    # Otherwise, simply create headers for ["location", "org", "loc", "ip"]
+    else:
+        for column in ["location", "org", "loc", "ip"]:
+            unique_urls_indexers_pandas[column] = pd.Series(dtype="str")
+
+        # Return the transformed df
+        return unique_urls_indexers_pandas
 
 
 def extract_location_and_details(url):
     """
-    This function extracts location and details from a URL by resolving it to an IP address.
+    Extract location and other details from a given URL by resolving it to an IP address.
+
+    This function first resolves the URL to an IP address, then fetches geographical and
+    organizational details for that IP address.
 
     Parameters:
-    url (str): The URL to be resolved.
+    url (str): The URL to be resolved and analyzed.
 
     Returns:
-    pd.Series: A pandas Series containing location details.
+    pandas.Series: A Series containing the following information:
+                   - 'location': String describing the location (country, region, city)
+                   - 'org': Organization associated with the IP
+                   - 'loc': Geographical coordinates
+                   - 'ip': IP address of the URL
+
+    Note:
+    This function relies on external API calls to resolve the IP and fetch location data.
+    It may return default "Unknown" values if the URL cannot be resolved or if the IP details cannot be fetched.
     """
     ip = url_to_ip(url)
     return pd.Series(get_location_and_details_from_ip(ip))
@@ -338,27 +522,54 @@ def extract_location_and_details(url):
 
 def url_to_ip(url):
     """
-    This function will figure our the IP address of the host pc for the URL that the indexer reports.
+    This function attempts to extract the hostname from the given URL and resolve it to an IP address.
+    It handles various edge cases such as invalid URLs or network issues.
+
+    Parameters:
+    url (str): The URL to be resolved to an IP address.
+
+    Returns:
+    str or None: The IP address as a string if resolution is successful, None otherwise.
     """
+    # First handle missing or nan URL's
     if pd.isna(url) or not isinstance(url, str):
         return None
+
+    # Then try get the ip of the URL
     try:
         parsed_url = urlparse(url)
         hostname = parsed_url.hostname
         return socket.gethostbyname(hostname)
+
+    # If there's a gaierror (getaddrinfo error) return nothing.
+    # e.g Non Existent Domain, DNS Issue, Network Problem, Invalid Hostname Format...
     except socket.gaierror:
         return None
 
 
+@retry(
+    retry=retry_if_exception_type(ExceptionsToRetry),
+    stop=stop_after_attempt(10),
+    wait=wait_exponential(multiplier=1, max=60),
+    reraise=True,  # (Default) After set number of attempts the decorator will re-raise the issue further up.
+)
 def get_location_and_details_from_ip(ip):
     """
-    This function gets location and other details from an IP address.
+    Fetch location and organizational details for a given IP address using an external API (ipinfo.io).
+
+    This function makes an HTTP request to the ipinfo.io API to retrieve geographical and
+    organizational information associated with the provided IP address. It includes a retry
+    mechanism to handle potential network issues or API failures.
 
     Parameters:
-    ip (str): The IP address to be resolved to location details.
+    ip (str): The IP address to query.
 
     Returns:
-    dict: A dictionary containing location/other details.
+    dict: A dictionary containing the following keys:
+        - 'location': String combining country, region, and city (e.g., "US, California, San Francisco")
+        - 'org': Organization associated with the IP
+        - 'loc': Geographical coordinates
+        - 'ip': The queried IP address
     """
     if ip is None:
         return {
@@ -368,15 +579,36 @@ def get_location_and_details_from_ip(ip):
             "ip": "Unknown",
         }
     try:
-        response = requests.get(f"https://ipinfo.io/{ip}/json?token=67647c2e5ccd95")
-        data = response.json()
+        response = requests.get(
+            f"https://ipinfo.io/{ip}/json?token=67647c2e5ccd95", timeout=10
+        )
+        response.raise_for_status()  # Raise a HTTPError in case of bad response.
+
+        # Try to decode the content manually
+        try:
+            data = response.json()
+
+        except requests.exceptions.JSONDecodeError:
+            # If JSON decoding fails, try to decompress manually
+            decompressed_content = gzip.decompress(response.content)
+            data = json.loads(decompressed_content)
+
         return {
             "location": f'{data.get("country", "Unknown")}, {data.get("region", "Unknown")}, {data.get("city", "Unknown")}',
             "org": data.get("org", "Unknown"),
             "loc": data.get("loc", "Unknown"),
-            "ip": data.get("ip", "Unknown"),
+            "ip": data.get("ip", "Unknown")
+            if data.get("ip") is None
+            else data.get("ip"),
         }
-    except requests.RequestException:
+
+    # If there's been a connection error then we can raise the issue to the retry decerator and retry the connection
+    except ExceptionsToRetry as e:
+        logging.error(f"Failed to retrieve IP details: {e}")
+        raise  # Raise to trigger retry decorator
+
+    except Exception as e:
+        logging.error(f"Unexpected error when retrieving IP details: {e}")
         return {
             "location": "Unknown",
             "org": "Unknown",
@@ -387,14 +619,18 @@ def get_location_and_details_from_ip(ip):
 
 def merge_dataframes(combined_query_pandas, unique_urls_indexers_pandas):
     """
-    Merge the information contained inside unique_urls_indexers_pandas with combined_query_pandas.
+    Merge two DataFrames containing combined query results and unique URL-indexer information.
+
+    This function performs a left merge operation, combining data from the combined query results
+    with the unique URL and indexer information. The merge is based on the 'indexer', 'day_partition',
+    and 'url' columns.
 
     Parameters:
-    combined_query_pandas (DataFrame): The DataFrame containing combined query results.
-    unique_urls_indexers_pandas (DataFrame): The DataFrame containing unique URLs and indexers.
+    combined_query_pandas (pandas.DataFrame): DataFrame containing the combined query results.
+    unique_urls_indexers_pandas (pandas.DataFrame): DataFrame containing unique URLs and indexers information.
 
     Returns:
-    DataFrame: The merged DataFrame.
+    pandas.DataFrame: A new DataFrame resulting from the left merge of the input DataFrames.
     """
     return pd.merge(
         left=combined_query_pandas,
@@ -407,18 +643,28 @@ def merge_dataframes(combined_query_pandas, unique_urls_indexers_pandas):
 
 def extract_iata_codes(df):
     """
-    Create a DataFrame containing the last 3 characters (the IATA code) from the query_id's found inside the DataFrame
-    and count the number of times the specific IATA showed up.
+    Extract IATA (International Air Transport Association) codes from query IDs and count their occurrences.
+
+    This function assumes that the last three characters of each query ID represent an IATA code.
+    It extracts these codes and counts how many times each unique code appears in the dataset.
 
     Parameters:
-    df (DataFrame): The DataFrame containing the query_id column.
+    df (pandas.DataFrame): Input DataFrame containing a 'query_id' column.
 
     Returns:
-    DataFrame: A DataFrame with IATA codes and their counts.
+    pandas.DataFrame: A new DataFrame with columns:
+        - 'IATA_code': The extracted 3-letter IATA code
+        - 'count': The number of occurrences of each IATA code
     """
+    if df.empty or "query_id" not in df.columns:
+        return pd.DataFrame(columns=["IATA_code", "count"])
+
+    df = df.dropna(subset=["query_id"])
+    df["query_id"] = df["query_id"].astype(str)
+
     iata_df = (
         df.groupby(df["query_id"].str[-3:])
-        .agg(count=("query_id", "nunique"))
+        .agg(count=("query_id", "size"))
         .reset_index()
         .rename(columns={"query_id": "IATA_code"})
     )
@@ -427,76 +673,178 @@ def extract_iata_codes(df):
 
 def apply_iata_details(iata_df):
     """
-    Apply location and details extraction to each IATA code in the DataFrame.
-    Remember the IATA_df is already grouped by IATA.
+    Enrich a DataFrame containing IATA codes with location details for each code.
+
+    This function adds latitude, longitude, and country information to each IATA code in the input DataFrame.
+    It first attempts to retrieve this information from a local cache, and if not found, fetches it from an external API.
 
     Parameters:
-    iata_df (DataFrame): The DataFrame containing IATA codes.
+    iata_df (pandas.DataFrame): Input DataFrame containing an 'IATA_code' column.
 
     Returns:
-    DataFrame: The DataFrame with additional columns for latitude, longitude, and country.
+    pandas.DataFrame: The input DataFrame with additional columns:
+        - 'latitude': Latitude of the airport location
+        - 'longitude': Longitude of the airport location
+        - 'country': Country where the airport is located
+
+    Note:
+    - Uses a local cache (CSV file) to store and retrieve IATA code details to minimize API calls.
+    - Makes API calls to fetch details for IATA codes not found in the local cache.
+    - Updates the local cache with newly fetched information.
+    - Returns the original DataFrame with NaN values for location details if the input is empty or lacks the 'IATA_code' column.
     """
-    result = iata_df["IATA_code"].apply(get_location_and_details_from_iata)
-    iata_df[["latitude", "longitude", "country"]] = result
+    # First load our local copy of IATA records.
+    local_iata_df = load_or_create_iata_data()
+
+    # Check if the DataFrame is empty or the essential column is missing
+    if iata_df.empty or "IATA_code" not in iata_df.columns:
+        return pd.DataFrame(
+            columns=["IATA_code", "count", "latitude", "longitude", "country"]
+        )
+
+    iata_df[["latitude", "longitude", "country"]] = iata_df["IATA_code"].apply(
+        lambda x: get_location_and_details_from_iata(x, local_iata_df)
+    )
     return iata_df
 
 
-def get_location_and_details_from_iata(iata):
+def load_or_create_iata_data():
     """
-    Get location and other details from an IATA Code.
+    Returns:
+    DataFrame: The DataFrame with columns for latitude, longitude, and country.
 
-    Parameters:
-    iata (str): The IATA code to get details for.
+    Load existing IATA data from a CSV file or create a new DataFrame if the file doesn't exist.
+
+    This function attempts to read IATA data from a file named 'iata_data.csv'. If the file exists,
+    it loads the data into a DataFrame. If the file doesn't exist, it creates a new empty DataFrame
+    with the appropriate structure and saves it as a CSV file. This will be used to reduce the number
+    of api-ninjas api calls we are making.
 
     Returns:
-    pd.Series: A pandas Series containing latitude, longitude, and country.
+    pandas.DataFrame: A DataFrame with columns:
+        - 'latitude': Latitude of the airport location
+        - 'longitude': Longitude of the airport location
+        - 'country': Country where the airport is located
+    The DataFrame uses 'iata_code' as the index.
+
+    Note:
+    - The CSV file is expected to be named 'iata_data.csv' and located in the current working directory.
+    - If creating a new file, it will be empty except for the column headers.
     """
+    try:
+        # Attempt to load the iata_data CSV file if it exists
+        return pd.read_csv("iata_data.csv", index_col="iata_code")
+
+    except FileNotFoundError:
+        # Create a new DataFrame with appropriate columns
+        df = pd.DataFrame(columns=["latitude", "longitude", "country"])
+        df.index.name = "iata_code"
+
+        # Save the empty DataFrame to a new CSV file
+        df.to_csv("iata_data.csv")
+
+        return df
+
+
+def get_location_and_details_from_iata(iata, local_iata_df):
+    """
+    Retrieve location details for a given IATA code, using local cache or fetching from an external API.
+
+    This function first checks a local DataFrame for the IATA code details. If not found locally,
+    it makes an API call to fetch the information. The function then updates the local cache with any new data.
+
+    Parameters:
+    iata (str): The IATA code to look up.
+    local_iata_df (pandas.DataFrame): A DataFrame containing locally cached IATA data.
+
+    Returns:
+    pandas.Series: A Series containing:
+        - 'latitude': Latitude of the airport location
+        - 'longitude': Longitude of the airport location
+        - 'country': Country where the airport is located
+    """
+    # In the case that no IATA is provided, return none for each variable
     if iata is None:
         return pd.Series({"latitude": None, "longitude": None, "country": None})
+
+    # Otherwise try get the relevant latitude,longitude,country information from an API.
     try:
+        # Try to retrieve from local data
+        if iata in local_iata_df.index:
+            return pd.Series(local_iata_df.loc[iata])
+
+        # Fetch from API if not found in local data
         response = requests.get(
             f"https://api.api-ninjas.com/v1/airports?iata={iata}",
             headers={"X-Api-Key": "tKjUrCjntxiwVrcAdxyH0w==Wcmi2BuwNCpb2l3K"},
+            timeout=5,
         )
+        response.raise_for_status()  # Check for HTTP errors
         data = response.json()
-        if data and isinstance(data, list) and len(data) > 0:
-            return pd.Series(
-                {
-                    "latitude": float(data[0].get("latitude", None)),
-                    "longitude": float(data[0].get("longitude", None)),
-                    "country": data[0].get("country", None),
-                }
-            )
+
+        # Make sure to append that information to our local_iata_df
+        if data and len(data) > 0:
+            new_entry = {
+                "latitude": float(data[0].get("latitude")),
+                "longitude": float(data[0].get("longitude")),
+                "country": data[0].get("country"),
+            }
+
+            # Add to DataFrame
+            local_iata_df.loc[iata] = new_entry
+
+            # Save updated DataFrame to CSV
+            local_iata_df.to_csv("iata_data.csv")
+
+            return pd.Series(new_entry)
+
+        # Otherwise return none
         else:
             return pd.Series({"latitude": None, "longitude": None, "country": None})
-    except requests.RequestException:
+
+    # On connection error, return none.
+    except requests.RequestException as e:
+        logger.error(f"Failed to retrieve data for IATA code {iata}: {e}")
         return pd.Series({"latitude": None, "longitude": None, "country": None})
 
 
-def extract_iata_code(df):
+def extract_iata_code(df):  # Not the same function as extract_iata_codes!
     """
-    Extract the last 3 characters from the 'query_id' column as a new column 'IATA_code'.
+    Extract the IATA code from the 'query_id' column of a DataFrame.
+
+    This function creates a new 'IATA_code' column in the input DataFrame by extracting
+    the last three characters from the 'query_id' column, assuming these represent the IATA code.
 
     Parameters:
-    df (DataFrame): The DataFrame containing the 'query_id' column.
+    df (pandas.DataFrame): Input DataFrame containing a 'query_id' column.
 
     Returns:
-    DataFrame: The DataFrame with the new 'IATA_code' column.
+    pandas.DataFrame: The input DataFrame with an additional 'IATA_code' column.
     """
+    logging.basicConfig(level=logging.INFO)
+    if "query_id" not in df.columns:
+        logging.error("DataFrame must include a 'query_id' column.")
+        df["IATA_code"] = None
+        df["query_id"] = None
+        return df
+
     df["IATA_code"] = df["query_id"].str[-3:]
     return df
 
 
-def merge_iata_info(combined_query_pandas, iata_df):
+def right_merge_iata_info(iata_df, combined_query_pandas):
     """
-    Merge the information contained inside the newly created IATA_df with the existing combined_query_pandas.
+    Perform a right merge between IATA information and combined query data.
+
+    This function merges two DataFrames: one containing IATA code information and another
+    containing combined query results. The merge is performed on the 'IATA_code' column.
 
     Parameters:
-    combined_query_pandas (DataFrame): The DataFrame containing combined query results.
-    iata_df (DataFrame): The DataFrame containing IATA codes and their counts.
+    iata_df (pandas.DataFrame): DataFrame containing IATA code information.
+    combined_query_pandas (pandas.DataFrame): DataFrame containing combined query results.
 
     Returns:
-    DataFrame: The merged DataFrame.
+    pandas.DataFrame: A new DataFrame resulting from the right merge of the input DataFrames.
     """
     merged_df = pd.merge(
         left=iata_df,
@@ -509,14 +857,39 @@ def merge_iata_info(combined_query_pandas, iata_df):
 
 def process_combined_query_pandas(df):
     """
-    Rename columns, drop old columns, and add an indexer count.
+    Process and transform the combined query DataFrame to prepare it for further analysis.
+
+    This function performs several operations on the input DataFrame:
+    1. Adds an 'indexer_count' column
+    2. Renames certain columns
+    3. Creates an 'origin_loc' column from latitude and longitude
+    4. Drops unnecessary columns
+    5. Removes rows with NaN or invalid location data
 
     Parameters:
-    df (DataFrame): The DataFrame to process.
+    df (pandas.DataFrame): Input DataFrame containing combined query results.
 
     Returns:
-    DataFrame: The processed DataFrame.
+    pandas.DataFrame: Processed DataFrame with new and modified columns.
+
+    Note:
+    - The function expects columns: 'indexer', 'loc', 'country', 'latitude', 'longitude'
+    - New columns created: 'indexer_count', 'destination_loc', 'origin_country', 'origin_loc'
+    - Rows with NaN values or 'nan,nan' in 'origin_loc' or 'destination_loc' are dropped
+    - If the input DataFrame is empty, returns an empty DataFrame with expected columns
     """
+    if df.empty:
+        # Return an empty DataFrame with the expected columns
+        return pd.DataFrame(
+            columns=[
+                "indexer",
+                "indexer_count",
+                "destination_loc",
+                "origin_country",
+                "origin_loc",
+            ]
+        )
+
     # Add an indexer count
     df["indexer_count"] = df.groupby("indexer")["indexer"].transform("count")
 
@@ -543,38 +916,66 @@ def process_combined_query_pandas(df):
 
 def split_locations(df):
     """
-    Split origin_loc and destination_loc into latitude and longitude. Handles non-numeric entries by converting them to NaN.
+    Split 'origin_loc' and 'destination_loc' columns into separate latitude and longitude columns.
+
+    This function takes a DataFrame with 'origin_loc' and 'destination_loc' columns containing
+    comma-separated coordinate pairs, and splits them into four new columns: 'origin_lat',
+    'origin_lon', 'dest_lat', and 'dest_lon'.The function handles non-numeric entries by converting
+    them to NaN.
 
     Parameters:
     df (DataFrame): The DataFrame containing 'origin_loc' and 'destination_loc' columns.
 
     Returns:
-    DataFrame: The DataFrame with new 'origin_lat', 'origin_lon', 'dest_lat', and 'dest_lon' columns.
+    pandas.DataFrame: The input DataFrame with four new columns added:
+        - 'origin_lat': Latitude of the origin location
+        - 'origin_lon': Longitude of the origin location
+        - 'dest_lat': Latitude of the destination location
+        - 'dest_lon': Longitude of the destination location
     """
+    # Handle potential empty input df.
+    if df.empty:
+        return df.assign(origin_lat=[], origin_lon=[], dest_lat=[], dest_lon=[])
 
     # Function to safely convert values to float
     def safe_convert(coords):
+        # Convert non-numeric entries to NaN
+        if pd.isna(coords):
+            return pd.Series([np.nan, np.nan])
+
+        # Else split lat, long
         try:
-            return [float(x) for x in coords.split(",")]
-        except ValueError:
-            return [float("nan"), float("nan")]  # Convert non-numeric entries to NaN
+            lat, lon, *_ = coords.split(",")
+            return pd.Series([float(lat), float(lon)])
+
+        # Handle errors as nan
+        except (ValueError, AttributeError):
+            return pd.Series([np.nan, np.nan])
 
     # Apply safe conversion to both origin and destination columns
-    df[["origin_lat", "origin_lon"]] = df["origin_loc"].apply(safe_convert).tolist()
-    df[["dest_lat", "dest_lon"]] = df["destination_loc"].apply(safe_convert).tolist()
+    df[["origin_lat", "origin_lon"]] = df["origin_loc"].apply(safe_convert)
+    df[["dest_lat", "dest_lon"]] = df["destination_loc"].apply(safe_convert)
 
     return df
 
 
 def calculate_distances(df):
     """
-    Apply the vectorized Haversine function to calculate distances.
+    Calculate the spherical distances between origin and destination coordinates.
+
+    This function applies the Haversine formula to compute the distance between each pair
+    of origin and destination coordinates in the input DataFrame.
 
     Parameters:
-    df (DataFrame): The DataFrame containing 'origin_lon', 'origin_lat', 'dest_lon', and 'dest_lat' columns.
+    df (pandas.DataFrame): Input DataFrame containing columns:
+        - 'origin_lon': Longitude of the origin location
+        - 'origin_lat': Latitude of the origin location
+        - 'dest_lon': Longitude of the destination location
+        - 'dest_lat': Latitude of the destination location
 
     Returns:
-    DataFrame: The DataFrame with a new 'distance_miles' column.
+    pandas.DataFrame: The input DataFrame with an additional 'distance_miles' column
+                      containing the calculated distances in miles.
     """
     df["distance_miles"] = haversine_vectorized(
         df["origin_lon"], df["origin_lat"], df["dest_lon"], df["dest_lat"]
@@ -584,13 +985,19 @@ def calculate_distances(df):
 
 def haversine_vectorized(lon1, lat1, lon2, lat2):
     """
-    Calculate the great circle distance between two points on the earth (specified in decimal degrees).
+    Calculate the spherical distances between two sets of coordinates using the Haversine formula.
+
+    This function computes distances between multiple pairs of points on Earth's surface,
+    treating the Earth as a sphere. It uses a vectorized implementation for efficiency.
 
     Parameters:
-    lon1, lat1, lon2, lat2 (array-like): Arrays of longitude and latitude values.
+    lon1 (array-like): Longitudes of the first set of points
+    lat1 (array-like): Latitudes of the first set of points
+    lon2 (array-like): Longitudes of the second set of points
+    lat2 (array-like): Latitudes of the second set of points
 
     Returns:
-    array-like: Distances between points in miles.
+    numpy.ndarray: An array of distances in miles between each pair of points
     """
     lon1, lat1, lon2, lat2 = np.radians([lon1, lat1, lon2, lat2])
     dlon = lon2 - lon1
@@ -603,68 +1010,96 @@ def haversine_vectorized(lon1, lat1, lon2, lat2):
 
 def drop_intermediate_columns(df):
     """
-    Drop intermediate columns to save memory.
+    Remove specified intermediate columns from the DataFrame to conserve memory.
+
+    This function drops the columns used for intermediate calculations, specifically
+    the latitude and longitude columns for both origin and destination.
 
     Parameters:
-    df (DataFrame): The DataFrame to process.
+    df (pandas.DataFrame): Input DataFrame potentially containing intermediate columns.
 
     Returns:
-    DataFrame: The DataFrame with intermediate columns dropped.
+    pandas.DataFrame: The input DataFrame with specified intermediate columns removed.
+
+    Note:
+    - Columns to be dropped: 'origin_lat', 'origin_lon', 'dest_lat', 'dest_lon'
+    - If any of these columns are not present in the DataFrame, they are simply ignored.
     """
-    df.drop(columns=["origin_lat", "origin_lon", "dest_lat", "dest_lon"], inplace=True)
+    columns_to_drop = ["origin_lat", "origin_lon", "dest_lat", "dest_lon"]
+    existing_columns = [col for col in columns_to_drop if col in df.columns]
+
+    if existing_columns:
+        df.drop(columns=existing_columns, inplace=True)
+
     return df
 
 
 def filter_status(df):
     """
-    Filter the DataFrame to only include rows where status is '200 OK'.
+    Filter the DataFrame to include only rows where the status is '200 OK'.
+
+    This function creates a new DataFrame containing only the rows from the input
+    DataFrame where the 'status' column has the value '200 OK'.
 
     Parameters:
-    df (DataFrame): The DataFrame to filter.
+    df (pandas.DataFrame): Input DataFrame containing a 'status' column.
 
     Returns:
-    DataFrame: The filtered DataFrame.
+    pandas.DataFrame: A new DataFrame with only the rows where status is '200 OK'.
     """
     return df[df["status"] == "200 OK"].copy()
 
 
 def apply_round_distance(df):
     """
-    Apply the round_distance function to the 'distance_miles' column.
+    Apply the round_distance function to the 'distance_miles' column of the DataFrame.
+
+    This function rounds the values in the 'distance_miles' column to the nearest x miles
+    using the round_distance function. Where x is set inside round_distance.
 
     Parameters:
-    df (DataFrame): The DataFrame with the 'distance_miles' column.
+    df (pandas.DataFrame): Input DataFrame containing a 'distance_miles' column.
 
     Returns:
-    DataFrame: The DataFrame with rounded distances.
+    pandas.DataFrame: The input DataFrame with the 'distance_miles' column rounded.
     """
-    df.loc[:, "distance_miles"] = df["distance_miles"].apply(round_distance)
+    if "distance_miles" in df.columns:
+        df["distance_miles"] = df["distance_miles"].apply(
+            lambda x: round_distance(x) if pd.notnull(x) else x
+        )
     return df
 
 
 def round_distance(value):
     """
-    Round the distance to the nearest 250 miles.
+    Round a distance value to the nearest multiple of 250 miles.
+
+    This function takes a numeric distance value and rounds it to the nearest
+    multiple of 250. It's used for simplifying distance measurements.
 
     Parameters:
-    value (float): The distance in miles.
+    value (float): The distance value to be rounded, in miles.
 
     Returns:
-    float: The rounded distance.
+    float: The input value rounded to the nearest multiple of 250.
     """
     return round(value / 250) * 250
 
 
 def filter_columns(df, all_columns):
     """
-    Filter the DataFrame to include only the specified columns.
+    Filter the DataFrame to include only specified columns.
+
+    This function creates a new DataFrame that includes only the columns
+    specified in the all_columns list.
 
     Parameters:
-    df (DataFrame): The DataFrame to filter.
-    all_columns (list): The list of columns to keep.
+    df (pandas.DataFrame): The input DataFrame to be filtered.
+    all_columns (list): A list of column names to retain in the output DataFrame.
 
     Returns:
-    DataFrame: The filtered DataFrame.
+    pandas.DataFrame: A new DataFrame containing only the specified columns.
+
     """
     return df[all_columns]
 
@@ -677,19 +1112,24 @@ def iterative_filter(
     min_queries_per_deployment,
 ):
     """
-    Iteratively filter the DataFrame based on specified thresholds for indexers, deployments, and queries.
-    Apply filtering criteria in rounds, recalculating metrics and adjusting filters in each iteration, until the
-    DataFrame size is no longer shrinking after a round.
+    Iteratively filter a DataFrame based on multiple criteria related to deployments, indexers, and queries.
+
+    This function applies a series of filters to the input DataFrame, removing rows that don't meet
+    the specified criteria. It continues to apply these filters iteratively until no further changes occur.
 
     Parameters:
-    `df`: DataFrame to filter.
-    `min_deployment_indexers`: Each deployment must be served by at least this many indexers.
-    `min_deployments_per_indexer`: Each indexer must serve at least this many deployments.
-    `min_queries_per_indexer`: Each indexer must serve at least this many queries.
-    `min_queries_per_deployment`: Each subgraph deployment must be queried at least this many times.
+    df (pandas.DataFrame): Input DataFrame containing columns: 'deployment_hash', 'indexer', 'query_id'.
+    min_deployment_indexers (int): Minimum number of indexers required for each deployment.
+    min_deployments_per_indexer (int): Minimum number of deployments required for each indexer.
+    min_queries_per_indexer (int): Minimum number of queries required for each indexer.
+    min_queries_per_deployment (int): Minimum number of queries required for each deployment.
 
     Returns:
-    DataFrame: The filtered DataFrame.
+    pandas.DataFrame: Filtered DataFrame meeting all specified criteria.
+
+    Note:
+    - The filtering process is iterative and continues until the DataFrame size stabilizes.
+    - If the filtering results in an empty DataFrame, an empty DataFrame is returned.
     """
     while True:
         initial_len = len(df)
@@ -724,27 +1164,41 @@ def iterative_filter(
     return df
 
 
-def strategic_sample(df, rows_to_use, cap_per_indexer=None):
+def strategic_sample(df, target_rows_per_subgraph):
     """
     Sample query_id's in a way that creates balanced representation across indexers on each subgraph.
+    The function adds a new column ('sampled_query_id') with some values set to None.
 
     Parameters:
     df (DataFrame): The DataFrame to sample.
-    rows_to_use (int): The number of rows to target.
-    cap_per_indexer (dict, optional): Cap per indexer. Defaults to None.
+    target_rows_per_subgraph (int): The number of rows (queries) to target for each deployment_hash.
 
     Returns:
-    DataFrame: The sampled DataFrame.
-    int: The square root of the number of sampled IDs.
+    tuple: A tuple containing two elements:
+        - pandas.DataFrame: The input DataFrame with an additional 'sampled_query_id' column.
+          This column contains the sampled query IDs where applicable, and None for non-sampled rows.
+        - int: The square root of the number of sampled query_ids, intended to inform the number of buckets for
+               subsequent hashing operations.
+
+    Note:
+    - The function does not reduce the size of the input DataFrame. It only marks sampled rows.
+    - The actual number of sampled rows can (will) be greater than target_rows_per_subgraph, as sampling is done
+      separately for each (deployment_hash, indexer) combination.
+    - Each deployment_hash is sampled for (target_rows_per_subgraph // number_of_indexers) rows.
+    - The function aims for balance: it tries to sample an equal number of rows for each
+      indexer within a deployment_hash, subject to the calculated or provided cap for each deployment_hash.
     """
+    if df.empty:
+        df["sampled_query_id"] = pd.Series(dtype="float64")
+        return df, 0
 
     # Calculate number of unique indexers per subgraph.
     # Then calculate how many queries to sample for each indexer, subgraph combination.
-    if cap_per_indexer is None:
-        indexers_per_subgraph = df.groupby("deployment_hash")["indexer"].nunique()
-        cap_per_indexer = indexers_per_subgraph.map(
-            lambda x: rows_to_use // x if x else 0
-        ).to_dict()
+    # In the lambda function, x represents the number of unique indexers for a particular deployment_hash.
+    indexers_per_subgraph = df.groupby("deployment_hash")["indexer"].nunique()
+    cap_per_indexer = indexers_per_subgraph.map(
+        lambda x: target_rows_per_subgraph // x if x else 0
+    ).to_dict()
 
     # Create a DataFrame that contains the info above
     query_counts = (
@@ -764,12 +1218,13 @@ def strategic_sample(df, rows_to_use, cap_per_indexer=None):
         return np.random.choice(query_ids, size=min(len(query_ids), cap), replace=False)
 
     # Apply sampling function
-    query_counts["sampled_query_ids"] = query_counts.apply(
+    query_counts["sampled_query_id_list"] = query_counts.apply(
         lambda x: sample_queries(x["unique_query_ids"], x["cap"]), axis=1
     )
 
     # Filter the df with the sampled id's
-    sampled_ids = set(np.concatenate(query_counts["sampled_query_ids"].values))
+    # x represents each individual query ID from the df["query_id"] Series
+    sampled_ids = set(np.concatenate(query_counts["sampled_query_id_list"].values))
     df["sampled_query_id"] = df["query_id"].apply(
         lambda x: x if x in sampled_ids else None
     )
@@ -782,31 +1237,49 @@ def strategic_sample(df, rows_to_use, cap_per_indexer=None):
 
 def hash_sampled_queries(df, integer_root):
     """
-    Hash the sampled query_id's to the hash mod of the integer root.
+    Hash the sampled query IDs to create a new column with hashed values.
+
+    This function takes a DataFrame with a 'sampled_query_id' column and creates a new column
+    'sampled_query_id_hashed_mod_integer_root' containing the hash of each sampled query ID
+    modulo the provided integer root.
 
     Parameters:
-    df (DataFrame): The DataFrame with sampled queries.
-    integer_root (int): The integer root used for hashing.
+    df (pandas.DataFrame): Input DataFrame containing a 'sampled_query_id' column.
+    integer_root (int): The modulus to apply to the hash values.
 
     Returns:
-    DataFrame: The DataFrame with hashed query IDs.
+    pandas.DataFrame: A copy of the input DataFrame with an additional column
+                      'sampled_query_id_hashed_mod_integer_root' containing the hashed values.
     """
-    df.loc[
-        df["sampled_query_id"].notna(), "sampled_query_id_hashed_mod_integer_root"
-    ] = df["sampled_query_id"].apply(lambda x: hash(x) % integer_root)
+    # Create a copy of the input DataFrame
+    result_df = df.copy()
 
-    return df
+    result_df.loc[
+        result_df["sampled_query_id"].notna(),
+        "sampled_query_id_hashed_mod_integer_root",
+    ] = result_df["sampled_query_id"].apply(lambda x: hash(x) % integer_root)
+
+    return result_df
 
 
 def perform_linear_regression(df, predictor, categorical, numeric):
     """
-    Perform linear regression on the given data.
+    Perform linear regression analysis on the given data.
+
+    This function orchestrates the entire linear regression process, including data preprocessing,
+    model fitting, prediction, and result analysis. It also calculates robust normalized coefficients
+    for indexer rankings.
 
     Parameters:
-    df (DataFrame): The data to perform regression on, must contain 'response_time_ms' and 'Score' columns.
+    df (pandas.DataFrame): The data to perform regression on.
+    predictor (list): List of column names to be used as the dependent variable(s).
+    categorical (list): List of column names containing categorical features.
+    numeric (list): List of column names containing numeric features.
 
     Returns:
-    DataFrame: The original data with an added 'predicted_score' column containing regression predictions.
+    tuple: A tuple containing two elements:
+        - pandas.DataFrame: The original DataFrame with additional columns for regression results.
+        - pandas.DataFrame: A DataFrame containing indexer rankings based on robust normalized coefficients.
     """
     # Preprocess the data
     X, y, preprocessor = preprocess_data_for_regression(
@@ -827,19 +1300,22 @@ def perform_linear_regression(df, predictor, categorical, numeric):
 
 def preprocess_data_for_regression(df, predictor, categorical, numeric):
     """
-    Preprocess data for linear regression by applying one-hot encoding to categorical features
-    and scaling numeric features.
+    Preprocess data for linear regression by encoding categorical variables and scaling numeric variables.
+
+    This function prepares the input data for linear regression by separating features and target variables,
+    and applying appropriate preprocessing techniques to categorical and numeric features.
 
     Parameters:
-    df (DataFrame): The DataFrame containing the data.
-    predictor (list): List of predictor column names.
-    categorical (list): List of categorical column names.
-    numeric (list): List of numeric column names.
+    df (pandas.DataFrame): The input DataFrame containing all variables.
+    predictor (list): List of column names to be used as the dependent variable(s).
+    categorical (list): List of column names containing categorical features.
+    numeric (list): List of column names containing numeric features.
 
     Returns:
-    X (DataFrame): The preprocessed feature DataFrame.
-    y (DataFrame): The target variable DataFrame.
-    preprocessor (ColumnTransformer): The preprocessor object.
+    tuple: A tuple containing three elements:
+        - pandas.DataFrame: Preprocessed feature DataFrame (X).
+        - pandas.DataFrame: Target variable DataFrame (y).
+        - ColumnTransformer: The preprocessor object used for transforming the data.
     """
     model_columns = categorical + numeric
 
@@ -865,16 +1341,20 @@ def preprocess_data_for_regression(df, predictor, categorical, numeric):
 
 def perform_regression(X, y, preprocessor):
     """
-    Perform linear regression on the given data.
+    Perform linear regression using preprocessed data.
+
+    This function creates a regression pipeline that includes the preprocessor and a linear regression model,
+    fits the pipeline to the data, and generates predictions.
 
     Parameters:
-    X (DataFrame): The feature DataFrame.
-    y (DataFrame): The target variable DataFrame.
-    preprocessor (ColumnTransformer): The preprocessor object.
+    X (pandas.DataFrame): The feature DataFrame.
+    y (pandas.DataFrame): The target variable DataFrame.
+    preprocessor (ColumnTransformer): The preprocessor object for transforming the features.
 
     Returns:
-    Pipeline: The regression model pipeline.
-    ndarray: The predicted values.
+    tuple: A tuple containing two elements:
+        - sklearn.pipeline.Pipeline: The fitted regression pipeline.
+        - numpy.ndarray: The predicted values (y_pred).
     """
     # Create regression pipeline
     pipeline = Pipeline(
@@ -890,33 +1370,30 @@ def perform_regression(X, y, preprocessor):
 
 def analyze_regression_results(pipeline, X, y, y_pred):
     """
-    Analyze the results of the linear regression.
+    Analyze the results of the linear regression model.
+
+    This function computes various statistical measures to evaluate the performance of the regression model,
+    including coefficients, standard errors, and p-values for each feature.
 
     Parameters:
-    pipeline (Pipeline): The regression model pipeline.
-    X (DataFrame): The feature DataFrame.
-    y (DataFrame): The target variable DataFrame.
-    y_pred (ndarray): The predicted values.
+    pipeline (sklearn.pipeline.Pipeline): The fitted regression pipeline.
+    X (pandas.DataFrame): The feature DataFrame.
+    y (pandas.DataFrame): The actual target variable DataFrame.
+    y_pred (numpy.ndarray): The predicted values from the model.
 
     Returns:
-    results_df (DataFrame): DataFrame containing regression coefficients and statistics.
+    pandas.DataFrame: A DataFrame containing the following columns for each feature:
+        - 'Variable': Name of the feature
+        - 'Coefficient': Estimated coefficient
+        - 'Standard Error': Standard error of the coefficient
+        - 'p-value': p-value for the coefficient
     """
+    # Calculate the mean_squared_error
     mse = mean_squared_error(y, y_pred)
-    # rmse = np.sqrt(mse)
-    # mae = mean_absolute_error(y, y_pred)
-    # r2 = r2_score(y, y_pred)
-    # adjusted_r2 = 1 - ((1 - r2) * (len(y) - 1) / (len(y) - X.shape[1] - 1))
 
-    # Print regression model stats
-    # print(f"RMSE: {rmse}")
-    # print(f"MAE: {mae}")
-    # print(f"R²: {r2}")
-    # print(f"Adjusted R²: {adjusted_r2}")
-
-    # Extract feature names, coefficients, and standard errors from the regression pipeline
+    # Extract feature names and coefficients from the regression pipeline
     feature_names = pipeline.named_steps["preprocessor"].get_feature_names_out()
     coefficients = pipeline.named_steps["regressor"].coef_
-    # intercept = pipeline.named_steps["regressor"].intercept_
 
     # Ensure coefficients are a flat array
     if coefficients.ndim > 1:
@@ -945,40 +1422,53 @@ def analyze_regression_results(pipeline, X, y, y_pred):
         }
     )
 
-    # Show results
-    # print(f"The regression intercept is: {intercept}")
-    # print(tabulate(results_df, headers="keys", tablefmt="psql", showindex=False))
-
     return results_df
 
 
 def calculate_robust_normalized_coefficients(results_df):
     """
-    Calculate robust normalized coefficients for the indexers.
+    Calculate robust normalized coefficients for indexer rankings based on regression results.
+
+    This function processes the regression results to create a ranking of indexers based on their
+    coefficients, adjusting for statistical uncertainty and normalizing the results.
 
     Parameters:
-    results_df (DataFrame): DataFrame containing regression coefficients and statistics.
+    results_df (pandas.DataFrame): DataFrame containing regression results, including coefficients
+                                   and standard errors for each variable.
 
     Returns:
-    indexer_rankings (DataFrame): DataFrame containing indexer rankings based on the robust normalized coefficients.
+    pandas.DataFrame: A DataFrame with columns:
+        - 'indexer': Identifier for each indexer
+        - 'Coefficient': Original regression coefficient
+        - 'Standard Error': Standard error of the coefficient
+        - 'p-value': p-value of the coefficient
+        - 'Coefficient + 1.5 SE': Coefficient adjusted by adding 1.5 times the standard error
+        - 'Robust Normalized Coefficient + 1.5 SE': Normalized version of the adjusted coefficient
     """
+    # Extract indexer coefficients
     indexer_rankings = results_df[
-        results_df["Variable"].str.startswith("one_hot__indexer_")
+        (results_df["Variable"].str.startswith("one_hot__indexer_"))
+        & (~results_df["Variable"].str.startswith("one_hot__indexer_network_"))
     ].sort_values(by="Coefficient")
+
+    # Reset the index and remove the old index column for a clean, sequential index
     indexer_rankings.reset_index(inplace=True)
     indexer_rankings.drop(columns=["index"], inplace=True)
-    indexer_rankings["Variable"] = indexer_rankings["Variable"].str.replace(
-        "one_hot__indexer_network_", ""
-    )
+
+    # Drop one_hot__indexer_ from coefficent names
     indexer_rankings["Variable"] = indexer_rankings["Variable"].str.replace(
         "one_hot__indexer_", ""
     )
-    indexer_rankings = indexer_rankings[indexer_rankings["Variable"] != "mainnet"]
+
+    # Rename columns appropriately
     indexer_rankings.rename(columns={"Variable": "indexer"}, inplace=True)
+
+    # Drop nan's
     indexer_rankings.dropna(
         subset=["Coefficient", "Standard Error", "p-value"], inplace=True
     )
 
+    # Calculate the coefficient + 1.5 standard errors.
     indexer_rankings["Coefficient + 1.5 SE"] = (
         indexer_rankings["Coefficient"] + 1.5 * indexer_rankings["Standard Error"]
     )
@@ -989,7 +1479,7 @@ def calculate_robust_normalized_coefficients(results_df):
     q3 = indexer_rankings["Coefficient + 1.5 SE"].quantile(0.75)
     iqr_val = q3 - q1
 
-    # Normalize the values using median and IQR
+    # Normalize the Coefficient + 1.5 SE using median and IQR
     indexer_rankings["Robust Normalized Coefficient + 1.5 SE"] = (
         indexer_rankings["Coefficient + 1.5 SE"] - median_val
     ) / iqr_val
@@ -999,15 +1489,18 @@ def calculate_robust_normalized_coefficients(results_df):
 
 def calculate_indexer_success_rate(df):
     """
-    Calculate the indexer query success rate.
-    '200 OK' or 'Unavailable(MissingBlock)' =  success
-    Anything else = fail.
+    Calculate the success rate for each indexer based on query status.
+
+    This function computes the proportion of successful queries (status '200 OK' or 'Unavailable(MissingBlock)')
+    for each indexer in the dataset.
 
     Parameters:
-    df (DataFrame): The data frame containing indexer and status columns.
+    df (pandas.DataFrame): Input DataFrame containing 'indexer' and 'status' columns.
 
     Returns:
-    DataFrame: Data frame with indexer and their success rates.
+    pandas.DataFrame: A DataFrame with columns:
+        - 'indexer': Unique identifier for each indexer
+        - 'average_status': The proportion of successful queries for each indexer (range 0 to 1)
     """
     df_filtered = df[["indexer", "status"]].copy()
     df_filtered["status_numeric"] = df_filtered["status"].apply(
@@ -1018,19 +1511,49 @@ def calculate_indexer_success_rate(df):
         .agg(average_status=("status_numeric", "mean"))
         .reset_index()
     )
-    return indexer_success_rate.sort_values(by="average_status", ascending=True)
+
+    # Sorting by indexer name as a tie-breaker when success rates are equal.
+    return indexer_success_rate.sort_values(
+        by=["average_status", "indexer"], ascending=[True, True]
+    )
 
 
 def calculate_indexer_uptime(df, threshold_seconds=120):
     """
-    Calculate the indexer uptime.
+    Calculate the indexer uptime based on query response statuses and timestamps.
+
+    This function computes two types of uptime metrics for each indexer:
+    1. Full uptime: Considers the entire time range between queries.
+    2. Restricted uptime: Limits the considered time between queries to a 'threshold' e.g. 120 seconds.
+
+    The uptime calculation process involves:
+    1. Determining the midpoint between consecutive timestamps for each indexer.
+    2. Considering an indexer as 'up' if the status is '200 OK' or 'Unavailable(MissingBlock)'.
+    3. Calculating the duration between midpoints infront and after a specific query response when the indexer is 'up'.
+    4. Summing these durations to get the total uptime (seconds) for each indexer.
+    5. Comparing the uptime to the total observed time to calculate the percentage uptime.
+
+    The restricted uptime calculation differs in the following ways:
+    - Both the restricted uptime and the total observed time are capped at the threshold for each interval.
+    - This results in a separate, tailored calculation where both the numerator (restricted uptime)
+      and denominator (observed time) are adjusted based on the threshold.
+    - The restricted uptime percentage may differ significantly from the full uptime
+      percentage, especially when there are large gaps between queries.
 
     Parameters:
-    df (DataFrame): The data frame containing indexer and timestamp columns.
-    threshold_seconds (int): Threshold for restricted uptime calculation.
+    df (pandas.DataFrame): Input DataFrame containing 'indexer', 'timestamp', and 'status' columns.
+    threshold_seconds (int, optional): Maximum time gap to consider for restricted uptime calculation.
+                                       Defaults to 120 seconds.
 
     Returns:
-    DataFrame: Data frame with indexer uptime information.
+    pandas.DataFrame: A DataFrame with columns:
+        - 'indexer': Unique identifier for each indexer
+        - 'observed_duration_restricted': Total observed time within the threshold
+        - 'uptime_duration_restricted': Calculated uptime within the threshold
+        - '% up_x': Percentage uptime based on restricted calculation
+        - 'observed_duration_full': Total observed time without restrictions
+        - 'uptime_duration_full': Calculated uptime without restrictions
+        - '% up_y': Percentage uptime based on full calculation
     """
     df_copy = df.copy()
     df_copy["timestamp"] = pd.to_datetime(df_copy["timestamp"])
@@ -1133,34 +1656,70 @@ def calculate_indexer_uptime(df, threshold_seconds=120):
     )
 
     # Final merge
+    # merged_uptime_both['% up_x'] represents merged_uptime_restricted["% up"]
+    # merged_uptime_both['% up_y'] represents merged_uptime_full["% up"]
     merged_uptime_both = pd.merge(
         merged_uptime_restricted, merged_uptime_full, on="indexer", how="left"
     )
     return merged_uptime_both
 
 
-def get_initial_stake_to_fees_query():
+def get_initial_stake_to_fees_query(start_ts):
     """
-    Construct the initial query to fetch the stake to fees data.
+    A SQL query to calculate the stake-to-fees ratio for indexers.
+
+    This function constructs a SQL query that computes the ratio of slashable stake
+    to total query fees each indexer in the Arbitrum network has received, regardless
+    of the collection status, starting from a specified timestamp. In this case the
+    start_ts is a date time string num_days before the current day. This way any historical
+    query fees earned outside of the looked upon window does not effect an indexers
+    current stake-to-fees ratio.
+
+    Parameters:
+    start_ts (str): The starting timestamp for the query, formatted as a string.
+
+    Returns:
+    QueryStr: A SQL query string that calculates stake-to-fees ratios.
+
+    Note:
+    - The query joins data from 'internal_metrics.indexer_dimensions_arbitrum' and
+      'internal_metrics.metrics_indexer_attempts' tables.
+    - The query filters data starting from the provided timestamp.
     """
-    return """
-    SELECT  indexer_wallet AS indexer,
-            GREATEST(available_stake, 0) /
-                CASE
-                    WHEN ROUND((query_fees_collected - query_fee_rebates - delegator_query_fees), 0) = 0
-                    THEN 1
-                    ELSE ROUND((query_fees_collected - query_fee_rebates - delegator_query_fees), 0)
-                END AS stake_to_fees
-    FROM internal_metrics.indexer_dimensions_arbitrum
+    return f"""
+        SELECT indexer,
+            recent_slashable_stake,
+            SUM(query_fees_sum) AS total_query_fees_sum,
+            recent_slashable_stake / SUM(query_fees_sum) as stake_to_fees
+        FROM (
+            SELECT  id.indexer_wallet AS indexer,
+                    id.staked_tokens - id.locked_tokens as recent_slashable_stake,
+                    SUM(mia.query_fee) AS query_fees_sum
+            FROM internal_metrics.indexer_dimensions_arbitrum id
+            INNER JOIN internal_metrics.metrics_indexer_attempts mia ON id.indexer_wallet = mia.indexer
+            WHERE TIMESTAMP(mia.day_partition) > '{start_ts}'
+            GROUP BY id.indexer_wallet, id.staked_tokens - id.locked_tokens, mia.day_partition
+        ) as aggregated_data
+        GROUP BY indexer, recent_slashable_stake;
     """
 
 
 def calculate_stake_to_fees(stake_query_pandas):
     """
-    Calculate the stake to fees ratio.
+    Calculate the stake-to-fees ratio and its deviation from the median for each indexer.
+
+    This function processes the results of the stake-to-fees query, computing the
+    interquartile range (IQR) normalized deviation of each indexer's stake-to-fees ratio
+    from the median.
+
+    Parameters:
+    stake_query_pandas (pandas.DataFrame): DataFrame containing 'indexer' and 'stake_to_fees' columns.
 
     Returns:
-    DataFrame: Data frame with stake to fees ratio.
+    pandas.DataFrame: A DataFrame with columns:
+        - 'indexer': Indexer identifier
+        - 'stake_to_fees': Original stake-to-fees ratio
+        - 'stake_to_fees_iqr_deviation': IQR-normalized deviation from the median ratio
     """
 
     stake_to_fees = stake_query_pandas[["indexer", "stake_to_fees"]].copy()
@@ -1176,29 +1735,43 @@ def calculate_stake_to_fees(stake_query_pandas):
 
 def aggregate_indexer_info(df):
     """
-    Aggregate indexer organizational and location information.
+    Aggregate organizational and location information for each indexer.
+
+    This function groups the input DataFrame by indexer and aggregates the 'org' and 'destination_loc'
+    information, selecting the most frequent value for each. It also rounds the location coordinates
+    to the nearest 20 degrees for privacy and generalization purposes.
 
     Parameters:
-    df (DataFrame): The data frame containing indexer information.
+    df (pandas.DataFrame): Input DataFrame containing 'indexer', 'org', and 'destination_loc' columns.
 
     Returns:
-    DataFrame: Aggregated data frame with indexer organizational and location information.
+    pandas.DataFrame: An aggregated DataFrame with columns:
+        - 'indexer': Unique identifier for each indexer
+        - 'org': Most frequent organization associated with the indexer
+        - 'destination_loc': Most frequent location associated with the indexer, rounded to nearest 20 degrees
     """
+    # Group the DataFrame by 'indexer' and calculate the most frequent 'org' and 'destination_loc'
+    # for each indexer. The `.mode()[0]` is used to select the first mode in case of multiple modes.
     agg_df = (
         df.groupby("indexer")
-        .agg({"org": lambda x: x.mode()[0], "destination_loc": lambda x: x.mode()[0]})
+        .agg(
+            {
+                "org": lambda x: x.mode()[0] if not x.mode().empty else np.nan,
+                "destination_loc": lambda x: x.mode()[0]
+                if not x.mode().empty
+                else np.nan,
+            }
+        )
         .reset_index()
     )
 
-    # Function to round lat/long to nearest 20 deg.
     def process_location(loc):
-        lat, long = map(float, loc.split(","))
-        return f"{round(lat / 20) * 20},{round(long / 20) * 20}"
+        if pd.notna(loc):
+            lat, long = map(float, loc.split(","))
+            return f"{round(lat / 20) * 20},{round(long / 20) * 20}"
+        return loc
 
-    # Round the Lat/Long with prior function
-    agg_df["destination_loc"] = agg_df["destination_loc"].apply(
-        lambda x: process_location(x) if pd.notna(x) else x
-    )
+    agg_df["destination_loc"] = agg_df["destination_loc"].apply(process_location)
 
     return agg_df
 
@@ -1207,26 +1780,35 @@ def merge_and_prepare_dataframes(
     indexer_uptime, indexer_rankings, agg_df, indexer_success_rate, stake_to_fees
 ):
     """
-    Merge and prepare dataframes.
+    Merge multiple DataFrames related to indexer performance and prepare a consolidated DataFrame.
+
+    This function combines information from various sources including uptime, rankings,
+    organizational data, success rates, and stake-to-fees ratios. It also adds placeholder
+    columns for additional metrics.
 
     Parameters:
-    indexer_uptime (DataFrame): Data frame with indexer uptime information.
-    indexer_rankings (DataFrame): Data frame with indexer rankings.
-    agg_df (DataFrame): Data frame with indexer organizational information.
-    indexer_success_rate (DataFrame): Data frame with indexer success rates.
-    stake_to_fees (DataFrame): Data frame with stake to fees ratios.
+    indexer_uptime (pandas.DataFrame): DataFrame with indexer uptime information.
+    indexer_rankings (pandas.DataFrame): DataFrame with indexer rankings.
+    agg_df (pandas.DataFrame): DataFrame with aggregated indexer organizational information.
+    indexer_success_rate (pandas.DataFrame): DataFrame with indexer success rates.
+    stake_to_fees (pandas.DataFrame): DataFrame with stake to fees ratios.
 
     Returns:
-    DataFrame: Merged data frame.
+    pandas.DataFrame: A merged DataFrame containing all relevant indexer information.
     """
     # Merge df's together
     merged = pd.merge(indexer_uptime, indexer_rankings, on="indexer", how="left")
 
     # Drop unnecessary columns
-    merged = merged.drop(
-        columns=["observed_duration_full", "uptime_duration_full", "% up_y"]
-    )
-    merged = merged.dropna(subset=["Coefficient", "Standard Error", "p-value"])
+    columns_to_drop = ["observed_duration_full", "uptime_duration_full", "% up_y"]
+    columns_to_drop = [col for col in columns_to_drop if col in merged.columns]
+    merged = merged.drop(columns=columns_to_drop)
+
+    # Drop rows with no useful data if the columns exist
+    columns_to_check = ["Coefficient", "Standard Error", "p-value"]
+    existing_columns = [col for col in columns_to_check if col in merged.columns]
+    if existing_columns:
+        merged = merged.dropna(subset=existing_columns)
 
     # Merge df's together
     merged = pd.merge(merged, agg_df, on="indexer", how="left")
@@ -1241,78 +1823,262 @@ def merge_and_prepare_dataframes(
     merged["existing_dips_agreements"] = 0
     merged["avg_sync_duration"] = np.nan
     merged["indexing_agreement_acceptance_latency"] = np.nan
+
     return merged
 
 
 def normalize_metrics(merged):
-    # Normalise linear regression score:
-    merged["norm_lin_reg_coefficient"] = 1 - normalize_generic(
-        merged["Coefficient + 1.5 SE"]
-    )  # lower is better
+    """
+    Normalize various metrics in the merged DataFrame to create comparable scores across different dimensions.
 
-    # Normalise uptime score:
-    merged["norm_uptime_score"] = normalize_uptime_and_success_rate(
-        merged["% up_x"]
-    )  # higher is better
+    This function takes the merged DataFrame containing various indexer metrics and normalizes them,
+    to create standardized scores. It handles different types of metrics, applying appropriate
+    normalization techniques for each.
 
-    # Normalise the number of indexing agreements each indexer has:
-    merged["norm_existing_dips_agreements"] = 1 - normalize_generic(
-        merged["existing_dips_agreements"]
-    )  # lower is better
+    Parameters:
+    merged (pandas.DataFrame): The input DataFrame containing various indexer metrics.
 
-    # Normalise stake to fees ratio:
-    merged["norm_stake_to_fees_iqr_deviation"] = normalize_generic(
-        merged["stake_to_fees_iqr_deviation"]
-    )  # higher is better
+    Returns:
+    pandas.DataFrame: The input DataFrame with additional columns for normalized metrics:
+        - 'norm_lin_reg_coefficient': Normalized linear regression coefficient
+        - 'norm_uptime_score': Normalized uptime score
+        - 'norm_existing_dips_agreements': Normalized score for existing DIP agreements
+        - 'norm_stake_to_fees_iqr_deviation': Normalized stake-to-fees ratio deviation
+        - 'norm_success_rate': Normalized success rate
+        - 'norm_avg_sync_duration': Normalized average sync duration
+        - 'norm_indexing_agreement_acceptance_latency': Normalized acceptance latency
 
-    # Normalise success rate score:
-    merged["norm_success_rate"] = normalize_uptime_and_success_rate(
-        merged["average_status"]
-    )  # higher is better
+    Note:
+    - Each metric is normalized to a scale of 0 to 1, where 1 represents better performance.
+    - Some metrics are inverted (1 - normalized value) if lower values are better (e.g., latency).
+    - The function handles missing data by assigning a neutral score of 0.5 to NaN values.
+    - Different normalization techniques are used based on the nature of each metric:
+        - Generic min-max normalization for most metrics
+        - Special normalization for uptime and success rate to emphasize high performance
+        - Logistic function for acceptance latency
+    """
+    if merged.empty:
+        new_columns = [
+            "norm_lin_reg_coefficient",
+            "norm_uptime_score",
+            "norm_existing_dips_agreements",
+            "norm_stake_to_fees_iqr_deviation",
+            "norm_success_rate",
+            "norm_avg_sync_duration",
+            "norm_indexing_agreement_acceptance_latency",
+        ]
+        for col in new_columns:
+            merged[col] = pd.Series(dtype=float)
+        return merged
 
-    # Needs future revision:
-    merged["norm_avg_sync_duration"] = 1 - normalize_generic(
-        merged["avg_sync_duration"]
-    )  # lower is better
+    # Normalise linear regression score
+    if "Coefficient + 1.5 SE" in merged.columns:
+        merged["norm_lin_reg_coefficient"] = 1 - normalize_generic(
+            merged["Coefficient + 1.5 SE"]
+        )  # lower is better
+    else:
+        merged["norm_lin_reg_coefficient"] = np.nan
+
+    # Normalise uptime score
+    if "% up_x" in merged.columns:
+        merged["norm_uptime_score"] = normalize_uptime_and_success_rate(
+            merged["% up_x"]
+        )  # higher is better
+    else:
+        merged["norm_uptime_score"] = np.nan
+
+    # Normalise the number of indexing agreements each indexer has
+    if "existing_dips_agreements" in merged.columns:
+        merged["norm_existing_dips_agreements"] = 1 - normalize_generic(
+            merged["existing_dips_agreements"]
+        )  # lower is better
+    else:
+        merged["norm_existing_dips_agreements"] = np.nan
+
+    # Normalise stake to fees ratio
+    if "stake_to_fees_iqr_deviation" in merged.columns:
+        merged["norm_stake_to_fees_iqr_deviation"] = normalize_generic(
+            merged["stake_to_fees_iqr_deviation"]
+        )  # higher is better
+    else:
+        merged["norm_stake_to_fees_iqr_deviation"] = np.nan
+
+    # Normalise success rate score
+    if "average_status" in merged.columns:
+        merged["norm_success_rate"] = normalize_uptime_and_success_rate(
+            merged["average_status"]
+        )  # higher is better
+    else:
+        merged["norm_success_rate"] = np.nan
+
+    # Normalize avg_sync_duration
+    if "avg_sync_duration" in merged.columns:
+        merged["norm_avg_sync_duration"] = 1 - normalize_generic(
+            merged["avg_sync_duration"]
+        )  # lower is better
+    else:
+        merged["norm_avg_sync_duration"] = np.nan
 
     # Normalize indexing_agreement_acceptance_latency
-    merged["norm_indexing_agreement_acceptance_latency"] = (
-        normalize_indexing_agreement_acceptance_latency(
-            merged["indexing_agreement_acceptance_latency"]
-        )
-    )
+    if "indexing_agreement_acceptance_latency" in merged.columns:
+        merged["norm_indexing_agreement_acceptance_latency"] = (
+            normalize_indexing_agreement_acceptance_latency(
+                merged["indexing_agreement_acceptance_latency"]
+            )
+        )  # lower is better
+    else:
+        merged["norm_indexing_agreement_acceptance_latency"] = np.nan
+
+    # Fill NaN values with 0.5
+    norm_columns = [col for col in merged.columns if col.startswith("norm_")]
+    merged[norm_columns] = merged[norm_columns].fillna(0.5)
 
     return merged
 
 
-# Function to normalize other metrics
 def normalize_generic(series):
-    return (series - series.min()) / (series.max() - series.min())
+    """
+    Perform a generic min-max normalization on a pandas Series.
+
+    This function normalizes the input series to a range between 0 and 1 using min-max scaling.
+    It handles edge cases such as constant series or series with NaN values.
+
+    Parameters:
+    series (pandas.Series): The input series to be normalized.
+
+    Returns:
+    pandas.Series: A new series with normalized values between 0 and 1.
+
+    Note:
+    - If the input series is empty or contains only one unique value, it returns a series of 0.5.
+    """
+    if series.empty or series.max() == series.min():
+        return pd.Series(0.5, index=series.index)
+
+    min_val = series.min()
+    max_val = series.max()
+    # Handle cases where all values are the same
+    if min_val == max_val:
+        return pd.Series(0.5, index=series.index)
+
+    # Normalize to between 0 and 1 range
+    normalized = (series - min_val) / (max_val - min_val)
+
+    # Handle any potential NaN or inf values
+    normalized = normalized.fillna(0.5)
+
+    return normalized
 
 
-# Function to normalize uptime/succes rate
-def normalize_uptime_and_success_rate(series):
-    # Find the best uptime/success rate score in the series first
-    best = series.max()
+def normalize_uptime_and_success_rate(series, is_raw_data=True):
+    """
+    Normalize either uptime or success rate data using a piecewise linear scaling method.
 
-    # Threshold whereby indexers that have less uptime/success rate than this get no score
-    threshold = best - 0.03  # e.g best was 90% so threshold is 87%
+    This function applies a custom normalization to uptime / success rate data, emphasizing
+    high performance. Uptime between 0% and 97% of the best indexers uptime results in a
+    score of 0, while uptime between 97% and 100% of the best indexers uptime results in a
+    linear score scaling from 0 to 1. So for example 98.5% of the best indexers uptime would
+    result in a normalised score of 0.5. The same calculation applies to success rate.
 
-    # Linear score between the threshold and the best.
-    # e.g 88.5% gets a score of 50% in this example.
-    return series.apply(lambda x: max(0, min(1, (x - threshold) / 0.03)))
+    Parameters:
+    series (pandas.Series): The input series containing uptime or success rate data.
+    is_raw_data (bool, optional): Flag indicating if the data is raw (True) or already normalized (False).
+                                  Defaults to True.
+
+    Returns:
+    pandas.Series: A new series with normalized values between 0 and 1.
+    """
+    if series.empty or series.isnull().all() or series.max() == series.min():
+        return pd.Series(0.5, index=series.index)
+
+    if is_raw_data:
+        # Remove NaN values for calculations.
+        valid_series = series.dropna()
+
+        # Find the best uptime/success rate score in the series first.
+        best = valid_series.max()
+
+        # Threshold whereby indexers that have less uptime/success rate than this get no score.
+        threshold = best - 0.03
+
+        # Linear score between the threshold and the best.
+        normalized = valid_series.apply(
+            lambda x: max(0, min(1, (x - threshold) / 0.03))
+        )
+
+        # Reindex and fill NaN with 0.5.
+        normalized = normalized.reindex(series.index).fillna(0.5)
+
+        return normalized
+
+    else:
+        # If this is already normalized data, return it as is, filling NaN with 0.5
+        return series.fillna(0.5)
 
 
-# Function to Normalize acceptance latency
-def normalize_indexing_agreement_acceptance_latency(latency, L=1, k=0.5, x0=12):
-    return L / (1 + np.exp(k * (latency - x0)))
+def normalize_indexing_agreement_acceptance_latency(latency_series, L=1, k=0.5, x0=12):
+    """
+    Normalize indexing agreement acceptance latency using a logistic function.
+
+    This function applies a logistic normalization to the acceptance latency data,
+    creating a smooth logistic transition between high and low latency values.
+
+    Parameters:
+    latency_series (pandas.Series): The input series containing latency data in hours.
+    L (float, optional): The logistic function's maximum value. Defaults to 1.
+    k (float, optional): The steepness of the curve. Defaults to 0.5.
+    x0 (float, optional): The x-value of the sigmoid's midpoint. Defaults to 12 hours.
+
+    Returns:
+    pandas.Series: A new series with normalized values between 0 and 1.
+
+    Note:
+    - Indexing agreement acceptancy latency should be measured in hours, not minutes or seconds.
+    - Lower latency results in higher normalized values.
+    - Negative latency values are clipped to 0 before normalization.
+    - Very large latency values are clipped to a maximum of 1000 hours to prevent overflow.
+    - If the input series is empty or constant, it returns a series of 0.5.
+    - NaN values in the input are replaced with 0.5 in the output.
+    """
+    if latency_series.empty or latency_series.max() == latency_series.min():
+        return pd.Series(0.5, index=latency_series.index)
+
+    # Replace negative values with 0 (as negative latency doesn't make sense)
+    latency_series = latency_series.clip(lower=0)
+
+    # Clip very large values to avoid overflow
+    max_latency = 1000  # Adjust this value based on your expected maximum latency
+    clipped_latency = np.clip(latency_series, 0, max_latency)
+
+    # Logistic function to normalize acceptance latency
+    normalized = L / (1 + np.exp(k * (clipped_latency - x0)))
+
+    # Handle any potential NaN or inf values
+    normalized = normalized.fillna(0.5)
+
+    return normalized
 
 
 def calculate_weighted_score(row, weights):
+    """
+    Calculate a weighted score for an indexer based on multiple normalized metrics.
+
+    This function computes a single score by combining multiple performance metrics,
+    each weighted according to predefined weights.
+
+    Parameters:
+    row (pandas.Series): A series containing normalized metric values for an indexer.
+                         Expected to have columns prefixed with 'norm_'.
+    weights (dict): A dictionary mapping metric names to their respective weights.
+                    Keys should match the suffix of the 'norm_' columns in the row.
+
+    Returns:
+    float: The calculated weighted score, or np.nan if no valid metrics are found.
+    """
     weighted_sum = 0
     weight_total = 0
     for metric, weight in weights.items():
-        if not pd.isna(row[f"norm_{metric}"]):
+        if f"norm_{metric}" in row and not pd.isna(row[f"norm_{metric}"]):
             weighted_sum += row[f"norm_{metric}"] * weight
             weight_total += weight
     if weight_total == 0:
