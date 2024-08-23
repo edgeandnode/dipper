@@ -44,6 +44,15 @@ ITERATIVE_FILTER_MIN_QUERIES_PER_DEPLOYMENT = 250
 
 
 def initialize_data_manager():
+    """
+    Initialize and return a new DataManager instance with a configured BigQueryProvider.
+
+    This function creates a BigQueryProvider for "graph-mainnet" project in "US" region,
+    and uses it to initialize a new DataManager instance.
+
+    Returns:
+        DataManager: An initialized DataManager instance.
+    """
     bigqueryprovider = BigQueryProvider("graph-mainnet", "US")
     return DataManager(bigquery=bigqueryprovider)
 
@@ -107,11 +116,6 @@ class DataManager:
 
         # Fetch initial data upon instantiation
         self.fetch_bigquery_data()
-
-    @classmethod
-    def initialize(cls):
-        bigqueryprovider = BigQueryProvider("graph-mainnet", "US")
-        return cls(bigquery=bigqueryprovider)
 
     def fetch_bigquery_data(self):
         """
@@ -325,6 +329,11 @@ class DataProcessor:
         self.pending_agreements = pending_agreements or {}
         self.blacklist = blacklist or []
 
+        if "destination_loc" not in self.data.columns:
+            self.data["destination_loc"] = "unknown"
+        if "org" not in self.data.columns:
+            self.data["org"] = "unknown"
+
         # Initialize timestamps
         (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
             derive_timestamps(self.num_days)
@@ -382,13 +391,21 @@ class DataProcessor:
         This method updates the 'existing_dips_agreements' field in the df to reflect the number of
         current agreements each indexer has, as specified in the existing_agreements attribute passed by the rust server.
         """
-        # Update 'existing_dips_agreements' for each indexer in 'existing_agreements' (class variable)
-        for indexer in self.existing_agreements:
-            self.data.loc[
-                self.data["indexer"] == indexer, "existing_dips_agreements"
-            ] = self.existing_agreements[indexer]
+        # Create a copy of the data to avoid modifying the original
+        updated_data = self.data.copy()
 
-        return self.data
+        # Create a dictionary to store the number of agreements for each indexer
+        agreement_counts = {
+            indexer: len(subgraphs)
+            for indexer, subgraphs in self.existing_agreements.items()
+        }
+
+        # Update 'existing_dips_agreements' for all indexers at once
+        updated_data["existing_dips_agreements"] = (
+            updated_data["indexer"].map(agreement_counts).fillna(0).astype(int)
+        )
+
+        return updated_data
 
     def _get_current_group(self):
         """
@@ -415,8 +432,9 @@ class DataProcessor:
             "avg_sync_duration": 0.0625,
             "indexing_agreement_acceptance_latency": 0.2424,
         }
+
         self.data["weighted_score"] = self.data.apply(
-            calculate_weighted_score, axis=1, weights=weights
+            lambda row: calculate_weighted_score(row, weights=weights), axis=1
         )
 
         return self.data
@@ -470,13 +488,20 @@ class DataProcessor:
     def _meets_diversity_requirements(self, new_indexer):
         """
         Check if adding the new indexer meets decentralisation requirements.
+
+        This method is called either when adding indexers to a group with less than 3 indexers,
+        or when finding a replacement for an existing indexer in a group of 3 or more.
+
+        The final group must have at least 2 unique organizations and 2 unique locations.
         """
         # If the current group has fewer than 2 indexers, no decentralisation check is needed.
         if len(self.current_group) < 2:
             return True
 
-        # Otherwise, we check if the new_group meets our decentralisation requirements.
+        # Create a new group including the new indexer
         new_group = self.current_group + [new_indexer]
+
+        # Get unique locations and organizations for the new group
         locations = self.data[self.data["indexer"].isin(new_group)][
             "destination_loc"
         ].unique()
@@ -575,50 +600,54 @@ class DataProcessor:
         This method is intended to have only one of [indexer_to_exclude, indexer_to_include] passed
         into it, at most.
         """
-        if indexer_to_exclude:
-            # Temporarily adjust the data to reflect the indexer losing an agreement
-            self.data.loc[
-                self.data["indexer"] == indexer_to_exclude, "existing_dips_agreements"
-            ] -= 1
-            self.data = normalize_metrics(self.data)
-            self.data["weighted_score"] = self.data.apply(
-                calculate_weighted_score, axis=1, weights=self.weights
-            )
+        score = None
+        try:
+            if indexer_to_exclude:
+                # Temporarily adjust the data to reflect the indexer losing an agreement
+                self.data.loc[
+                    self.data["indexer"] == indexer_to_exclude,
+                    "existing_dips_agreements",
+                ] -= 1
+                self._recalculate_metrics_and_scores()
 
-        if indexer_to_include:
-            # Temporarily adjust the data to reflect the indexer gaining an agreement
-            self.data.loc[
-                self.data["indexer"] == indexer_to_include, "existing_dips_agreements"
-            ] += 1
-            self.data = normalize_metrics(self.data)
-            self.data["weighted_score"] = self.data.apply(
-                calculate_weighted_score, axis=1, weights=self.weights
-            )
+            if indexer_to_include:
+                # Temporarily adjust the data to reflect the indexer gaining an agreement
+                self.data.loc[
+                    self.data["indexer"] == indexer_to_include,
+                    "existing_dips_agreements",
+                ] += 1
+                self._recalculate_metrics_and_scores()
 
-        # Calculate the average weighted score of the new indexer group
-        score = self.data[self.data["indexer"].isin(group)]["weighted_score"].mean()
+            # Calculate the average weighted score of the new indexer group
+            score = self.data[self.data["indexer"].isin(group)]["weighted_score"].mean()
 
-        if indexer_to_exclude:
-            # Revert the temporary change
-            self.data.loc[
-                self.data["indexer"] == indexer_to_exclude, "existing_dips_agreements"
-            ] += 1
-            self.data = normalize_metrics(self.data)
-            self.data["weighted_score"] = self.data.apply(
-                calculate_weighted_score, axis=1, weights=self.weights
-            )
+        finally:
+            if indexer_to_exclude:
+                # Revert the temporary change
+                self.data.loc[
+                    self.data["indexer"] == indexer_to_exclude,
+                    "existing_dips_agreements",
+                ] += 1
+                self._recalculate_metrics_and_scores()
 
-        if indexer_to_include:
-            # Revert the temporary change
-            self.data.loc[
-                self.data["indexer"] == indexer_to_include, "existing_dips_agreements"
-            ] -= 1
-            self.data = normalize_metrics(self.data)
-            self.data["weighted_score"] = self.data.apply(
-                calculate_weighted_score, axis=1, weights=self.weights
-            )
+            if indexer_to_include:
+                # Revert the temporary change
+                self.data.loc[
+                    self.data["indexer"] == indexer_to_include,
+                    "existing_dips_agreements",
+                ] -= 1
+                self._recalculate_metrics_and_scores()
 
         return score
+
+    def _recalculate_metrics_and_scores(self):
+        """
+        Helper method to recalculate metrics and scores.
+        """
+        self.data = normalize_metrics(self.data)
+        self.data["weighted_score"] = self.data.apply(
+            calculate_weighted_score, axis=1, weights=self.weights
+        )
 
     def update_and_reprocess_data(
         self,
