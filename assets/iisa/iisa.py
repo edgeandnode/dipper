@@ -1,10 +1,9 @@
-# Import statements
 from typing import Optional
 
 import pandas as pd
+
 from .bq import BigQueryProvider
 from .iisa_functions import (
-    derive_timestamps,
     adjust_rows,
     apply_location_details,
     merge_dataframes,
@@ -31,6 +30,7 @@ from .iisa_functions import (
     normalize_metrics,
     calculate_weighted_score,
 )
+from .time import derive_timestamps
 
 # Constants
 DATA_MANAGER_NUM_DAYS = 28
