@@ -4,8 +4,6 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import pytest
-import requests
-from requests.exceptions import HTTPError
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 
@@ -14,8 +12,7 @@ from iisa.iisa_functions import (
     apply_location_details,
     merge_dataframes,
     extract_iata_codes,
-    apply_iata_details,
-    right_merge_iata_info,
+    merge_in_iata_geolocation_info,
     process_combined_query_pandas,
     split_locations,
     calculate_distances,
@@ -419,317 +416,64 @@ class TestExtractIataCodes:
         pd.testing.assert_frame_equal(result, expected_result)
 
 
-class TestApplyIataDetails:
-    @pytest.fixture(autouse=True)
-    def mock_requests_get(self, monkeypatch):
-        """
-        This function effecitvely mocks the requests.get function to
-        return a predefined response, based on the URL.
-        """
-
-        def mock_get(
-            url, **kwargs
-        ):  # Example kwargs: headers ("X-Api-Key"), timeout "5"
-            class MockResponse:
-                def __init__(self, json_data, status_code):
-                    self.json_data = json_data
-                    self.status_code = status_code
-
-                def json(self):
-                    return self.json_data
-
-                def raise_for_status(self):
-                    if self.status_code != 200:
-                        raise HTTPError(f"HTTP {self.status_code}", response=self)
-
-            # Define responses for different IATA codes
-            response_map = {
-                "MAN": MockResponse(
-                    [{"latitude": 53.3537, "longitude": -2.2750, "country": "UK"}], 200
-                ),
-                "ARN": MockResponse(
-                    [{"latitude": 59.6519, "longitude": 17.9186, "country": "Sweden"}],
-                    200,
-                ),
-                "NEW": MockResponse(
-                    [{"latitude": 10.0, "longitude": 20.0, "country": "Neverland"}], 200
-                ),
-                "NEN": MockResponse(
-                    [{"latitude": 15.0, "longitude": 25.0, "country": "Wonderland"}],
-                    200,
-                ),
-                "XXX": MockResponse([], 200),
-                "FAIL": MockResponse({"error": "Server error"}, 500),
-            }
-            # Match the URL to the response
-            for code, response in response_map.items():
-                if code in url:
-                    return response
-            return MockResponse({"error": "Not found"}, 404)
-
-        monkeypatch.setattr("requests.get", mock_get)
-
-    @pytest.fixture
-    def empty_local_iata_df(self):
-        """
-        Fixture for an empty local IATA DataFrame.
-
-        Any test function that includes an argument with the same name as this
-        fixture will automatically have the fixture's return value passed to it.
-        """
-        df = pd.DataFrame(columns=["latitude", "longitude", "country"])
-        df.index.name = "iata_code"
-        return df
-
-    @pytest.fixture
-    def full_local_iata_df(self):
-        """Fixture to provide a DataFrame with predefined IATA data."""
-        return pd.DataFrame(
+class TestMergeInIataInfo:
+    def test_merge_in_iata_info(self):
+        ## Given
+        data = pd.DataFrame(
             {
-                "latitude": [34.0522, 40.7128],
-                "longitude": [-118.2437, -74.0060],
-                "country": ["USA", "USA"],
-            },
-            index=pd.Index(["LAX", "NYC"], name="iata_code"),
-        )
-
-    def test_apply_iata_details_valid(self):
-        # Test with valid data first for the base case.
-        iata_df = pd.DataFrame({"IATA_code": ["MAN", "ARN"], "count": [3, 4]})
-        expected_result = pd.DataFrame(
-            {
-                "IATA_code": ["MAN", "ARN"],
-                "count": [3, 4],
-                "latitude": [53.3537, 59.6519],
-                "longitude": [-2.2750, 17.9186],
-                "country": ["UK", "Sweden"],
-            }
-        )
-        result = apply_iata_details(iata_df)
-        pd.testing.assert_frame_equal(result, expected_result)
-
-    def test_apply_iata_details_with_existing_local_data(self, full_local_iata_df):
-        # Setup the DataFrame to be processed
-        iata_df = pd.DataFrame({"IATA_code": ["LAX", "NYC"], "count": [5, 3]})
-
-        # Expected results using the local data, without needing an API call
-        expected_result = pd.DataFrame(
-            {
-                "IATA_code": ["LAX", "NYC"],
-                "count": [5, 3],
-                "latitude": [34.0522, 40.7128],
-                "longitude": [-118.2437, -74.0060],
-                "country": ["USA", "USA"],
+                "query_id": ["123-AMS", "456-CDG", "789-LHR"],
+                "IATA_code": ["AMS", "CDG", "LHR"],
             }
         )
 
-        # Use patch to mock the "load_or_create_iata_data" function to return the predefined local DataFrame
-        with patch(
-            "iisa.iisa_functions.load_or_create_iata_data",
-            return_value=full_local_iata_df,
-        ):
-            # Mock the requests.get to ensure it is not called
-            with patch("requests.get") as mock_get:
-                # Execute the function with the test DataFrame
-                result = apply_iata_details(iata_df)
+        ## When
+        result = merge_in_iata_geolocation_info(data)
 
-                # Assert that the result matches the expected DataFrame
-                pd.testing.assert_frame_equal(result, expected_result)
-
-                # Assert that the requests.get was not called
-                mock_get.assert_not_called()
-
-    def test_apply_iata_details_new_iata_code(self, empty_local_iata_df):
-        """Test with a new IATA code that is not in the local DataFrame initially."""
-        iata_df = pd.DataFrame({"IATA_code": ["NEW"], "count": [1]})
-
-        # Patch the CSV writing method to ensure it's called properly
-        with patch("pandas.DataFrame.to_csv") as mock_to_csv:
-            with patch(
-                "iisa.iisa_functions.load_or_create_iata_data",
-                return_value=empty_local_iata_df,
-            ):
-                result = apply_iata_details(iata_df)
-
-        # Verify DataFrame update and CSV write
-        mock_to_csv.assert_called_once_with("iata_data.csv")
-        assert "NEW" in empty_local_iata_df.index
-        assert empty_local_iata_df.loc["NEW"]["country"] == "Neverland"
-        assert result.loc[0, "country"] == "Neverland"
-
-    def test_apply_iata_details_multiple_new_entries(self, empty_local_iata_df):
-        """Test with multiple new IATA codes."""
-        iata_df = pd.DataFrame({"IATA_code": ["NEW", "NEN"], "count": [1, 1]})
-
-        # Expected results
-        expected_local_entries = {
-            "NEW": {"latitude": 10.0, "longitude": 20.0, "country": "Neverland"},
-            "NEN": {"latitude": 15.0, "longitude": 25.0, "country": "Wonderland"},
-        }
-
-        with patch("pandas.DataFrame.to_csv") as mock_to_csv:
-            with patch(
-                "iisa.iisa_functions.load_or_create_iata_data",
-                return_value=empty_local_iata_df,
-            ):
-                result = apply_iata_details(iata_df)
-
-        # Verify updates to local DataFrame and CSV write
-        assert mock_to_csv.call_count == 2  # Allow for multiple calls
-        for code, attrs in expected_local_entries.items():
-            assert code in empty_local_iata_df.index
-            for key, value in attrs.items():
-                assert empty_local_iata_df.loc[code][key] == value
-
-        # Check results for the correct output DataFrame
-        for idx, row in result.iterrows():
-            iata_code = row["IATA_code"]
-            assert row["latitude"] == expected_local_entries[iata_code]["latitude"]
-            assert row["longitude"] == expected_local_entries[iata_code]["longitude"]
-            assert row["country"] == expected_local_entries[iata_code]["country"]
-
-    def test_apply_iata_details_invalid_code(self):
-        # Test with an invalid IATA code
-        iata_df = pd.DataFrame({"IATA_code": ["XXX"], "count": [1]})
-        expected_result = pd.DataFrame(
+        ## Then
+        expected = pd.DataFrame(
             {
-                "IATA_code": ["XXX"],
-                "count": [1],
-                "latitude": [None],
-                "longitude": [None],
-                "country": [None],
+                "query_id": ["123-AMS", "456-CDG", "789-LHR"],
+                "IATA_code": ["AMS", "CDG", "LHR"],
+                "country": ["NL", "FR", "GB"],
+                "latitude": [52.3086, 49.0128, 51.4706],
+                "longitude": [4.7639, 2.5500, -0.46194],
             }
         )
-        result = apply_iata_details(iata_df)
-        pd.testing.assert_frame_equal(result, expected_result)
+        pd.testing.assert_frame_equal(result, expected)
 
-    def test_apply_iata_details_api_failure(self):
-        # Setup DataFrame with an IATA code
-        iata_df = pd.DataFrame({"IATA_code": ["ABC"], "count": [1]})
-
-        # Expected result should handle the API failure gracefully
-        expected_result = pd.DataFrame(
+    def test_merge_with_unknown_iata_code(self):
+        ## Given
+        data = pd.DataFrame(
             {
-                "IATA_code": ["ABC"],
-                "count": [1],
-                "latitude": [None],
-                "longitude": [None],
-                "country": [None],
+                "query_id": ["123-AMS", "456-CDG", "789-LHR", "999-XXX"],
+                "IATA_code": ["AMS", "CDG", "LHR", "XXX"],
             }
         )
 
-        # Mocking the requests.get to simulate an API failure
-        with patch(
-            "requests.get",
-            side_effect=requests.RequestException("API failure simulation"),
-        ):
-            # Execute the function with the test DataFrame
-            result = apply_iata_details(iata_df)
+        ## When
+        result = merge_in_iata_geolocation_info(data)
 
-            # Assert that the function handles the exception and the DataFrame matches the expected result
-            pd.testing.assert_frame_equal(result, expected_result)
+        ## Then
+        assert np.isnan(result.loc[3, "latitude"])
+        assert np.isnan(result.loc[3, "longitude"])
+        assert np.isnan(result.loc[3, "country"])
 
-    def test_apply_iata_details_mixed_validity(self):
-        # Test with mixed validity IATA codes
-        iata_df = pd.DataFrame(
-            {"IATA_code": ["MAN", "XXX", "ARN", None, "??!"], "count": [2, 1, 3, 1, 1]}
-        )
-        expected_result = pd.DataFrame(
-            {
-                "IATA_code": ["MAN", "XXX", "ARN", None, "??!"],
-                "count": [2, 1, 3, 1, 1],
-                "latitude": [53.3537, None, 59.6519, None, None],
-                "longitude": [-2.2750, None, 17.9186, None, None],
-                "country": ["UK", None, "Sweden", None, None],
-            }
-        )
-        result = apply_iata_details(iata_df)
-        pd.testing.assert_frame_equal(result, expected_result)
+    def test_merge_with_empty_dataframe(self):
+        ## Given
+        data = pd.DataFrame(columns=["query_id", "IATA_code"])
 
-    def test_apply_iata_details_empty_df(self):
-        # Test with an empty DataFrame
-        iata_df = pd.DataFrame()
-        expected_result = pd.DataFrame(
-            columns=["IATA_code", "count", "latitude", "longitude", "country"]
-        )
-        result = apply_iata_details(iata_df)
-        pd.testing.assert_frame_equal(result, expected_result)
-
-    def test_apply_iata_details_logging_on_error(self, caplog):
-        # Test that logging occurs correctly on an error
-        with patch(
-            "iisa.iisa_functions.requests.get",
-            side_effect=requests.RequestException("Test exception"),
-        ):
-            iata_df = pd.DataFrame({"IATA_code": ["FAIL"], "count": [1]})
-            apply_iata_details(iata_df)
-            assert (
-                "Failed to retrieve data for IATA code FAIL: Test exception"
-                in caplog.text
-            )
-
-
-class TestRightMergeIataInfo:
-    def test_right_merge_iata_info(self):
-        # Note this is a right merge
-        # Setup DataFrames for base case.
-        left = pd.DataFrame({"IATA_code": ["LAX", "NYC"], "count": [100, 200]})
-        right = pd.DataFrame(
-            {
-                "IATA_code": ["LAX", "NYC", "ATL"],
-                "details": ["Los Angeles", "New York", "Atlanta"],
-            }
-        )
-        expected_result = pd.DataFrame(
-            {
-                "IATA_code": ["LAX", "NYC", "ATL"],
-                "count": [
-                    100.0,
-                    200.0,
-                    np.nan,
-                ],  # Merging on 'right' adds NaN for missing matches
-                "details": ["Los Angeles", "New York", "Atlanta"],
-            }
-        )
-
-        # Compute result.
-        result = right_merge_iata_info(
-            left, right
-        )  # Right merge means all rows from right df
-
-        # Asset result matches expected result.
-        pd.testing.assert_frame_equal(result, expected_result)
-
-    def test_right_merge_iata_info_no_overlap(self):
-        # Setup DataFrames with no overlapping IATA codes
-        left = pd.DataFrame({"IATA_code": ["LAX"], "details": ["Los Angeles"]})
-        right = pd.DataFrame({"IATA_code": ["SFO"], "count": [150]})
-
-        # Compute result
-        result = right_merge_iata_info(left, right)
-
-        # Assert the structure and content of the result
-        assert list(result.columns) == ["IATA_code", "details", "count"]
-        assert result["IATA_code"].tolist() == ["SFO"]
-        assert result["count"].tolist() == [150]
-        assert pd.isna(result["details"].iloc[0])
-
-        # Check data types
-        assert result["IATA_code"].dtype == "object"
-        assert result["count"].dtype == "int64"
-        assert result["details"].dtype == "object"
-
-    def test_right_merge_iata_info_empty_dataframes(self):
-        # Setup empty DataFrames and expected result
-        left = pd.DataFrame(columns=["IATA_code", "count"])
-        right = pd.DataFrame(columns=["IATA_code", "details"])
-        expected_result = pd.DataFrame(columns=["IATA_code", "count", "details"])
-
-        # Compute result
-        result = right_merge_iata_info(left, right)
+        ## When
+        result = merge_in_iata_geolocation_info(data)
 
         # Assert result is as expected.
-        pd.testing.assert_frame_equal(result, expected_result)
+        assert result.empty
+        assert result.columns.tolist() == [
+            "query_id",
+            "IATA_code",
+            "country",
+            "latitude",
+            "longitude",
+        ]
 
 
 class TestProcessCombinedQueryPandas:
