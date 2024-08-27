@@ -1,30 +1,30 @@
+import gzip
+import json
 import logging
 import socket
-from datetime import datetime, timedelta
 from urllib.parse import urlparse
+
+import bigframes.pandas as bpd
+import numpy as np
+import pandas as pd
+import requests
+from numpy.linalg import pinv
+from requests.exceptions import (
+    HTTPError,
+    ConnectionError as ReqConnectionError,
+)
+from scipy.stats import t
+from sklearn.compose import ColumnTransformer
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
     retry_if_exception_type,
 )
-from requests.exceptions import (
-    HTTPError,
-    ConnectionError as ReqConnectionError,
-)
-import bigframes.pandas as bpd
-import numpy as np
-import pandas as pd
-import requests
-from scipy.stats import t
-from numpy.linalg import pinv
-from sklearn.compose import ColumnTransformer
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-import gzip
-import json
 
 # Combine exceptions from different modules into a tuple
 ExceptionsToRetry = (ConnectionError, ReqConnectionError, HTTPError, socket.timeout)
@@ -32,39 +32,6 @@ ExceptionsToRetry = (ConnectionError, ReqConnectionError, HTTPError, socket.time
 # Setup basic logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-def derive_timestamps(num_days: int):
-    """
-    Derive start and end timestamps for a data collection period based on the current date.
-
-    This function calculates a date range ending at the current date and starting 'num_days' ago.
-    It returns both datetime objects and formatted string timestamps.
-
-    Parameters:
-    num_days (int): Number of days to look back from the current date. Must be a non-negative integer.
-
-    Returns:
-    tuple: A tuple containing four elements:
-        - start_date (datetime): The start date of the range.
-        - end_date (datetime): The end date of the range (current date).
-        - start_ts (str): Formatted string of the start date (YYYY-MM-DDTHH:MM:SSZ).
-        - end_ts (str): Formatted string of the end date (YYYY-MM-DDTHH:MM:SSZ).
-
-    Raises:
-    ValueError: If num_days is negative or not an integer.
-    """
-    if not isinstance(num_days, int) or num_days < 0:
-        raise ValueError("num_days must be a non-negative integer")
-
-    today = datetime.today()
-
-    end_date = today
-    start_date = today - timedelta(days=num_days)
-    start_ts = start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-    end_ts = end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    return start_date, end_date, start_ts, end_ts
 
 
 def get_initial_query(start_date, num_days):
