@@ -191,3 +191,73 @@ class TestInitializeDataManager:
         # Verify the BigQueryProvider was instantiated exactly once
         assert mock_bigquery_provider.call_count == 1
 
+
+class TestProcessSubgraph:
+    """
+    This class verifies the process_subgraph function creates a DataProcessor
+    instance and returns the expected results for added/cancelled indexers.
+    """
+    @patch("iisa.iisa.DataProcessor")
+    def test_process_subgraph(
+        self, mock_data_processor, sample_data, mock_bigquery_provider
+    ):
+        """
+        Test the process_subgraph function creates a DataProcessor instance and returns the expected results.
+
+        Expected results:
+        1. processor.added_indexers
+        2. processor.cancelled_indexers
+        """
+        # Set up mock DataProcessor instance
+        mock_instance = mock_data_processor.return_value
+        mock_instance.added_indexers = [
+            ("indexer1", "test_subgraph"),
+            ("indexer2", "test_subgraph"),
+        ]
+        mock_instance.cancelled_indexers = [("indexer3", "test_subgraph")]
+
+        # Define test input parameters
+        subgraph_id = "test_subgraph"
+        prices = {"indexer1": 10, "indexer2": 20, "indexer3": 15}
+        existing_agreements = {
+            "indexer1": ["subgraph1"],
+            "indexer2": ["subgraph2"],
+            "indexer3": ["test_subgraph"],
+        }
+        pending_agreements = {"indexer4": ["subgraph3"]}
+        blacklist = ["blacklisted_indexer"]
+
+        # Apply patch for the test
+        with patch(
+            "iisa.iisa.BigQueryProvider",
+            return_value=mock_bigquery_provider.return_value,
+        ):
+            # Process the subgraph
+            added, cancelled = process_subgraph(
+                sample_data,
+                subgraph_id,
+                prices,
+                existing_agreements,
+                pending_agreements,
+                blacklist,
+            )
+
+        # Verify an instance of DataProcessor was created with expected parameters
+        mock_data_processor.assert_called_once_with(
+            data=sample_data,
+            subgraph_id=subgraph_id,
+            prices=prices,
+            bigquery=mock_bigquery_provider.return_value,
+            existing_agreements=existing_agreements,
+            pending_agreements=pending_agreements,
+            blacklist=blacklist,
+        )
+
+        # Verify the function returns the expected added and cancelled indexer pairs
+        assert added == [("indexer1", "test_subgraph"), ("indexer2", "test_subgraph")]
+        assert cancelled == [("indexer3", "test_subgraph")]
+
+        # Verify pairs are associated with the expected respective subgraphs
+        assert all(pair[1] == subgraph_id for pair in added)
+        assert all(pair[1] == subgraph_id for pair in cancelled)
+
