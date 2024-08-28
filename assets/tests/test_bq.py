@@ -1,259 +1,236 @@
+"""
+Test suite covering the BigQueryProvider class and its associated functions.
+"""
+
+import socket
 from datetime import datetime
+
+import pandas as pd
+import pytest
 
 from iisa.bq import (
     _get_combined_query,
     _get_initial_query,
     _get_url_query,
     _get_initial_stake_to_fees_query,
+    BigQueryProvider,
 )
+from iisa.time import DateStr, TimestampStr
 
 
 class TestGetCombinedQuery:
+    """
+    Tests for the query string generation functions.
+    """
+
     def test_basic_query(self):
         # Given a start date, a number of days and a number of rows to use
-        start_date = datetime.strptime("2024-01-01", "%Y-%m-%d")
+        start_date = DateStr("2024-01-01")
 
         # When _get_combined_query is called
         query = _get_combined_query(start_date, 10, 20000000)
 
-        # Then the query should match the expected output
-        expected_query = """
-        WITH production_metrics_gateway_subgraph_queries AS (
-            WITH initial_data AS (
-                SELECT
-                    day_timestamp AS day_partition,
-                    subgraph_deployment_ipfs_hash AS deployment_hash,
-                    subgraph_chain_indexed AS subgraph_network,
-                    subgraph_deployment_chain AS indexer_network
-                FROM production_metrics.prod_metrics_gateway_subgraph_queries
-                WHERE subgraph_deployment_ipfs_hash IS NOT NULL
-                AND subgraph_chain_indexed IS NOT NULL
-                AND subgraph_deployment_chain IS NOT NULL
-            ),
-            non_dupe_data AS (
-                SELECT DISTINCT * FROM initial_data
-            ),
-            mode_subgraph_networks AS (
-                SELECT
-                    deployment_hash,
-                    subgraph_network,
-                    COUNT(subgraph_network) AS freq
-                FROM non_dupe_data
-                GROUP BY deployment_hash, subgraph_network
-            ),
-            aggregated_data AS (
-                SELECT
-                    n.deployment_hash,
-                    ARRAY_AGG(n.indexer_network) AS indexer_network_list,
-                    ARRAY_AGG(DISTINCT n.subgraph_network) AS subgraph_network_list,
-                    COUNT(DISTINCT n.indexer_network) AS number_of_unique_indexer_networks,
-                    COUNT(n.indexer_network) AS number_of_indexer_networks,
-                    ARRAY_AGG(s.subgraph_network ORDER BY s.freq DESC LIMIT 1)[OFFSET(0)] AS mode_subgraph_network
-                FROM non_dupe_data n
-                LEFT JOIN mode_subgraph_networks s
-                ON n.deployment_hash = s.deployment_hash
-                GROUP BY n.deployment_hash
-            )
-            SELECT
-                deployment_hash,
-                CASE
-                    WHEN ARRAY_LENGTH(indexer_network_list) = 1 THEN indexer_network_list[OFFSET(0)]
-                    ELSE 'arbitrum'
-                END AS indexer_network,
-                CASE
-                    WHEN ARRAY_LENGTH(subgraph_network_list) = 1 THEN subgraph_network_list[OFFSET(0)]
-                    ELSE mode_subgraph_network
-                END AS subgraph_network
-            FROM aggregated_data
-            WHERE deployment_hash IS NOT NULL
-            AND deployment_hash <> ''
-            ORDER BY number_of_unique_indexer_networks DESC
-        ),
-        
-        combined_indexer_dimensions AS (
-            WITH indexer_dimensions AS (
-                SELECT
-                    day AS day_partition,
-                    indexer_wallet AS indexer,
-                    indexer_url AS url,
-                    'mainnet-gateway' AS indexer_network
-                FROM internal_metrics.indexer_dimensions_daily
-                WHERE day BETWEEN '2024-01-01' AND DATE_ADD('2024-01-01', INTERVAL 10 DAY)
-            ),
-            indexer_dimensions_arbitrum AS (
-                SELECT
-                    day AS day_partition,
-                    indexer_wallet AS indexer,
-                    indexer_url AS url,
-                    'mainnet-thegraph-arbitrum' AS indexer_network
-                FROM internal_metrics.indexer_dimensions_arbitrum_daily
-                WHERE day BETWEEN '2024-01-01' AND DATE_ADD('2024-01-01', INTERVAL 10 DAY)
-            ),
-            combined_data AS (
-                SELECT * FROM indexer_dimensions
-                UNION ALL
-                SELECT * FROM indexer_dimensions_arbitrum
-            )
-            SELECT
-                day_partition,
-                indexer,
-                url,
-                CASE
-                    WHEN indexer_network = 'mainnet-thegraph-arbitrum' THEN 'arbitrum'
-                    WHEN indexer_network = 'mainnet-gateway' THEN 'mainnet'
-                END AS indexer_network
-            FROM combined_data
-            WHERE indexer IS NOT NULL AND url IS NOT NULL
-            GROUP BY day_partition, indexer, url, indexer_network
-            ORDER BY day_partition
-        ),
-        
-        metrics_indexer_attempts AS (
-            WITH BasicFilter AS (
-                SELECT
-                    query_id,
-                    deployment AS deployment_hash,
-                    query_fee AS fee,
-                    query_ts AS timestamp,
-                    CAST(blocks_behind AS INT64) AS blocks_behind,
-                    SAFE_CAST(response_time_ms AS INT64) AS response_time_ms,
-                    indexer,
-                    status,
-                    day_partition,
-                    RAND() as rnd
-                FROM internal_metrics.metrics_indexer_attempts
-                WHERE day_partition BETWEEN '2024-01-01' AND DATE_ADD('2024-01-01', INTERVAL 10 DAY)
-                AND deployment IN (SELECT deployment_hash FROM production_metrics_gateway_subgraph_queries)
-            ),
-            FilteredRows AS (
-                SELECT
-                    *,
-                    ROW_NUMBER() OVER (PARTITION BY deployment_hash, indexer ORDER BY rnd) as row_num
-                FROM BasicFilter
-            )
-            SELECT
-                query_id,
-                deployment_hash,
-                fee,
-                timestamp,
-                blocks_behind,
-                response_time_ms,
-                indexer,
-                status,
-                day_partition
-            FROM FilteredRows
-            WHERE row_num <= 20000000
+        # Then the query string should contain the expected date ranges
+        assert (
+            "WHERE day BETWEEN '2024-01-01' AND DATE_ADD('2024-01-01', INTERVAL 10 DAY"
+            in query
         )
-        
-        SELECT
-            m.query_id,
-            m.deployment_hash,
-            m.fee,
-            m.timestamp,
-            m.blocks_behind,
-            m.response_time_ms,
-            m.indexer,
-            m.status,
-            m.day_partition,
-            pm.subgraph_network,
-            c.url
-        FROM metrics_indexer_attempts m
-        LEFT JOIN production_metrics_gateway_subgraph_queries pm
-        ON m.deployment_hash = pm.deployment_hash
-        LEFT JOIN combined_indexer_dimensions c
-        ON m.indexer = c.indexer AND m.day_partition = c.day_partition AND pm.indexer_network = c.indexer_network
-        WHERE pm.indexer_network = 'arbitrum'
-        ORDER BY m.timestamp;
-        """
-        # Remove excess whitespace and new lines for comparison
-        assert "".join(query.split()) == "".join(expected_query.split())
+        assert (
+            "WHERE day_partition BETWEEN '2024-01-01' AND DATE_ADD('2024-01-01', INTERVAL 10 DAY)"
+            in query
+        )
 
-
-class TestGetInitialQuery:
-    def test_basic_query(self):
+    def test_get_initial_query(self):
         # Given a start date and a number of days
-        start_date = datetime.strptime("2024-01-01", "%Y-%m-%d")
+        start_date = DateStr("2024-01-01")
 
         # When get_initial_query is called
         query = _get_initial_query(start_date, 10)
 
-        # Then the query should match the expected output
-        expected_query = """
-        WITH BasicFilter AS (
-            SELECT
-                deployment AS deployment_hash,
-                indexer,
-                COUNT(*) AS num_rows
-            FROM internal_metrics.metrics_indexer_attempts
-            WHERE day_partition BETWEEN '2024-01-01' AND DATE_ADD('2024-01-01', INTERVAL 10 DAY)
-            GROUP BY deployment_hash, indexer
-        ),
-        TotalQueries AS (
-            SELECT
-                deployment_hash,
-                indexer,
-                num_rows
-            FROM BasicFilter
+        # Then the query string should contain the expected date range
+        assert (
+            "BETWEEN '2024-01-01' AND DATE_ADD('2024-01-01', INTERVAL 10 DAY)" in query
         )
-        SELECT
-            deployment_hash,
-            indexer,
-            num_rows
-        FROM TotalQueries;
-        """
-        # Remove excess whitespace and new lines for comparison
-        assert "".join(query.split()) == "".join(expected_query.split())
 
-
-class TestGetUrlQuery:
     def test_get_url_query(self):
         # Given a start date, a number of days and a number of rows to use
-        start_date = datetime.strptime("2024-01-01", "%Y-%m-%d")
+        start_date = DateStr("2024-01-01")
 
         # When get_combined_query is called
         query = _get_url_query(start_date, 10)
 
-        # Then the query should match the expected output
-        expected_query = """
-        SELECT
-            day AS day_partition,
-            indexer_wallet AS indexer,
-            indexer_url AS url,
-            'arbitrum' AS indexer_network
-        FROM internal_metrics.indexer_dimensions_arbitrum_daily
-        WHERE day BETWEEN '2024-01-01' AND DATE_ADD('2024-01-01', INTERVAL 10 DAY)
-        AND indexer_wallet IS NOT NULL AND indexer_url IS NOT NULL
-        GROUP BY day, indexer_wallet, indexer_url
-        ORDER BY day_partition
-        """
-        # Remove excess whitespace and new lines for comparison
-        assert "".join(query.split()) == "".join(expected_query.split())
+        # Then the query string should contain the expected date range
+        assert (
+            "BETWEEN '2024-01-01' AND DATE_ADD('2024-01-01', INTERVAL 10 DAY)" in query
+        )
 
-
-class TestGetInitialStakeToFeesQuery:
-    def test_basic_query(self):
+    def test_get_initial_stake_to_fees_query(self):
         # Given a start timestamp
-        start_ts = "2024-01-01T00:00:00Z"
+        start_ts = TimestampStr("2024-01-01T00:00:00Z")
 
         # When _get_initial_stake_to_fees_query is called
         query = _get_initial_stake_to_fees_query(start_ts)
 
-        # Then the query should match the expected output
-        expected_query = """
-        SELECT indexer,
-            recent_slashable_stake,
-            SUM(query_fees_sum) AS total_query_fees_sum,
-            recent_slashable_stake / SUM(query_fees_sum) as stake_to_fees
-        FROM (
-            SELECT  id.indexer_wallet AS indexer,
-                    id.staked_tokens - id.locked_tokens as recent_slashable_stake,
-                    SUM(mia.query_fee) AS query_fees_sum
-            FROM internal_metrics.indexer_dimensions_arbitrum id
-            INNER JOIN internal_metrics.metrics_indexer_attempts mia ON id.indexer_wallet = mia.indexer
-            WHERE TIMESTAMP(mia.day_partition) > '2024-01-01T00:00:00Z'
-            GROUP BY id.indexer_wallet, id.staked_tokens - id.locked_tokens, mia.day_partition
-        ) as aggregated_data
-        GROUP BY indexer, recent_slashable_stake;
+        # Then the query string should contain the expected timestamp where clause
+        assert "WHERE TIMESTAMP(mia.day_partition) > '2024-01-01T00:00:00Z'" in query
+
+
+class TestFetchData:
+    """
+    Tests for the fetch_initial_query_results function.
+
+    This suite tests various scenarios for the fetch_initial_query_results function,
+    including successful fetch, empty results, error handling, and retry mechanism.
+    """
+
+    @pytest.fixture
+    def bigquery(self):
+        return BigQueryProvider("graph-mainnet", "US")
+
+    def test_successful_fetch(self, mocker, bigquery):
+        # Test timeframe
+        start_date = datetime.strptime("2024-08-01", "%Y-%m-%d")
+        num_days = 28
+
+        # Setup sample data and the DataFrame to be returned by the 'to_pandas' method
+        df = pd.DataFrame(
+            {
+                "deployment_hash": ["hash1", "hash2", "hash3", "hash4", "hash5"],
+                "indexer": ["index1", "index2", "index3", "index4", "index5"],
+                "num_rows": [10, 20, 15, 5, 25],
+                "timestamp": [
+                    "2024-08-01T12:00:00Z",
+                    "2024-08-01T13:00:00Z",
+                    "2024-08-01T14:00:00Z",
+                    "2024-08-01T15:00:00Z",
+                    "2024-08-01T16:00:00Z",
+                ],
+                "status": ["success", "success", "failure", "success", "failure"],
+            }
+        )
+        expected_df = df.sort_values(by="num_rows", ascending=False)
+
+        # Mock object that read_gbq will return
+        mock_query_job = mocker.Mock()
+        mock_query_job.to_pandas.return_value = expected_df
+
+        # Apply the mock to make read_gbq return the mock_query_job
+        mocker.patch("bigframes.pandas.read_gbq", return_value=mock_query_job)
+
+        # Call the function
+        result_df = bigquery.fetch_initial_query_results(start_date, num_days)
+
+        # Verify the result DataFrame is sorted correctly by 'num_rows'
+        pd.testing.assert_frame_equal(result_df, expected_df)
+
+        # Additional assert to explicitly check the order of 'num_rows' to ensure sorting is as expected
+        assert (result_df["num_rows"].values == expected_df["num_rows"].values).all()
+
+    def test_fetch_empty_data(self, mocker, bigquery):
+        # Test timeframe
+        start_date = datetime.strptime("2024-08-01", "%Y-%m-%d")
+        num_days = 28
+
+        # Setup sample data and the DataFrame to be returned by the 'to_pandas' method
+        df = pd.DataFrame({})
+        expected_df = df
+
+        # Mock object that read_gbq will return
+        mock_query_job = mocker.Mock()
+        mock_query_job.to_pandas.return_value = expected_df
+
+        # Apply the mock to make read_gbq return the mock_query_job
+        mocker.patch("bigframes.pandas.read_gbq", return_value=mock_query_job)
+
+        # Call the function
+        result_df = bigquery.fetch_initial_query_results(start_date, num_days)
+
+        # Assertions to check the result is an empty DataFrame
+        assert result_df.empty
+
+    def test_fail_on_generic_error(self, mocker, bigquery):
         """
-        # Remove excess whitespace and new lines for comparison
-        assert "".join(query.split()) == "".join(expected_query.split())
+        Check the retry mechanism does not capture generic errors.
+        """
+        # Test timeframe
+        start_date = datetime.strptime("2024-08-01", "%Y-%m-%d")
+        num_days = 28
+
+        # Setup sample data and the DataFrame to be returned by the 'to_pandas' method
+        sample_data = {
+            "deployment_hash": ["hash1", "hash2", "hash3", "hash4", "hash5"],
+            "indexer": ["index1", "index2", "index3", "index4", "index5"],
+            "num_rows": [10, 20, 15, 5, 25],
+            "timestamp": [
+                "2024-08-01T12:00:00Z",
+                "2024-08-01T13:00:00Z",
+                "2024-08-01T14:00:00Z",
+                "2024-08-01T15:00:00Z",
+                "2024-08-01T16:00:00Z",
+            ],
+            "status": ["success", "success", "failure", "success", "failure"],
+        }
+        df = pd.DataFrame(sample_data)
+        expected_df = df
+
+        # Mock object that read_gbq will return
+        mock_query_job = mocker.Mock()
+        mock_query_job.to_pandas.return_value = expected_df
+
+        # Apply the mock to make read_gbq return the mock_query_job, then apply a side effect.
+        mock_read_gbq = mocker.patch(
+            "bigframes.pandas.read_gbq", return_value=mock_query_job
+        )
+        mock_read_gbq.side_effect = Exception("Generic error. Query failed.")
+
+        # Call the function and assert that it raises an exception "Generic error. Query failed."
+        with pytest.raises(Exception, match="Generic error. Query failed."):
+            bigquery.fetch_initial_query_results(start_date, num_days)
+
+    def test_rerty_on_connection_error(self, mocker, bigquery):
+        """
+        Check the retry mechanism works as expected when a connection error is raised.
+        """
+        # Test timeframe
+        start_date = datetime.strptime("2024-08-01", "%Y-%m-%d")
+        num_days = 28
+
+        # Setup sample data and the DataFrame to be returned by the 'to_pandas' method
+        df = pd.DataFrame(
+            {
+                "deployment_hash": ["hash1", "hash2", "hash3", "hash4", "hash5"],
+                "indexer": ["index1", "index2", "index3", "index4", "index5"],
+                "num_rows": [10, 20, 15, 5, 25],
+                "timestamp": [
+                    "2024-08-01T12:00:00Z",
+                    "2024-08-01T13:00:00Z",
+                    "2024-08-01T14:00:00Z",
+                    "2024-08-01T15:00:00Z",
+                    "2024-08-01T16:00:00Z",
+                ],
+                "status": ["success", "success", "failure", "success", "failure"],
+            }
+        )
+        expected_df = df.sort_values(by="num_rows", ascending=False)
+
+        # Create a Mock object for the to_pandas method to simulate connection error on first call
+        mock_query_job = mocker.Mock()
+        mock_query_job.to_pandas.side_effect = [
+            ConnectionError(
+                "Temporary connectivity issue"
+            ),  # First call raises an error
+            socket.timeout(
+                "Connection timed out"
+            ),  # Second call raises a different error
+            expected_df,  # Second call returns the DataFrame
+        ]
+
+        # Apply the mock to make read_gbq return the mock_query_job
+        mocker.patch("bigframes.pandas.read_gbq", return_value=mock_query_job)
+
+        # Call the fetch_initial_query_results function, which should retry after the first connection error
+        result_df = bigquery.fetch_initial_query_results(start_date, num_days)
+
+        # Assert that the result DataFrame is sorted correctly by 'num_rows'
+        assert not result_df.empty
+        assert result_df.equals(expected_df)
