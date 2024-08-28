@@ -261,3 +261,146 @@ class TestProcessSubgraph:
         assert all(pair[1] == subgraph_id for pair in added)
         assert all(pair[1] == subgraph_id for pair in cancelled)
 
+
+class TestDataManager:
+    """
+    This class contains tests to ensure that the DataManager class
+    correctly initializes, fetches data, and provides access to its data.
+    """
+    @patch("iisa.iisa.BigQueryProvider")
+    @patch("iisa.iisa.derive_timestamps")
+    def test_data_manager_constructor(
+        self, mock_derive_timestamps, mock_bigquery_provider
+    ):
+        """
+        Tests the initialization of the DataManager class to ensure it sets up with
+        default values and proper initialization of dependencies.
+
+        This test checks:
+        1. That DataManager uses the expected default number of days for data fetching.
+        2. That BigQueryProvider is properly instantiated.
+        3. That the derive_timestamps function is called with the appropriate parameters, and the 
+           return values are correctly used to set the start and end dates and timestamps.
+        4. That internal data attributes (bigquery_data, indexer_rankings, etc...) are initialized to
+           None, to verify the class is in the correct state before further data fetching.
+        """
+        # Mock the return value of derive_timestamps
+        mock_derive_timestamps.return_value = (
+            datetime(2024, 1, 1),
+            datetime(2024, 1, 28),
+            "2024-01-01T00:00:00Z",
+            "2024-01-28T23:59:59Z",
+        )
+
+        with patch("iisa.iisa.DataManager.fetch_bigquery_data"):
+            # Initialize DataManager with mocked BigQueryProvider
+            dm = DataManager(bigquery=mock_bigquery_provider.return_value)
+
+        # Verify default values
+        assert dm.num_days == 28
+        assert dm.bigquery == mock_bigquery_provider.return_value
+
+        # Check date calculations
+        assert dm.start_date == datetime(2024, 1, 1)
+        assert dm.end_date == datetime(2024, 1, 28)
+        assert dm.start_ts == "2024-01-01T00:00:00Z"
+        assert dm.end_ts == "2024-01-28T23:59:59Z"
+
+        # Verify initial data attributes
+        assert dm.bigquery_data is None
+        assert dm.indexer_rankings is None
+        assert dm.indexer_success_rate is None
+        assert dm.indexer_uptime is None
+        assert dm.stake_to_fees is None
+        assert dm.filtered_bigquery_data is None
+
+        # Ensure derive_timestamps was called with correct argument
+        mock_derive_timestamps.assert_called_once_with(28)
+
+    @patch("iisa.iisa.DataManager.fetch_bigquery_data")
+    def test_update_and_fetch_data_method(self, mock_fetch, mock_bigquery_provider):
+        """
+        This test verifies:
+        1. The update_and_fetch_data method updates the start and end dates.
+        2. The fetch_bigquery_data method is called after updating dates.
+        """
+        # Initialize a DataManager instance
+        dm = DataManager(bigquery=mock_bigquery_provider.return_value)
+
+        # Set initial variables
+        initial_start_date = dm.start_date
+        initial_end_date = dm.end_date
+
+        # Reset mock_fetch to clear the call from initialization
+        mock_fetch.reset_mock()
+
+        # Call update_and_fetch_data
+        with patch(
+            "iisa.iisa.derive_timestamps",
+            return_value=(
+                dm.start_date + timedelta(days=1),
+                dm.end_date + timedelta(days=1),
+                "",
+                "",
+            ),
+        ):
+            dm.update_and_fetch_data()
+
+        # Verify date updates
+        assert dm.start_date >= initial_start_date
+        assert dm.end_date > initial_end_date
+
+        # Verify fetch_bigquery_data was called
+        mock_fetch.assert_called_once()
+
+    def test_get_data(self, mock_bigquery_provider):
+        """
+        This test verifies:
+        1. The get_data method returns the bigquery_data.
+        2. The returned data matches the explicitly defined mock data.
+        """
+        # Define mock data
+        mock_data = pd.DataFrame({
+            'indexer': ['indexer1', 'indexer2', 'indexer3'],
+            'score': [0.9, 0.8, 0.7],
+            'query_count': [100, 200, 300]
+        })
+
+        # Mock the fetch_bigquery_data method to avoid actual data fetching
+        with patch("iisa.iisa.DataManager.fetch_bigquery_data"):
+            # Initialize a DataManager instance
+            dm = DataManager(bigquery=mock_bigquery_provider.return_value)
+
+            # Manually set the bigquery_data attribute
+            dm.bigquery_data = mock_data
+
+        # Call get_data method
+        result = dm.get_data()
+
+        # Verify returned data is the same as the mock data
+        pd.testing.assert_frame_equal(result, mock_data)
+
+        # Additional assertions
+        assert result.shape == (3, 3)
+        assert list(result.columns) == ['indexer', 'score', 'query_count']
+        assert result['indexer'].tolist() == ['indexer1', 'indexer2', 'indexer3']
+        assert result['score'].tolist() == [0.9, 0.8, 0.7]
+        assert result['query_count'].tolist() == [100, 200, 300]
+
+    def test_get_indexer_rankings(self, mock_bigquery_provider):
+        """
+        This test verifies:
+        1. The get_indexer_rankings method returns the indexer rankings.
+        """
+        # Initialize a DataManager instance
+        with patch("iisa.iisa.DataManager.fetch_bigquery_data"):
+            dm = DataManager(bigquery=mock_bigquery_provider.return_value)
+        sample_rankings = pd.DataFrame({"indexer": ["A", "B"], "rank": [1, 2]})
+        dm.indexer_rankings = sample_rankings
+
+        # Call get_indexer_rankings method
+        result = dm.get_indexer_rankings()
+
+        # Verify returned data is the same as the sample data.
+        pd.testing.assert_frame_equal(result, sample_rankings)
+
