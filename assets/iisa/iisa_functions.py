@@ -4,7 +4,6 @@ import logging
 import socket
 from urllib.parse import urlparse
 
-import bigframes.pandas as bpd
 import numpy as np
 import pandas as pd
 import requests
@@ -32,83 +31,6 @@ ExceptionsToRetry = (ConnectionError, ReqConnectionError, HTTPError, socket.time
 # Setup basic logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-def get_initial_query(start_date, num_days):
-    """
-    Construct an initial SQL query to fetch basic filter data from the metrics_indexer_attempts table.
-
-    This function generates a SQL query that counts the number of rows for each combination of
-    deployment hash and indexer within a specified date range.
-
-    Parameters:
-    start_date (datetime): The start date for the query range.
-    num_days (int): The number of days to include in the query range.
-
-    Returns:
-    str: A SQL query string that selects deployment_hash, indexer, and num_rows,
-         filtered by the specified date range.
-    """
-    return f"""
-    WITH BasicFilter AS (
-        SELECT
-            deployment AS deployment_hash,
-            indexer,
-            COUNT(*) AS num_rows
-        FROM internal_metrics.metrics_indexer_attempts
-        WHERE day_partition BETWEEN '{start_date.strftime("%Y-%m-%d")}' AND DATE_ADD('{start_date.strftime("%Y-%m-%d")}', INTERVAL {num_days} DAY)
-        GROUP BY deployment_hash, indexer
-    ),
-    TotalQueries AS (
-        SELECT
-            deployment_hash,
-            indexer,
-            num_rows
-        FROM BasicFilter
-    )
-    SELECT
-        deployment_hash,
-        indexer,
-        num_rows
-    FROM TotalQueries;
-    """
-
-
-@retry(
-    retry=retry_if_exception_type(ExceptionsToRetry),
-    stop=stop_after_attempt(10),
-    wait=wait_exponential(multiplier=1, max=60),
-    reraise=True,  # (Default) After set number of attempts the decorator will re-raise the issue further up.
-)
-def fetch_initial_query_results(initial_query, project):
-    """
-    Execute the initial query and fetch results, with built-in retry mechanism for network-related errors.
-
-    This function sends the query to BigQuery, retrieves the results, and returns them as a pandas DataFrame.
-    It implements an exponential backoff retry strategy for handling network-related errors.
-
-    Parameters:
-    initial_query (str): The SQL query string to execute.
-    project (str): The BigQuery project ID.
-
-    Returns:
-    pandas.DataFrame: A DataFrame containing the query results, sorted by 'num_rows' in descending order.
-                      Returns an empty DataFrame if no results are found.
-    """
-    try:
-        initial_query_results_pandas = bpd.read_gbq(
-            initial_query, project_id=project
-        ).to_pandas()
-
-        # Check if the DataFrame is empty, return it without attempting to sort by num_rows
-        if initial_query_results_pandas.empty:
-            return initial_query_results_pandas
-
-        return initial_query_results_pandas.sort_values(by="num_rows", ascending=False)
-
-    except ExceptionsToRetry as e:
-        logging.error(f"Network-related error when executing query: {e}")
-        raise  # Re-raise the error for the @retry decorator to catch
 
 
 def adjust_rows(initial_query_results_pandas, target_rows):
@@ -161,270 +83,6 @@ def adjust_rows(initial_query_results_pandas, target_rows):
             break
 
     return initial_query_results_pandas["num_rows_restricted"].max()
-
-
-def get_combined_query(start_date, num_days, rows_to_use):
-    """
-    Construct a SQL query to fetch detailed data from multiple tables.
-
-    This function generates a complex SQL query that combines data from production_metrics,
-    indexer_dimensions, and metrics_indexer_attempts tables. It includes subquery logic
-    to handle deployment networks, indexer networks, and data sampling.
-
-    Parameters:
-    start_date (datetime): The start date for the query range.
-    num_days (int): The number of days to include in the query range.
-    rows_to_use (int): The maximum number of rows to retrieve per deployment_hash and indexer combination.
-
-    Returns:
-    str: A SQL query string that selects and combines data from multiple tables,
-         applying various filters and transformations.
-    """
-    return f"""
-    WITH production_metrics_gateway_subgraph_queries AS (
-        WITH initial_data AS (
-            SELECT
-                day_timestamp AS day_partition,
-                subgraph_deployment_ipfs_hash AS deployment_hash,
-                subgraph_chain_indexed AS subgraph_network,
-                subgraph_deployment_chain AS indexer_network
-            FROM production_metrics.prod_metrics_gateway_subgraph_queries
-            WHERE subgraph_deployment_ipfs_hash IS NOT NULL
-            AND subgraph_chain_indexed IS NOT NULL
-            AND subgraph_deployment_chain IS NOT NULL
-        ),
-        non_dupe_data AS (
-            SELECT DISTINCT * FROM initial_data
-        ),
-        mode_subgraph_networks AS (
-            SELECT
-                deployment_hash,
-                subgraph_network,
-                COUNT(subgraph_network) AS freq
-            FROM non_dupe_data
-            GROUP BY deployment_hash, subgraph_network
-        ),
-        aggregated_data AS (
-            SELECT
-                n.deployment_hash,
-                ARRAY_AGG(n.indexer_network) AS indexer_network_list,
-                ARRAY_AGG(DISTINCT n.subgraph_network) AS subgraph_network_list,
-                COUNT(DISTINCT n.indexer_network) AS number_of_unique_indexer_networks,
-                COUNT(n.indexer_network) AS number_of_indexer_networks,
-                ARRAY_AGG(s.subgraph_network ORDER BY s.freq DESC LIMIT 1)[OFFSET(0)] AS mode_subgraph_network
-            FROM non_dupe_data n
-            LEFT JOIN mode_subgraph_networks s
-            ON n.deployment_hash = s.deployment_hash
-            GROUP BY n.deployment_hash
-        )
-        SELECT
-            deployment_hash,
-            CASE
-                WHEN ARRAY_LENGTH(indexer_network_list) = 1 THEN indexer_network_list[OFFSET(0)]
-                ELSE 'arbitrum'
-            END AS indexer_network,
-            CASE
-                WHEN ARRAY_LENGTH(subgraph_network_list) = 1 THEN subgraph_network_list[OFFSET(0)]
-                ELSE mode_subgraph_network
-            END AS subgraph_network
-        FROM aggregated_data
-        WHERE deployment_hash IS NOT NULL
-        AND deployment_hash <> ''
-        ORDER BY number_of_unique_indexer_networks DESC
-    ),
-    
-    combined_indexer_dimensions AS (
-        WITH indexer_dimensions AS (
-            SELECT
-                day AS day_partition,
-                indexer_wallet AS indexer,
-                indexer_url AS url,
-                'mainnet-gateway' AS indexer_network
-            FROM internal_metrics.indexer_dimensions_daily
-            WHERE day BETWEEN '{start_date.strftime("%Y-%m-%d")}' AND DATE_ADD('{start_date.strftime("%Y-%m-%d")}', INTERVAL {num_days} DAY)
-        ),
-        indexer_dimensions_arbitrum AS (
-            SELECT
-                day AS day_partition,
-                indexer_wallet AS indexer,
-                indexer_url AS url,
-                'mainnet-thegraph-arbitrum' AS indexer_network
-            FROM internal_metrics.indexer_dimensions_arbitrum_daily
-            WHERE day BETWEEN '{start_date.strftime("%Y-%m-%d")}' AND DATE_ADD('{start_date.strftime("%Y-%m-%d")}', INTERVAL {num_days} DAY)
-        ),
-        combined_data AS (
-            SELECT * FROM indexer_dimensions
-            UNION ALL
-            SELECT * FROM indexer_dimensions_arbitrum
-        )
-        SELECT
-            day_partition,
-            indexer,
-            url,
-            CASE
-                WHEN indexer_network = 'mainnet-thegraph-arbitrum' THEN 'arbitrum'
-                WHEN indexer_network = 'mainnet-gateway' THEN 'mainnet'
-            END AS indexer_network
-        FROM combined_data
-        WHERE indexer IS NOT NULL AND url IS NOT NULL
-        GROUP BY day_partition, indexer, url, indexer_network
-        ORDER BY day_partition
-    ),
-    
-    metrics_indexer_attempts AS (
-        WITH BasicFilter AS (
-            SELECT
-                query_id,
-                deployment AS deployment_hash,
-                query_fee AS fee,
-                query_ts AS timestamp,
-                CAST(blocks_behind AS INT64) AS blocks_behind,
-                SAFE_CAST(response_time_ms AS INT64) AS response_time_ms,
-                indexer,
-                status,
-                day_partition,
-                RAND() as rnd
-            FROM internal_metrics.metrics_indexer_attempts
-            WHERE day_partition BETWEEN '{start_date.strftime("%Y-%m-%d")}' AND DATE_ADD('{start_date.strftime("%Y-%m-%d")}', INTERVAL {num_days} DAY)
-            AND deployment IN (SELECT deployment_hash FROM production_metrics_gateway_subgraph_queries)
-        ),
-        FilteredRows AS (
-            SELECT
-                *,
-                ROW_NUMBER() OVER (PARTITION BY deployment_hash, indexer ORDER BY rnd) as row_num
-            FROM BasicFilter
-        )
-        SELECT
-            query_id,
-            deployment_hash,
-            fee,
-            timestamp,
-            blocks_behind,
-            response_time_ms,
-            indexer,
-            status,
-            day_partition
-        FROM FilteredRows
-        WHERE row_num <= {rows_to_use}
-    )
-    
-    SELECT
-        m.query_id,
-        m.deployment_hash,
-        m.fee,
-        m.timestamp,
-        m.blocks_behind,
-        m.response_time_ms,
-        m.indexer,
-        m.status,
-        m.day_partition,
-        pm.subgraph_network,
-        c.url
-    FROM metrics_indexer_attempts m
-    LEFT JOIN production_metrics_gateway_subgraph_queries pm
-    ON m.deployment_hash = pm.deployment_hash
-    LEFT JOIN combined_indexer_dimensions c
-    ON m.indexer = c.indexer AND m.day_partition = c.day_partition AND pm.indexer_network = c.indexer_network
-    WHERE pm.indexer_network = 'arbitrum'
-    ORDER BY m.timestamp;
-    """
-
-
-@retry(
-    retry=retry_if_exception_type(ExceptionsToRetry),
-    stop=stop_after_attempt(10),
-    wait=wait_exponential(multiplier=1, max=60),
-    reraise=True,  # (Default) After set number of attempts the decorator will re-raise the issue further up.
-)
-def fetch_combined_query_results(combined_query, project):
-    """
-    Execute the combined query and fetch results, with built-in retry mechanism for network-related errors.
-
-    This function sends the combined query to BigQuery, retrieves the results,
-    and returns them as a pandas DataFrame. It implements an exponential backoff
-    retry strategy for handling network-related errors.
-
-    Parameters:
-    combined_query (str): The SQL query string to execute.
-    project (str): The BigQuery project ID.
-
-    Returns:
-    pandas.DataFrame: A DataFrame containing the query results.
-    """
-    try:
-        # Put the results from the query in a pandas DataFrame
-        combined_query_results_pandas = bpd.read_gbq(
-            combined_query, project_id=project
-        ).to_pandas()
-
-        return combined_query_results_pandas
-
-    except ExceptionsToRetry as e:
-        logging.error(f"Network-related error when executing query: {e}")
-        raise  # Re-raise the error for the @retry decorator to catch
-
-
-def get_url_query(start_date, num_days):
-    """
-    Construct a SQL query to fetch indexer URL data from the indexer_dimensions_arbitrum_daily table.
-
-    This function generates a SQL query that retrieves indexer wallet addresses, URLs, and other
-    relevant information for the Arbitrum network table within a specified date range.
-
-    Parameters:
-    start_date (datetime): The start date for the query range.
-    num_days (int): The number of days to include in the query range.
-
-    Returns:
-    str: A SQL query string that selects day, indexer_wallet, indexer_url, and sets indexer_network
-         as 'arbitrum' for the specified date range.
-    """
-    return f"""
-    SELECT
-        day AS day_partition,
-        indexer_wallet AS indexer,
-        indexer_url AS url,
-        'arbitrum' AS indexer_network
-    FROM internal_metrics.indexer_dimensions_arbitrum_daily
-    WHERE day BETWEEN '{start_date.strftime("%Y-%m-%d")}' AND DATE_ADD('{start_date.strftime("%Y-%m-%d")}', INTERVAL {num_days} DAY)
-    AND indexer_wallet IS NOT NULL AND indexer_url IS NOT NULL
-    GROUP BY day, indexer_wallet, indexer_url
-    ORDER BY day_partition
-    """
-
-
-@retry(
-    retry=retry_if_exception_type(ExceptionsToRetry),
-    stop=stop_after_attempt(10),
-    wait=wait_exponential(multiplier=1, max=60),
-    reraise=True,  # (Default) After set number of attempts the decorator will re-raise the issue further up.
-)
-def fetch_url_data(url_query, project):
-    """
-    Execute the URL query and fetch results, with built-in retry mechanism for network-related errors.
-
-    This function sends the URL query to BigQuery, retrieves the results, and returns them as a
-    pandas DataFrame. It implements an exponential backoff retry strategy for handling network-related errors.
-
-    Parameters:
-    url_query (str): The SQL query string to execute.
-    project (str): The BigQuery project ID.
-
-    Returns:
-    pandas.DataFrame: A DataFrame containing the query results with indexer URL information.
-
-    """
-    try:
-        # Put the results from the query in a pandas DataFrame
-        url_query_results_pandas = bpd.read_gbq(
-            url_query, project_id=project
-        ).to_pandas()
-
-        return url_query_results_pandas
-
-    except ExceptionsToRetry as e:
-        logging.error(f"Network-related error when executing query: {e}")
-        raise  # Re-raise the error for the @retry decorator to catch
 
 
 def apply_location_details(unique_urls_indexers_pandas):
@@ -502,14 +160,18 @@ def url_to_ip(url):
     if pd.isna(url) or not isinstance(url, str):
         return None
 
-    # Then try get the ip of the URL
     try:
         parsed_url = urlparse(url)
         hostname = parsed_url.hostname
+
+        # If the hostname is not present, return nothing.
+        if hostname is None:
+            return None
+
         return socket.gethostbyname(hostname)
 
     # If there's a gaierror (getaddrinfo error) return nothing.
-    # e.g Non Existent Domain, DNS Issue, Network Problem, Invalid Hostname Format...
+    # e.g. Non-Existent Domain, DNS Issue, Network Problem, Invalid Hostname Format...
     except socket.gaierror:
         return None
 
@@ -571,7 +233,7 @@ def get_location_and_details_from_ip(ip):
 
     # If there's been a connection error then we can raise the issue to the retry decerator and retry the connection
     except ExceptionsToRetry as e:
-        logging.error(f"Failed to retrieve IP details: {e}")
+        logging.debug(f"Failed to retrieve IP details: {e}")
         raise  # Raise to trigger retry decorator
 
     except Exception as e:
@@ -1629,46 +1291,6 @@ def calculate_indexer_uptime(df, threshold_seconds=120):
         merged_uptime_restricted, merged_uptime_full, on="indexer", how="left"
     )
     return merged_uptime_both
-
-
-def get_initial_stake_to_fees_query(start_ts):
-    """
-    A SQL query to calculate the stake-to-fees ratio for indexers.
-
-    This function constructs a SQL query that computes the ratio of slashable stake
-    to total query fees each indexer in the Arbitrum network has received, regardless
-    of the collection status, starting from a specified timestamp. In this case the
-    start_ts is a date time string num_days before the current day. This way any historical
-    query fees earned outside of the looked upon window does not effect an indexers
-    current stake-to-fees ratio.
-
-    Parameters:
-    start_ts (str): The starting timestamp for the query, formatted as a string.
-
-    Returns:
-    QueryStr: A SQL query string that calculates stake-to-fees ratios.
-
-    Note:
-    - The query joins data from 'internal_metrics.indexer_dimensions_arbitrum' and
-      'internal_metrics.metrics_indexer_attempts' tables.
-    - The query filters data starting from the provided timestamp.
-    """
-    return f"""
-        SELECT indexer,
-            recent_slashable_stake,
-            SUM(query_fees_sum) AS total_query_fees_sum,
-            recent_slashable_stake / SUM(query_fees_sum) as stake_to_fees
-        FROM (
-            SELECT  id.indexer_wallet AS indexer,
-                    id.staked_tokens - id.locked_tokens as recent_slashable_stake,
-                    SUM(mia.query_fee) AS query_fees_sum
-            FROM internal_metrics.indexer_dimensions_arbitrum id
-            INNER JOIN internal_metrics.metrics_indexer_attempts mia ON id.indexer_wallet = mia.indexer
-            WHERE TIMESTAMP(mia.day_partition) > '{start_ts}'
-            GROUP BY id.indexer_wallet, id.staked_tokens - id.locked_tokens, mia.day_partition
-        ) as aggregated_data
-        GROUP BY indexer, recent_slashable_stake;
-    """
 
 
 def calculate_stake_to_fees(stake_query_pandas):
