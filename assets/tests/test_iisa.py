@@ -8,6 +8,7 @@ from iisa.iisa import (
     DataManager,
 )
 
+
 @pytest.fixture
 def sample_data():
     return pd.DataFrame(
@@ -18,9 +19,11 @@ def sample_data():
         }
     )
 
+
 @pytest.fixture
 def mock_url_to_ip():
     return "0.0.0.0"  # Return a dummy IP for any URL
+
 
 @pytest.fixture
 def mock_bigquery_provider():
@@ -33,6 +36,7 @@ class TestInitializeDataManager:
     This class verifies the initialize_data_manager function creates/returns
     a DataManager instance with the correct configuration and handles errors.
     """
+
     def test_initialize_data_manager(self, mock_bigquery_provider, mock_url_to_ip):
         """
         This test verifies:
@@ -41,6 +45,7 @@ class TestInitializeDataManager:
         3. The returned DataManager uses the created BigQueryProvider.
         4. The DataManager's attributes are correctly set and populated.
         """
+
         def mock_perform_linear_regression(*args):
             """
             Creates and returns mock data for linear regression results.
@@ -197,6 +202,7 @@ class TestProcessSubgraph:
     This class verifies the process_subgraph function creates a DataProcessor
     instance and returns the expected results for added/cancelled indexers.
     """
+
     @patch("iisa.iisa.DataProcessor")
     def test_process_subgraph(
         self, mock_data_processor, sample_data, mock_bigquery_provider
@@ -267,6 +273,7 @@ class TestDataManager:
     This class contains tests to ensure that the DataManager class
     correctly initializes, fetches data, and provides access to its data.
     """
+
     @patch("iisa.iisa.BigQueryProvider")
     @patch("iisa.iisa.derive_timestamps")
     def test_data_manager_constructor(
@@ -279,7 +286,7 @@ class TestDataManager:
         This test checks:
         1. That DataManager uses the expected default number of days for data fetching.
         2. That BigQueryProvider is properly instantiated.
-        3. That the derive_timestamps function is called with the appropriate parameters, and the 
+        3. That the derive_timestamps function is called with the appropriate parameters, and the
            return values are correctly used to set the start and end dates and timestamps.
         4. That internal data attributes (bigquery_data, indexer_rankings, etc...) are initialized to
            None, to verify the class is in the correct state before further data fetching.
@@ -360,11 +367,13 @@ class TestDataManager:
         2. The returned data matches the explicitly defined mock data.
         """
         # Define mock data
-        mock_data = pd.DataFrame({
-            'indexer': ['indexer1', 'indexer2', 'indexer3'],
-            'score': [0.9, 0.8, 0.7],
-            'query_count': [100, 200, 300]
-        })
+        mock_data = pd.DataFrame(
+            {
+                "indexer": ["indexer1", "indexer2", "indexer3"],
+                "score": [0.9, 0.8, 0.7],
+                "query_count": [100, 200, 300],
+            }
+        )
 
         # Mock the fetch_bigquery_data method to avoid actual data fetching
         with patch("iisa.iisa.DataManager.fetch_bigquery_data"):
@@ -382,10 +391,10 @@ class TestDataManager:
 
         # Additional assertions
         assert result.shape == (3, 3)
-        assert list(result.columns) == ['indexer', 'score', 'query_count']
-        assert result['indexer'].tolist() == ['indexer1', 'indexer2', 'indexer3']
-        assert result['score'].tolist() == [0.9, 0.8, 0.7]
-        assert result['query_count'].tolist() == [100, 200, 300]
+        assert list(result.columns) == ["indexer", "score", "query_count"]
+        assert result["indexer"].tolist() == ["indexer1", "indexer2", "indexer3"]
+        assert result["score"].tolist() == [0.9, 0.8, 0.7]
+        assert result["query_count"].tolist() == [100, 200, 300]
 
     def test_get_indexer_rankings(self, mock_bigquery_provider):
         """
@@ -403,4 +412,3 @@ class TestDataManager:
 
         # Verify returned data is the same as the sample data.
         pd.testing.assert_frame_equal(result, sample_rankings)
-
