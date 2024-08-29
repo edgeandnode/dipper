@@ -1,3 +1,4 @@
+airportsdata>=20240806
 bigframes>=1.11.1
 community>=1.0.0b1
 freezegun>=1.5.1
@@ -7,6 +8,8 @@ networkx>=3.3
 numpy>=1.26.4
 pandas>=2.2.2
 pandas-stubs>=2.2.2.240807
+pandera>=0.20.3
+pandera[mypy]>=0.20.3
 plotly>=5.22.0
 polars>=1.2.1
 PuLP>=2.9.0

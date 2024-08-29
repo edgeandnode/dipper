@@ -2,12 +2,14 @@ import gzip
 import json
 import logging
 import socket
+from typing import Optional
 from urllib.parse import urlparse
 
 import numpy as np
 import pandas as pd
 import requests
 from numpy.linalg import pinv
+from pandera.typing import DataFrame
 from requests.exceptions import (
     HTTPError,
     ConnectionError as ReqConnectionError,
@@ -24,6 +26,8 @@ from tenacity import (
     wait_exponential,
     retry_if_exception_type,
 )
+
+from .iata import IataInfoSchema, get_iata_geolocation_info
 
 # Combine exceptions from different modules into a tuple
 ExceptionsToRetry = (ConnectionError, ReqConnectionError, HTTPError, socket.timeout)
@@ -233,11 +237,11 @@ def get_location_and_details_from_ip(ip):
 
     # If there's been a connection error then we can raise the issue to the retry decerator and retry the connection
     except ExceptionsToRetry as e:
-        logging.debug(f"Failed to retrieve IP details: {e}")
+        logger.debug(f"Failed to retrieve IP details: {e}")
         raise  # Raise to trigger retry decorator
 
     except Exception as e:
-        logging.error(f"Unexpected error when retrieving IP details: {e}")
+        logger.error(f"Unexpected error when retrieving IP details: {e}")
         return {
             "location": "Unknown",
             "org": "Unknown",
@@ -300,143 +304,6 @@ def extract_iata_codes(df):
     return iata_df
 
 
-def apply_iata_details(iata_df):
-    """
-    Enrich a DataFrame containing IATA codes with location details for each code.
-
-    This function adds latitude, longitude, and country information to each IATA code in the input DataFrame.
-    It first attempts to retrieve this information from a local cache, and if not found, fetches it from an external API.
-
-    Parameters:
-    iata_df (pandas.DataFrame): Input DataFrame containing an 'IATA_code' column.
-
-    Returns:
-    pandas.DataFrame: The input DataFrame with additional columns:
-        - 'latitude': Latitude of the airport location
-        - 'longitude': Longitude of the airport location
-        - 'country': Country where the airport is located
-
-    Note:
-    - Uses a local cache (CSV file) to store and retrieve IATA code details to minimize API calls.
-    - Makes API calls to fetch details for IATA codes not found in the local cache.
-    - Updates the local cache with newly fetched information.
-    - Returns the original DataFrame with NaN values for location details if the input is empty or lacks the 'IATA_code' column.
-    """
-    # First load our local copy of IATA records.
-    local_iata_df = load_or_create_iata_data()
-
-    # Check if the DataFrame is empty or the essential column is missing
-    if iata_df.empty or "IATA_code" not in iata_df.columns:
-        return pd.DataFrame(
-            columns=["IATA_code", "count", "latitude", "longitude", "country"]
-        )
-
-    iata_df[["latitude", "longitude", "country"]] = iata_df["IATA_code"].apply(
-        lambda x: get_location_and_details_from_iata(x, local_iata_df)
-    )
-    return iata_df
-
-
-def load_or_create_iata_data():
-    """
-    Returns:
-    DataFrame: The DataFrame with columns for latitude, longitude, and country.
-
-    Load existing IATA data from a CSV file or create a new DataFrame if the file doesn't exist.
-
-    This function attempts to read IATA data from a file named 'iata_data.csv'. If the file exists,
-    it loads the data into a DataFrame. If the file doesn't exist, it creates a new empty DataFrame
-    with the appropriate structure and saves it as a CSV file. This will be used to reduce the number
-    of api-ninjas api calls we are making.
-
-    Returns:
-    pandas.DataFrame: A DataFrame with columns:
-        - 'latitude': Latitude of the airport location
-        - 'longitude': Longitude of the airport location
-        - 'country': Country where the airport is located
-    The DataFrame uses 'iata_code' as the index.
-
-    Note:
-    - The CSV file is expected to be named 'iata_data.csv' and located in the current working directory.
-    - If creating a new file, it will be empty except for the column headers.
-    """
-    try:
-        # Attempt to load the iata_data CSV file if it exists
-        return pd.read_csv("iata_data.csv", index_col="iata_code")
-
-    except FileNotFoundError:
-        # Create a new DataFrame with appropriate columns
-        df = pd.DataFrame(columns=["latitude", "longitude", "country"])
-        df.index.name = "iata_code"
-
-        # Save the empty DataFrame to a new CSV file
-        df.to_csv("iata_data.csv")
-
-        return df
-
-
-def get_location_and_details_from_iata(iata, local_iata_df):
-    """
-    Retrieve location details for a given IATA code, using local cache or fetching from an external API.
-
-    This function first checks a local DataFrame for the IATA code details. If not found locally,
-    it makes an API call to fetch the information. The function then updates the local cache with any new data.
-
-    Parameters:
-    iata (str): The IATA code to look up.
-    local_iata_df (pandas.DataFrame): A DataFrame containing locally cached IATA data.
-
-    Returns:
-    pandas.Series: A Series containing:
-        - 'latitude': Latitude of the airport location
-        - 'longitude': Longitude of the airport location
-        - 'country': Country where the airport is located
-    """
-    # In the case that no IATA is provided, return none for each variable
-    if iata is None:
-        return pd.Series({"latitude": None, "longitude": None, "country": None})
-
-    # Otherwise try get the relevant latitude,longitude,country information from an API.
-    try:
-        # Try to retrieve from local data
-        if iata in local_iata_df.index:
-            return pd.Series(local_iata_df.loc[iata])
-
-        # Fetch from API if not found in local data
-        response = requests.get(
-            f"https://api.api-ninjas.com/v1/airports?iata={iata}",
-            headers={"X-Api-Key": "tKjUrCjntxiwVrcAdxyH0w==Wcmi2BuwNCpb2l3K"},
-            timeout=5,
-        )
-        response.raise_for_status()  # Check for HTTP errors
-        data = response.json()
-
-        # Make sure to append that information to our local_iata_df
-        if data and len(data) > 0:
-            new_entry = {
-                "latitude": float(data[0].get("latitude")),
-                "longitude": float(data[0].get("longitude")),
-                "country": data[0].get("country"),
-            }
-
-            # Add to DataFrame
-            local_iata_df.loc[iata] = new_entry
-
-            # Save updated DataFrame to CSV
-            local_iata_df.to_csv("iata_data.csv")
-
-            return pd.Series(new_entry)
-
-        # Otherwise return none
-        else:
-            return pd.Series({"latitude": None, "longitude": None, "country": None})
-
-    # On connection error, return none.
-    except requests.RequestException as e:
-        logger.error(f"Failed to retrieve data for IATA code {iata}: {e}")
-        return pd.Series({"latitude": None, "longitude": None, "country": None})
-
-
 def extract_iata_code(df):  # Not the same function as extract_iata_codes!
     """
     Extract the IATA code from the 'query_id' column of a DataFrame.
@@ -450,38 +317,44 @@ def extract_iata_code(df):  # Not the same function as extract_iata_codes!
     Returns:
     pandas.DataFrame: The input DataFrame with an additional 'IATA_code' column.
     """
-    logging.basicConfig(level=logging.INFO)
+    # If the DataFrame does not contain the 'query_id' column, set the query_id and IATA_code columns to None
+    # and return the DataFrame
     if "query_id" not in df.columns:
-        logging.error("DataFrame must include a 'query_id' column.")
-        df["IATA_code"] = None
+        logger.error("DataFrame must include a 'query_id' column.")
+
         df["query_id"] = None
+        df["IATA_code"] = None
         return df
 
     df["IATA_code"] = df["query_id"].str[-3:]
     return df
 
 
-def right_merge_iata_info(iata_df, combined_query_pandas):
+def merge_in_iata_geolocation_info(
+    combined_query_pandas, iata_info: Optional[DataFrame[IataInfoSchema]] = None
+):
     """
-    Perform a right merge between IATA information and combined query data.
+    Merge IATA information into combined query data.
 
     This function merges two DataFrames: one containing IATA code information and another
     containing combined query results. The merge is performed on the 'IATA_code' column.
 
     Parameters:
-    iata_df (pandas.DataFrame): DataFrame containing IATA code information.
     combined_query_pandas (pandas.DataFrame): DataFrame containing combined query results.
+    iata_df (DataFrame[IataInfoSchema], optional): DataFrame containing IATA code information.
 
     Returns:
     pandas.DataFrame: A new DataFrame resulting from the right merge of the input DataFrames.
     """
-    merged_df = pd.merge(
-        left=iata_df,
-        right=combined_query_pandas,
-        how="right",  # All rows from the right DataFrame (combined_query_pandas) will be in the merged DataFrame.
+    if iata_info is None:
+        iata_info = get_iata_geolocation_info()
+
+    return pd.merge(
+        combined_query_pandas,
+        iata_info,
         on="IATA_code",
+        how="left",
     )
-    return merged_df
 
 
 def process_combined_query_pandas(df):

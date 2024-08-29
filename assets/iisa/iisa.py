@@ -7,10 +7,8 @@ from .iisa_functions import (
     adjust_rows,
     apply_location_details,
     merge_dataframes,
-    extract_iata_codes,
-    apply_iata_details,
     extract_iata_code,
-    right_merge_iata_info,
+    merge_in_iata_geolocation_info,
     process_combined_query_pandas,
     split_locations,
     calculate_distances,
@@ -153,17 +151,11 @@ class DataManager:
             self.bigquery_data, unique_urls_indexers_pandas
         )
 
-        # Create a DataFrame containing the IATA codes and their counts
-        iata_df = extract_iata_codes(self.bigquery_data)
-
-        # Apply location and details extraction to the IATA codes in the DataFrame
-        iata_df = apply_iata_details(iata_df)
-
         # Extract IATA codes from the combined query data
         self.bigquery_data = extract_iata_code(self.bigquery_data)
 
         # Merge the IATA information with the combined query data
-        self.bigquery_data = right_merge_iata_info(iata_df, self.bigquery_data)
+        self.bigquery_data = merge_in_iata_geolocation_info(self.bigquery_data)
 
         # Process the combined query DataFrame
         self.bigquery_data = process_combined_query_pandas(self.bigquery_data)
