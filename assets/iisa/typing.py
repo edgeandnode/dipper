@@ -3,8 +3,11 @@ IISA-specific type hints and Pandera schema field factories.
 """
 
 from functools import partial
+from typing import NewType
 
 import pandera as pa
+
+HttpUrlStr = NewType("HttpUrlStr", str)
 
 IataCodeField = partial(
     pa.Field,
