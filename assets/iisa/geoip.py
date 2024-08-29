@@ -1,0 +1,237 @@
+"""
+GeoIP utilities for resolving IP addresses and getting their geolocation information.
+"""
+
+import gzip
+import json
+import logging
+import socket
+from typing import TypedDict, Optional, NewType, Dict
+from urllib.parse import urlparse
+
+import requests
+from requests.exceptions import (
+    HTTPError,
+    ConnectionError as ReqConnectionError,
+)
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
+from .typing import HttpUrlStr
+
+__all__ = [
+    "IpInfoLocationInfo",
+    "GeoipResolver",
+]
+
+logger = logging.getLogger(__name__)
+
+_UrlHostStr = NewType("_UrlHostStr", str)
+_IpAddressStr = NewType("_IpAddressStr", str)
+
+IpInfoLocationInfo = TypedDict(
+    "IpInfoLocationInfo",
+    {
+        "ip_addr": str,
+        "org": str,
+        "latitude": float | str,
+        "longitude": float | str,
+        "country": str,
+    },
+)
+
+
+def _resolve_host_ipaddr(host: _UrlHostStr) -> Optional[_IpAddressStr]:
+    """
+    Use DNS resolution to get the IP address of a hostname.
+
+    :param host: Hostname to resolve to an IP address.
+
+    :returns: IP address if host is resolved, otherwise None.
+    """
+    try:
+        (hostname, alias, ip_addrs) = socket.gethostbyname_ex(host)
+    except socket.gaierror:
+        return None
+
+    # Sort IP addresses to get a deterministic result
+    ip_addrs = sorted(ip_addrs)
+
+    if len(ip_addrs) == 0:
+        return None
+
+    return _IpAddressStr(ip_addrs[0])
+
+
+def _get_url_host(url: HttpUrlStr) -> Optional[_UrlHostStr]:
+    """
+    Get the hostname from a URL.
+
+    :param url: URL to extract the hostname from.
+
+    :returns: Hostname if it can be extracted, otherwise None.
+    """
+    try:
+        parsed_url = urlparse(url)
+
+        # If the URL does not have a hostname, return None
+        if not parsed_url.hostname or parsed_url.hostname == "":
+            return None
+
+        return _UrlHostStr(parsed_url.hostname)
+    except ValueError:
+        return None
+
+
+_ExceptionsToRetry = (ConnectionError, ReqConnectionError, HTTPError, socket.timeout)
+
+
+@retry(
+    retry=retry_if_exception_type(_ExceptionsToRetry),
+    stop=stop_after_attempt(10),
+    wait=wait_exponential(multiplier=1, max=60),
+)
+def _get_ipaddr_location_info(ip_addr: _IpAddressStr) -> IpInfoLocationInfo:
+    """
+    Fetch location and organizational details for a given IP address using an external API (ipinfo.io).
+
+    This function makes an HTTP request to the ipinfo.io API to retrieve geographical and
+    organizational information associated with the provided IP address. It includes a retry
+    mechanism to handle potential network issues or API failures.
+
+    Parameters:
+    ip (str): The IP address to query.
+
+    Returns:
+    dict: A dictionary containing the following keys:
+        - 'org': Organization associated with the IP
+        - 'loc': Geographical coordinates
+        - 'ip': The queried IP address
+    """
+    try:
+        response = requests.get(
+            f"https://ipinfo.io/{ip_addr}/json?token=67647c2e5ccd95", timeout=10
+        )
+        response.raise_for_status()  # Raise a HTTPError in case of bad response.
+
+        # Try to decode the content manually
+        try:
+            data = response.json()
+
+        except requests.exceptions.JSONDecodeError:
+            # If JSON decoding fails, try to decompress manually
+            decompressed_content = gzip.decompress(response.content)
+            data = json.loads(decompressed_content)
+
+        ip_addr = data.get("ip", "Unknown")
+        org = data.get("org", "Unknown")
+        country = data.get("country", "Unknown")
+
+        # Extract the latitude and longitude from the 'loc' field
+        loc = data.get("loc")
+        if loc is not None:
+            (latitude, longitude) = loc.split(",")
+            latitude = float(latitude)
+            longitude = float(longitude)
+        else:
+            latitude = longitude = "Unknown"
+
+        return {
+            "ip_addr": ip_addr,
+            "org": org,
+            "latitude": latitude,
+            "longitude": longitude,
+            "country": country,
+        }
+
+    # If there's been a connection error then we can raise the issue to the retry decerator and retry the connection
+    except _ExceptionsToRetry as e:
+        logger.debug(f"Failed to retrieve IP details: {e}")
+        raise  # Raise to trigger retry decorator
+
+    except Exception as e:
+        logger.error(f"Unexpected error when retrieving IP details: {e}")
+        return {
+            "ip_addr": ip_addr,
+            "org": "Unknown",
+            "latitude": "Unknown",
+            "longitude": "Unknown",
+            "country": "Unknown",
+        }
+
+
+class GeoipResolver:
+    """
+    A simple cache-based resolver for IP addresses using the ipinfo.io API.
+    """
+
+    def __init__(self) -> None:
+        self._host_ipaddr_cache: Dict[_UrlHostStr, _IpAddressStr] = {}
+        self._ipinfo_cache: Dict[_IpAddressStr, IpInfoLocationInfo] = {}
+
+    def _host_ipaddr_cache_entries(self) -> int:
+        """
+        Get the number of entries in the host-to-IP address cache.
+
+        This is a helper method for testing purposes.
+
+        :return: The number of entries in the cache.
+        """
+        return len(self._host_ipaddr_cache)
+
+    def _ipinfo_cache_entries(self) -> int:
+        """
+        Get the number of entries in the IP address geolocation cache.
+
+        This is a helper method for testing purposes.
+
+        :return: The number of entries in the cache.
+        """
+        return len(self._ipinfo_cache)
+
+    def resolve_url_host_info(self, url: HttpUrlStr) -> IpInfoLocationInfo:
+        """
+        Resolve the geolocation information for a given URL.
+
+        :param url: The URL to resolve.
+        :return: A dictionary containing the geolocation information.
+        """
+        # Extract the host from the URL
+        url_host = _get_url_host(url)
+
+        # Bail out if the URL host cannot be extracted
+        if url_host is None:
+            return {
+                "ip_addr": "Unknown",
+                "org": "Unknown",
+                "latitude": "Unknown",
+                "longitude": "Unknown",
+                "country": "Unknown",
+            }
+
+        # If the IP address for the host is not in the cache,
+        # resolve it and cache the result
+        ipaddr = self._host_ipaddr_cache.get(url_host, _resolve_host_ipaddr(url_host))
+
+        if ipaddr is not None:
+            self._host_ipaddr_cache[url_host] = ipaddr
+        else:
+            # Bail out if the IP address is unknown
+            return {
+                "ip_addr": "Unknown",
+                "org": "Unknown",
+                "latitude": "Unknown",
+                "longitude": "Unknown",
+                "country": "Unknown",
+            }
+
+        # If the IP address geolocation info is not in the cache,
+        # resolve it and cache the result
+        if ipaddr not in self._ipinfo_cache:
+            self._ipinfo_cache[ipaddr] = _get_ipaddr_location_info(ipaddr)
+
+        return self._ipinfo_cache[ipaddr]
