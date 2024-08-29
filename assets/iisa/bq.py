@@ -5,10 +5,12 @@ The "Google BigQuery" provider.
 import socket
 from datetime import date
 from textwrap import dedent
-from typing import NewType
+from typing import NewType, cast
 
+import pandas as pd
+import pandera as pa
 from bigframes import pandas as bpd
-from pandas import DataFrame
+from pandera.typing import DataFrame, Series, Index
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -17,13 +19,77 @@ from tenacity import (
 )
 
 from .time import TimestampStr, DateStr
+from .typing import (
+    ArrowDate32Field,
+    EthAddressField,
+    HttpUrlField,
+    IpfsHashField,
+    QueryIdField,
+)
 
 QueryStr = NewType("QueryStr", str)
 
-StakeToFeesDataFrame = NewType("StakeToFeesDataFrame", DataFrame)
-CombinedQueryResultsDataFrame = NewType("CombinedQueryResultsDataFrame", DataFrame)
-UrlDataFrame = NewType("UrlDataFrame", DataFrame)
-InitialQueryResultsDataFrame = NewType("InitialQueryResultsDataFrame", DataFrame)
+
+class InitialQuerySchema(pa.DataFrameModel):
+    """
+    Schema for the initial query results data frame.
+
+    See BigQueryProvider.fetch_initial_query_results for more information.
+    """
+
+    deployment_hash: Series[str] = IpfsHashField()
+    indexer: Series[str] = EthAddressField()
+    num_rows: Series[int] = pa.Field(ge=0)
+
+
+class UrlDataFrameSchema(pa.DataFrameModel):
+    """
+    Schema for the URL dataframe.
+
+    See BigQueryProvider.fetch_url_data for more information.
+    """
+
+    indexer: Index[str] = EthAddressField()
+    day_partition: Series[pd.ArrowDtype] = ArrowDate32Field()
+    url: Series[str] = HttpUrlField()
+    indexer_network: Series[str] = pa.Field(isin=["arbitrum"])
+
+
+class CombinedQuerySchema(pa.DataFrameModel):
+    """
+    Schema for the combined query results dataframe.
+
+    See BigQueryProvider.fetch_combined_query_results for more information.
+    """
+
+    query_id: Series[str] = QueryIdField()
+    deployment_hash: Series[str] = IpfsHashField()
+    fee: Series[float] = pa.Field()
+    # timestamp: Series[pd.Timestamp] = pa.Field()
+    blocks_behind: Series[int] = pa.Field(ge=0)
+    response_time_ms: Series[int] = pa.Field(ge=0)
+    indexer: Series[str] = EthAddressField()
+    status: Series[str] = pa.Field()
+    day_partition: Series[pd.ArrowDtype] = ArrowDate32Field()
+    subgraph_network: Series[str] = pa.Field(str_matches=r"[a-zA-Z0-9-]+")
+    url: Series[str] = HttpUrlField()
+
+
+class StakeToFeesSchema(pa.DataFrameModel):
+    """
+    Schema for the stake-to-fees ratio dataframe.
+    """
+
+    indexer: Index[str] = EthAddressField()
+    recent_slashable_stake: Series[float] = pa.Field(ge=0)
+    total_query_fees_sum: Series[float] = pa.Field(ge=0)
+    stake_to_fees: Series[float] = pa.Field(ge=0)
+
+
+InitialQueryDataFrame = DataFrame[InitialQuerySchema]
+UrlDataFrame = DataFrame[UrlDataFrameSchema]
+CombinedQueryDataFrame = DataFrame[CombinedQuerySchema]
+StakeToFeesDataFrame = DataFrame[StakeToFeesSchema]
 
 
 class BigQueryProvider:
@@ -33,6 +99,7 @@ class BigQueryProvider:
         # Configure the Google BigQuery dataframes project and location
         bpd.options.bigquery.project = project
         bpd.options.bigquery.location = location
+        # bpd.options.display.progress_bar = None
 
     @retry(
         retry=retry_if_exception_type((ConnectionError, socket.timeout)),
@@ -57,49 +124,23 @@ class BigQueryProvider:
         query (QueryStr): SQL query string to be executed on Google BigQuery.
 
         Returns:
-        pandas.DataFrame: A DataFrame containing the query results.
+        DataFrame[Any]: A DataFrame containing the query results.
         """
-        return bpd.read_gbq(query).to_pandas()
+        return cast(DataFrame, bpd.read_gbq(query).to_pandas())
 
-    def fetch_initial_stake_to_fees(
-        self, start_ts: TimestampStr
-    ) -> StakeToFeesDataFrame:
-        """
-        Get the initial stake to fees query
-        """
-        query = _get_initial_stake_to_fees_query(start_ts)
-        dataframe = self._read_gbq_dataframe(query)
-        return StakeToFeesDataFrame(dataframe)
-
-    def fetch_combined_query_results(
-        self, start_date: date, num_days: int, rows_to_use: int
-    ) -> CombinedQueryResultsDataFrame:
-        """
-        Fetch the combined query results.
-        """
-        # Format the start date as a %Y-%m-%d string
-        start = DateStr(start_date.strftime("%Y-%m-%d"))
-
-        query = _get_combined_query(start, num_days, rows_to_use)
-        dataframe = self._read_gbq_dataframe(query)
-        return CombinedQueryResultsDataFrame(dataframe)
-
-    def fetch_url_data(self, start_date: date, num_days: int) -> UrlDataFrame:
-        """
-        Fetch the url query results.
-        """
-        # Format the start date as a %Y-%m-%d string
-        start = DateStr(start_date.strftime("%Y-%m-%d"))
-
-        query = _get_url_query(start, num_days)
-        dataframe = self._read_gbq_dataframe(query)
-        return UrlDataFrame(dataframe)
-
+    @pa.check_types
     def fetch_initial_query_results(
         self, start_date: date, num_days: int
-    ) -> InitialQueryResultsDataFrame:
+    ) -> InitialQueryDataFrame:
         """
         Fetch the initial query results.
+
+        Parameters:
+        start_date (date): The start date for the query range.
+        num_days (int): The number of days to include in the query range.
+
+        Returns:
+        InitialQueryDataFrame: A DataFrame containing the initial query results.
         """
         # Format the start date as a %Y-%m-%d string
         start = DateStr(start_date.strftime("%Y-%m-%d"))
@@ -107,11 +148,80 @@ class BigQueryProvider:
         query = _get_initial_query(start, num_days)
         dataframe = self._read_gbq_dataframe(query)
 
-        if dataframe.empty:
-            return InitialQueryResultsDataFrame(dataframe)
+        if not dataframe.empty:
+            dataframe.sort_values(by="num_rows", ascending=False, inplace=True)
 
-        dataframe = dataframe.sort_values(by="num_rows", ascending=False)
-        return InitialQueryResultsDataFrame(dataframe)
+        return cast(InitialQueryDataFrame, dataframe)
+
+    @pa.check_types
+    def fetch_url_data(self, start_date: date, num_days: int) -> UrlDataFrame:
+        """
+        Fetch the url query results.
+
+        Parameters:
+        start_date (date): The start date for the query range.
+        num_days (int): The number of days to include in the query range.
+
+        Returns:
+        UrlDataFrame: A DataFrame containing the URL query results
+        """
+        # Format the start date as a %Y-%m-%d string
+        start = DateStr(start_date.strftime("%Y-%m-%d"))
+
+        query = _get_url_query(start, num_days)
+        dataframe = self._read_gbq_dataframe(query)
+
+        # Set the indexer column as the index
+        dataframe.set_index("indexer", inplace=True)
+
+        return cast(UrlDataFrame, dataframe)
+
+    @pa.check_types
+    def fetch_combined_query_results(
+        self, start_date: date, num_days: int, rows_to_use: int
+    ) -> CombinedQueryDataFrame:
+        """
+        Fetch the combined query results.
+
+        Parameters:
+        start_date (date): The start date for the query range.
+        num_days (int): The number of days to include in the query range.
+        rows_to_use (int): The maximum number of rows to retrieve per deployment_hash and indexer combination.
+
+        Returns:
+        CombinedQueryDataFrame: A DataFrame containing the combined query results.
+        """
+        # Format the start date as a %Y-%m-%d string
+        start = DateStr(start_date.strftime("%Y-%m-%d"))
+
+        query = _get_combined_query(start, num_days, rows_to_use)
+        dataframe = self._read_gbq_dataframe(query)
+
+        if not dataframe.empty:
+            dataframe.dropna(subset=["url"], inplace=True)
+
+        return cast(CombinedQueryDataFrame, dataframe)
+
+    @pa.check_types
+    def fetch_initial_stake_to_fees(
+        self, start_ts: TimestampStr
+    ) -> StakeToFeesDataFrame:
+        """
+        Get the initial stake to fees query.
+
+        Parameters:
+        start_ts (TimestampStr): The starting timestamp for the query.
+
+        Returns:
+        StakeToFeesDataFrame: A DataFrame containing the stake-to-fees query results.
+        """
+        query = _get_initial_stake_to_fees_query(start_ts)
+        dataframe = self._read_gbq_dataframe(query)
+
+        # Set the indexer column as the index
+        dataframe.set_index("indexer", inplace=True)
+
+        return cast(StakeToFeesDataFrame, dataframe)
 
 
 def _get_combined_query(
@@ -351,7 +461,8 @@ def _get_url_query(start_date: DateStr, num_days: int) -> QueryStr:
             'arbitrum' AS indexer_network
         FROM internal_metrics.indexer_dimensions_arbitrum_daily
         WHERE day BETWEEN '{start_date}' AND DATE_ADD('{start_date}', INTERVAL {num_days} DAY)
-        AND indexer_wallet IS NOT NULL AND indexer_url IS NOT NULL
+        AND indexer_wallet IS NOT NULL 
+        AND indexer_url IS NOT NULL
         GROUP BY day, indexer_wallet, indexer_url
         ORDER BY day_partition
     """)
