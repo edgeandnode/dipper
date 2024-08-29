@@ -1259,7 +1259,7 @@ class TestDataProcessor:
             processor._replace_underperforming_indexers()
 
             # Verify that the worst indexer in the current group has been replaced with the best available indexer
-            assert processor.current_group == ["B", "C", "D"] 
+            assert processor.current_group == ["B", "C", "D"]
             assert mock_find.call_count == 3
             assert mock_score.call_count == 2
 
@@ -1296,7 +1296,7 @@ class TestDataProcessor:
 
             result = processor._find_best_replacement("C")
 
-            # Verify the best replacement is D, not E, due to blacklisting. 
+            # Verify the best replacement is D, not E, due to blacklisting.
             assert result == "D"
 
             # Verify the number of diversity requirement checks
@@ -1313,7 +1313,7 @@ class TestDataProcessor:
         The test uses raw, non-normalized sample data to create a DataProcessor instance,
         sets predefined weights, and then calls _calculate_group_score with different
         parameters to test various scenarios.
-    """
+        """
         # raw non-normalized sample data
         raw_data = pd.DataFrame(
             {

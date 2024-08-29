@@ -30,6 +30,11 @@ from .iisa_functions import (
     calculate_weighted_score,
 )
 from .time import derive_timestamps
+import logging
+
+# Setup basic logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Constants
 DATA_MANAGER_NUM_DAYS = 28
@@ -427,6 +432,9 @@ class DataProcessor:
         try:
             normalized_data = normalize_metrics(self.data)
         except Exception as e:
+            logger.error(
+                f"Unexpected error when trying normalize_metrics(self.data): {e}"
+            )
             normalized_data = self.data
 
         weights = {
@@ -444,6 +452,7 @@ class DataProcessor:
                 lambda row: calculate_weighted_score(row, weights), axis=1
             )
         except Exception as e:
+            logger.error(f"Unexpected error when trying calculate_weighted_score: {e}")
             normalized_data["weighted_score"] = np.nan
 
         return normalized_data
