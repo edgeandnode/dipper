@@ -83,9 +83,9 @@ class TestGetIpaddrLocationInfo:
         ## Then
         assert result["ip_addr"] == ipaddr
         assert result["org"] == "AS19527 Google LLC"
-        assert result["latitude"] != "Unknown"
-        assert result["longitude"] != "Unknown"
         assert result["country"] == "US"
+        assert result["latitude"] is not None
+        assert result["longitude"] is not None
 
     def test_get_geolocation_info_for_private_address(self):
         ## Given
@@ -97,10 +97,10 @@ class TestGetIpaddrLocationInfo:
 
         ## Then
         assert result["ip_addr"] == ipaddr
-        assert result["org"] == "Unknown"
-        assert result["latitude"] == "Unknown"
-        assert result["longitude"] == "Unknown"
-        assert result["country"] == "Unknown"
+        assert result["org"] is None
+        assert result["country"] is None
+        assert result["latitude"] is None
+        assert result["longitude"] is None
 
 
 class TestGeoipResolver:
@@ -117,9 +117,9 @@ class TestGeoipResolver:
         # Assert the IP address and geolocation information is returned
         assert result["ip_addr"] == "8.8.4.4"
         assert result["org"] == "AS15169 Google LLC"
-        assert result["latitude"] != "Unknown"
-        assert result["longitude"] != "Unknown"
         assert result["country"] == "US"
+        assert result["latitude"] is not None
+        assert result["longitude"] is not None
 
         # Assert caches are no longer empty
         assert geoip._host_ipaddr_cache_entries() == 1
@@ -136,11 +136,11 @@ class TestGeoipResolver:
 
         ## Then
         # Assert no information is returned
-        assert result["ip_addr"] == "Unknown"
-        assert result["org"] == "Unknown"
-        assert result["latitude"] == "Unknown"
-        assert result["longitude"] == "Unknown"
-        assert result["country"] == "Unknown"
+        assert result["ip_addr"] is None
+        assert result["org"] is None
+        assert result["country"] is None
+        assert result["latitude"] is None
+        assert result["longitude"] is None
 
         # Assert cache is empty
         assert geoip._host_ipaddr_cache_entries() == 0
@@ -157,11 +157,11 @@ class TestGeoipResolver:
 
         ## Then
         # Assert no information is returned
-        assert result["ip_addr"] == "Unknown"
-        assert result["org"] == "Unknown"
-        assert result["latitude"] == "Unknown"
-        assert result["longitude"] == "Unknown"
-        assert result["country"] == "Unknown"
+        assert result["ip_addr"] is None
+        assert result["org"] is None
+        assert result["country"] is None
+        assert result["latitude"] is None
+        assert result["longitude"] is None
 
         # Assert cache is empty
         assert geoip._host_ipaddr_cache_entries() == 0
@@ -180,10 +180,10 @@ class TestGeoipResolver:
         ## Then
         # Assert the localhost IP address is returned, but no geolocation information
         assert result["ip_addr"] == "127.0.0.1"
-        assert result["org"] == "Unknown"
-        assert result["latitude"] == "Unknown"
-        assert result["longitude"] == "Unknown"
-        assert result["country"] == "Unknown"
+        assert result["org"] is None
+        assert result["country"] is None
+        assert result["latitude"] is None
+        assert result["longitude"] is None
 
         # Assert cache is not empty
         assert geoip._host_ipaddr_cache_entries() == 1
