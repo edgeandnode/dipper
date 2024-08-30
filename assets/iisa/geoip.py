@@ -24,7 +24,7 @@ from tenacity import (
 from .typing import HttpUrlStr
 
 __all__ = [
-    "IpInfoLocationInfo",
+    "IpInfoLocation",
     "GeoipResolver",
 ]
 
@@ -33,14 +33,14 @@ logger = logging.getLogger(__name__)
 _UrlHostStr = NewType("_UrlHostStr", str)
 _IpAddressStr = NewType("_IpAddressStr", str)
 
-IpInfoLocationInfo = TypedDict(
-    "IpInfoLocationInfo",
+IpInfoLocation = TypedDict(
+    "IpInfoLocation",
     {
-        "ip_addr": str,
-        "org": str,
-        "latitude": float | str,
-        "longitude": float | str,
-        "country": str,
+        "ip_addr": Optional[str],
+        "org": Optional[str],
+        "country": Optional[str],
+        "latitude": Optional[float],
+        "longitude": Optional[float],
     },
 )
 
@@ -95,7 +95,7 @@ _ExceptionsToRetry = (ConnectionError, ReqConnectionError, HTTPError, socket.tim
     stop=stop_after_attempt(10),
     wait=wait_exponential(multiplier=1, max=60),
 )
-def _get_ipaddr_location_info(ip_addr: _IpAddressStr) -> IpInfoLocationInfo:
+def _get_ipaddr_location_info(ip_addr: _IpAddressStr) -> IpInfoLocation:
     """
     Fetch location and organizational details for a given IP address using an external API (ipinfo.io).
 
@@ -127,25 +127,29 @@ def _get_ipaddr_location_info(ip_addr: _IpAddressStr) -> IpInfoLocationInfo:
             decompressed_content = gzip.decompress(response.content)
             data = json.loads(decompressed_content)
 
-        ip_addr = data.get("ip", "Unknown")
-        org = data.get("org", "Unknown")
-        country = data.get("country", "Unknown")
+        ip_addr = data.get("ip", None)
+        org = data.get("org", None)
+        country = data.get("country", None)
 
         # Extract the latitude and longitude from the 'loc' field
-        loc = data.get("loc")
+        loc = data.get("loc", None)
         if loc is not None:
-            (latitude, longitude) = loc.split(",")
-            latitude = float(latitude)
-            longitude = float(longitude)
+            # Try to convert the latitude and longitude to floats
+            try:
+                (latitude, longitude) = loc.split(",")
+                latitude = float(latitude)
+                longitude = float(longitude)
+            except ValueError:
+                latitude = longitude = None
         else:
-            latitude = longitude = "Unknown"
+            latitude = longitude = None
 
         return {
             "ip_addr": ip_addr,
             "org": org,
+            "country": country,
             "latitude": latitude,
             "longitude": longitude,
-            "country": country,
         }
 
     # If there's been a connection error then we can raise the issue to the retry decerator and retry the connection
@@ -157,10 +161,10 @@ def _get_ipaddr_location_info(ip_addr: _IpAddressStr) -> IpInfoLocationInfo:
         logger.error(f"Unexpected error when retrieving IP details: {e}")
         return {
             "ip_addr": ip_addr,
-            "org": "Unknown",
-            "latitude": "Unknown",
-            "longitude": "Unknown",
-            "country": "Unknown",
+            "country": None,
+            "org": None,
+            "latitude": None,
+            "longitude": None,
         }
 
 
@@ -171,7 +175,7 @@ class GeoipResolver:
 
     def __init__(self) -> None:
         self._host_ipaddr_cache: Dict[_UrlHostStr, _IpAddressStr] = {}
-        self._ipinfo_cache: Dict[_IpAddressStr, IpInfoLocationInfo] = {}
+        self._ipinfo_cache: Dict[_IpAddressStr, IpInfoLocation] = {}
 
     def _host_ipaddr_cache_entries(self) -> int:
         """
@@ -193,7 +197,7 @@ class GeoipResolver:
         """
         return len(self._ipinfo_cache)
 
-    def resolve_url_host_info(self, url: HttpUrlStr) -> IpInfoLocationInfo:
+    def resolve_url_host_info(self, url: HttpUrlStr) -> IpInfoLocation:
         """
         Resolve the geolocation information for a given URL.
 
@@ -206,11 +210,11 @@ class GeoipResolver:
         # Bail out if the URL host cannot be extracted
         if url_host is None:
             return {
-                "ip_addr": "Unknown",
-                "org": "Unknown",
-                "latitude": "Unknown",
-                "longitude": "Unknown",
-                "country": "Unknown",
+                "ip_addr": None,
+                "org": None,
+                "country": None,
+                "latitude": None,
+                "longitude": None,
             }
 
         # If the IP address for the host is not in the cache,
@@ -222,11 +226,11 @@ class GeoipResolver:
         else:
             # Bail out if the IP address is unknown
             return {
-                "ip_addr": "Unknown",
-                "org": "Unknown",
-                "latitude": "Unknown",
-                "longitude": "Unknown",
-                "country": "Unknown",
+                "ip_addr": None,
+                "org": None,
+                "country": None,
+                "latitude": None,
+                "longitude": None,
             }
 
         # If the IP address geolocation info is not in the cache,
