@@ -1199,7 +1199,9 @@ class TestDataProcessor:
         processor.current_group = ["A", "A"]
         assert not processor._meets_decentralization_requirements("A")
 
-    def test_meets_decentralization_requirements_edge_cases(self, mock_bigquery_provider):
+    def test_meets_decentralization_requirements_edge_cases(
+        self, mock_bigquery_provider
+    ):
         """
         Test _meets_decentralization_requirements with various edge cases.
         """
