@@ -14,6 +14,7 @@ from iisa.bq import (
     _get_url_query,
     _get_initial_stake_to_fees_query,
     BigQueryProvider,
+    InitialQueryDataFrame,
 )
 from iisa.time import DateStr, TimestampStr
 
@@ -88,15 +89,28 @@ class TestFetchData:
         return BigQueryProvider("graph-mainnet", "US")
 
     def test_successful_fetch(self, mocker, bigquery):
+        ## Given
         # Test timeframe
         start_date = datetime.strptime("2024-08-01", "%Y-%m-%d")
         num_days = 28
 
         # Setup sample data and the DataFrame to be returned by the 'to_pandas' method
-        df = pd.DataFrame(
+        expected_df = InitialQueryDataFrame(
             {
-                "deployment_hash": ["hash1", "hash2", "hash3", "hash4", "hash5"],
-                "indexer": ["index1", "index2", "index3", "index4", "index5"],
+                "deployment_hash": [
+                    "QmWATWQ7fVPP2EFGu71UkfnqhYXDYH566qy47CnJDgvs8u",
+                    "QmPK1s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB",
+                    "QmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n",
+                    "QmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                    "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY",
+                ],
+                "indexer": [
+                    "0x0058223c6617cca7ce76fc929ec9724cd43d4542",
+                    "0x015cb4f88c16dfaf90fa350af5338c4424a0d490",
+                    "0x01e110178f15aeec1cccc507939109175dc9c121",
+                    "0x01f17c392614c7ea586e7272ed348efee21b90a3",
+                    "0x07ca020fdde5c57c1c3a783befdb08929cf77fec",
+                ],
                 "num_rows": [10, 20, 15, 5, 25],
                 "timestamp": [
                     "2024-08-01T12:00:00Z",
@@ -108,7 +122,7 @@ class TestFetchData:
                 "status": ["success", "success", "failure", "success", "failure"],
             }
         )
-        expected_df = df.sort_values(by="num_rows", ascending=False)
+        expected_df.sort_values(by="num_rows", ascending=False, inplace=True)
 
         # Mock object that read_gbq will return
         mock_query_job = mocker.Mock()
@@ -117,9 +131,10 @@ class TestFetchData:
         # Apply the mock to make read_gbq return the mock_query_job
         mocker.patch("bigframes.pandas.read_gbq", return_value=mock_query_job)
 
-        # Call the function
+        ## When
         result_df = bigquery.fetch_initial_query_results(start_date, num_days)
 
+        ## Then
         # Verify the result DataFrame is sorted correctly by 'num_rows'
         pd.testing.assert_frame_equal(result_df, expected_df)
 
@@ -127,13 +142,21 @@ class TestFetchData:
         assert (result_df["num_rows"].values == expected_df["num_rows"].values).all()
 
     def test_fetch_empty_data(self, mocker, bigquery):
+        ## Given
         # Test timeframe
         start_date = datetime.strptime("2024-08-01", "%Y-%m-%d")
         num_days = 28
 
         # Setup sample data and the DataFrame to be returned by the 'to_pandas' method
-        df = pd.DataFrame({})
-        expected_df = df
+        expected_df = InitialQueryDataFrame(
+            {
+                "deployment_hash": pd.Series(dtype="string"),
+                "indexer": pd.Series(dtype="string"),
+                "num_rows": pd.Series(dtype="int64"),
+                "timestamp": pd.Series(dtype="string"),
+                "status": pd.Series(dtype="string"),
+            }
+        )
 
         # Mock object that read_gbq will return
         mock_query_job = mocker.Mock()
@@ -142,9 +165,10 @@ class TestFetchData:
         # Apply the mock to make read_gbq return the mock_query_job
         mocker.patch("bigframes.pandas.read_gbq", return_value=mock_query_job)
 
-        # Call the function
+        ## When
         result_df = bigquery.fetch_initial_query_results(start_date, num_days)
 
+        ## Then
         # Assertions to check the result is an empty DataFrame
         assert result_df.empty
 
@@ -152,26 +176,39 @@ class TestFetchData:
         """
         Check the retry mechanism does not capture generic errors.
         """
+        ## Given
         # Test timeframe
         start_date = datetime.strptime("2024-08-01", "%Y-%m-%d")
         num_days = 28
 
         # Setup sample data and the DataFrame to be returned by the 'to_pandas' method
-        sample_data = {
-            "deployment_hash": ["hash1", "hash2", "hash3", "hash4", "hash5"],
-            "indexer": ["index1", "index2", "index3", "index4", "index5"],
-            "num_rows": [10, 20, 15, 5, 25],
-            "timestamp": [
-                "2024-08-01T12:00:00Z",
-                "2024-08-01T13:00:00Z",
-                "2024-08-01T14:00:00Z",
-                "2024-08-01T15:00:00Z",
-                "2024-08-01T16:00:00Z",
-            ],
-            "status": ["success", "success", "failure", "success", "failure"],
-        }
-        df = pd.DataFrame(sample_data)
-        expected_df = df
+        expected_df = InitialQueryDataFrame(
+            {
+                "deployment_hash": [
+                    "QmWATWQ7fVPP2EFGu71UkfnqhYXDYH566qy47CnJDgvs8u",
+                    "QmPK1s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB",
+                    "QmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n",
+                    "QmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                    "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY",
+                ],
+                "indexer": [
+                    "0x0058223c6617cca7ce76fc929ec9724cd43d4542",
+                    "0x015cb4f88c16dfaf90fa350af5338c4424a0d490",
+                    "0x01e110178f15aeec1cccc507939109175dc9c121",
+                    "0x01f17c392614c7ea586e7272ed348efee21b90a3",
+                    "0x07ca020fdde5c57c1c3a783befdb08929cf77fec",
+                ],
+                "num_rows": [10, 20, 15, 5, 25],
+                "timestamp": [
+                    "2024-08-01T12:00:00Z",
+                    "2024-08-01T13:00:00Z",
+                    "2024-08-01T14:00:00Z",
+                    "2024-08-01T15:00:00Z",
+                    "2024-08-01T16:00:00Z",
+                ],
+                "status": ["success", "success", "failure", "success", "failure"],
+            }
+        )
 
         # Mock object that read_gbq will return
         mock_query_job = mocker.Mock()
@@ -183,6 +220,7 @@ class TestFetchData:
         )
         mock_read_gbq.side_effect = Exception("Generic error. Query failed.")
 
+        ## When
         # Call the function and assert that it raises an exception "Generic error. Query failed."
         with pytest.raises(Exception, match="Generic error. Query failed."):
             bigquery.fetch_initial_query_results(start_date, num_days)
@@ -191,15 +229,28 @@ class TestFetchData:
         """
         Check the retry mechanism works as expected when a connection error is raised.
         """
+        ## Given
         # Test timeframe
         start_date = datetime.strptime("2024-08-01", "%Y-%m-%d")
         num_days = 28
 
         # Setup sample data and the DataFrame to be returned by the 'to_pandas' method
-        df = pd.DataFrame(
+        expected_df = pd.DataFrame(
             {
-                "deployment_hash": ["hash1", "hash2", "hash3", "hash4", "hash5"],
-                "indexer": ["index1", "index2", "index3", "index4", "index5"],
+                "deployment_hash": [
+                    "QmWATWQ7fVPP2EFGu71UkfnqhYXDYH566qy47CnJDgvs8u",
+                    "QmPK1s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB",
+                    "QmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n",
+                    "QmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                    "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY",
+                ],
+                "indexer": [
+                    "0x0058223c6617cca7ce76fc929ec9724cd43d4542",
+                    "0x015cb4f88c16dfaf90fa350af5338c4424a0d490",
+                    "0x01e110178f15aeec1cccc507939109175dc9c121",
+                    "0x01f17c392614c7ea586e7272ed348efee21b90a3",
+                    "0x07ca020fdde5c57c1c3a783befdb08929cf77fec",
+                ],
                 "num_rows": [10, 20, 15, 5, 25],
                 "timestamp": [
                     "2024-08-01T12:00:00Z",
@@ -211,7 +262,7 @@ class TestFetchData:
                 "status": ["success", "success", "failure", "success", "failure"],
             }
         )
-        expected_df = df.sort_values(by="num_rows", ascending=False)
+        expected_df.sort_values(by="num_rows", ascending=False, inplace=True)
 
         # Create a Mock object for the to_pandas method to simulate connection error on first call
         mock_query_job = mocker.Mock()
@@ -228,9 +279,11 @@ class TestFetchData:
         # Apply the mock to make read_gbq return the mock_query_job
         mocker.patch("bigframes.pandas.read_gbq", return_value=mock_query_job)
 
+        ## When
         # Call the fetch_initial_query_results function, which should retry after the first connection error
         result_df = bigquery.fetch_initial_query_results(start_date, num_days)
 
+        ## Then
         # Assert that the result DataFrame is sorted correctly by 'num_rows'
         assert not result_df.empty
         assert result_df.equals(expected_df)
