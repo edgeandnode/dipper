@@ -1,6 +1,7 @@
 from typing import Optional
 
 import pandas as pd
+import numpy as np
 
 from .bq import BigQueryProvider
 from .iisa_functions import (
@@ -29,6 +30,11 @@ from .iisa_functions import (
     calculate_weighted_score,
 )
 from .time import derive_timestamps
+import logging
+
+# Setup basic logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Constants
 DATA_MANAGER_NUM_DAYS = 28
@@ -346,9 +352,13 @@ class DataProcessor:
         Returns the indexer-subgraph pairs that have recently been assigned or cancelled.
         This method should be called after data processing to fetch any updates.
         """
+        # Handle None values
+        current_group = self.current_group or set()
+        initial_group = self.initial_group or set()
+
         # Compare initial and current groups to determine changes
-        added = set(self.current_group) - set(self.initial_group)
-        cancelled = set(self.initial_group) - set(self.current_group)
+        added = set(current_group) - set(initial_group)
+        cancelled = set(initial_group) - set(current_group)
 
         # Format results as pairs
         added_pairs = [(indexer, self.subgraph_id) for indexer in added]
@@ -413,8 +423,20 @@ class DataProcessor:
     def _normalize_and_score(self):
         """
         Normalize metrics assessing indexer quality and calculate weighted scores.
+
+        This method attempts to normalize the data and calculate weighted scores.
+
+        Returns:
+            pd.DataFrame: The processed DataFrame.
         """
-        self.data = normalize_metrics(self.data)
+        try:
+            normalized_data = normalize_metrics(self.data)
+        except Exception as e:
+            logger.error(
+                f"Unexpected error when trying normalize_metrics(self.data): {e}"
+            )
+            normalized_data = self.data
+
         weights = {
             "lin_reg_coefficient": 0.2424,
             "uptime_score": 0.1667,
@@ -425,11 +447,15 @@ class DataProcessor:
             "indexing_agreement_acceptance_latency": 0.2424,
         }
 
-        self.data["weighted_score"] = self.data.apply(
-            lambda row: calculate_weighted_score(row, weights=weights), axis=1
-        )
+        try:
+            normalized_data["weighted_score"] = normalized_data.apply(
+                lambda row: calculate_weighted_score(row, weights), axis=1
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error when trying calculate_weighted_score: {e}")
+            normalized_data["weighted_score"] = np.nan
 
-        return self.data
+        return normalized_data
 
     def _assign_indexers_to_subgraph(self):
         """
