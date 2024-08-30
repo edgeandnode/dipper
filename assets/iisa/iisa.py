@@ -774,6 +774,7 @@ class DataProcessor:
         new_existing_agreements=None,
         new_pending_agreements=None,
         new_blacklist=None,
+        weights=None,
     ):
         """
         Update the class variables with new data, prices, existing agreements, pending agreements
@@ -812,6 +813,11 @@ class DataProcessor:
             # Cancel indexing agreements for newly blacklisted indexers
             for indexer in newly_blacklisted:
                 self._cancel_indexing_agreements(indexer)
+
+        # Update live weights
+        if weights is not None:
+            updated = True
+            self.weights = weights
 
         # Reprocess the data if there was an update
         if updated:
@@ -918,6 +924,15 @@ if __name__ == "__main__":
             "0xIndexer6": ["QmSubgraph7"],
         }
         updated_blacklist = new_blacklist + ["0xAnotherBlacklistedIndexer"]
+        new_weights = {
+            "lin_reg_coefficient": 0.1,
+            "uptime_score": 0.1,
+            "existing_dips_agreements": 0.1,
+            "stake_to_fees_iqr_deviation": 0.1,
+            "success_rate": 0.1,
+            "avg_sync_duration": 0.1,
+            "indexing_agreement_acceptance_latency": 0.4,
+        }
 
         # Create a DataProcessor instance for the subgraph we want to update
         try:
@@ -928,6 +943,7 @@ if __name__ == "__main__":
                 existing_agreements=new_existing_agreements,
                 pending_agreements=new_pending_agreements,
                 blacklist=new_blacklist,
+                weights=new_weights,
             )
 
             # Update and reprocess data
@@ -937,6 +953,7 @@ if __name__ == "__main__":
                 new_existing_agreements=updated_existing_agreements,
                 new_pending_agreements=updated_pending_agreements,
                 new_blacklist=updated_blacklist,
+                weights=new_weights,
             )
 
             # Get the updated results

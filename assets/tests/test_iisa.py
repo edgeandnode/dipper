@@ -327,6 +327,7 @@ class TestProcessSubgraph:
             existing_agreements=existing_agreements,
             pending_agreements=pending_agreements,
             blacklist=blacklist,
+            weights=None,
         )
 
         # Verify the function returns the expected added and cancelled indexer pairs
@@ -1153,17 +1154,17 @@ class TestDataProcessor:
             processor._add_indexers_to_group()
             assert processor.current_group == ["A"]
 
-    def test_meets_diversity_requirements(self, mock_bigquery_provider):
+    def test_meets_decentralization_requirements(self, mock_bigquery_provider):
         """
-        Test the _meets_diversity_requirements method of DataProcessor.
+        Test the _meets_decentralization_requirements method of DataProcessor.
 
         This test verifies:
         1. The method returns True when there are fewer than 2 indexers in the current group.
-        2. The method correctly evaluates diversity based on locations and organizations.
-        3. A group that does not _meets_diversity_requirements will not be marked as true.
+        2. The method correctly evaluates decentralization based on locations and organizations.
+        3. A group that does not _meets_decentralization_requirements will not be marked as true.
 
         Note:
-        _meets_diversity_requirements accepts new_indexer as an input perameter.
+        _meets_decentralization_requirements accepts new_indexer as an input perameter.
         """
         processor = DataProcessor(
             data=pd.DataFrame(
@@ -1180,27 +1181,27 @@ class TestDataProcessor:
 
         # Test with fewer than 2 indexers
         processor.current_group = ["A"]
-        assert processor._meets_diversity_requirements("B")
+        assert processor._meets_decentralization_requirements("B")
 
         # Test with 2 indexers, same location and org
         processor.current_group = ["A", "B"]
-        assert processor._meets_diversity_requirements("C")
+        assert processor._meets_decentralization_requirements("C")
 
         # Test with 2 indexers, different location and org
         processor.current_group = ["A", "C"]
-        assert processor._meets_diversity_requirements("D")
+        assert processor._meets_decentralization_requirements("D")
 
         # Test with 2 indexers, adding one with same location and org
         processor.current_group = ["A", "C"]
-        assert processor._meets_diversity_requirements("B")
+        assert processor._meets_decentralization_requirements("B")
 
         # Test with 3 of the same indexer.
         processor.current_group = ["A", "A"]
-        assert not processor._meets_diversity_requirements("A")
+        assert not processor._meets_decentralization_requirements("A")
 
-    def test_meets_diversity_requirements_edge_cases(self, mock_bigquery_provider):
+    def test_meets_decentralization_requirements_edge_cases(self, mock_bigquery_provider):
         """
-        Test _meets_diversity_requirements with various edge cases.
+        Test _meets_decentralization_requirements with various edge cases.
         """
         processor = DataProcessor(
             data=pd.DataFrame(
@@ -1216,19 +1217,19 @@ class TestDataProcessor:
         )
 
         # Test with empty current group
-        assert processor._meets_diversity_requirements("A")
+        assert processor._meets_decentralization_requirements("A")
 
         # Test with indexer 'A' selected twice due to some error
         processor.current_group = ["A", "A"]
-        assert processor._meets_diversity_requirements("E")
+        assert processor._meets_decentralization_requirements("E")
 
         # Test with many indexers
         processor.current_group = ["A", "B", "C", "D", "E", "F"]
-        assert processor._meets_diversity_requirements("F")
+        assert processor._meets_decentralization_requirements("F")
 
-        # Additional test: Check that it returns False when diversity requirements are not met
+        # Additional test: Check that it returns False when decentralization requirements are not met
         processor.current_group = ["A", "B"]
-        assert not processor._meets_diversity_requirements("A")
+        assert not processor._meets_decentralization_requirements("A")
 
     def test_replace_underperforming_indexers(
         self, sample_data, mock_bigquery_provider
@@ -1268,7 +1269,7 @@ class TestDataProcessor:
         Test the _find_best_replacement method of DataProcessor.
 
         This test verifies:
-        1. The method returns the best replacement that meets diversity requirements.
+        1. The method returns the best replacement that meets decentralization requirements.
         2. The method returns None when no suitable replacement is found.
         3. The method will not try to replace an indexer with one that is already blacklisted.
         """
@@ -1290,17 +1291,17 @@ class TestDataProcessor:
         processor.blacklist = ["E"]
 
         with patch(
-            "iisa.iisa.DataProcessor._meets_diversity_requirements"
-        ) as mock_diversity:
-            mock_diversity.side_effect = [True]
+            "iisa.iisa.DataProcessor._meets_decentralization_requirements"
+        ) as mock_decentralization:
+            mock_decentralization.side_effect = [True]
 
-            result = processor._find_best_replacement("C")
+            result = processor._find_best_replacement()
 
             # Verify the best replacement is D, not E, due to blacklisting.
             assert result == "D"
 
-            # Verify the number of diversity requirement checks
-            assert mock_diversity.call_count == 1
+            # Verify the number of decentralization requirement checks
+            assert mock_decentralization.call_count == 1
 
     def test_calculate_group_score(self, mock_bigquery_provider):
         """
