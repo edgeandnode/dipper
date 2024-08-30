@@ -11,9 +11,9 @@ from .iisa_functions import (
     adjust_rows,
     aggregate_indexer_info,
     calculate_distances,
+    calculate_indexer_stake_to_fees,
     calculate_indexer_success_rate,
     calculate_indexer_uptime,
-    calculate_stake_to_fees,
     calculate_weighted_score,
     filter_columns,
     filter_successful_queries,
@@ -23,7 +23,7 @@ from .iisa_functions import (
     merge_in_indexers_info,
     merge_in_query_geolocation_info,
     normalize_metrics,
-    perform_linear_regression,
+    perform_latency_linear_regression,
     strategic_sample,
 )
 from .network import NetworkProvider
@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 
 # Constants
 DATA_MANAGER_NUM_DAYS = 28
-DATA_PROCESSOR_NUM_DAYS = 28
 
 # Constants for iterative filtering
 ITERATIVE_FILTER_MIN_DEPLOYMENT_INDEXERS = 2
@@ -69,6 +68,7 @@ def _fetch_and_process_data(
         - Indexer rankings based on linear regression.
     """
     # Fetch the initial query results using the initial query as input
+    # initial_query_results_pandas will contain [deployment_hash, indexer, num_rows]
     initial_query_results_pandas = bigquery.fetch_initial_query_results(
         start_date, num_days
     )
@@ -80,6 +80,8 @@ def _fetch_and_process_data(
     )
 
     # Fetch the combined query results using the combined query as input
+    # combined_queries will contain ['query_id', 'deployment_hash', 'fee', 'timestamp', 'blocks_behind',
+    # 'response_time_ms', 'indexer', 'status', 'day_partition', 'subgraph_network', 'url']
     combined_queries = bigquery.fetch_combined_query_results(
         start_date, num_days, target_rows_per_subgraph
     )
@@ -91,8 +93,11 @@ def _fetch_and_process_data(
     combined_queries = merge_in_indexers_info(combined_queries, indexers_df)
 
     # Extract IATA codes from the combined query data and merge in the IATA information
-    # with the combined query data
+    # with the combined query data, adds column ['IATA_code'] to combined_queries
     combined_queries = merge_in_query_geolocation_info(combined_queries)
+
+    # Set data_for_uptime_calculations to be a filtered version of the combined_queries DataFrame
+    data_for_uptime_calculations = combined_queries[["indexer", "status"]].copy()
 
     # Apply the vectorized Haversine function to calculate the distance in miles
     combined_queries = calculate_distances(combined_queries)
@@ -121,6 +126,7 @@ def _fetch_and_process_data(
     )
 
     # Sample the query IDs to create a balanced representation across indexers
+    # Uniform random sampling of query_id for each indexer on each subgraph.
     filtered_data, integer_root = strategic_sample(
         filtered_data, target_rows_per_subgraph
     )
@@ -137,7 +143,11 @@ def _fetch_and_process_data(
     ]
 
     # Perform linear regression on the results from the combined query
-    indexer_rankings = perform_linear_regression(
+    (
+        filtered_data,
+        latency_linear_regression_indexer_rankings,
+        latency_linear_regression_results_df,
+    ) = perform_latency_linear_regression(
         filtered_data, predictor, categorical, numeric
     )
 
@@ -145,7 +155,7 @@ def _fetch_and_process_data(
     indexer_success_rate = calculate_indexer_success_rate(combined_queries)
 
     # Calculate indexer uptime
-    indexer_uptime = calculate_indexer_uptime(combined_queries)
+    indexer_uptime = calculate_indexer_uptime(data_for_uptime_calculations)
 
     # Get the initial stake to fees query results as a dataframe
     # df headers are:
@@ -156,7 +166,7 @@ def _fetch_and_process_data(
     initial_stake_query_pandas = bigquery.fetch_initial_stake_to_fees(start_ts)
 
     # Calculate stake to fees ratio
-    stake_to_fees = calculate_stake_to_fees(initial_stake_query_pandas)
+    stake_to_fees = calculate_indexer_stake_to_fees(initial_stake_query_pandas)
 
     # Group by 'indexer' and aggregate unique 'org' and 'destination_loc' values
     agg_df = aggregate_indexer_info(combined_queries)
@@ -164,13 +174,17 @@ def _fetch_and_process_data(
     # Merge all data into the main dataframe
     bigquery_data = merge_and_prepare_dataframes(
         indexer_uptime,
-        indexer_rankings,
+        latency_linear_regression_indexer_rankings,
         agg_df,
         indexer_success_rate,
         stake_to_fees,
     )
 
-    return bigquery_data, indexer_rankings
+    return (
+        bigquery_data, 
+        latency_linear_regression_indexer_rankings, 
+        latency_linear_regression_results_df
+    )
 
 
 class DataManager:
@@ -250,11 +264,17 @@ class DataManager:
         """
         return self.bigquery_data
 
-    def get_indexer_rankings(self):
+    def get_latency_linear_regression_indexer_rankings(self):
         """
-        Return the indexer rankings.
+        Return the indexer rankings from the latency linear regression.
         """
-        return self.indexer_rankings
+        return self.latency_linear_regression_indexer_rankings
+
+    def get_latency_linear_regression_results_df(self):
+        """
+        Return the results df from the latency linear regression.
+        """
+        return self.latency_linear_regression_results_df
 
 
 class DataProcessor:
@@ -280,10 +300,10 @@ class DataProcessor:
         subgraph_id,
         prices,
         bigquery,
-        num_days=DATA_PROCESSOR_NUM_DAYS,
         existing_agreements=None,
         pending_agreements=None,
         blacklist=None,
+        weights=None,
     ):
         """
         Initialize the DataProcessor class with data, subgraph ID, indexer prices, existing indexer
@@ -303,36 +323,70 @@ class DataProcessor:
         self.data = pd.DataFrame(data)
         self.subgraph_id = subgraph_id
         self.prices = prices
-        self.num_days = num_days
         self.existing_agreements = existing_agreements or {}
         self.pending_agreements = pending_agreements or {}
         self.blacklist = blacklist or []
+        self.weights = weights or {
+            "lat_lin_reg_coefficient": 0.2424,
+            "uptime_score": 0.1667,
+            "existing_dips_agreements": 0.1212,
+            "stake_to_fees_iqr_deviation": 0.1023,
+            "success_rate": 0.0625,
+            "avg_sync_duration": 0.0625,
+            "indexing_agreement_acceptance_latency": 0.2424,
+        }
 
-        if "destination_loc" not in self.data.columns:
-            self.data["destination_loc"] = "unknown"
-        if "org" not in self.data.columns:
-            self.data["org"] = "unknown"
-
-        # Initialize timestamps
-        (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
-            derive_timestamps(self.num_days)
-        )
-
-        # initialize the current group and initial group
-        self.current_group = self._get_current_group()
-        self.initial_group = list(self.current_group)
-
-        # Begin the process of assigning/replacing indexers for the subgraph
+        # Process the data, we can then call update_blacklist_cancel_indexing_agreements,
+        # or get_indexer_selections later after this constructor has finished running.
         self._process_data()
 
-        # After processing, store the results
-        self.added_indexers, self.cancelled_indexers = self.get_indexer_selections()
+    def update_blacklist_cancel_indexing_agreements(
+        self,
+        new_blacklist,
+    ):
+        """
+        Cancels all outstanding indexing agreements for indexers on the blacklist.
+
+        Perameters:
+        blacklisted_indexers (list): A list of indexers that have been blacklisted.
+
+        Returns:
+        dict: A dictionary where keys are blacklisted indexers and values are lists of subgraphs
+              from which they were removed.
+
+        Note:
+        - This method does not curently attempt to reassign indexers to the subgraph after
+          cancellation of the indexing agreement from the blacklisted indexers. Instead we can loop through
+          all of the subgraphs while calling the process_subgraph function. Which will detect when a subgraph
+          has less than the threshold number of indexers assigned to it and reassign an appropriate indexer.
+          We would do this loop at frequent intervalls anyway, because it will be important to reassign indexing
+          agreements to high quality indexers after an indexers quality has slipped based on their updated
+          weighted_score. # TODO we could address the above note, as if all indexers on a subgraph got
+          blacklisted simutanousely, there could be a longer than nescessary latency while we reassign new indexers.
+        - Although it would likely take some time for new indexers to accept the agreements and finish syncing, so this
+          additional latency while we wait for the for loop to get to the subgraph, might not be a huge issue.
+        """
+        #
+        self.blacklist = new_blacklist
+
+        cancelled_agreements = {}
+        for indexer in new_blacklist:
+            if indexer in self.existing_agreements:
+                # Get all subgraphs this indexer was assigned to
+                assigned_subgraphs = self.existing_agreements[indexer]
+
+                # Add this indexer and its assigned subgraphs to the cancelled_agreements
+                cancelled_agreements[indexer] = assigned_subgraphs
+
+        return cancelled_agreements
 
     def get_indexer_selections(self):
         """
         Returns the indexer-subgraph pairs that have recently been assigned or cancelled.
         This method should be called after data processing to fetch any updates.
         """
+        # TODO: we could call self._process_data() inside this method.
+
         # Handle None values
         current_group = self.current_group or set()
         initial_group = self.initial_group or set()
@@ -364,7 +418,7 @@ class DataProcessor:
         # Sort data by weighted score
         self.data.sort_values(by="weighted_score", ascending=True, inplace=True)
 
-        # Call _assign_indexers_to_subgraph to assign/replace an indexer on the subgraph.
+        # Call _assign_indexers_to_subgraph to assign/replace/remove an indexer on the subgraph.
         self._assign_indexers_to_subgraph()
 
     def _fetch_number_of_indexer_agreements(self):
@@ -374,7 +428,7 @@ class DataProcessor:
         This method updates the 'existing_dips_agreements' field in the df to reflect the number of
         current agreements each indexer has, as specified in the existing_agreements attribute passed by the rust server.
         """
-        # Create a copy of the data to avoid modifying the original
+        # Create a copy of the data to avoid modifying the original at this stage
         updated_data = self.data.copy()
 
         # Create a dictionary to store the number of agreements for each indexer
@@ -418,19 +472,9 @@ class DataProcessor:
             )
             normalized_data = self.data
 
-        weights = {
-            "lin_reg_coefficient": 0.2424,
-            "uptime_score": 0.1667,
-            "existing_dips_agreements": 0.1212,
-            "stake_to_fees_iqr_deviation": 0.1023,
-            "success_rate": 0.0625,
-            "avg_sync_duration": 0.0625,
-            "indexing_agreement_acceptance_latency": 0.2424,
-        }
-
         try:
             normalized_data["weighted_score"] = normalized_data.apply(
-                lambda row: calculate_weighted_score(row, weights), axis=1
+                lambda row: calculate_weighted_score(row, self.weights), axis=1
             )
         except Exception as e:
             logger.error(f"Unexpected error when trying calculate_weighted_score: {e}")
@@ -440,17 +484,21 @@ class DataProcessor:
 
     def _assign_indexers_to_subgraph(self):
         """
-        Assign indexers to subgraph based on weighted scores and diversity requirements.
+        Assign indexers to subgraph based on weighted scores and decentralization requirements.
 
         Use the methods _add_indexers_to_group and _replace_underperforming_indexers to
         assign indexers to the subgraph in question.
         """
-        # If the current indexer group assigned has less than 3 indexers, call '_add_indexers_to_group'
+        # If the current indexer group has less than 3 indexers, call '_add_indexers_to_group'
         if len(self.current_group) < 3:
             self._add_indexers_to_group()
 
+        # If the current indexer group has more than 3 indexers, call '_remove_indexers_from_group'
+        if len(self.current_group) > 3:
+            self._remove_indexers_from_group()
+
         # Otherwise, call '_replace_underperforming_indexers' which will search for a suitable replacement
-        else:
+        if len(self.current_group) == 3:
             self._replace_underperforming_indexers()
 
     def _add_indexers_to_group(self):
@@ -471,20 +519,29 @@ class DataProcessor:
 
     def _select_next_best_indexer(self):
         """
-        Select the next best indexer based on weighted scores and diversity requirements.
+        Select the next best indexer based on weighted scores and decentralization requirements.
+
+        Will not attempt to assign an indexing agreement to an indexer under the following conditions:
+        1. The indexer is already in the current group.
+        2. The indexer is blacklisted.
+        3. The indexer has pending agreements that they have not yet accepted.
         """
-        # Iterate through the DataFrame to find the best indexer based on scores/diversity requirements.
+        # Iterate through the DataFrame to find the best indexer based on scores/decentralization requirements.
+        # Sort by weighted score, highest score first.
+        self.data = self.data.sort_values(by="weighted_score", ascending=False)
+
         for _, row in self.data.iterrows():
             if (
                 row["indexer"] not in self.current_group
                 and row["indexer"] not in self.blacklist
+                and row["indexer"] not in self.pending_agreements
             ):
-                if self._meets_diversity_requirements(row["indexer"]):
+                if self._meets_decentralization_requirements(row["indexer"]):
                     return row["indexer"]
 
         return None
 
-    def _meets_diversity_requirements(self, new_indexer):
+    def _meets_decentralization_requirements(self, new_indexer):
         """
         Check if adding the new indexer meets decentralisation requirements.
 
@@ -513,6 +570,82 @@ class DataProcessor:
         # Otherwise 'False'
         return False
 
+    def _remove_indexers_from_group(self):
+        """
+        Remove the worst indexers from the current group until the current group only has 3 indexers.
+        """
+        while len(self.current_group) > 3:
+            indexer_scores = []
+            for indexer in self.current_group:
+                # Calculate each indexers score as if the indexer had 1 less indexing agreement
+                score = self._calculate_indexer_score(indexer)
+                indexer_scores.append((indexer, score))
+
+            # Sort indexers by score, worst (lowest score) first
+            indexer_scores.sort(key=lambda x: x[1], reverse=False)
+
+            for indexer, _ in indexer_scores:
+                temp_group = self.current_group.copy()
+                temp_group.remove(indexer)
+
+                if self._meets_decentralization_requirements_indexer_removal(
+                    temp_group
+                ):
+                    self.current_group.remove(indexer)
+                    break
+            else:
+                break
+
+    def _calculate_indexer_score(self, indexer):
+        """
+        Calculate the score for an individual indexer as if they had one less indexing agreement.
+        """
+        # Check if the indexer exists in self.data
+        indexer_data = self.data[self.data["indexer"] == indexer]
+
+        if indexer_data.empty:
+            logger.warning(
+                f"Indexer {indexer} not found in self.data. Returning lowest possible score."
+            )
+            return 0
+
+        # Create a copy of the data for this indexer
+        indexer_data = indexer_data.copy()
+
+        # Reduce the indexer's agreement count by 1
+        indexer_data["existing_dips_agreements"] = (
+            indexer_data["existing_dips_agreements"] - 1
+        ).clip(lower=0)
+
+        # Normalize only the necessary metrics for this indexer
+        normalized_data = normalize_metrics(indexer_data)
+
+        # Calculate the weighted score for this indexer
+        score = calculate_weighted_score(normalized_data.iloc[0], self.weights)
+
+        return score
+
+    def _meets_decentralization_requirements_indexer_removal(self, group):
+        """
+        Check if the group meets decentralisation requirements after removing an indexer.
+
+        The group must have at least 2 unique organizations and 2 unique locations.
+        """
+        if len(group) < 2:
+            return False
+
+        locations = self.data[self.data["indexer"].isin(group)][
+            "destination_loc"
+        ].unique()
+        orgs = self.data[self.data["indexer"].isin(group)]["org"].unique()
+
+        # Return 'True' if decentralisation requirements are hit
+        if len(locations) >= 2 and len(orgs) >= 2:
+            return True
+
+        # Otherwise 'False'
+        return False
+
     def _replace_underperforming_indexers(self):
         """
         Replace underperforming indexers if the group score can be improved by more than 10%.
@@ -526,7 +659,7 @@ class DataProcessor:
         # For each indexer in the current group
         for indexer in self.current_group:
             # Check the most appropriate replacement indexer to replace the indexer in question.
-            new_indexer = self._find_best_replacement(indexer)
+            new_indexer = self._find_best_replacement()
 
             if new_indexer:
                 # Create a temp copy of the current group, remove the old indexer from it, add the new indexer.
@@ -564,12 +697,16 @@ class DataProcessor:
             self.current_group.remove(worst_indexer)
             self.current_group.append(best_replacement)
 
-    def _find_best_replacement(self, indexer_to_replace):
+    def _find_best_replacement(self):
         """
-        Find the best replacement for an indexer in the group.
+        Find the best replacement for an indexer in the current group.
+
+        Will not attempt to assign an indexing agreement to an indexer under the following conditions:
+        1. The indexer is already in the current group.
+        2. The indexer is blacklisted.
+        3. The indexer has pending agreements that they have not yet accepted.
         """
-        # Filter out candidates that are already in the group, on the blacklist, or have pending agreements that they
-        # have not yet accepted.
+        # Filter out unpickable candidates, selecting only necessary columns
         candidates = self.data[
             ~self.data["indexer"].isin(
                 self.current_group
@@ -581,11 +718,10 @@ class DataProcessor:
         # Sort the remaining candidates by weighted score, highest score first.
         candidates = candidates.sort_values(by="weighted_score", ascending=False)
 
-        # Iterate through the list of candidates, return the first (best) candidate that meets diversity requirements
-        for index, row in candidates.iterrows():
-            new_group = [i for i in self.current_group if i != indexer_to_replace]
-            if self._meets_diversity_requirements(new_group, row["indexer"]):
-                return row["indexer"]
+        # Iterate through the list of candidates, return the first (best) candidate that meets decentralization requirements
+        for indexer in candidates["indexer"]:
+            if self._meets_decentralization_requirements(indexer):
+                return indexer
 
         return None
 
@@ -597,7 +733,7 @@ class DataProcessor:
         the average weighted score of the new indexer group.
 
         This method is intended to have only one of [indexer_to_exclude, indexer_to_include] passed
-        into it, at most.
+        into it at a time, at most.
         """
         score = None
         try:
@@ -648,67 +784,6 @@ class DataProcessor:
             calculate_weighted_score, axis=1, weights=self.weights
         )
 
-    def update_and_reprocess_data(
-        self,
-        new_data=None,
-        new_prices=None,
-        new_existing_agreements=None,
-        new_pending_agreements=None,
-        new_blacklist=None,
-    ):
-        """
-        Update the class variables with new data, prices, existing agreements, pending agreements
-        and blacklist in real-time. If new data comes in then call _process_data a second time using
-        the new data.
-        """
-        updated = False
-
-        # Update live data from DataManager class as it comes in, in real-time.
-        if new_data is not None:
-            updated = True
-            self.data = pd.DataFrame(new_data)
-
-        # Update live indexer prices
-        if new_prices is not None:
-            updated = True
-            self.prices = new_prices
-
-        # Update live existing agreements
-        if new_existing_agreements is not None:
-            updated = True
-            self.existing_agreements = new_existing_agreements
-
-        # Update live pending agreements
-        if new_pending_agreements is not None:
-            updated = True
-            self.pending_agreements = new_pending_agreements
-
-        # Manage live blacklist updates
-        if new_blacklist is not None:
-            updated = True
-            # Capture newly blacklisted indexers before updating the class attribute
-            newly_blacklisted = set(new_blacklist) - set(self.blacklist)
-            self.blacklist = new_blacklist
-
-            # Cancel indexing agreements for newly blacklisted indexers
-            for indexer in newly_blacklisted:
-                self._cancel_indexing_agreements(indexer)
-
-        # Reprocess the data if there was an update
-        if updated:
-            self._process_data()
-
-    def _cancel_indexing_agreements(self, indexer):
-        """
-        Remove the specified indexer from any current indexing groups and update the dataset.
-        """
-        if indexer in self.current_group:
-            self.current_group.remove(indexer)
-            self.data.loc[self.data["indexer"] == indexer, "subgraph"] = None
-
-        # Find replacements
-        self._assign_indexers_to_subgraph()
-
 
 # This block serves as a functional test and an example implementation
 if __name__ == "__main__":
@@ -720,14 +795,11 @@ if __name__ == "__main__":
         existing_agreements,
         pending_agreements,
         blacklist,
-        *,
-        bigquery,
     ):
         processor = DataProcessor(
             data=data,
             subgraph_id=subgraph_id,
             prices=prices,
-            bigquery=bigquery,
             existing_agreements=existing_agreements,
             pending_agreements=pending_agreements,
             blacklist=blacklist,
@@ -826,6 +898,15 @@ if __name__ == "__main__":
             "0xIndexer6": ["QmSubgraph7"],
         }
         updated_blacklist = new_blacklist + ["0xAnotherBlacklistedIndexer"]
+        new_weights = {
+            "lat_lin_reg_coefficient": 0.1,
+            "uptime_score": 0.1,
+            "existing_dips_agreements": 0.1,
+            "stake_to_fees_iqr_deviation": 0.1,
+            "success_rate": 0.1,
+            "avg_sync_duration": 0.1,
+            "indexing_agreement_acceptance_latency": 0.4,
+        }
 
         # Create a DataProcessor instance for the subgraph we want to update
         try:
@@ -837,6 +918,7 @@ if __name__ == "__main__":
                 existing_agreements=new_existing_agreements,
                 pending_agreements=new_pending_agreements,
                 blacklist=new_blacklist,
+                weights=new_weights,
             )
 
             # Update and reprocess data
@@ -846,6 +928,7 @@ if __name__ == "__main__":
                 new_existing_agreements=updated_existing_agreements,
                 new_pending_agreements=updated_pending_agreements,
                 new_blacklist=updated_blacklist,
+                weights=new_weights,
             )
 
             # Get the updated results

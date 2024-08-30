@@ -5,7 +5,13 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from iisa import DataManager, DataProcessor, GeoipResolver, NetworkProvider
+from iisa.iisa import (
+    DataManager,
+    DataProcessor,
+    process_subgraph,
+    GeoipResolver,
+    NetworkProvider
+)
 from iisa.time import TimestampStr
 from tests.__fixtures__ import network as network_fixture
 
@@ -140,9 +146,9 @@ class TestInitializeDataManager:
         4. The DataManager's attributes are correctly set and populated.
         """
 
-        def mock_perform_linear_regression(*args):
+        def mock_perform_latency_linear_regression(*args):
             """
-            Creates and returns mock data for linear regression results.
+            Creates and returns mock data for latency linear regression results.
 
             This function simulates the output of a linear regression process,
             providing mock data for:
@@ -214,7 +220,8 @@ class TestInitializeDataManager:
                     "sampled_query_id_hashed_mod_integer_root": [0, 1, 2],
                 }
             )
-            indexer_rankings_mock_data = pd.DataFrame(
+            filtered_mock_data = mock_data.iloc[:2].copy()
+            latency_linear_regression_indexer_rankings_mock_data = pd.DataFrame(
                 {
                     "indexer": ["indexer1", "indexer2", "indexer3"],
                     "rank": [1, 2, 3],
@@ -222,7 +229,11 @@ class TestInitializeDataManager:
                 }
             )
 
-            return mock_data, indexer_rankings_mock_data
+            # Assign the mock data to the appropriate attributes
+            self.bigquery_data = mock_data
+            self.filtered_bigquery_data = filtered_mock_data
+            self.latency_linear_regression_indexer_rankings = latency_linear_regression_indexer_rankings_mock_data
+            return mock_data, latency_linear_regression_indexer_rankings_mock_data#, latency_linear_regression_results_df_mock_data
 
         # Apply patches for the test
         with patch(
@@ -235,8 +246,8 @@ class TestInitializeDataManager:
             ),
         ):
             with patch(
-                "iisa.iisa_functions.perform_linear_regression",
-                side_effect=mock_perform_linear_regression,
+                "iisa.iisa_functions.perform_latency_linear_regression",
+                side_effect=mock_perform_latency_linear_regression,
             ):
                 with patch(
                     "iisa.iisa._fetch_and_process_data",
@@ -261,8 +272,11 @@ class TestInitializeDataManager:
         assert "destination_loc" in result.bigquery_data.columns
         assert result.bigquery_data["destination_loc"].dtype == "object"
 
-        # Verify that indexer_rankings is not None
-        assert result.indexer_rankings is not None
+        # Verify that filtered_bigquery_data is not None
+        assert result.filtered_bigquery_data is not None
+
+        # Verify that latency_linear_regression_indexer_rankings is not None
+        assert result.latency_linear_regression_indexer_rankings is not None
 
     def test_initialize_data_manager_exception_handling(
         self, mock_bigquery_provider, mock_network_provider
@@ -347,6 +361,7 @@ class TestProcessSubgraph:
             existing_agreements=existing_agreements,
             pending_agreements=pending_agreements,
             blacklist=blacklist,
+            weights=None,
         )
 
         # Verify the function returns the expected added and cancelled indexer pairs
@@ -406,7 +421,11 @@ class TestDataManager:
 
         # Verify initial data attributes
         assert dm.bigquery_data is None
-        assert dm.indexer_rankings is None
+        assert dm.latency_linear_regression_indexer_rankings is None
+        assert dm.indexer_success_rate is None
+        assert dm.indexer_uptime is None
+        assert dm.stake_to_fees is None
+        assert dm.filtered_bigquery_data is None
 
         # Ensure derive_timestamps was called with correct argument
         mock_derive_timestamps.assert_called_once_with(28, None)
@@ -487,10 +506,12 @@ class TestDataManager:
         assert result["score"].tolist() == [0.9, 0.8, 0.7]
         assert result["query_count"].tolist() == [100, 200, 300]
 
-    def test_get_indexer_rankings(self, mock_bigquery_provider, mock_network_provider):
+    def test_get_latency_linear_regression_indexer_rankings(
+        self, mock_bigquery_provider, mock_network_provider
+    ):
         """
         This test verifies:
-        1. The get_indexer_rankings method returns the indexer rankings.
+        1. The get_latency_linear_regression_indexer_rankings method returns the indexer rankings.
         """
         sample_rankings = pd.DataFrame({"indexer": ["A", "B"], "rank": [1, 2]})
 
@@ -503,8 +524,8 @@ class TestDataManager:
                 network=mock_network_provider,
             )
 
-        # Call get_indexer_rankings method
-        result = dm.get_indexer_rankings()
+        # Call get_latency_linear_regression_indexer_rankings method
+        result = dm.get_latency_linear_regression_indexer_rankings()
 
         # Verify returned data is the same as the sample data.
         pd.testing.assert_frame_equal(result, sample_rankings)
@@ -529,7 +550,7 @@ class TestDataProcessor:
                 "org": ["org1", "org2", "org3"],
                 "existing_dips_agreements": [1, 2, 3],
                 "weighted_score": [0.9, 0.7, 0.8],
-                "lin_reg_coefficient": [0.1, 0.2, 0.3],
+                "lat_lin_reg_coefficient": [0.1, 0.2, 0.3],
                 "uptime_score": [0.9, 0.8, 0.7],
                 "stake_to_fees_iqr_deviation": [0.1, 0.2, 0.3],
                 "success_rate": [0.95, 0.90, 0.85],
@@ -541,7 +562,7 @@ class TestDataProcessor:
     @pytest.fixture
     def mock_bigquery_provider(self):
         return MagicMock()
-
+    
     @pytest.mark.skip(reason="Flaky test: high dependency on internal details")
     def test_data_processor_constructor(self, sample_data, mock_bigquery_provider):
         """
@@ -551,15 +572,11 @@ class TestDataProcessor:
         1. The constructor correctly sets all instance variables with provided parameters.
         2. Default values are applied when optional parameters are not provided.
         3. The BigQueryProvider is properly instantiated.
-        4. Timestamps are correctly derived and set - using the mocked derive_timestamps function.
-        5. The initial and current groups of indexers are properly initialized.
-        6. The _process_data method is called once.
-        7. The added_indexers and cancelled_indexers attributes are set after processing.
-        8. The constructor handles missing 'destination_loc' and 'org' columns in the input data
-        9. The blacklist is properly applied.
-        10. pending_agreements are correctly set.
-        11. The 'data' DataFrame maintains its original content, while adding the new columns.
-        12. Optional parameters (existing_agreements, pending_agreements, blacklist) default empty if not set.
+        4. The _process_data method is called once.
+        5. The blacklist is properly applied.
+        6. pending_agreements are correctly set.
+        7. The 'data' DataFrame maintains its original content, while adding the new columns.
+        8. Optional parameters (existing_agreements, pending_agreements, blacklist) default empty if not set.
 
         The test uses mock objects for BigQueryProvider and patch decorators for _process_data
         and derive_timestamps to avoid actual data fetching and ensure consistent test behavior.
@@ -571,67 +588,24 @@ class TestDataProcessor:
         pending_agreements = {"C": ["subgraph3"]}
         blacklist = ["D"]
 
-        # Remove 'destination_loc' and 'org' columns to test handling of missing columns
-        sample_data = sample_data.drop(
-            columns=["destination_loc", "org"], errors="ignore"
+        # Create a DataProcessor instance
+        processor = DataProcessor(
+            data=sample_data,
+            subgraph_id=subgraph_id,
+            prices=prices,
+            bigquery=bigquery,
+            existing_agreements=existing_agreements,
+            pending_agreements=pending_agreements,
+            blacklist=blacklist,
         )
-
-        # Patch necessary methods
-        with patch("iisa.iisa.DataProcessor._process_data") as mock_process:
-            with patch("iisa.iisa.derive_timestamps") as mock_derive_timestamps:
-                mock_derive_timestamps.return_value = (
-                    datetime(2024, 1, 1),
-                    datetime(2024, 1, 28),
-                    "2024-01-01T00:00:00Z",
-                    "2024-01-28T23:59:59Z",
-                )
-
-                # Create a DataProcessor instance
-                processor = DataProcessor(
-                    data=sample_data,
-                    subgraph_id=subgraph_id,
-                    prices=prices,
-                    bigquery=mock_bigquery_provider,
-                    existing_agreements=existing_agreements,
-                    pending_agreements=pending_agreements,
-                    blacklist=blacklist,
-                )
 
         # Verify that all instance variables are set correctly
-        assert set(processor.data.columns) == set(sample_data.columns).union(
-            {"destination_loc", "org"}
-        )
-        assert processor.data[sample_data.columns].equals(sample_data)
-        assert (processor.data["destination_loc"] == "unknown").all()
-        assert (processor.data["org"] == "unknown").all()
         assert processor.subgraph_id == subgraph_id
         assert processor.prices == prices
+        assert processor.bigquery == bigquery
         assert processor.existing_agreements == existing_agreements
         assert processor.pending_agreements == pending_agreements
         assert processor.blacklist == blacklist
-
-        # Verify timestamps correctly set
-        assert processor.start_date == datetime(2024, 1, 1)
-        assert processor.end_date == datetime(2024, 1, 28)
-        assert processor.start_ts == "2024-01-01T00:00:00Z"
-        assert processor.end_ts == "2024-01-28T23:59:59Z"
-
-        # Verify initialization of initial and current groups
-        assert hasattr(processor, "initial_group")
-        assert hasattr(processor, "current_group")
-
-        # Verify _process_data was called
-        mock_process.assert_called_once()
-
-        # Verify added_indexers and cancelled_indexers attributes are set
-        assert hasattr(processor, "added_indexers")
-        assert hasattr(processor, "cancelled_indexers")
-
-        # Verify handling of missing 'destination_loc' and 'org' columns
-        assert "destination_loc" in processor.data.columns
-        assert "org" in processor.data.columns
-        assert (processor.data["destination_loc"] == "unknown").all()
-        assert (processor.data["org"] == "unknown").all()
 
         # Verify default values for optional parameters
         processor_default = DataProcessor(
@@ -686,7 +660,6 @@ class TestDataProcessor:
     def test_get_indexer_selections(
         self,
         sample_data,
-        mock_bigquery_provider,
         initial_group,
         current_group,
         expected_added,
@@ -702,7 +675,6 @@ class TestDataProcessor:
                 data=sample_data,
                 subgraph_id="test_subgraph",
                 prices={"A": 10, "B": 20, "C": 15},
-                bigquery=mock_bigquery_provider,
             )
 
         processor.initial_group = initial_group
@@ -740,9 +712,7 @@ class TestDataProcessor:
         # Verify that added and cancelled are disjoint
         assert added_set.isdisjoint(cancelled_set)
 
-    def test_get_indexer_selections_invalid_types(
-        self, sample_data, mock_bigquery_provider
-    ):
+    def test_get_indexer_selections_invalid_types(self, sample_data):
         """
         Test get_indexer_selections method handles unexpected input types.
         """
@@ -751,7 +721,6 @@ class TestDataProcessor:
                 data=sample_data,
                 subgraph_id="test_subgraph",
                 prices={"A": 10, "B": 20, "C": 15},
-                bigquery=mock_bigquery_provider,
             )
 
         processor.initial_group = "not a list"
@@ -768,9 +737,7 @@ class TestDataProcessor:
         )
         assert set(item[0] for item in cancelled).issubset(set(processor.initial_group))
 
-    def test_get_indexer_selections_none_values(
-        self, sample_data, mock_bigquery_provider
-    ):
+    def test_get_indexer_selections_none_values(self, sample_data):
         """
         Test get_indexer_selections method handles None values.
         """
@@ -779,7 +746,6 @@ class TestDataProcessor:
                 data=sample_data,
                 subgraph_id="test_subgraph",
                 prices={"A": 10, "B": 20, "C": 15},
-                bigquery=mock_bigquery_provider,
             )
 
         processor.initial_group = None
@@ -790,9 +756,7 @@ class TestDataProcessor:
         assert added == []
         assert cancelled == []
 
-    def test_get_indexer_selections_empty_groups(
-        self, sample_data, mock_bigquery_provider
-    ):
+    def test_get_indexer_selections_empty_groups(self, sample_data):
         """
         Test get_indexer_selections method when both initial_group and current_group are empty.
 
@@ -806,7 +770,6 @@ class TestDataProcessor:
                 data=sample_data,
                 subgraph_id="test_subgraph",
                 prices={"A": 10, "B": 20, "C": 15},
-                bigquery=mock_bigquery_provider,
             )
 
         processor.initial_group = []
@@ -829,7 +792,6 @@ class TestDataProcessor:
         mock_get_group,
         mock_fetch,
         sample_data,
-        mock_bigquery_provider,
     ):
         """
         Test the _process_data method of the DataProcessor class.
@@ -846,7 +808,6 @@ class TestDataProcessor:
             data=sample_data,
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15},
-            bigquery=mock_bigquery_provider,
         )
 
         # Reset all mock call counts after initialization
@@ -897,9 +858,7 @@ class TestDataProcessor:
             mock_normalize.return_value.sort_values(by="weighted_score", ascending=True)
         )
 
-    def test_fetch_number_of_indexer_agreements(
-        self, sample_data, mock_bigquery_provider
-    ):
+    def test_fetch_number_of_indexer_agreements(self, sample_data):
         """
         This test verifies the _fetch_number_of_indexer_agreements method updates the
         'existing_dips_agreements' column based on the existing_agreements.
@@ -910,7 +869,6 @@ class TestDataProcessor:
                 data=sample_data,
                 subgraph_id="test_subgraph",
                 prices={"A": 10, "B": 20, "C": 15},
-                bigquery=mock_bigquery_provider,
                 existing_agreements={
                     "A": ["subgraph1", "subgraph2"],
                     "B": ["subgraph3"],
@@ -941,12 +899,11 @@ class TestDataProcessor:
         )
 
     @pytest.fixture
-    def processor(self, sample_data, mock_bigquery_provider):
+    def processor(self, sample_data):
         return DataProcessor(
             data=sample_data,
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15, "D": 25},
-            bigquery=mock_bigquery_provider,
         )
 
     def test_get_current_group_normal_case(self, processor):
@@ -997,7 +954,7 @@ class TestDataProcessor:
     @patch("iisa.iisa.normalize_metrics")
     @patch("iisa.iisa.calculate_weighted_score")
     def test_normalize_and_score(
-        self, mock_calculate_score, mock_normalize, sample_data, mock_bigquery_provider
+        self, mock_calculate_score, mock_normalize, sample_data
     ):
         """
         Test the _normalize_and_score method.
@@ -1023,13 +980,12 @@ class TestDataProcessor:
                 data=sample_data,
                 subgraph_id="test_subgraph",
                 prices={"A": 10, "B": 20, "C": 15},
-                bigquery=mock_bigquery_provider,
             )
 
         # Set up mock return values
         normalized_data = sample_data.copy()
         for metric in [
-            "lin_reg_coefficient",
+            "lat_lin_reg_coefficient",
             "uptime_score",
             "existing_dips_agreements",
             "stake_to_fees_iqr_deviation",
@@ -1058,7 +1014,7 @@ class TestDataProcessor:
             assert isinstance(args[1], dict)
             weights = args[1]
             expected_metrics = [
-                "lin_reg_coefficient",
+                "lat_lin_reg_coefficient",
                 "uptime_score",
                 "existing_dips_agreements",
                 "stake_to_fees_iqr_deviation",
@@ -1076,7 +1032,7 @@ class TestDataProcessor:
         )
         pd.testing.assert_series_equal(result["weighted_score"], expected_scores)
 
-    def test_assign_indexers_to_subgraph(self, sample_data, mock_bigquery_provider):
+    def test_assign_indexers_to_subgraph(self, sample_data):
         """
         Test the _assign_indexers_to_subgraph method of DataProcessor.
 
@@ -1092,7 +1048,6 @@ class TestDataProcessor:
                     data=sample_data,
                     subgraph_id="test_subgraph",
                     prices={"A": 10, "B": 20, "C": 15},
-                    bigquery=mock_bigquery_provider,
                 )
 
                 # Test with fewer than 3 indexers
@@ -1139,7 +1094,6 @@ class TestDataProcessor:
     def test_add_indexers_to_group(
         self,
         sample_data,
-        mock_bigquery_provider,
         initial_group,
         expected_calls,
         expected_final_group,
@@ -1156,7 +1110,6 @@ class TestDataProcessor:
             data=sample_data,
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15, "D": 25},
-            bigquery=mock_bigquery_provider,
         )
 
         with patch("iisa.iisa.DataProcessor._select_next_best_indexer") as mock_select:
@@ -1180,17 +1133,17 @@ class TestDataProcessor:
             processor._add_indexers_to_group()
             assert processor.current_group == ["A"]
 
-    def test_meets_diversity_requirements(self, mock_bigquery_provider):
+    def test_meets_decentralization_requirements(self):
         """
-        Test the _meets_diversity_requirements method of DataProcessor.
+        Test the _meets_decentralization_requirements method of DataProcessor.
 
         This test verifies:
         1. The method returns True when there are fewer than 2 indexers in the current group.
-        2. The method correctly evaluates diversity based on locations and organizations.
-        3. A group that does not _meets_diversity_requirements will not be marked as true.
+        2. The method correctly evaluates decentralization based on locations and organizations.
+        3. A group that does not _meets_decentralization_requirements will not be marked as true.
 
         Note:
-        _meets_diversity_requirements accepts new_indexer as an input perameter.
+        _meets_decentralization_requirements accepts new_indexer as an input perameter.
         """
         processor = DataProcessor(
             data=pd.DataFrame(
@@ -1202,32 +1155,31 @@ class TestDataProcessor:
             ),
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15, "D": 25},
-            bigquery=mock_bigquery_provider,
         )
 
         # Test with fewer than 2 indexers
         processor.current_group = ["A"]
-        assert processor._meets_diversity_requirements("B")
+        assert processor._meets_decentralization_requirements("B")
 
         # Test with 2 indexers, same location and org
         processor.current_group = ["A", "B"]
-        assert processor._meets_diversity_requirements("C")
+        assert processor._meets_decentralization_requirements("C")
 
         # Test with 2 indexers, different location and org
         processor.current_group = ["A", "C"]
-        assert processor._meets_diversity_requirements("D")
+        assert processor._meets_decentralization_requirements("D")
 
         # Test with 2 indexers, adding one with same location and org
         processor.current_group = ["A", "C"]
-        assert processor._meets_diversity_requirements("B")
+        assert processor._meets_decentralization_requirements("B")
 
         # Test with 3 of the same indexer.
         processor.current_group = ["A", "A"]
-        assert not processor._meets_diversity_requirements("A")
+        assert not processor._meets_decentralization_requirements("A")
 
-    def test_meets_diversity_requirements_edge_cases(self, mock_bigquery_provider):
+    def test_meets_decentralization_requirements_edge_cases(self):
         """
-        Test _meets_diversity_requirements with various edge cases.
+        Test _meets_decentralization_requirements with various edge cases.
         """
         processor = DataProcessor(
             data=pd.DataFrame(
@@ -1239,27 +1191,24 @@ class TestDataProcessor:
             ),
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15, "D": 25, "E": 30, "F": 35},
-            bigquery=mock_bigquery_provider,
         )
 
         # Test with empty current group
-        assert processor._meets_diversity_requirements("A")
+        assert processor._meets_decentralization_requirements("A")
 
         # Test with indexer 'A' selected twice due to some error
         processor.current_group = ["A", "A"]
-        assert processor._meets_diversity_requirements("E")
+        assert processor._meets_decentralization_requirements("E")
 
         # Test with many indexers
         processor.current_group = ["A", "B", "C", "D", "E", "F"]
-        assert processor._meets_diversity_requirements("F")
+        assert processor._meets_decentralization_requirements("F")
 
-        # Additional test: Check that it returns False when diversity requirements are not met
+        # Additional test: Check that it returns False when decentralization requirements are not met
         processor.current_group = ["A", "B"]
-        assert not processor._meets_diversity_requirements("A")
+        assert not processor._meets_decentralization_requirements("A")
 
-    def test_replace_underperforming_indexers(
-        self, sample_data, mock_bigquery_provider
-    ):
+    def test_replace_underperforming_indexers(self, sample_data):
         """
         Test the _replace_underperforming_indexers method of DataProcessor.
 
@@ -1271,7 +1220,6 @@ class TestDataProcessor:
             data=sample_data,
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15, "D": 25},
-            bigquery=mock_bigquery_provider,
         )
 
         with patch(
@@ -1290,12 +1238,12 @@ class TestDataProcessor:
             assert mock_find.call_count == 3
             assert mock_score.call_count == 2
 
-    def test_find_best_replacement(self, mock_bigquery_provider):
+    def test_find_best_replacement(self):
         """
         Test the _find_best_replacement method of DataProcessor.
 
         This test verifies:
-        1. The method returns the best replacement that meets diversity requirements.
+        1. The method returns the best replacement that meets decentralization requirements.
         2. The method returns None when no suitable replacement is found.
         3. The method will not try to replace an indexer with one that is already blacklisted.
         """
@@ -1310,26 +1258,25 @@ class TestDataProcessor:
             ),
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15, "D": 25, "E": 30},
-            bigquery=mock_bigquery_provider,
         )
 
         processor.current_group = ["A", "B", "C"]
         processor.blacklist = ["E"]
 
         with patch(
-            "iisa.iisa.DataProcessor._meets_diversity_requirements"
-        ) as mock_diversity:
-            mock_diversity.side_effect = [True]
+            "iisa.iisa.DataProcessor._meets_decentralization_requirements"
+        ) as mock_decentralization:
+            mock_decentralization.side_effect = [True]
 
-            result = processor._find_best_replacement("C")
+            result = processor._find_best_replacement()
 
             # Verify the best replacement is D, not E, due to blacklisting.
             assert result == "D"
 
-            # Verify the number of diversity requirement checks
-            assert mock_diversity.call_count == 1
+            # Verify the number of decentralization requirement checks
+            assert mock_decentralization.call_count == 1
 
-    def test_calculate_group_score(self, mock_bigquery_provider):
+    def test_calculate_group_score(self):
         """
         Test the _calculate_group_score method of the DataProcessor class.
 
@@ -1345,8 +1292,10 @@ class TestDataProcessor:
         raw_data = pd.DataFrame(
             {
                 "indexer": ["A", "B", "C", "D"],
+                "destination_loc": ["0,0", "0,0", "0,0", "0,0"],
+                "org": ["org1", "org7", "org3", "org2"],
                 "existing_dips_agreements": [1, 2, 3, 4],
-                "lin_reg_coefficient": [0.1, 0.2, 0.3, 0.4],
+                "lat_lin_reg_coefficient": [0.1, 0.2, 0.3, 0.4],
                 "uptime_score": [0.9, 0.8, 0.7, 0.6],
                 "stake_to_fees_iqr_deviation": [0.1, 0.2, 0.3, 0.4],
                 "success_rate": [0.95, 0.90, 0.85, 0.80],
@@ -1359,11 +1308,10 @@ class TestDataProcessor:
             data=raw_data,
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15, "D": 25},
-            bigquery=mock_bigquery_provider,
         )
 
         processor.weights = {
-            "lin_reg_coefficient": 0.2424,
+            "lat_lin_reg_coefficient": 0.2424,
             "uptime_score": 0.1667,
             "existing_dips_agreements": 0.1212,
             "stake_to_fees_iqr_deviation": 0.1023,
@@ -1383,150 +1331,68 @@ class TestDataProcessor:
         )
 
         # Update assertions based on actual behavior
-        assert normal_score == 0.43269945586664776
-        assert exclude_score == 0.4001859218192328
-        assert include_score == 0.5169175617106954
+        assert normal_score == 0.26087946666666667
+        assert exclude_score == 0.17102986666666664
+        assert include_score == 0.28620253333333334
 
         # Verify that the original data was not modified
         pd.testing.assert_frame_equal(processor.data, original_data)
 
-    @patch("iisa.iisa.DataProcessor._process_data")
-    def test_update_and_reprocess_data(
-        self, mock_process_data, sample_data, mock_bigquery_provider
-    ):
+    def test_update_blacklist_cancel_indexing_agreements(self, sample_data):
         """
-        Test the update_and_reprocess_data method of DataProcessor.
+        Test the update_blacklist_cancel_indexing_agreements method of DataProcessor.
 
         This test verifies:
-        1. The method updates class variables with new data.
-        2. The _process_data method is called when updates occur.
-        3. The method handles partial updates correctly.
+        1. The update_blacklist_cancel_indexing_agreements method is
+        2. The update_blacklist_cancel_indexing_agreements method is
+        3. The update_blacklist_cancel_indexing_agreements method is
         """
         # Initialize DataProcessor
         processor = DataProcessor(
             data=sample_data,
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15},
-            bigquery=mock_bigquery_provider,
-            existing_agreements={"A": ["subgraph1"]},
-            pending_agreements={"B": ["subgraph2"]},
-            blacklist=["D"],
+            existing_agreements={
+                "A": ["subgraph1", "subgraph2", "subgraph4", "subgraph7", "subgraph10"],
+                "B": ["subgraph2", "subgraph3", "subgraph5", "subgraph9", "subgraph12"],
+                "C": [
+                    "subgraph10",
+                    "subgraph20",
+                    "subgraph40",
+                    "subgraph70",
+                    "subgraph100",
+                ],
+                "D": ["subgraph0", "subgraph2", "subgraph4"],
+                "E": ["subgraph11", "subgraph12", "subgraph14", "subgraph15"],
+                "F": [
+                    "subgraph6",
+                    "subgraph9",
+                    "subgraph16",
+                    "subgraph23",
+                    "subgraph41",
+                    "subgraph45",
+                ],
+            },
+            pending_agreements={
+                "B": ["subgraph13"],
+                "G": ["subgraph70"],
+                "I": ["subgraph90"],
+            },
+            blacklist=["H"],
         )
 
-        # Verify that _process_data was called
-        assert mock_process_data.call_count == 1
+        # update the blacklist to cancel agreements
+        new_blacklist = ["H", "B", "E", "NOT_IN_LIST"]
 
-        # Prepare new data
-        new_data = pd.DataFrame(
-            {
-                "indexer": ["X", "Y", "Z"],
-                "destination_loc": ["loc1", "loc2", "loc3"],
-                "org": ["org1", "org2", "org3"],
-            }
+        # Call update_blacklist_cancel_indexing_agreements with new new_blacklist
+        newly_cancelled_agreements = (
+            processor.update_blacklist_cancel_indexing_agreements(new_blacklist)
         )
-        new_prices = {"X": 30, "Y": 40, "Z": 50}
-        new_existing_agreements = {"X": ["subgraph3"]}
-        new_pending_agreements = {"Y": ["subgraph4"]}
-        new_blacklist = ["E"]
+        expected_newly_cancelled_agreements = {
+            "B": ["subgraph2", "subgraph3", "subgraph5", "subgraph9", "subgraph12"],
+            "E": ["subgraph11", "subgraph12", "subgraph14", "subgraph15"],
+        }
 
-        # Call update_and_reprocess_data with all new data
-        processor.update_and_reprocess_data(
-            new_data=new_data,
-            new_prices=new_prices,
-            new_existing_agreements=new_existing_agreements,
-            new_pending_agreements=new_pending_agreements,
-            new_blacklist=new_blacklist,
-        )
-
-        # Verify that class variables were updated
-        assert_frame_equal(processor.data, new_data)
-        assert processor.prices == new_prices
-        assert processor.existing_agreements == new_existing_agreements
-        assert processor.pending_agreements == new_pending_agreements
-        assert processor.blacklist == new_blacklist
-
-        # Verify that _process_data was called a second time for the update.
-        assert mock_process_data.call_count == 2
-
-        # Reset mock and test partial update
-        mock_process_data.reset_mock()
-        processor.update_and_reprocess_data(new_prices={"A": 25})
-
-        # Verify that only prices were updated and _process_data was called
-        assert processor.prices == {"A": 25}
-        assert_frame_equal(processor.data, new_data)
-        assert mock_process_data.call_count >= 1
-
-    def test_update_and_reprocess_data_no_perams(
-        self, sample_data, mock_bigquery_provider
-    ):
-        """
-        Tests that update_and_reprocess_data handles empty updates correctly.
-        """
-        processor = DataProcessor(
-            data=sample_data,
-            subgraph_id="test_subgraph",
-            prices={"A": 10, "B": 20, "C": 15},
-            bigquery=mock_bigquery_provider,
-        )
-
-        with patch("iisa.iisa.DataProcessor._process_data") as mock_process_data:
-            # Call update_and_reprocess_data with no arguments
-            processor.update_and_reprocess_data()
-
-            # Verify that _process_data was not called
-            assert mock_process_data.call_count == 0
-
-    @patch("iisa.iisa.DataProcessor._assign_indexers_to_subgraph")
-    def test_cancel_indexing_agreements(
-        self, mock_assign, sample_data, mock_bigquery_provider
-    ):
-        """
-        Test the _cancel_indexing_agreements method of DataProcessor.
-
-        This test verifies:
-        1. The method removes the specified indexer from the current group.
-        2. The method updates the dataset to reflect the cancellation.
-        3. The _assign_indexers_to_subgraph method is called to find replacements.
-        """
-        # Initialize DataProcessor
-        processor = DataProcessor(
-            data=sample_data,
-            subgraph_id="test_subgraph",
-            prices={"A": 10, "B": 20, "C": 15},
-            bigquery=mock_bigquery_provider,
-        )
-
-        # Set up initial state
-        processor.current_group = ["A", "B", "C"]
-        processor.data = pd.DataFrame(
-            {
-                "indexer": ["A", "B", "C", "D"],
-                "subgraph": ["test_subgraph", "test_subgraph", "test_subgraph", None],
-            }
-        )
-
-        # Call _cancel_indexing_agreements
-        processor._cancel_indexing_agreements("B")
-
-        # Verify that 'B' was removed from current_group
-        assert "B" not in processor.current_group
-        assert processor.current_group == ["A", "C"]
-
-        # Verify that the dataset was updated
-        assert (
-            processor.data.loc[processor.data["indexer"] == "B", "subgraph"].iloc[0]
-            is None
-        )
-
-        # Verify that _assign_indexers_to_subgraph was called
-        assert mock_assign.call_count >= 1
-
-        # Test cancelling an indexer not in the current group
-        processor._cancel_indexing_agreements("D")
-
-        # Verify that current_group remained unchanged
-        assert processor.current_group == ["A", "C"]
-
-        # Verify that _assign_indexers_to_subgraph was called again
-        assert mock_assign.call_count >= 2
+        # Check state after update
+        print("Newly cancelled indexing agreements: ", newly_cancelled_agreements)
+        assert newly_cancelled_agreements == expected_newly_cancelled_agreements
