@@ -434,29 +434,22 @@ def split_locations(df):
         - 'origin_lon': Longitude of the origin location
         - 'dest_lat': Latitude of the destination location
         - 'dest_lon': Longitude of the destination location
+
+    Note:
+        - NaN values in input columns are implicitly handled and result in NaN values in output columns.
+        - Non-numeric entries or invalid coordinate pairs will also result in NaN values.
     """
     # Handle potential empty input df.
     if df.empty:
         return df.assign(origin_lat=[], origin_lon=[], dest_lat=[], dest_lon=[])
 
-    # Function to safely convert values to float
-    def safe_convert(coords):
-        # Convert non-numeric entries to NaN
-        if pd.isna(coords):
-            return pd.Series([np.nan, np.nan])
+    for prefix, col in [("origin", "origin_loc"), ("dest", "destination_loc")]:
+        # Split the strings
+        split = df[col].str.split(",", expand=True)
 
-        # Else split lat, long
-        try:
-            lat, lon, *_ = coords.split(",")
-            return pd.Series([float(lat), float(lon)])
-
-        # Handle errors as nan
-        except (ValueError, AttributeError):
-            return pd.Series([np.nan, np.nan])
-
-    # Apply safe conversion to both origin and destination columns
-    df[["origin_lat", "origin_lon"]] = df["origin_loc"].apply(safe_convert)
-    df[["dest_lat", "dest_lon"]] = df["destination_loc"].apply(safe_convert)
+        # Convert to float, invalid values become NaN
+        df[f"{prefix}_lat"] = pd.to_numeric(split[0], errors="coerce")
+        df[f"{prefix}_lon"] = pd.to_numeric(split[1], errors="coerce")
 
     return df
 
@@ -1184,14 +1177,23 @@ def calculate_stake_to_fees(stake_query_pandas):
         - 'stake_to_fees_iqr_deviation': IQR-normalized deviation from the median ratio
     """
 
-    stake_to_fees = stake_query_pandas[["indexer", "stake_to_fees"]].copy()
+    stake_to_fees = stake_query_pandas[["stake_to_fees"]].copy()
+
     median_stake_to_fees = stake_to_fees["stake_to_fees"].median()
     q1 = stake_to_fees["stake_to_fees"].quantile(0.25)
     q3 = stake_to_fees["stake_to_fees"].quantile(0.75)
     iqr = q3 - q1
+
     stake_to_fees["stake_to_fees_iqr_deviation"] = (
         stake_to_fees["stake_to_fees"] - median_stake_to_fees
     ) / iqr
+
+    # Ensure the index is named 'indexer' before resetting
+    stake_to_fees.index.name = "indexer"
+
+    # Reset the index to make 'indexer' a column
+    stake_to_fees = stake_to_fees.reset_index()
+
     return stake_to_fees
 
 

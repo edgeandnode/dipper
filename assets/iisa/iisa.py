@@ -62,7 +62,13 @@ def initialize_data_manager():
 
 
 def process_subgraph(
-    data, subgraph_id, prices, existing_agreements, pending_agreements, blacklist
+    data,
+    subgraph_id,
+    prices,
+    existing_agreements,
+    pending_agreements,
+    blacklist,
+    weights=None,
 ):
     bigqueryprovider = BigQueryProvider("graph-mainnet", "US")
     processor = DataProcessor(
@@ -73,6 +79,7 @@ def process_subgraph(
         existing_agreements=existing_agreements,
         pending_agreements=pending_agreements,
         blacklist=blacklist,
+        weights=weights,
     )
     return processor.added_indexers, processor.cancelled_indexers
 
@@ -305,6 +312,7 @@ class DataProcessor:
         existing_agreements=None,
         pending_agreements=None,
         blacklist=None,
+        weights=None,
     ):
         """
         Initialize the DataProcessor class with data, subgraph ID, indexer prices, existing indexer
@@ -326,6 +334,15 @@ class DataProcessor:
         self.existing_agreements = existing_agreements or {}
         self.pending_agreements = pending_agreements or {}
         self.blacklist = blacklist or []
+        self.weights = weights or {
+            "lin_reg_coefficient": 0.2424,
+            "uptime_score": 0.1667,
+            "existing_dips_agreements": 0.1212,
+            "stake_to_fees_iqr_deviation": 0.1023,
+            "success_rate": 0.0625,
+            "avg_sync_duration": 0.0625,
+            "indexing_agreement_acceptance_latency": 0.2424,
+        }
 
         if "destination_loc" not in self.data.columns:
             self.data["destination_loc"] = "unknown"
@@ -383,7 +400,7 @@ class DataProcessor:
         # Sort data by weighted score
         self.data.sort_values(by="weighted_score", ascending=True, inplace=True)
 
-        # Call _assign_indexers_to_subgraph to assign/replace an indexer on the subgraph.
+        # Call _assign_indexers_to_subgraph to assign/replace/remove an indexer on the subgraph.
         self._assign_indexers_to_subgraph()
 
     def _fetch_number_of_indexer_agreements(self):
@@ -437,19 +454,9 @@ class DataProcessor:
             )
             normalized_data = self.data
 
-        weights = {
-            "lin_reg_coefficient": 0.2424,
-            "uptime_score": 0.1667,
-            "existing_dips_agreements": 0.1212,
-            "stake_to_fees_iqr_deviation": 0.1023,
-            "success_rate": 0.0625,
-            "avg_sync_duration": 0.0625,
-            "indexing_agreement_acceptance_latency": 0.2424,
-        }
-
         try:
             normalized_data["weighted_score"] = normalized_data.apply(
-                lambda row: calculate_weighted_score(row, weights), axis=1
+                lambda row: calculate_weighted_score(row, self.weights), axis=1
             )
         except Exception as e:
             logger.error(f"Unexpected error when trying calculate_weighted_score: {e}")
@@ -459,17 +466,21 @@ class DataProcessor:
 
     def _assign_indexers_to_subgraph(self):
         """
-        Assign indexers to subgraph based on weighted scores and diversity requirements.
+        Assign indexers to subgraph based on weighted scores and decentralization requirements.
 
         Use the methods _add_indexers_to_group and _replace_underperforming_indexers to
         assign indexers to the subgraph in question.
         """
-        # If the current indexer group assigned has less than 3 indexers, call '_add_indexers_to_group'
+        # If the current indexer group has less than 3 indexers, call '_add_indexers_to_group'
         if len(self.current_group) < 3:
             self._add_indexers_to_group()
 
+        # If the current indexer group has more than 3 indexers, call '_remove_indexers_from_group'
+        if len(self.current_group) > 3:
+            self._remove_indexers_from_group()
+
         # Otherwise, call '_replace_underperforming_indexers' which will search for a suitable replacement
-        else:
+        if len(self.current_group) == 3:
             self._replace_underperforming_indexers()
 
     def _add_indexers_to_group(self):
@@ -490,20 +501,30 @@ class DataProcessor:
 
     def _select_next_best_indexer(self):
         """
-        Select the next best indexer based on weighted scores and diversity requirements.
+        Select the next best indexer based on weighted scores and decentralization requirements.
+
+        Will not attempt to assign an indexing agreement to an indexer under the following conditions:
+        1. The indexer is already in the current group.
+        2. The indexer is blacklisted.
+        3. The indexer has pending agreements that they have not yet accepted.
         """
-        # Iterate through the DataFrame to find the best indexer based on scores/diversity requirements.
+        # Iterate through the DataFrame to find the best indexer based on scores/decentralization requirements.
+
+        # Sort by weighted score, highest score first.
+        self.data = self.data.sort_values(by="weighted_score", ascending=False)
+
         for _, row in self.data.iterrows():
             if (
                 row["indexer"] not in self.current_group
                 and row["indexer"] not in self.blacklist
+                and row["indexer"] not in self.pending_agreements
             ):
-                if self._meets_diversity_requirements(row["indexer"]):
+                if self._meets_decentralization_requirements(row["indexer"]):
                     return row["indexer"]
 
         return None
 
-    def _meets_diversity_requirements(self, new_indexer):
+    def _meets_decentralization_requirements(self, new_indexer):
         """
         Check if adding the new indexer meets decentralisation requirements.
 
@@ -532,6 +553,82 @@ class DataProcessor:
         # Otherwise 'False'
         return False
 
+    def _remove_indexers_from_group(self):
+        """
+        Remove the worst indexers from the current group until the current group only has 3 indexers.
+        """
+        while len(self.current_group) > 3:
+            indexer_scores = []
+            for indexer in self.current_group:
+                # Calculate each indexers score as if the indexer had 1 less indexing agreement
+                score = self._calculate_indexer_score(indexer)
+                indexer_scores.append((indexer, score))
+
+            # Sort indexers by score, worst (lowest score) first
+            indexer_scores.sort(key=lambda x: x[1])
+
+            for indexer, _ in indexer_scores:
+                temp_group = self.current_group.copy()
+                temp_group.remove(indexer)
+
+                if self._meets_decentralization_requirements_indexer_removal(
+                    temp_group
+                ):
+                    self.current_group.remove(indexer)
+                    break
+            else:
+                break
+
+    def _calculate_indexer_score(self, indexer):
+        """
+        Calculate the score for an individual indexer as if they had one less indexing agreement.
+        """
+        # Check if the indexer exists in self.data
+        indexer_data = self.data[self.data["indexer"] == indexer]
+
+        if indexer_data.empty:
+            logger.warning(
+                f"Indexer {indexer} not found in self.data. Returning lowest possible score."
+            )
+            return 0
+
+        # Create a copy of the data for this indexer
+        indexer_data = indexer_data.copy()
+
+        # Reduce the indexer's agreement count by 1
+        indexer_data["existing_dips_agreements"] = (
+            indexer_data["existing_dips_agreements"] - 1
+        ).clip(lower=0)
+
+        # Normalize only the necessary metrics for this indexer
+        normalized_data = normalize_metrics(indexer_data)
+
+        # Calculate the weighted score for this indexer
+        score = calculate_weighted_score(normalized_data.iloc[0], self.weights)
+
+        return score
+
+    def _meets_decentralization_requirements_indexer_removal(self, group):
+        """
+        Check if the group meets decentralisation requirements after removing an indexer.
+
+        The group must have at least 2 unique organizations and 2 unique locations.
+        """
+        if len(group) < 2:
+            return False
+
+        locations = self.data[self.data["indexer"].isin(group)][
+            "destination_loc"
+        ].unique()
+        orgs = self.data[self.data["indexer"].isin(group)]["org"].unique()
+
+        # Return 'True' if decentralisation requirements are hit
+        if len(locations) >= 2 and len(orgs) >= 2:
+            return True
+
+        # Otherwise 'False'
+        return False
+
     def _replace_underperforming_indexers(self):
         """
         Replace underperforming indexers if the group score can be improved by more than 10%.
@@ -545,7 +642,7 @@ class DataProcessor:
         # For each indexer in the current group
         for indexer in self.current_group:
             # Check the most appropriate replacement indexer to replace the indexer in question.
-            new_indexer = self._find_best_replacement(indexer)
+            new_indexer = self._find_best_replacement()
 
             if new_indexer:
                 # Create a temp copy of the current group, remove the old indexer from it, add the new indexer.
@@ -583,12 +680,16 @@ class DataProcessor:
             self.current_group.remove(worst_indexer)
             self.current_group.append(best_replacement)
 
-    def _find_best_replacement(self, indexer_to_replace):
+    def _find_best_replacement(self):
         """
-        Find the best replacement for an indexer in the group.
+        Find the best replacement for an indexer in the current group.
+
+        Will not attempt to assign an indexing agreement to an indexer under the following conditions:
+        1. The indexer is already in the current group.
+        2. The indexer is blacklisted.
+        3. The indexer has pending agreements that they have not yet accepted.
         """
-        # Filter out candidates that are already in the group, on the blacklist, or have pending agreements that they
-        # have not yet accepted.
+        # Filter out unpickable candidates, selecting only necessary columns
         candidates = self.data[
             ~self.data["indexer"].isin(
                 self.current_group
@@ -600,11 +701,10 @@ class DataProcessor:
         # Sort the remaining candidates by weighted score, highest score first.
         candidates = candidates.sort_values(by="weighted_score", ascending=False)
 
-        # Iterate through the list of candidates, return the first (best) candidate that meets diversity requirements
-        for index, row in candidates.iterrows():
-            new_group = [i for i in self.current_group if i != indexer_to_replace]
-            if self._meets_diversity_requirements(new_group, row["indexer"]):
-                return row["indexer"]
+        # Iterate through the list of candidates, return the first (best) candidate that meets decentralization requirements
+        for indexer in candidates["indexer"]:
+            if self._meets_decentralization_requirements(indexer):
+                return indexer
 
         return None
 
@@ -616,7 +716,7 @@ class DataProcessor:
         the average weighted score of the new indexer group.
 
         This method is intended to have only one of [indexer_to_exclude, indexer_to_include] passed
-        into it, at most.
+        into it at a time, at most.
         """
         score = None
         try:

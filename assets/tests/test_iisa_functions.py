@@ -1857,10 +1857,7 @@ class TestCalculateStakeToFees:
             "stake_to_fees_iqr_deviation",
         }
 
-        # Check that both 'indexer' & 'stake_to_fees' columns are unchanged
-        pd.testing.assert_series_equal(
-            result["indexer"], sample_stake_query_pandas["indexer"]
-        )
+        # Check that 'stake_to_fees' column is unchanged
         pd.testing.assert_series_equal(
             result["stake_to_fees"], sample_stake_query_pandas["stake_to_fees"]
         )
