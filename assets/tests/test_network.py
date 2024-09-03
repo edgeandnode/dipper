@@ -15,7 +15,7 @@ class TestNetworkIndexersDataframe:
 
         # Initialize the network provider with test data
         test_data = network_fixture.load_fixture_data()
-        provider._set_snapshot(test_data)
+        provider.set_snapshot(test_data)
 
         ## When
         indexers = provider.indexers()

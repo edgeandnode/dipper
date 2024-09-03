@@ -9,12 +9,11 @@ import pandas as pd
 import pytest
 
 from iisa.bq import (
-    _get_combined_query,
-    _get_initial_query,
-    _get_url_query,
-    _get_initial_stake_to_fees_query,
     BigQueryProvider,
     InitialQueryDataFrame,
+    _get_combined_query,
+    _get_initial_query,
+    _get_initial_stake_to_fees_query,
 )
 from iisa.time import DateStr, TimestampStr
 
@@ -47,18 +46,6 @@ class TestGetCombinedQuery:
 
         # When get_initial_query is called
         query = _get_initial_query(start_date, 10)
-
-        # Then the query string should contain the expected date range
-        assert (
-            "BETWEEN '2024-01-01' AND DATE_ADD('2024-01-01', INTERVAL 10 DAY)" in query
-        )
-
-    def test_get_url_query(self):
-        # Given a start date, a number of days and a number of rows to use
-        start_date = DateStr("2024-01-01")
-
-        # When get_combined_query is called
-        query = _get_url_query(start_date, 10)
 
         # Then the query string should contain the expected date range
         assert (

@@ -1,29 +1,13 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from unittest.mock import MagicMock, call, patch
 
 import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from iisa.iisa import (
-    BigQueryProvider,
-    DataManager,
-    DataProcessor,
-)
-
-
-def initialize_data_manager():
-    """
-    Initialize and return a new DataManager instance with a configured BigQueryProvider.
-
-    This function creates a BigQueryProvider for "graph-mainnet" project in "US" region,
-    and uses it to initialize a new DataManager instance.
-
-    Returns:
-        DataManager: An initialized DataManager instance.
-    """
-    bigquery_provider = BigQueryProvider("graph-mainnet", "US")
-    return DataManager(bigquery=bigquery_provider)
+from iisa import DataManager, DataProcessor, GeoipResolver, NetworkProvider
+from iisa.time import TimestampStr
+from tests.__fixtures__ import network as network_fixture
 
 
 def process_subgraph(
@@ -34,14 +18,13 @@ def process_subgraph(
     pending_agreements,
     blacklist,
     *,
-    bigquery_provider=None,
+    bigquery_provider,
 ):
-    bigquery = bigquery_provider or BigQueryProvider("graph-mainnet", "US")
     processor = DataProcessor(
         data=data,
         subgraph_id=subgraph_id,
         prices=prices,
-        bigquery=bigquery,
+        bigquery=bigquery_provider,
         existing_agreements=existing_agreements,
         pending_agreements=pending_agreements,
         blacklist=blacklist,
@@ -73,11 +56,6 @@ def mock_regression_results():
         {"indexer": ["indexer1", "indexer2", "indexer3"], "rank": [1, 2, 3]}
     )
     return filtered_df, rankings_df
-
-
-@pytest.fixture
-def mock_url_to_ip():
-    return "0.0.0.0"  # Return a dummy IP for any URL
 
 
 @pytest.fixture
@@ -129,24 +107,31 @@ def mock_bigquery_provider(mock_combined_query_results):
             "stake_to_fees": [1.0, 2.0, 3.0],
         }
     )
-    mock.return_value.fetch_url_data.return_value = pd.DataFrame(
-        {
-            "indexer": ["indexer1", "indexer2", "indexer3"],
-            "url": ["url1", "url2", "url3"],
-            "day_partition": ["2024-01-01", "2024-01-02", "2024-01-03"],
-        }
-    )
     return mock
 
 
-@pytest.mark.skip(reason="Flaky test suite: high dependency on internal details")
+@pytest.fixture
+def mock_network_provider():
+    ## Given
+    resolver = GeoipResolver()
+    provider = NetworkProvider(geoip=resolver)
+
+    # Initialize the network provider with test data
+    test_data = network_fixture.load_fixture_data()
+    provider.set_snapshot(test_data)
+
+    return provider
+
+
 class TestInitializeDataManager:
     """
     This class verifies the initialize_data_manager function creates/returns
     a DataManager instance with the correct configuration and handles errors.
     """
 
-    def test_initialize_data_manager(self, mock_bigquery_provider, mock_url_to_ip):
+    def test_initialize_data_manager(
+        self, mock_bigquery_provider, mock_network_provider
+    ):
         """
         This test verifies:
         1. The function returns a DataManager instance.
@@ -192,13 +177,19 @@ class TestInitializeDataManager:
 
             return filtered_data, indexer_rankings
 
-        def mock__fetch_bigquery_data():
+        def mock__fetch_and_process_data(
+            bigquery_provider,
+            network_provider,
+            start_date: date,
+            start_ts: TimestampStr,
+            num_days: int,
+            target_rows: int = 20_000_000,
+        ):
             """
             Creates and returns mock data simulating BigQuery fetch results.
 
             This function generates mock data for:
             1. bigquery_data: A DataFrame with various indexer and query metrics.
-            2. filtered_bigquery_data: A subset of bigquery_data (first two rows).
             3. indexer_rankings: A DataFrame with indexer rankings and scores.
             """
             mock_data = pd.DataFrame(
@@ -223,7 +214,6 @@ class TestInitializeDataManager:
                     "sampled_query_id_hashed_mod_integer_root": [0, 1, 2],
                 }
             )
-            filtered_mock_data = mock_data.iloc[:2].copy()
             indexer_rankings_mock_data = pd.DataFrame(
                 {
                     "indexer": ["indexer1", "indexer2", "indexer3"],
@@ -232,43 +222,33 @@ class TestInitializeDataManager:
                 }
             )
 
-            # Assign the mock data to the appropriate attributes
-            self.bigquery_data = mock_data
-            self.filtered_bigquery_data = filtered_mock_data
-            self.indexer_rankings = indexer_rankings_mock_data
-            return mock_data
+            return mock_data, indexer_rankings_mock_data
 
         # Apply patches for the test
-        with patch("iisa.iisa.BigQueryProvider", mock_bigquery_provider):
-            with patch("iisa.iisa_functions.url_to_ip", mock_url_to_ip):
+        with patch(
+            "iisa.iisa.derive_timestamps",
+            return_value=(
+                datetime.now(),
+                datetime.now(),
+                "2024-01-01T00:00:00Z",
+                "2024-01-28T23:59:59Z",
+            ),
+        ):
+            with patch(
+                "iisa.iisa_functions.perform_linear_regression",
+                side_effect=mock_perform_linear_regression,
+            ):
                 with patch(
-                    "iisa.iisa.derive_timestamps",
-                    return_value=(
-                        datetime.now(),
-                        datetime.now(),
-                        "2024-01-01T00:00:00Z",
-                        "2024-01-28T23:59:59Z",
-                    ),
+                    "iisa.iisa._fetch_and_process_data",
+                    mock__fetch_and_process_data,
                 ):
-                    with patch(
-                        "iisa.iisa_functions.perform_linear_regression",
-                        side_effect=mock_perform_linear_regression,
-                    ):
-                        with patch.object(
-                            DataManager,
-                            "_fetch_bigquery_data",
-                            mock__fetch_bigquery_data,
-                        ):
-                            result = initialize_data_manager()
+                    result = DataManager(
+                        bigquery=mock_bigquery_provider.return_value,
+                        network=mock_network_provider,
+                    )
 
         # Verify that the result is an instance of DataManager
         assert isinstance(result, DataManager)
-
-        # Verify BigQueryProvider was called with the correct parameters
-        mock_bigquery_provider.assert_called_once_with("graph-mainnet", "US")
-
-        # Verify the DataManager is using the created BigQueryProvider
-        assert result.bigquery == mock_bigquery_provider.return_value
 
         # Verify that the bigquery_data attribute is not None and that bigquery_data contains some rows.
         assert result.bigquery_data is not None
@@ -281,14 +261,12 @@ class TestInitializeDataManager:
         assert "destination_loc" in result.bigquery_data.columns
         assert result.bigquery_data["destination_loc"].dtype == "object"
 
-        # Verify that filtered_bigquery_data is not None
-        assert result.filtered_bigquery_data is not None
-
         # Verify that indexer_rankings is not None
         assert result.indexer_rankings is not None
 
-    @patch("iisa.iisa.BigQueryProvider")
-    def test_initialize_data_manager_exception_handling(self, mock_bigquery_provider):
+    def test_initialize_data_manager_exception_handling(
+        self, mock_bigquery_provider, mock_network_provider
+    ):
         """
         This test verifies that initialize_data_manager handles exceptions gracefully.
         """
@@ -299,13 +277,13 @@ class TestInitializeDataManager:
 
         # Verify the function raises the expected exception
         with pytest.raises(Exception) as exc_info:
-            initialize_data_manager()
+            DataManager(
+                bigquery=mock_bigquery_provider.return_value,
+                network=mock_network_provider,
+            )
 
-        # Verify the exception message matches
+            # Verify the exception message matches
         assert str(exc_info.value) == "Simulated error"
-
-        # Verify the BigQueryProvider was instantiated exactly once
-        assert mock_bigquery_provider.call_count == 1
 
 
 class TestProcessSubgraph:
@@ -314,7 +292,7 @@ class TestProcessSubgraph:
     instance and returns the expected results for added/cancelled indexers.
     """
 
-    @pytest.mark.skip(reason="Flaky test suite: high dependency on internal details")
+    @pytest.mark.skip(reason="Flaky test: high dependency on internal details")
     @patch("iisa.iisa.DataProcessor")
     def test_process_subgraph(
         self, mock_data_processor, sample_data, mock_bigquery_provider
@@ -386,10 +364,9 @@ class TestDataManager:
     correctly initializes, fetches data, and provides access to its data.
     """
 
-    @patch("iisa.iisa.BigQueryProvider")
     @patch("iisa.iisa.derive_timestamps")
     def test_data_manager_constructor(
-        self, mock_derive_timestamps, mock_bigquery_provider
+        self, mock_derive_timestamps, mock_bigquery_provider, mock_network_provider
     ):
         """
         Tests the initialization of the DataManager class to ensure it sets up with
@@ -411,9 +388,12 @@ class TestDataManager:
             "2024-01-28T23:59:59Z",
         )
 
-        with patch("iisa.iisa.DataManager._fetch_bigquery_data"):
-            # Initialize DataManager with mocked BigQueryProvider
-            dm = DataManager(bigquery=mock_bigquery_provider.return_value)
+        with patch("iisa.iisa._fetch_and_process_data", return_value=(None, None)):
+            # Initialize DataManager
+            dm = DataManager(
+                bigquery=mock_bigquery_provider.return_value,
+                network=mock_network_provider,
+            )
 
         # Verify default values
         assert dm.num_days == 28
@@ -427,23 +407,23 @@ class TestDataManager:
         # Verify initial data attributes
         assert dm.bigquery_data is None
         assert dm.indexer_rankings is None
-        assert dm.indexer_success_rate is None
-        assert dm.indexer_uptime is None
-        assert dm.stake_to_fees is None
-        assert dm.filtered_bigquery_data is None
 
         # Ensure derive_timestamps was called with correct argument
         mock_derive_timestamps.assert_called_once_with(28, None)
 
-    @patch("iisa.iisa.DataManager._fetch_bigquery_data")
-    def test_update_and_fetch_data_method(self, mock_fetch, mock_bigquery_provider):
+    @patch("iisa.iisa._fetch_and_process_data", return_value=(None, None))
+    def test_fetch_and_update(
+        self, mock_fetch, mock_bigquery_provider, mock_network_provider
+    ):
         """
         This test verifies:
         1. The update_and_fetch_data method updates the start and end dates.
-        2. The _fetch_bigquery_data method is called after updating dates.
+        2. The fetch_data method is called after updating dates.
         """
         # Initialize a DataManager instance
-        dm = DataManager(bigquery=mock_bigquery_provider.return_value)
+        dm = DataManager(
+            bigquery=mock_bigquery_provider.return_value, network=mock_network_provider
+        )
 
         # Set initial variables
         initial_start_date = dm.start_date
@@ -468,10 +448,10 @@ class TestDataManager:
         assert dm.start_date >= initial_start_date
         assert dm.end_date > initial_end_date
 
-        # Verify _fetch_bigquery_data was called
+        # Verify fetch_data was called
         mock_fetch.assert_called_once()
 
-    def test_get_data(self, mock_bigquery_provider):
+    def test_get_data(self, mock_bigquery_provider, mock_network_provider):
         """
         This test verifies:
         1. The get_data method returns the bigquery_data.
@@ -486,13 +466,13 @@ class TestDataManager:
             }
         )
 
-        # Mock the _fetch_bigquery_data method to avoid actual data fetching
-        with patch("iisa.iisa.DataManager._fetch_bigquery_data"):
+        # Mock the fetch_data method to avoid actual data fetching
+        with patch("iisa.iisa._fetch_and_process_data", return_value=(mock_data, None)):
             # Initialize a DataManager instance
-            dm = DataManager(bigquery=mock_bigquery_provider.return_value)
-
-            # Manually set the bigquery_data attribute
-            dm.bigquery_data = mock_data
+            dm = DataManager(
+                bigquery=mock_bigquery_provider.return_value,
+                network=mock_network_provider,
+            )
 
         # Call get_data method
         result = dm.get_data()
@@ -507,16 +487,21 @@ class TestDataManager:
         assert result["score"].tolist() == [0.9, 0.8, 0.7]
         assert result["query_count"].tolist() == [100, 200, 300]
 
-    def test_get_indexer_rankings(self, mock_bigquery_provider):
+    def test_get_indexer_rankings(self, mock_bigquery_provider, mock_network_provider):
         """
         This test verifies:
         1. The get_indexer_rankings method returns the indexer rankings.
         """
-        # Initialize a DataManager instance
-        with patch("iisa.iisa.DataManager._fetch_bigquery_data"):
-            dm = DataManager(bigquery=mock_bigquery_provider.return_value)
         sample_rankings = pd.DataFrame({"indexer": ["A", "B"], "rank": [1, 2]})
-        dm.indexer_rankings = sample_rankings
+
+        # Initialize a DataManager instance
+        with patch(
+            "iisa.iisa._fetch_and_process_data", return_value=(None, sample_rankings)
+        ):
+            dm = DataManager(
+                bigquery=mock_bigquery_provider.return_value,
+                network=mock_network_provider,
+            )
 
         # Call get_indexer_rankings method
         result = dm.get_indexer_rankings()
@@ -557,7 +542,7 @@ class TestDataProcessor:
     def mock_bigquery_provider(self):
         return MagicMock()
 
-    @pytest.mark.skip(reason="Flaky test suite: high dependency on internal details")
+    @pytest.mark.skip(reason="Flaky test: high dependency on internal details")
     def test_data_processor_constructor(self, sample_data, mock_bigquery_provider):
         """
         Test the initialization of the DataProcessor class.
@@ -625,9 +610,6 @@ class TestDataProcessor:
         assert processor.pending_agreements == pending_agreements
         assert processor.blacklist == blacklist
 
-        # Verify BigQueryProvider instantiation
-        assert processor._bq == mock_bigquery_provider
-
         # Verify timestamps correctly set
         assert processor.start_date == datetime(2024, 1, 1)
         assert processor.end_date == datetime(2024, 1, 28)
@@ -653,7 +635,10 @@ class TestDataProcessor:
 
         # Verify default values for optional parameters
         processor_default = DataProcessor(
-            data=sample_data, subgraph_id=subgraph_id, prices=prices
+            data=sample_data,
+            subgraph_id=subgraph_id,
+            prices=prices,
+            bigquery=mock_bigquery_provider,
         )
         assert processor_default.existing_agreements == {}
         assert processor_default.pending_agreements == {}

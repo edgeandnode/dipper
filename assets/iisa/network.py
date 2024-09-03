@@ -6,16 +6,13 @@ A module that provides classes to represent the graph network of indexers and th
     of indexers and their indexed subgraphs. The classes are not meant to be used as domain objects.
 """
 
-from datetime import date
 from typing import Dict, Iterable, List, Optional, cast
 
-import pandas as pd
 import pandera as pa
 from pandera.typing import DataFrame, Series
 
 from .geoip import GeoipResolver
 from .typing import (
-    ArrowDate32Field,
     DeploymentId,
     EthAddressField,
     HttpUrlField,
@@ -170,7 +167,6 @@ class IndexersSchema(pa.DataFrameModel):
     indexer: Series[str] = EthAddressField(
         description="The indexer's Ethereum address", unique=True
     )
-    day_partition: Series[pd.ArrowDtype] = ArrowDate32Field()
     url: Series[str] = HttpUrlField(description="The indexer's URL")
     indexer_network: Series[str] = pa.Field(isin=["arbitrum"])
 
@@ -213,7 +209,7 @@ class NetworkProvider:
 
         self._indexers: Optional[IndexersDataFrame] = None
 
-    def _set_snapshot(
+    def set_snapshot(
         self,
         indexers: Iterable[Indexer],
     ) -> None:
@@ -244,7 +240,6 @@ def _to_indexers_dataframe(
     indexers: Iterable[Indexer],
     *,
     geoip: GeoipResolver,
-    day_partition: Optional[date] = None,
 ) -> IndexersDataFrame:
     """
     Converts a list of indexers to a Pandas DataFrame.
@@ -263,14 +258,6 @@ def _to_indexers_dataframe(
 
     # Set network columns to 'arbitrum'
     indexers_df["indexer_network"] = "arbitrum"
-
-    # Set the "day_partition" column and convert it to a "date32[pyarrow]" type
-    indexers_df["day_partition"] = (
-        day_partition if day_partition is not None else date.today()
-    )
-    indexers_df["day_partition"] = indexers_df["day_partition"].astype(
-        "date32[pyarrow]"
-    )
 
     # Resolve the IP address and geolocation information for each indexer
     indexers_df[["ip_addr", "org", "country", "latitude", "longitude"]] = indexers_df[
