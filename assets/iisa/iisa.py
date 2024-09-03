@@ -1,36 +1,37 @@
+import logging
+from datetime import date
 from typing import Optional
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 from .bq import BigQueryProvider
 from .iisa_functions import (
     adjust_rows,
+    aggregate_indexer_info,
     apply_location_details,
-    merge_dataframes,
-    extract_iata_code,
-    merge_in_iata_geolocation_info,
-    process_combined_query_pandas,
-    split_locations,
-    calculate_distances,
-    drop_intermediate_columns,
-    filter_status,
     apply_round_distance,
-    filter_columns,
-    iterative_filter,
-    strategic_sample,
-    hash_sampled_queries,
-    perform_linear_regression,
+    calculate_distances,
     calculate_indexer_success_rate,
     calculate_indexer_uptime,
     calculate_stake_to_fees,
-    aggregate_indexer_info,
-    merge_and_prepare_dataframes,
-    normalize_metrics,
     calculate_weighted_score,
+    drop_intermediate_columns,
+    extract_iata_code,
+    filter_columns,
+    filter_status,
+    hash_sampled_queries,
+    iterative_filter,
+    merge_and_prepare_dataframes,
+    merge_dataframes,
+    merge_in_iata_geolocation_info,
+    normalize_metrics,
+    perform_linear_regression,
+    process_combined_query_pandas,
+    split_locations,
+    strategic_sample,
 )
-from .time import derive_timestamps
-import logging
+from .time import TimestampStr, derive_timestamps
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO)
@@ -45,36 +46,6 @@ ITERATIVE_FILTER_MIN_DEPLOYMENT_INDEXERS = 2
 ITERATIVE_FILTER_MIN_DEPLOYMENTS_PER_INDEXER = 1
 ITERATIVE_FILTER_MIN_QUERIES_PER_INDEXER = 250
 ITERATIVE_FILTER_MIN_QUERIES_PER_DEPLOYMENT = 250
-
-
-def initialize_data_manager():
-    """
-    Initialize and return a new DataManager instance with a configured BigQueryProvider.
-
-    This function creates a BigQueryProvider for "graph-mainnet" project in "US" region,
-    and uses it to initialize a new DataManager instance.
-
-    Returns:
-        DataManager: An initialized DataManager instance.
-    """
-    bigqueryprovider = BigQueryProvider("graph-mainnet", "US")
-    return DataManager(bigquery=bigqueryprovider)
-
-
-def process_subgraph(
-    data, subgraph_id, prices, existing_agreements, pending_agreements, blacklist
-):
-    bigqueryprovider = BigQueryProvider("graph-mainnet", "US")
-    processor = DataProcessor(
-        data=data,
-        subgraph_id=subgraph_id,
-        prices=prices,
-        bigquery=bigqueryprovider,
-        existing_agreements=existing_agreements,
-        pending_agreements=pending_agreements,
-        blacklist=blacklist,
-    )
-    return processor.added_indexers, processor.cancelled_indexers
 
 
 class DataManager:
@@ -99,15 +70,18 @@ class DataManager:
 
     def __init__(
         self,
-        num_days=DATA_MANAGER_NUM_DAYS,
-        bigquery: Optional[BigQueryProvider] = None,
+        bigquery,
+        *,
+        num_days: int = DATA_MANAGER_NUM_DAYS,
+        end_date: Optional[date] = None,
     ):
-        self.num_days = num_days
-        self.bigquery = bigquery or BigQueryProvider("graph-mainnet", "US")
+        # Providers
+        self._bq = bigquery
 
-        # Initialize timestamps
+        # Initialize the number of days to look back, and derive timestamps
+        self.num_days = num_days
         (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
-            derive_timestamps(self.num_days)
+            derive_timestamps(self.num_days, end_date)
         )
 
         # Initialize data attributes
@@ -119,67 +93,70 @@ class DataManager:
         self.filtered_bigquery_data = None
 
         # Fetch initial data upon instantiation
-        self.fetch_bigquery_data()
+        # TODO: Require calling explicitly fetch_data_and_update() to fetch data after instantiation
+        self._fetch_bigquery_data(self.start_date, self.start_ts, self.num_days)
 
-    def fetch_bigquery_data(self):
+    def _fetch_bigquery_data(
+        self,
+        start_date: date,
+        start_ts: TimestampStr,
+        num_days: int,
+        target_rows: int = 20_000_000,
+    ):
         """
         Fetch data from BigQuery and cache it for the application's runtime.
         """
         # Fetch the initial query results using the initial query as input
-        initial_query_results_pandas = self.bigquery.fetch_initial_query_results(
-            self.start_date, self.num_days
+        initial_query_results_pandas = self._bq.fetch_initial_query_results(
+            start_date, num_days
         )
 
         # Figure out how many queries to take from each [indexer, subgraph] combination to target n queries overall
         target_rows_per_subgraph = adjust_rows(
             initial_query_results_pandas,
-            target_rows=20_000_000,
+            target_rows,
         )
 
         # Fetch the combined query results using the combined query as input
-        self.bigquery_data = self.bigquery.fetch_combined_query_results(
-            self.start_date, self.num_days, target_rows_per_subgraph
+        bigquery_data = self._bq.fetch_combined_query_results(
+            start_date, num_days, target_rows_per_subgraph
         )
 
         # Fetch the URL data query results using the URL query as input
-        unique_urls_indexers_pandas = self.bigquery.fetch_url_data(
-            self.start_date, self.num_days
-        )
+        unique_urls_indexers_pandas = self._bq.fetch_url_data(start_date, num_days)
 
         # Extract location/org details from the URL data. We should then have a df containing
-        # [['location', 'org', 'loc', 'ip']]  = [["country/reigon/city", "org", "lat,long", "ip"]]
+        # [['location', 'org', 'loc', 'ip']]  = [["country/region/city", "org", "lat,long", "ip"]]
         unique_urls_indexers_pandas = apply_location_details(
             unique_urls_indexers_pandas
         )
 
         # Merge the information contained inside unique_urls_indexers_pandas with combined_query_pandas
-        self.bigquery_data = merge_dataframes(
-            self.bigquery_data, unique_urls_indexers_pandas
-        )
+        bigquery_data = merge_dataframes(bigquery_data, unique_urls_indexers_pandas)
 
         # Extract IATA codes from the combined query data
-        self.bigquery_data = extract_iata_code(self.bigquery_data)
+        bigquery_data = extract_iata_code(bigquery_data)
 
         # Merge the IATA information with the combined query data
-        self.bigquery_data = merge_in_iata_geolocation_info(self.bigquery_data)
+        bigquery_data = merge_in_iata_geolocation_info(bigquery_data)
 
         # Process the combined query DataFrame
-        self.bigquery_data = process_combined_query_pandas(self.bigquery_data)
+        bigquery_data = process_combined_query_pandas(bigquery_data)
 
         # Split origin_loc and destination_loc into latitude and longitude
-        self.bigquery_data = split_locations(self.bigquery_data)
+        bigquery_data = split_locations(bigquery_data)
 
         # Apply the vectorized Haversine function
-        self.bigquery_data = calculate_distances(self.bigquery_data)
+        bigquery_data = calculate_distances(bigquery_data)
 
         # Drop the intermediate columns
-        self.bigquery_data = drop_intermediate_columns(self.bigquery_data)
+        bigquery_data = drop_intermediate_columns(bigquery_data)
 
         # Filter the data to only include rows where status is '200 OK'
-        self.bigquery_data = filter_status(self.bigquery_data)
+        bigquery_data = filter_status(bigquery_data)
 
         # Round the distance in miles
-        self.bigquery_data = apply_round_distance(self.bigquery_data)
+        bigquery_data = apply_round_distance(bigquery_data)
 
         # Specify the columns for regression
         predictor = ["response_time_ms"]
@@ -188,14 +165,14 @@ class DataManager:
         all_columns = predictor + categorical + numeric
 
         # Filter the DataFrame to include only the specified columns for regression
-        self.filtered_bigquery_data = filter_columns(self.bigquery_data, all_columns)
+        filtered_bigquery_data = filter_columns(bigquery_data, all_columns)
 
         # Filter the DataFrame to include only the rows that have non nan values for numeric columns such as 'distance_miles'
-        self.filtered_bigquery_data = self.filtered_bigquery_data.dropna(subset=numeric)
+        filtered_bigquery_data = filtered_bigquery_data.dropna(subset=numeric)
 
         # Apply iterative filtering
-        self.filtered_bigquery_data = iterative_filter(
-            self.filtered_bigquery_data,
+        filtered_bigquery_data = iterative_filter(
+            filtered_bigquery_data,
             ITERATIVE_FILTER_MIN_DEPLOYMENT_INDEXERS,
             ITERATIVE_FILTER_MIN_DEPLOYMENTS_PER_INDEXER,
             ITERATIVE_FILTER_MIN_QUERIES_PER_INDEXER,
@@ -203,13 +180,13 @@ class DataManager:
         )
 
         # Sample the query IDs to create a balanced representation across indexers
-        self.filtered_bigquery_data, integer_root = strategic_sample(
-            self.filtered_bigquery_data, target_rows_per_subgraph
+        filtered_bigquery_data, integer_root = strategic_sample(
+            filtered_bigquery_data, target_rows_per_subgraph
         )
 
         # Hash the sampled query IDs to the hash mod of the integer root
-        self.filtered_bigquery_data = hash_sampled_queries(
-            self.filtered_bigquery_data, integer_root
+        filtered_bigquery_data = hash_sampled_queries(
+            filtered_bigquery_data, integer_root
         )
 
         # update categorical to use the hashed query id's instead of the raw query id's
@@ -222,14 +199,14 @@ class DataManager:
 
         # Perform linear regression on the results from the combined query
         self.filtered_bigquery_data, self.indexer_rankings = perform_linear_regression(
-            self.filtered_bigquery_data, predictor, categorical, numeric
+            filtered_bigquery_data, predictor, categorical, numeric
         )
 
         # Calculate indexer query success rate
-        self.indexer_success_rate = calculate_indexer_success_rate(self.bigquery_data)
+        self.indexer_success_rate = calculate_indexer_success_rate(bigquery_data)
 
         # Calculate indexer uptime
-        self.indexer_uptime = calculate_indexer_uptime(self.bigquery_data)
+        self.indexer_uptime = calculate_indexer_uptime(bigquery_data)
 
         # Get the initial stake to fees query results as a dataframe
         # df headers are:
@@ -237,15 +214,13 @@ class DataManager:
         # "recent_slashable_stake",
         # "total_query_fees_sum",
         # "stake_to_fees"
-        initial_stake_query_pandas = self.bigquery.fetch_initial_stake_to_fees(
-            self.start_ts
-        )
+        initial_stake_query_pandas = self._bq.fetch_initial_stake_to_fees(start_ts)
 
         # Calculate stake to fees ratio
         self.stake_to_fees = calculate_stake_to_fees(initial_stake_query_pandas)
 
         # Group by 'indexer' and aggregate unique 'org' and 'destination_loc' values
-        agg_df = aggregate_indexer_info(self.bigquery_data)
+        agg_df = aggregate_indexer_info(bigquery_data)
 
         # Merge all data into the main dataframe
         self.bigquery_data = merge_and_prepare_dataframes(
@@ -256,14 +231,15 @@ class DataManager:
             self.stake_to_fees,
         )
 
-    def update_and_fetch_data(self):
+    def fetch_data_and_update(self):
         """
-        Update timestamps and fetch the latest data from BigQuery.
+        Fetch the latest data from BigQuery and update the internal data attributes.
         """
         (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
             derive_timestamps(self.num_days)
         )
-        self.fetch_bigquery_data()
+
+        self._fetch_bigquery_data(self.start_date, self.start_ts, self.num_days)
 
     def get_data(self):
         """
@@ -300,8 +276,8 @@ class DataProcessor:
         data,
         subgraph_id,
         prices,
+        bigquery,
         num_days=DATA_PROCESSOR_NUM_DAYS,
-        bigquery=None,
         existing_agreements=None,
         pending_agreements=None,
         blacklist=None,
@@ -317,12 +293,14 @@ class DataProcessor:
             existing_agreements (dict, optional): Dictionary of current subgraph-indexer relationships.
             blacklist (list, optional): List of blacklisted indexers.
         """
+        # Providers
+        self._bq = bigquery
+
         # Initialize class variables with provided parameters
         self.data = pd.DataFrame(data)
         self.subgraph_id = subgraph_id
         self.prices = prices
         self.num_days = num_days
-        self.bigquery = bigquery or BigQueryProvider("graph-mainnet", "US")
         self.existing_agreements = existing_agreements or {}
         self.pending_agreements = pending_agreements or {}
         self.blacklist = blacklist or []
@@ -731,13 +709,36 @@ class DataProcessor:
 
 # This block serves as a functional test and an example implementation
 if __name__ == "__main__":
+
+    def process_subgraph(
+        data,
+        subgraph_id,
+        prices,
+        existing_agreements,
+        pending_agreements,
+        blacklist,
+        *,
+        bigquery,
+    ):
+        processor = DataProcessor(
+            data=data,
+            subgraph_id=subgraph_id,
+            prices=prices,
+            bigquery=bigquery,
+            existing_agreements=existing_agreements,
+            pending_agreements=pending_agreements,
+            blacklist=blacklist,
+        )
+        return processor.added_indexers, processor.cancelled_indexers
+
     try:
         # Initialize DataManager (done once at project creation)
         # This also performs the initial data fetch
-        data_manager = initialize_data_manager()
+        bigquery_provider = BigQueryProvider("graph-mainnet", "US")
+        data_manager = DataManager(bigquery=bigquery_provider)
 
         # Simulate periodic data update (should be done once every 24 hours)
-        data_manager.update_and_fetch_data()
+        data_manager.fetch_data_and_update()
 
         # Get the latest data
         data = data_manager.get_data()
@@ -764,6 +765,7 @@ if __name__ == "__main__":
                 existing_agreements,
                 pending_agreements,
                 blacklist,
+                bigquery=bigquery_provider,
             )
             print(f"Initial processing - Added: {added}, Cancelled: {cancelled}")
 
@@ -800,6 +802,7 @@ if __name__ == "__main__":
                 new_existing_agreements,
                 new_pending_agreements,
                 new_blacklist,
+                bigquery=bigquery_provider,
             )
             print(f"New subgraph processing - Added: {added}, Cancelled: {cancelled}")
 
@@ -825,6 +828,7 @@ if __name__ == "__main__":
                 data,
                 new_subgraph_id,
                 new_prices,
+                bigquery_provider,
                 existing_agreements=new_existing_agreements,
                 pending_agreements=new_pending_agreements,
                 blacklist=new_blacklist,
