@@ -10,15 +10,15 @@ from typing import NewType, cast
 import pandas as pd
 import pandera as pa
 from bigframes import pandas as bpd
-from pandera.typing import DataFrame, Series, Index
+from pandera.typing import DataFrame, Index, Series
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
 
-from .time import TimestampStr, DateStr
+from .time import DateStr, TimestampStr
 from .typing import (
     ArrowDate32Field,
     EthAddressField,
@@ -40,19 +40,6 @@ class InitialQuerySchema(pa.DataFrameModel):
     deployment_hash: Series[str] = IpfsHashField()
     indexer: Series[str] = EthAddressField()
     num_rows: Series[int] = pa.Field(ge=0)
-
-
-class UrlDataFrameSchema(pa.DataFrameModel):
-    """
-    Schema for the URL dataframe.
-
-    See BigQueryProvider.fetch_url_data for more information.
-    """
-
-    indexer: Index[str] = EthAddressField()
-    day_partition: Series[pd.ArrowDtype] = ArrowDate32Field()
-    url: Series[str] = HttpUrlField()
-    indexer_network: Series[str] = pa.Field(isin=["arbitrum"])
 
 
 class CombinedQuerySchema(pa.DataFrameModel):
@@ -87,7 +74,6 @@ class StakeToFeesSchema(pa.DataFrameModel):
 
 
 InitialQueryDataFrame = DataFrame[InitialQuerySchema]
-UrlDataFrame = DataFrame[UrlDataFrameSchema]
 CombinedQueryDataFrame = DataFrame[CombinedQuerySchema]
 StakeToFeesDataFrame = DataFrame[StakeToFeesSchema]
 
@@ -152,29 +138,6 @@ class BigQueryProvider:
             dataframe.sort_values(by="num_rows", ascending=False, inplace=True)
 
         return cast(InitialQueryDataFrame, dataframe)
-
-    @pa.check_types
-    def fetch_url_data(self, start_date: date, num_days: int) -> UrlDataFrame:
-        """
-        Fetch the url query results.
-
-        Parameters:
-        start_date (date): The start date for the query range.
-        num_days (int): The number of days to include in the query range.
-
-        Returns:
-        UrlDataFrame: A DataFrame containing the URL query results
-        """
-        # Format the start date as a %Y-%m-%d string
-        start = DateStr(start_date.strftime("%Y-%m-%d"))
-
-        query = _get_url_query(start, num_days)
-        dataframe = self._read_gbq_dataframe(query)
-
-        # Set the indexer column as the index
-        dataframe.set_index("indexer", inplace=True)
-
-        return cast(UrlDataFrame, dataframe)
 
     @pa.check_types
     def fetch_combined_query_results(
@@ -433,38 +396,6 @@ def _get_initial_query(start_date: DateStr, num_days: int) -> QueryStr:
             indexer,
             num_rows
         FROM TotalQueries;
-    """)
-    )
-
-
-def _get_url_query(start_date: DateStr, num_days: int) -> QueryStr:
-    """
-    Construct a SQL query to fetch indexer URL data from the indexer_dimensions_arbitrum_daily table.
-
-    This function generates a SQL query that retrieves indexer wallet addresses, URLs, and other
-    relevant information for the Arbitrum network table within a specified date range.
-
-    Parameters:
-    start_date (datetime): The start date for the query range.
-    num_days (int): The number of days to include in the query range.
-
-    Returns:
-    str: A SQL query string that selects day, indexer_wallet, indexer_url, and sets indexer_network
-         as 'arbitrum' for the specified date range.
-    """
-    return QueryStr(
-        dedent(f"""\
-        SELECT
-            day AS day_partition,
-            indexer_wallet AS indexer,
-            indexer_url AS url,
-            'arbitrum' AS indexer_network
-        FROM internal_metrics.indexer_dimensions_arbitrum_daily
-        WHERE day BETWEEN '{start_date}' AND DATE_ADD('{start_date}', INTERVAL {num_days} DAY)
-        AND indexer_wallet IS NOT NULL 
-        AND indexer_url IS NOT NULL
-        GROUP BY day, indexer_wallet, indexer_url
-        ORDER BY day_partition
     """)
     )
 

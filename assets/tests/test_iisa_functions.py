@@ -1,5 +1,4 @@
 from datetime import datetime
-from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -8,37 +7,45 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 
 from iisa.iisa_functions import (
+    _CalculateDistancesInputDataFrame,
+    _CalculateDistancesInputSchema,
+    _CalculateDistancesMixinSchema,
+    _FilterSuccessfulQueriesInputDataFrame,
+    _FilterSuccessfulQueriesInputSchema,
+    _FilterSuccessfulQueriesMixinSchema,
+    _MergeInIndexersInfoInputDataFrame,
+    _MergeInIndexersInfoInputSchema,
+    _MergeInIndexersInfoMixinSchema,
+    _MergeInQueryGeolocationInputDataFrame,
+    _MergeInQueryGeolocationInputSchema,
+    _MergeInQueryGeolocationMixinSchema,
     adjust_rows,
-    apply_location_details,
-    merge_dataframes,
-    extract_iata_codes,
-    merge_in_iata_geolocation_info,
-    process_combined_query_pandas,
-    split_locations,
-    calculate_distances,
-    drop_intermediate_columns,
-    filter_status,
-    apply_round_distance,
-    filter_columns,
-    iterative_filter,
-    strategic_sample,
-    hash_sampled_queries,
-    perform_linear_regression,
-    preprocess_data_for_regression,
-    perform_regression,
+    aggregate_indexer_info,
     analyze_regression_results,
-    calculate_robust_normalized_coefficients,
+    calculate_distances,
     calculate_indexer_success_rate,
     calculate_indexer_uptime,
+    calculate_robust_normalized_coefficients,
     calculate_stake_to_fees,
-    aggregate_indexer_info,
-    merge_and_prepare_dataframes,
-    normalize_metrics,
-    normalize_generic,
-    normalize_uptime_and_success_rate,
-    normalize_indexing_agreement_acceptance_latency,
     calculate_weighted_score,
+    filter_columns,
+    filter_successful_queries,
+    hash_sampled_queries,
+    iterative_filter,
+    merge_and_prepare_dataframes,
+    merge_in_indexers_info,
+    merge_in_query_geolocation_info,
+    normalize_generic,
+    normalize_indexing_agreement_acceptance_latency,
+    normalize_metrics,
+    normalize_uptime_and_success_rate,
+    perform_linear_regression,
+    perform_regression,
+    preprocess_data_for_regression,
+    strategic_sample,
 )
+from iisa.network import IndexersDataFrame, IndexersSchema
+from iisa.typing import empty_dataframe
 
 
 class TestAdjustRows:
@@ -107,787 +114,10 @@ class TestAdjustRows:
             adjust_rows(df, target_rows)
 
 
-class TestApplyLocationDetails:
-    @pytest.fixture
-    def sample_dataframe(self):
-        return pd.DataFrame(
-            {
-                "url": [
-                    "https://example.com",
-                    "https://test.com",
-                ],
-                "indexer": ["0x123", "0xabc"],
-            }
-        )
-
-    def test_apply_location_details_normal(self, mocker, sample_dataframe):
-        # Define expected results for comparison after execution
-        expected_results_data = {
-            "url": [
-                "https://example.com",
-                "https://test.com",
-            ],
-            "indexer": ["0x123", "0xabc"],
-            "location": ["Location1", "Location2"],
-            "org": ["Org1", "Org2"],
-            "loc": ["Loc1", "Loc2"],
-            "ip": ["IP1", "IP2"],
-        }
-        expected_results_dataframe = pd.DataFrame(expected_results_data)
-
-        # Mock external dependencies to ensure the function's logic is isolated
-        mocker.patch(
-            "iisa.iisa_functions.url_to_ip",
-            side_effect=lambda url: {
-                "https://example.com": "IP1",
-                "https://test.com": "IP2",
-            }.get(url, None),
-        )
-        mocker.patch(
-            "iisa.iisa_functions.get_location_and_details_from_ip",
-            side_effect=lambda ip: {
-                "IP1": {
-                    "location": "Location1",
-                    "org": "Org1",
-                    "loc": "Loc1",
-                    "ip": "IP1",
-                },
-                "IP2": {
-                    "location": "Location2",
-                    "org": "Org2",
-                    "loc": "Loc2",
-                    "ip": "IP2",
-                },
-            }.get(
-                ip,
-                {
-                    "location": "Unknown",
-                    "org": "Unknown",
-                    "loc": "Unknown",
-                    "ip": "Unknown",
-                },
-            ),
-        )
-
-        # Execute the function under test
-        results = apply_location_details(sample_dataframe)
-
-        # Assert that the results match the expected DataFrame
-        pd.testing.assert_frame_equal(results, expected_results_dataframe)
-
-    def test_apply_location_details_with_failures(self, mocker, sample_dataframe):
-        # Mock failures in URL resolution/API calls
-        mocker.patch("iisa.iisa_functions.url_to_ip", return_value=None)
-        mocker.patch(
-            "iisa.iisa_functions.get_location_and_details_from_ip",
-            return_value={
-                "location": "Unknown",
-                "org": "Unknown",
-                "loc": "Unknown",
-                "ip": "Unknown",
-            },
-        )
-
-        # Apply the function
-        results = apply_location_details(sample_dataframe)
-
-        # Assert that the result DataFrame looks as it should.
-        # Since our mock had two rows, our series would contain "Unknown" twice.
-        assert results["location"].equals(pd.Series(["Unknown", "Unknown"]))
-
-    def test_invalid_data_formats(self, sample_dataframe):
-        # Introduce invalid URL
-        sample_dataframe.loc[0, "url"] = "htp:/invalid-url"
-
-        with patch("iisa.iisa_functions.url_to_ip", return_value=None):
-            results = apply_location_details(sample_dataframe)
-
-            # Check that there is at least 1 "Unknown" value in the results df, corresponding to the invalid url
-            # Remember that url_to_ip does:
-            # except socket.gaierror:
-            #   return None
-            # and when none is passed into get_location_and_details_from_ip, it returns "Unknown".
-            assert "Unknown" in results["location"].values
-
-    def test_apply_location_details_empty(self):
-        # Test the function with an empty DataFrame to ensure it handles lack of data gracefully
-        empty_df = pd.DataFrame(columns=["url", "indexer"])
-
-        # Setup expected results with the additional columns initialized
-        expected_df = empty_df.copy()
-        for column in ["location", "org", "loc", "ip"]:
-            expected_df[column] = pd.Series(
-                dtype="str"
-            )  # Specify dtype but no initial data
-
-        # Call the function with empty data.
-        results = apply_location_details(empty_df)
-
-        # Assert that the result is an empty DataFrame and has the same structure as expected
-        assert results.empty
-        pd.testing.assert_frame_equal(results, expected_df)
-
-
-class TestMergeDataframes:
-    @pytest.fixture
-    def combined_query_pandas(self):
-        return pd.DataFrame(
-            {
-                "indexer": ["0x123", "0xabc", "0xdef"],
-                "day_partition": ["2023-01-01", "2023-01-02", "2023-01-03"],
-                "url": [
-                    "https://example.com",
-                    "https://test.com",
-                    "https://another.com",
-                ],
-                "data": ["data1", "data2", "data3"],
-            }
-        )
-
-    @pytest.fixture
-    def unique_urls_indexers_pandas(self):
-        return pd.DataFrame(
-            {
-                "indexer": ["0x123", "0xabc"],
-                "day_partition": ["2023-01-01", "2023-01-02"],
-                "url": ["https://example.com", "https://test.com"],
-                "location": ["Location1", "Location2"],
-                "org": ["Org1", "Org2"],
-                "loc": ["Loc1", "Loc2"],
-                "ip": ["IP1", "IP2"],
-            }
-        )
-
-    def test_merge_normal(self, combined_query_pandas, unique_urls_indexers_pandas):
-        expected_result = pd.DataFrame(
-            {
-                "indexer": ["0x123", "0xabc", "0xdef"],
-                "day_partition": ["2023-01-01", "2023-01-02", "2023-01-03"],
-                "url": [
-                    "https://example.com",
-                    "https://test.com",
-                    "https://another.com",
-                ],
-                "data": ["data1", "data2", "data3"],
-                "location": ["Location1", "Location2", None],
-                "org": ["Org1", "Org2", None],
-                "loc": ["Loc1", "Loc2", None],
-                "ip": ["IP1", "IP2", None],
-            }
-        )
-
-        result = merge_dataframes(combined_query_pandas, unique_urls_indexers_pandas)
-        pd.testing.assert_frame_equal(
-            result.fillna(pd.NA), expected_result.fillna(pd.NA)
-        )
-
-    def test_merge_empty_left(self, unique_urls_indexers_pandas):
-        left_df = pd.DataFrame(
-            columns=["indexer", "day_partition", "url", "data", "something_else"]
-        )
-        right_df = unique_urls_indexers_pandas.copy()
-
-        # Expected result will have all headers from both frames, but no rows since left df had no rows.
-        expected_result = pd.DataFrame(
-            columns=[
-                "indexer",
-                "day_partition",
-                "url",
-                "data",
-                "something_else",
-                "location",
-                "org",
-                "loc",
-                "ip",
-            ]
-        )
-
-        result = merge_dataframes(left_df, right_df)
-        pd.testing.assert_frame_equal(result, expected_result)
-
-    def test_merge_empty_right(self, combined_query_pandas):
-        left_df = combined_query_pandas.copy()
-        right_df = pd.DataFrame(
-            columns=[
-                "indexer",
-                "day_partition",
-                "url",
-                "location",
-                "org",
-                "loc",
-                "ip",
-            ]
-        )
-
-        expected_result = left_df.copy()
-        expected_result[["location", "org", "loc", "ip"]] = pd.NA
-
-        result = merge_dataframes(left_df, right_df)
-        pd.testing.assert_frame_equal(
-            result.fillna(pd.NA), expected_result.fillna(pd.NA)
-        )
-
-
-class TestExtractIataCodes:
-    @pytest.fixture
-    def sample_dataframe(self):
-        return pd.DataFrame(
-            {
-                "query_id": [
-                    "855e9b7776ebb2e8-MAN",
-                    "855e429c17fdc03c-VNO",
-                    "855e8f0844741e85-AMS",
-                    "855e94bc810ee3cf-TLV",
-                    "855e784d904218d3-FRA",
-                    "855c163234712d73-KBP",
-                    "855e7c33c1d85f01-ARN",
-                ]
-            }
-        )
-
-    def test_extract_iata_codes_normal(self, sample_dataframe):
-        expected_result = (
-            pd.DataFrame(
-                {
-                    "IATA_code": ["MAN", "VNO", "AMS", "TLV", "FRA", "KBP", "ARN"],
-                    "count": [1, 1, 1, 1, 1, 1, 1],
-                }
-            )
-            .sort_values(by="IATA_code")
-            .reset_index(drop=True)
-        )
-
-        result = extract_iata_codes(sample_dataframe)
-        pd.testing.assert_frame_equal(result, expected_result)
-
-    def test_extract_iata_codes_duplicates(self):
-        df = pd.DataFrame(
-            {
-                "query_id": [
-                    "855e27be757a21cb-MAN",  # different to below
-                    "855e9b7776ebb2e8-MAN",  # different to above
-                    "855e9b7776ebb2e8-MAN",
-                    "855cb975238e98f7-ARN",
-                    "855cb975238e98f7-ARN",
-                    "855cb975238e98f7-ARN",
-                    "855cb975238e98f7-ARN",
-                ]
-            }
-        )
-        expected_result = (
-            pd.DataFrame({"IATA_code": ["MAN", "ARN"], "count": [3, 4]})
-            .sort_values(by="IATA_code")
-            .reset_index(drop=True)
-        )
-
-        result = (
-            extract_iata_codes(df).sort_values(by="IATA_code").reset_index(drop=True)
-        )
-        pd.testing.assert_frame_equal(result, expected_result)
-
-    def test_extract_iata_codes_empty(self):
-        df = pd.DataFrame({"query_id": []})
-        expected_result = pd.DataFrame(columns=["IATA_code", "count"])
-
-        result = extract_iata_codes(df)
-        pd.testing.assert_frame_equal(result, expected_result)
-
-    def test_extract_iata_codes_all_same(self):
-        df = pd.DataFrame(
-            {
-                "query_id": [
-                    "855e9b7776ebb2e8-MAN",
-                    "855e9b7776ebb2e8-MAN",
-                    "855e9b7776ebb2e8-MAN",
-                    "855e9b7776ebb2e8-MAN",
-                    "855e9b7776ebb2e8-MAN",
-                ]
-            }
-        )
-        expected_result = (
-            pd.DataFrame({"IATA_code": ["MAN"], "count": [5]})
-            .sort_values(by="IATA_code")
-            .reset_index(drop=True)
-        )
-
-        result = (
-            extract_iata_codes(df).sort_values(by="IATA_code").reset_index(drop=True)
-        )
-        pd.testing.assert_frame_equal(result, expected_result)
-
-
-class TestMergeInIataInfo:
-    def test_merge_in_iata_info(self):
-        ## Given
-        data = pd.DataFrame(
-            {
-                "query_id": ["123-AMS", "456-CDG", "789-LHR"],
-                "IATA_code": ["AMS", "CDG", "LHR"],
-            }
-        )
-
-        ## When
-        result = merge_in_iata_geolocation_info(data)
-
-        ## Then
-        expected = pd.DataFrame(
-            {
-                "query_id": ["123-AMS", "456-CDG", "789-LHR"],
-                "IATA_code": ["AMS", "CDG", "LHR"],
-                "country": ["NL", "FR", "GB"],
-                "latitude": [52.3086, 49.0128, 51.4706],
-                "longitude": [4.7639, 2.5500, -0.46194],
-            }
-        )
-        pd.testing.assert_frame_equal(result, expected)
-
-    def test_merge_with_unknown_iata_code(self):
-        ## Given
-        data = pd.DataFrame(
-            {
-                "query_id": ["123-AMS", "456-CDG", "789-LHR", "999-XXX"],
-                "IATA_code": ["AMS", "CDG", "LHR", "XXX"],
-            }
-        )
-
-        ## When
-        result = merge_in_iata_geolocation_info(data)
-
-        ## Then
-        assert np.isnan(result.loc[3, "latitude"])
-        assert np.isnan(result.loc[3, "longitude"])
-        assert np.isnan(result.loc[3, "country"])
-
-    def test_merge_with_empty_dataframe(self):
-        ## Given
-        data = pd.DataFrame(columns=["query_id", "IATA_code"])
-
-        ## When
-        result = merge_in_iata_geolocation_info(data)
-
-        # Assert result is as expected.
-        assert result.empty
-        assert result.columns.tolist() == [
-            "query_id",
-            "IATA_code",
-            "country",
-            "latitude",
-            "longitude",
-        ]
-
-
-class TestProcessCombinedQueryPandas:
-    def test_process_combined_query_pandas_base_case(self):
-        # Create a sample DataFrame
-        df = pd.DataFrame(
-            {
-                "indexer": ["A", "A", "B", "C", "C"],
-                "loc": ["1,1", "2,2", "3,3", "4,4", "5,5"],
-                "country": ["USA", "Canada", "UK", "France", "Germany"],
-                "latitude": [1.0, 2.0, 3.0, 4.0, 5.0],
-                "longitude": [1.0, 2.0, 3.0, 4.0, 5.0],
-            }
-        )
-
-        # Process the DataFrame
-        result = process_combined_query_pandas(df)
-
-        # Check if all expected columns are present
-        expected_columns = [
-            "indexer",
-            "indexer_count",
-            "destination_loc",
-            "origin_country",
-            "origin_loc",
-        ]
-        assert all(col in result.columns for col in expected_columns)
-
-        # Check if 'latitude' and 'longitude' columns are dropped
-        assert "latitude" not in result.columns and "longitude" not in result.columns
-
-        # Check if indexer_count is correct
-        assert result["indexer_count"].tolist() == [2, 2, 1, 2, 2]
-
-        # Check if columns are renamed correctly
-        assert (
-            "destination_loc" in result.columns and "origin_country" in result.columns
-        )
-
-        # Check if origin_loc is created correctly
-        assert result["origin_loc"].tolist() == [
-            "1.0,1.0",
-            "2.0,2.0",
-            "3.0,3.0",
-            "4.0,4.0",
-            "5.0,5.0",
-        ]
-
-    def test_nan_handling(self):
-        # Create a DataFrame with NaN values
-        df = pd.DataFrame(
-            {
-                "indexer": ["A", "B", "C"],
-                "loc": ["1,1", "nan,nan", "3,3"],
-                "country": ["USA", "Canada", "UK"],
-                "latitude": [1.0, np.nan, 3.0],
-                "longitude": [1.0, np.nan, 3.0],
-            }
-        )
-
-        # Compute result
-        result = process_combined_query_pandas(df)
-
-        # Check if rows with NaN values are dropped
-        assert len(result) == 2
-        assert "nan,nan" not in result["origin_loc"].values
-        assert "nan,nan" not in result["destination_loc"].values
-
-    def test_empty_dataframe(self):
-        # Test with an empty DataFrame
-        df = pd.DataFrame(
-            columns=["indexer", "loc", "country", "latitude", "longitude"]
-        )
-
-        # Compute result
-        result = process_combined_query_pandas(df)
-
-        # Check if the result is an empty DataFrame with the correct columns
-        assert len(result) == 0
-        expected_columns = [
-            "indexer",
-            "indexer_count",
-            "destination_loc",
-            "origin_country",
-            "origin_loc",
-        ]
-        assert all(col in result.columns for col in expected_columns)
-
-
-class TestSplitLocations:
-    def test_split_locations_normal_case(self):
-        # Create a sample DataFrame with normal location data
-        df = pd.DataFrame(
-            {
-                "origin_loc": ["40.7128,-74.0060", "34.0522,-118.2437"],
-                "destination_loc": ["51.5074,-0.1278", "48.8566,2.3522"],
-            }
-        )
-
-        # Compute result
-        result = split_locations(df)
-
-        # Check if new columns are created
-        assert all(
-            col in result.columns
-            for col in ["origin_lat", "origin_lon", "dest_lat", "dest_lon"]
-        )
-
-        # Check if values are correctly split and converted
-        assert result["origin_lat"].tolist() == [40.7128, 34.0522]
-        assert result["origin_lon"].tolist() == [-74.0060, -118.2437]
-        assert result["dest_lat"].tolist() == [51.5074, 48.8566]
-        assert result["dest_lon"].tolist() == [-0.1278, 2.3522]
-
-    def test_split_locations_non_numeric(self):
-        # Create a DataFrame with some non-numeric entries
-        df = pd.DataFrame(
-            {
-                "origin_loc": ["40.7128,-74.0060", "invalid,data"],
-                "destination_loc": ["not,numeric", "48.8566,2.3522"],
-            }
-        )
-
-        # Compute result
-        result = split_locations(df)
-
-        # Check if non-numeric entries are converted to NaN
-        assert np.isnan(result.loc[1, "origin_lat"]) and np.isnan(
-            result.loc[1, "origin_lon"]
-        )
-        assert np.isnan(result.loc[0, "dest_lat"]) and np.isnan(
-            result.loc[0, "dest_lon"]
-        )
-
-        # Check if valid entries are still correct
-        assert result.loc[0, "origin_lat"] == 40.7128
-        assert result.loc[0, "origin_lon"] == -74.0060
-        assert result.loc[1, "dest_lat"] == 48.8566
-        assert result.loc[1, "dest_lon"] == 2.3522
-
-    def test_split_locations_empty_dataframe(self):
-        # Test with an empty DataFrame
-        df = pd.DataFrame(columns=["origin_loc", "destination_loc"])
-
-        # Compute result
-        result = split_locations(df)
-
-        # Check if new columns are created even for empty DataFrame
-        assert all(
-            col in result.columns
-            for col in ["origin_lat", "origin_lon", "dest_lat", "dest_lon"]
-        )
-        assert len(result) == 0
-
-    def test_split_locations_missing_values(self):
-        # Create a DataFrame with missing values
-        df = pd.DataFrame(
-            {
-                "origin_loc": ["40.7128,-74.0060", np.nan],
-                "destination_loc": [np.nan, "48.8566,2.3522"],
-            }
-        )
-
-        # Compute result
-        result = split_locations(df)
-
-        # Check if missing values are handled correctly
-        assert np.isnan(result.loc[1, "origin_lat"]) and np.isnan(
-            result.loc[1, "origin_lon"]
-        )
-        assert np.isnan(result.loc[0, "dest_lat"]) and np.isnan(
-            result.loc[0, "dest_lon"]
-        )
-
-        # Check if valid entries are still correct
-        assert result.loc[0, "origin_lat"] == 40.7128
-        assert result.loc[0, "origin_lon"] == -74.0060
-        assert result.loc[1, "dest_lat"] == 48.8566
-        assert result.loc[1, "dest_lon"] == 2.3522
-
-    def test_split_locations_extra_commas(self):
-        # Create a DataFrame with entries containing extra commas
-        df = pd.DataFrame(
-            {
-                "origin_loc": ["40.7128,-74.0060,extra", "34.0522,-118.2437,,,"],
-                "destination_loc": ["51.5074,-0.1278", "48.8566,2.3522,more,data"],
-            }
-        )
-
-        # Compute result
-        result = split_locations(df)
-
-        # Check if only the first two values are used and others are ignored
-        assert result["origin_lat"].tolist() == [40.7128, 34.0522]
-        assert result["origin_lon"].tolist() == [-74.0060, -118.2437]
-        assert result["dest_lat"].tolist() == [51.5074, 48.8566]
-        assert result["dest_lon"].tolist() == [-0.1278, 2.3522]
-
-
-class TestCalculateDistances:
-    @pytest.fixture
-    def sample_df(self):
-        return pd.DataFrame(
-            {
-                "origin_lon": [-74.4444, -118.8888, -0.3333],
-                "origin_lat": [40.5555, 34.9999, 51.4444],
-                "dest_lon": [-87.6666, -122.1111, 2.5555],
-                "dest_lat": [41.7777, 37.2222, 48.6666],
-            }
-        )
-
-    def test_calculate_distances_basic(self, sample_df):
-        # Compute result
-        result = calculate_distances(sample_df)
-
-        assert "distance_miles" in result.columns
-        assert len(result) == len(sample_df)
-        assert all(result["distance_miles"] > 0)
-
-    def test_calculate_distances_known_change(self):
-        df = pd.DataFrame(
-            {
-                "origin_lon": [0],
-                "origin_lat": [0],
-                "dest_lon": [1],
-                "dest_lat": [0],
-            }
-        )
-
-        # Compute result
-        result = calculate_distances(df)
-
-        expected_distance = 69.09  # Approximate distance in miles for 1 degree of longitude at the equator
-        assert np.isclose(
-            result["distance_miles"].iloc[0], expected_distance, rtol=0.01
-        )
-
-    def test_calculate_distances_no_change(self):
-        df = pd.DataFrame(
-            {
-                "origin_lon": [10, 20],
-                "origin_lat": [10, 20],
-                "dest_lon": [10, 20],
-                "dest_lat": [10, 20],
-            }
-        )
-
-        # Compute result
-        result = calculate_distances(df)
-
-        assert all(result["distance_miles"] == 0)
-
-    def test_calculate_distances_empty_df(self):
-        df = pd.DataFrame(
-            columns=[
-                "origin_lon",
-                "origin_lat",
-                "dest_lon",
-                "dest_lat",
-            ]
-        )
-
-        # Compute result
-        result = calculate_distances(df)
-
-        assert "distance_miles" in result.columns
-        assert len(result) == 0
-
-    def test_calculate_distances_nan_values(self):
-        df = pd.DataFrame(
-            {
-                "origin_lat": [40.99, np.nan, 51.20],
-                "origin_lon": [-74.00, -118.00, np.nan],
-                "dest_lat": [40.99, 37.25, 48.10],
-                "dest_lon": [-84.00, np.nan, 2.20],
-            }
-        )
-
-        # Compute result
-        result = calculate_distances(df)
-
-        assert "distance_miles" in result.columns
-        assert result["distance_miles"].iloc[0] > 0
-        assert np.isnan(
-            result["distance_miles"].iloc[1]
-        )  # Nan value in the df for this entry
-        assert np.isnan(result["distance_miles"].iloc[2])
-
-    def test_calculate_distances_integration_with_haversine(
-        self, sample_df, monkeypatch
-    ):
-        def mock_haversine(lon1, lat1, lon2, lat2):
-            return np.array([100.0, 200.0, 300.0])
-
-        monkeypatch.setattr("iisa.iisa_functions.haversine_vectorized", mock_haversine)
-
-        # Compute result
-        result = calculate_distances(sample_df)
-
-        assert all(result["distance_miles"] == [100.0, 200.0, 300.0])
-
-
-class TestDropIntermediateColumns:
-    @pytest.fixture
-    def sample_df(self):
-        return pd.DataFrame(
-            {
-                "indexer": ["0xABC", "0x123", "0xXYZ"],
-                "origin_lon": [-74.4444, -118.8888, -0.3333],
-                "origin_lat": [40.5555, 34.9999, 51.4444],
-                "dest_lon": [-87.6666, -122.1111, 2.5555],
-                "dest_lat": [41.7777, 37.2222, 48.6666],
-                "distance_miles": [100, 200, 300],
-                "other_column": ["ABC", "123", "XYZ"],
-            }
-        )
-
-    def test_drop_intermediate_columns_basic(self, sample_df):
-        # Compute result
-        result = drop_intermediate_columns(sample_df)
-
-        # Check if intermediate columns are dropped
-        assert "origin_lat" not in result.columns
-        assert "origin_lon" not in result.columns
-        assert "dest_lat" not in result.columns
-        assert "dest_lon" not in result.columns
-
-        # Check if other columns are retained
-        assert "indexer" in result.columns
-        assert "distance_miles" in result.columns
-        assert "other_column" in result.columns
-
-        # Check if the number of rows remains the same
-        assert len(result) == len(sample_df)
-
-    def test_drop_intermediate_columns_missing_columns(self):
-        df = pd.DataFrame(
-            {
-                "indexer": ["A", "B", "C"],
-                "origin_lat": [40.5555, 34.9999, 51.4444],
-                "dest_lon": [-87.6666, -122.1111, 2.5555],
-                "distance_miles": [100, 200, 300],
-            }
-        )
-
-        # Compute result
-        result = drop_intermediate_columns(df)
-
-        # Check if existing intermediate columns are dropped
-        assert "origin_lat" not in result.columns
-        assert "dest_lon" not in result.columns
-
-        # Check non-existent intermediate columns don't cause issues
-        assert "origin_lon" not in result.columns
-        assert "dest_lat" not in result.columns
-
-        # Check columns are retained
-        assert "indexer" in result.columns
-        assert "distance_miles" in result.columns
-
-        # Check if the number of rows remains the same
-        assert len(result) == len(df)
-
-    def test_drop_intermediate_columns_empty_df(self):
-        df = pd.DataFrame(
-            columns=[
-                "indexer",
-                "origin_lat",
-                "origin_lon",
-                "dest_lat",
-                "dest_lon",
-                "distance_miles",
-            ]
-        )
-
-        # Compute result
-        result = drop_intermediate_columns(df)
-
-        # Check if intermediate columns are dropped
-        assert "origin_lat" not in result.columns
-        assert "origin_lon" not in result.columns
-        assert "dest_lat" not in result.columns
-        assert "dest_lon" not in result.columns
-
-        # Check other columns are retained
-        assert "indexer" in result.columns
-        assert "distance_miles" in result.columns
-
-        # Check if the DataFrame is still empty
-        assert len(result) == 0
-
-    def test_drop_intermediate_columns_no_intermediate_columns(self):
-        df = pd.DataFrame(
-            {
-                "indexer": ["A", "B", "C"],
-                "distance_miles": [100, 200, 300],
-                "other_column": ["X", "Y", "Z"],
-            }
-        )
-
-        # Compute result
-        result = drop_intermediate_columns(df)
-
-        # Check if all original columns are retained
-        assert set(result.columns) == set(df.columns)
-
-        # Check if the number of rows remains the same
-        assert len(result) == len(df)
-
-
 class TestFilterStatus:
-    @pytest.fixture
-    def sample_df(self):
-        return pd.DataFrame(
+    def test_filter_200_ok_status(self):
+        ## Given
+        data = _FilterSuccessfulQueriesInputDataFrame(
             {
                 "status": [
                     "200 OK",
@@ -900,106 +130,347 @@ class TestFilterStatus:
             }
         )
 
-    def test_filter_status_basic(self, sample_df):
-        result = filter_status(sample_df)
+        ## When
+        result = filter_successful_queries(data)
+
+        ## Then
+        # Assert the result complies with the output schema
+        _FilterSuccessfulQueriesMixinSchema.validate(result)
+
+        # Assert the result content
         assert len(result) == 3
-        assert all(result["status"] == "200 OK")
         assert list(result["data"]) == ["A", "C", "E"]
-
-    def test_filter_status_no_matches(self):
-        df = pd.DataFrame(
-            {
-                "status": ["404 Not Found", "500 Internal Server Error"],
-                "data": ["X", "Y"],
-            }
-        )
-        result = filter_status(df)
-        assert len(result) == 0
-        assert list(result.columns) == ["status", "data"]
-
-    def test_filter_status_all_matches(self):
-        df = pd.DataFrame(
-            {"status": ["200 OK", "200 OK", "200 OK"], "data": ["1", "2", "3"]}
-        )
-        result = filter_status(df)
-        assert len(result) == 3
-        assert all(result["status"] == "200 OK")
-        assert list(result["data"]) == ["1", "2", "3"]
+        assert result["status"].eq("200 OK").all()
 
     def test_filter_status_empty_df(self):
-        df = pd.DataFrame(columns=["status", "data"])
-        result = filter_status(df)
-        assert len(result) == 0
-        assert list(result.columns) == ["status", "data"]
+        ## Given
+        data = empty_dataframe(_FilterSuccessfulQueriesInputSchema)
+
+        ## When
+        result = filter_successful_queries(data)
+
+        ## Then
+        # Assert the result complies with the output schema
+        _FilterSuccessfulQueriesMixinSchema.validate(result)
+
+        # Assert the result is empty
+        assert result.empty
 
     def test_filter_status_with_nan_values(self):
-        df = pd.DataFrame(
+        ## Given
+        data = _FilterSuccessfulQueriesInputDataFrame(
             {
-                "status": ["200 OK", np.nan, "200 OK", None],
-                "data": [np.nan, "B", "C", "D"],
+                "status": ["200 OK", pd.NA, "200 OK", None],
+                "data": ["A", "B", "C", "D"],
             }
         )
-        result = filter_status(df)
+
+        ## When
+        result = filter_successful_queries(data)
+
+        ## Then
+        # Assert the result complies with the output schema
+        _FilterSuccessfulQueriesMixinSchema.validate(result)
+
+        # Assert the result content
         assert len(result) == 2
-        assert all(result["data"].isin([np.nan, "C"]))
-
-    def test_filter_status_returns_copy(self, sample_df):
-        result = filter_status(sample_df)
-        result.loc[0, "status"] = "Changed"
-        assert sample_df.loc[0, "status"] == "200 OK"
+        assert list(result["data"]) == ["A", "C"]
+        assert result["status"].eq("200 OK").all()
 
 
-class TestApplyRoundDistance:
+class TestMergeInIndexersDataFrame:
+    @pytest.fixture
+    def combined_query_pandas(self):
+        return _MergeInIndexersInfoInputDataFrame(
+            {
+                "indexer": [
+                    "0x123fffffffffffffffffffffffffffffffffffff",
+                    "0x456fffffffffffffffffffffffffffffffffffff",
+                    "0x789fffffffffffffffffffffffffffffffffffff",
+                ],
+                "url": [
+                    "https://example.com",
+                    "https://test.com",
+                    "https://another.com",
+                ],
+            }
+        )
+
+    @pytest.fixture
+    def indexers(self):
+        return IndexersDataFrame(
+            {
+                "indexer": [
+                    "0x123fffffffffffffffffffffffffffffffffffff",
+                    "0x456fffffffffffffffffffffffffffffffffffff",
+                ],
+                "url": ["https://example.com", "https://test.com"],
+                "indexer_network": ["arbitrum", "arbitrum"],
+                "ip_addr": ["1.1.2.2", "3.3.4.4"],
+                "org": ["Org1", "Org2"],
+                "country": ["US", "CN"],
+                "latitude": [1.0, 2.0],
+                "longitude": [1.0, 2.0],
+            }
+        )
+
+    def test_merge_in_indexers_info(self, combined_query_pandas, indexers):
+        ## When
+        result = merge_in_indexers_info(combined_query_pandas, indexers)
+
+        ## Then
+        # Assert the result complies with the input and output schemas
+        _MergeInIndexersInfoInputSchema.validate(result)
+        _MergeInIndexersInfoMixinSchema.validate(result)
+
+        # Assert the result content
+        expected = pd.DataFrame(
+            {
+                "indexer": [
+                    "0x123fffffffffffffffffffffffffffffffffffff",
+                    "0x456fffffffffffffffffffffffffffffffffffff",
+                    "0x789fffffffffffffffffffffffffffffffffffff",
+                ],
+                "url": [
+                    "https://example.com",
+                    "https://test.com",
+                    "https://another.com",
+                ],
+                "indexer_network": ["arbitrum", "arbitrum", None],
+                "ip_addr": ["1.1.2.2", "3.3.4.4", None],
+                "org": ["Org1", "Org2", None],
+                "dst_country": ["US", "CN", None],
+                "dst_lat": [1.0, 2.0, None],
+                "dst_lon": [1.0, 2.0, None],
+            }
+        )
+
+        pd.testing.assert_frame_equal(result, expected)
+
+    def test_merge_into_empty_combined_queries_results(self, indexers):
+        ## Given
+        data = empty_dataframe(_MergeInIndexersInfoInputSchema)
+
+        ## When
+        result = merge_in_indexers_info(data, indexers)
+
+        ## Then
+        # Assert the result complies with the input and output schemas
+        _MergeInIndexersInfoInputSchema.validate(result)
+        _MergeInIndexersInfoMixinSchema.validate(result)
+
+        # Assert that the result is an empty dataframe
+        assert result.empty
+
+    def test_merge_in_empty_indexers_info(self, combined_query_pandas):
+        ## Given
+        indexers_df = empty_dataframe(IndexersSchema)
+
+        ## When
+        result = merge_in_indexers_info(combined_query_pandas, indexers_df)
+
+        ## Then
+        # Assert the result complies with the input and output schemas
+        _MergeInIndexersInfoInputSchema.validate(result)
+        _MergeInIndexersInfoMixinSchema.validate(result)
+
+        # Assert the result is non-empty and the new columns are filled with NaN values
+        assert not result.empty
+
+        assert result["indexer_network"].isna().all()
+        assert result["ip_addr"].isna().all()
+        assert result["org"].isna().all()
+        assert result["dst_country"].isna().all()
+        assert result["dst_lat"].isna().all()
+        assert result["dst_lon"].isna().all()
+
+
+class TestMergeInQueryGeolocationInfo:
+    def test_merge_in_iata_info(self):
+        ## Given
+        data = _MergeInQueryGeolocationInputDataFrame(
+            {
+                "query_id": [
+                    "1111111111111111-AMS",
+                    "2222222222222222-CDG",
+                    "3333333333333333-LHR",
+                ],
+            }
+        )
+
+        ## When
+        result = merge_in_query_geolocation_info(data)
+
+        ## Then
+        # Assert the result complies with the input and output schemas
+        _MergeInQueryGeolocationInputSchema.validate(result)
+        _MergeInQueryGeolocationMixinSchema.validate(result)
+
+        # Assert the result content
+        expected = pd.DataFrame(
+            {
+                "query_id": [
+                    "1111111111111111-AMS",
+                    "2222222222222222-CDG",
+                    "3333333333333333-LHR",
+                ],
+                "IATA_code": ["AMS", "CDG", "LHR"],
+                "src_country": ["NL", "FR", "GB"],
+                "src_lat": [52.3086, 49.0128, 51.4706],
+                "src_lon": [4.7639, 2.5500, -0.46194],
+            }
+        )
+        pd.testing.assert_frame_equal(result, expected)
+
+    def test_merge_with_unknown_iata_code(self):
+        ## Given
+        data = _MergeInQueryGeolocationInputDataFrame(
+            {
+                "query_id": [
+                    "1111111111111111-AMS",
+                    "2222222222222222-CDG",
+                    "3333333333333333-LHR",
+                    "0000000000000000-XXX",
+                ],
+            }
+        )
+
+        ## When
+        result = merge_in_query_geolocation_info(data)
+
+        ## Then
+        # Assert the result complies with the input and output schemas
+        _MergeInQueryGeolocationInputSchema.validate(result)
+        _MergeInQueryGeolocationMixinSchema.validate(result)
+
+        # Assert the result content
+        assert result.loc[3, "IATA_code"] == "XXX"
+        assert pd.isna(result.loc[3, "src_country"])
+        assert pd.isna(result.loc[3, "src_lat"])
+        assert pd.isna(result.loc[3, "src_lon"])
+
+    def test_merge_with_empty_dataframe(self):
+        ## Given
+        data = empty_dataframe(_MergeInQueryGeolocationInputSchema)
+
+        ## When
+        result = merge_in_query_geolocation_info(data)
+
+        ## Then
+        # Assert the result complies with the input and output schemas
+        _MergeInQueryGeolocationInputSchema.validate(result)
+        _MergeInQueryGeolocationMixinSchema.validate(result)
+
+        # Assert result is as expected.
+        assert result.empty
+
+
+class TestCalculateDistances:
     @pytest.fixture
     def sample_df(self):
-        return pd.DataFrame(
+        return _CalculateDistancesInputDataFrame(
             {
-                "distance_miles": [100, 249, 250, 251, 60001, 9081.4523],
-                "other_column": ["A", "B", "C", "D", 1, 2],
+                "src_lon": [-74.4444, -118.8888, -0.3333],
+                "src_lat": [40.5555, 34.9999, 51.4444],
+                "dst_lon": [-87.6666, -122.1111, 2.5555],
+                "dst_lat": [41.7777, 37.2222, 48.6666],
             }
         )
 
-    def test_apply_round_distance_regular(self, sample_df):
-        result = apply_round_distance(sample_df)
-        expected_distances = [0, 250, 250, 250, 60000, 9000]
-        assert list(result["distance_miles"]) == expected_distances
-        assert list(result["other_column"]) == list(sample_df["other_column"])
-
-    def test_apply_round_distance_empty_df(self):
-        df = pd.DataFrame(columns=["distance_miles", "other_column"])
-        result = apply_round_distance(df)
-        assert len(result) == 0
-        assert list(result.columns) == ["distance_miles", "other_column"]
-
-    def test_apply_round_distance_distance_miles_missing(self):
-        df = pd.DataFrame(columns=["not_distance_miles", "other_column"])
-        result = apply_round_distance(df)
-        assert len(result) == 0
-        assert list(result.columns) == ["not_distance_miles", "other_column"]
-
-    def test_apply_round_distance_with_nan_values(self):
-        df = pd.DataFrame(
+    def test_calculate_distance(self):
+        ## Given
+        data = _CalculateDistancesInputDataFrame(
             {
-                "distance_miles": [100, np.nan, 500, None, 1],
-                "other_column": ["A", "B", "C", "D", np.nan],
+                "src_lon": [0.0],
+                "src_lat": [0.0],
+                "dst_lon": [30.0],
+                "dst_lat": [0.0],
             }
         )
-        result = apply_round_distance(df)
-        expected = [0, np.nan, 500, np.nan, 0]
-        pd.testing.assert_series_equal(
-            result["distance_miles"], pd.Series(expected, name="distance_miles")
-        )
-        pd.testing.assert_series_equal(result["other_column"], df["other_column"])
 
-    def test_apply_round_distance_negative_numbers(self):
-        df = pd.DataFrame(
+        ## When
+        result = calculate_distances(data)
+
+        ## Then
+        # Assert the result complies with the output schema
+        _CalculateDistancesMixinSchema.validate(result)
+
+        # Assert the result content
+        expected_distance = 2000  # 2072.7 miles, approximate distance for 30 degrees of longitude at the equator
+        assert result["distance_miles"].iloc[0] == expected_distance
+
+    def test_calculate_distances_multiple(self, sample_df):
+        ## When
+        result = calculate_distances(sample_df)
+
+        ## Then
+        # Assert the result complies with the output schema
+        _CalculateDistancesMixinSchema.validate(result)
+
+        # Assert the result content
+        assert len(sample_df) == len(result)
+        assert result["distance_miles"].notna().all()
+
+    def test_calculate_same_location(self):
+        ## Given
+        data = _CalculateDistancesInputDataFrame(
             {
-                "distance_miles": [-100, -250, -374, -500],
-                "other_column": ["A", "B", "C", "D"],
+                "src_lon": [10.0, 20.0],
+                "src_lat": [10.0, 20.0],
+                "dst_lon": [10.0, 20.0],
+                "dst_lat": [10.0, 20.0],
             }
         )
-        result = apply_round_distance(df)
-        assert list(result["distance_miles"]) == [0, -250, -250, -500]
+
+        ## When
+        result = calculate_distances(data)
+
+        ## Then
+        # Assert the result complies with the output schema
+        _CalculateDistancesMixinSchema.validate(result)
+
+        # Assert all distances are zero
+        assert result["distance_miles"].eq(0.0).all()
+
+    def test_calculate_distances_empty_df(self):
+        ## Given
+        data = empty_dataframe(_CalculateDistancesInputSchema)
+
+        ## When
+        result = calculate_distances(data)
+
+        ## Then
+        # Assert the result complies with the output schema
+        _CalculateDistancesMixinSchema.validate(result)
+
+        # Assert the result is an empty DataFrame
+        assert result.empty
+
+    def test_calculate_distances_nan_values(self):
+        ## Given
+        data = _CalculateDistancesInputDataFrame(
+            {
+                "src_lat": [40.99, None, 51.20, 37.25],
+                "src_lon": [-74.00, -118.00, None, -122.00],
+                "dst_lat": [40.99, 37.25, 48.10, None],
+                "dst_lon": [-84.00, None, 2.20, 2.20],
+            }
+        )
+
+        ## When
+        result = calculate_distances(data)
+
+        ## Then
+        # Assert the result complies with the output schema
+        _CalculateDistancesMixinSchema.validate(result)
+
+        # Assert the result's first row has a non-zero distance
+        assert result["distance_miles"].iloc[0] >= 0
+
+        # Assert the rest of the distances are NaN
+        assert pd.isna(result["distance_miles"].iloc[1])
+        assert pd.isna(result["distance_miles"].iloc[2])
+        assert pd.isna(result["distance_miles"].iloc[3])
 
 
 class TestFilterColumns:
@@ -1313,12 +784,9 @@ class TestPerformLinearRegression:
         numeric = ["distance_miles", "fee"]
 
         # Compute result
-        result_df, indexer_rankings = perform_linear_regression(
+        indexer_rankings = perform_linear_regression(
             hashed_df, predictor, categorical, numeric
         )
-
-        # Check that the result_df contains the original columns
-        assert all(col in result_df.columns for col in hashed_df.columns)
 
         # Check that indexer_rankings contains expected columns
         expected_columns = [
@@ -1348,7 +816,7 @@ class TestPerformLinearRegression:
 
         # Check that the hashed column affects the regression by using a different mod hash integer root
         hashed_df_different_root = hash_sampled_queries(sample_df, integer_root + 1)
-        _, indexer_rankings_different_root = perform_linear_regression(
+        indexer_rankings_different_root = perform_linear_regression(
             hashed_df_different_root, predictor, categorical, numeric
         )
         assert not indexer_rankings["Coefficient"].equals(
@@ -1484,31 +952,15 @@ class TestPerformLinearRegression:
         numeric = ["distance_miles", "fee"]
 
         # Perform linear regression twice and compare results
-        result_df1, indexer_rankings1 = perform_linear_regression(
+        indexer_rankings1 = perform_linear_regression(
             sample_df, predictor, categorical, numeric
         )
-        result_df2, indexer_rankings2 = perform_linear_regression(
+        indexer_rankings2 = perform_linear_regression(
             sample_df, predictor, categorical, numeric
         )
 
         # Check if the results are consistent across multiple runs
-        pd.testing.assert_frame_equal(result_df1, result_df2)
         pd.testing.assert_frame_equal(indexer_rankings1, indexer_rankings2)
-
-    def test_perform_linear_regression_original_df_unchanged(self, sample_df):
-        # Create a copy of the original DataFrame
-        original_df = sample_df.copy()
-
-        # Setup linear regression variables
-        predictor = ["response_time_ms"]
-        categorical = ["indexer", "deployment_hash", "indexer_network"]
-        numeric = ["distance_miles", "fee"]
-
-        # Perform linear regression
-        _, _ = perform_linear_regression(sample_df, predictor, categorical, numeric)
-
-        # Check the original DataFrame is unchanged
-        pd.testing.assert_frame_equal(original_df, sample_df)
 
 
 class TestCalculateIndexerSuccessRate:

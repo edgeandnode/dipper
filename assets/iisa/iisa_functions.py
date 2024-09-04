@@ -1,36 +1,30 @@
-import gzip
-import json
 import logging
-import socket
-from typing import Optional
-from urllib.parse import urlparse
+from typing import Optional, overload
 
 import numpy as np
 import pandas as pd
-import requests
+import pandera as pa
 from numpy.linalg import pinv
-from pandera.typing import DataFrame
-from requests.exceptions import (
-    HTTPError,
-    ConnectionError as ReqConnectionError,
-)
+from pandera.typing import DataFrame, Series
 from scipy.stats import t
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+from .iata import IataInfoDataFrame, get_iata_geolocation_info
+from .network import IndexersDataFrame
+from .typing import (
+    EthAddressField,
+    HttpUrlField,
+    IataCodeField,
+    IpV4AddressField,
+    Iso3166CountryField,
+    LatitudeField,
+    LongitudeField,
+    QueryIdField,
 )
-
-from .iata import IataInfoSchema, get_iata_geolocation_info
-
-# Combine exceptions from different modules into a tuple
-ExceptionsToRetry = (ConnectionError, ReqConnectionError, HTTPError, socket.timeout)
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO)
@@ -89,403 +83,180 @@ def adjust_rows(initial_query_results_pandas, target_rows):
     return initial_query_results_pandas["num_rows_restricted"].max()
 
 
-def apply_location_details(unique_urls_indexers_pandas):
+class _MergeInIndexersInfoInputSchema(pa.DataFrameModel):
     """
-    Apply the extract_location_and_details function to each URL and expand the results into separate columns.
-
-    This function applies the extract_location_and_details function to each URL in the input DataFrame,
-    adding columns for location, organization, geographical coordinates, and IP address.
-
-    Parameters:
-    unique_urls_indexers_pandas (DataFrame): DataFrame containing the unique URLs and indexers.
-
-    Returns:
-    pandas.DataFrame: The input DataFrame with additional columns:
-                      - 'location': String describing the location (country, region, city)
-                      - 'org': Organization associated with the IP
-                      - 'loc': Geographical coordinates
-                      - 'ip': IP address of the URL
+    Schema for the merge_in_indexers_info function input DataFrame.
     """
-    # So long as the DataFrame is not empty, apply the extract_location_and_details function
-    if not unique_urls_indexers_pandas.empty:
-        unique_urls_indexers_pandas[["location", "org", "loc", "ip"]] = (
-            unique_urls_indexers_pandas["url"].apply(extract_location_and_details)
-        )
 
-        # Return the transformed df
-        return unique_urls_indexers_pandas
-
-    # Otherwise, simply create headers for ["location", "org", "loc", "ip"]
-    else:
-        for column in ["location", "org", "loc", "ip"]:
-            unique_urls_indexers_pandas[column] = pd.Series(dtype="str")
-
-        # Return the transformed df
-        return unique_urls_indexers_pandas
+    indexer: Series[str] = EthAddressField()
+    url: Series[str] = HttpUrlField()
 
 
-def extract_location_and_details(url):
+class _MergeInIndexersInfoMixinSchema(pa.DataFrameModel):
     """
-    Extract location and other details from a given URL by resolving it to an IP address.
+    Schema definition of the new columns to be added to the combined query data.
 
-    This function first resolves the URL to an IP address, then fetches geographical and
-    organizational details for that IP address.
-
-    Parameters:
-    url (str): The URL to be resolved and analyzed.
-
-    Returns:
-    pandas.Series: A Series containing the following information:
-                   - 'location': String describing the location (country, region, city)
-                   - 'org': Organization associated with the IP
-                   - 'loc': Geographical coordinates
-                   - 'ip': IP address of the URL
-
-    Note:
-    This function relies on external API calls to resolve the IP and fetch location data.
-    It may return default "Unknown" values if the URL cannot be resolved or if the IP details cannot be fetched.
+    This is an intermediate datatype result of merge_in_indexers_info function.
     """
-    ip = url_to_ip(url)
-    return pd.Series(get_location_and_details_from_ip(ip))
+
+    indexer_network: Series[str] = pa.Field(isin=["arbitrum"], nullable=True)
+    ip_addr: Series[str] = IpV4AddressField(nullable=True)
+    org: Series[str] = pa.Field(str_length={"min_value": 1}, nullable=True)
+    dst_country: Series[str] = Iso3166CountryField(nullable=True)
+    dst_lat: Series[float] = LatitudeField(nullable=True)
+    dst_lon: Series[float] = LongitudeField(nullable=True)
 
 
-def url_to_ip(url):
+_MergeInIndexersInfoInputDataFrame = DataFrame[_MergeInIndexersInfoInputSchema]
+_MergeInIndexersInfoMixinDataFrame = DataFrame[_MergeInIndexersInfoMixinSchema]
+
+
+@overload
+def merge_in_indexers_info(
+    combined_queries: _MergeInIndexersInfoInputDataFrame,
+    indexers: IndexersDataFrame,
+) -> _MergeInIndexersInfoMixinDataFrame:
+    pass
+
+
+@overload
+def merge_in_indexers_info(
+    combined_queries: DataFrame,
+    indexers: IndexersDataFrame,
+) -> DataFrame:
+    pass
+
+
+def merge_in_indexers_info(
+    combined_queries,
+    indexers,
+):
     """
-    This function attempts to extract the hostname from the given URL and resolve it to an IP address.
-    It handles various edge cases such as invalid URLs or network issues.
-
-    Parameters:
-    url (str): The URL to be resolved to an IP address.
-
-    Returns:
-    str or None: The IP address as a string if resolution is successful, None otherwise.
-    """
-    # First handle missing or nan URL's
-    if pd.isna(url) or not isinstance(url, str):
-        return None
-
-    try:
-        parsed_url = urlparse(url)
-        hostname = parsed_url.hostname
-
-        # If the hostname is not present, return nothing.
-        if hostname is None:
-            return None
-
-        return socket.gethostbyname(hostname)
-
-    # If there's a gaierror (getaddrinfo error) return nothing.
-    # e.g. Non-Existent Domain, DNS Issue, Network Problem, Invalid Hostname Format...
-    except socket.gaierror:
-        return None
-
-
-@retry(
-    retry=retry_if_exception_type(ExceptionsToRetry),
-    stop=stop_after_attempt(10),
-    wait=wait_exponential(multiplier=1, max=60),
-    reraise=True,  # (Default) After set number of attempts the decorator will re-raise the issue further up.
-)
-def get_location_and_details_from_ip(ip):
-    """
-    Fetch location and organizational details for a given IP address using an external API (ipinfo.io).
-
-    This function makes an HTTP request to the ipinfo.io API to retrieve geographical and
-    organizational information associated with the provided IP address. It includes a retry
-    mechanism to handle potential network issues or API failures.
-
-    Parameters:
-    ip (str): The IP address to query.
-
-    Returns:
-    dict: A dictionary containing the following keys:
-        - 'location': String combining country, region, and city (e.g., "US, California, San Francisco")
-        - 'org': Organization associated with the IP
-        - 'loc': Geographical coordinates
-        - 'ip': The queried IP address
-    """
-    if ip is None:
-        return {
-            "location": "Unknown",
-            "org": "Unknown",
-            "loc": "Unknown",
-            "ip": "Unknown",
-        }
-    try:
-        response = requests.get(
-            f"https://ipinfo.io/{ip}/json?token=67647c2e5ccd95", timeout=10
-        )
-        response.raise_for_status()  # Raise a HTTPError in case of bad response.
-
-        # Try to decode the content manually
-        try:
-            data = response.json()
-
-        except requests.exceptions.JSONDecodeError:
-            # If JSON decoding fails, try to decompress manually
-            decompressed_content = gzip.decompress(response.content)
-            data = json.loads(decompressed_content)
-
-        return {
-            "location": f'{data.get("country", "Unknown")}, {data.get("region", "Unknown")}, {data.get("city", "Unknown")}',
-            "org": data.get("org", "Unknown"),
-            "loc": data.get("loc", "Unknown"),
-            "ip": data.get("ip", "Unknown")
-            if data.get("ip") is None
-            else data.get("ip"),
-        }
-
-    # If there's been a connection error then we can raise the issue to the retry decerator and retry the connection
-    except ExceptionsToRetry as e:
-        logger.debug(f"Failed to retrieve IP details: {e}")
-        raise  # Raise to trigger retry decorator
-
-    except Exception as e:
-        logger.error(f"Unexpected error when retrieving IP details: {e}")
-        return {
-            "location": "Unknown",
-            "org": "Unknown",
-            "loc": "Unknown",
-            "ip": "Unknown",
-        }
-
-
-def merge_dataframes(combined_query_pandas, unique_urls_indexers_pandas):
-    """
-    Merge two DataFrames containing combined query results and unique URL-indexer information.
+    Merge in the indexers information into the combined query data.
 
     This function performs a left merge operation, combining data from the combined query results
     with the unique URL and indexer information. The merge is based on the 'indexer', 'day_partition',
     and 'url' columns.
 
     Parameters:
-    combined_query_pandas (pandas.DataFrame): DataFrame containing the combined query results.
-    unique_urls_indexers_pandas (pandas.DataFrame): DataFrame containing unique URLs and indexers information.
+    combined_queries: DataFrame containing the combined query results.
+    indexers: DataFrame containing unique URLs and indexers information.
 
     Returns:
-    pandas.DataFrame: A new DataFrame resulting from the left merge of the input DataFrames.
+    A new DataFrame resulting from the left merge of the input DataFrames.
     """
-    return pd.merge(
-        left=combined_query_pandas,
-        right=unique_urls_indexers_pandas,
+    # Rename destination (indexer) location columns
+    right_df = indexers.rename(
+        columns={
+            "country": "dst_country",
+            "latitude": "dst_lat",
+            "longitude": "dst_lon",
+        },
+    )
+
+    # Merge the combined query data with the indexers information
+    dataframe = pd.merge(
+        left=combined_queries,
+        right=right_df,
+        on=["indexer", "url"],
         how="left",
-        # Meaning that all rows from the left df will be in the merged df. Columns are merged together as expected.
-        on=["indexer", "day_partition", "url"],
     )
 
+    return dataframe
 
-def extract_iata_codes(df):
+
+class _MergeInQueryGeolocationInputSchema(pa.DataFrameModel):
     """
-    Extract IATA (International Air Transport Association) codes from query IDs and count their occurrences.
-
-    This function assumes that the last three characters of each query ID represent an IATA code.
-    It extracts these codes and counts how many times each unique code appears in the dataset.
-
-    Parameters:
-    df (pandas.DataFrame): Input DataFrame containing a 'query_id' column.
-
-    Returns:
-    pandas.DataFrame: A new DataFrame with columns:
-        - 'IATA_code': The extracted 3-letter IATA code
-        - 'count': The number of occurrences of each IATA code
+    Schema for the merge_in_query_geolocation_info function input DataFrame.
     """
-    if df.empty or "query_id" not in df.columns:
-        return pd.DataFrame(columns=["IATA_code", "count"])
 
-    df = df.dropna(subset=["query_id"])
-    df["query_id"] = df["query_id"].astype(str)
-
-    iata_df = (
-        df.groupby(df["query_id"].str[-3:])
-        .agg(count=("query_id", "size"))
-        .reset_index()
-        .rename(columns={"query_id": "IATA_code"})
-    )
-    return iata_df
+    query_id: Series[str] = QueryIdField()
 
 
-def extract_iata_code(df):  # Not the same function as extract_iata_codes!
+class _MergeInQueryGeolocationMixinSchema(pa.DataFrameModel):
     """
-    Extract the IATA code from the 'query_id' column of a DataFrame.
+    Schema for the combined query data with additional columns for geolocation information.
 
-    This function creates a new 'IATA_code' column in the input DataFrame by extracting
-    the last three characters from the 'query_id' column, assuming these represent the IATA code.
-
-    Parameters:
-    df (pandas.DataFrame): Input DataFrame containing a 'query_id' column.
-
-    Returns:
-    pandas.DataFrame: The input DataFrame with an additional 'IATA_code' column.
+    This is an intermediate datatype result of merge_in_query_geolocation_info function.
     """
-    # If the DataFrame does not contain the 'query_id' column, set the query_id and IATA_code columns to None
-    # and return the DataFrame
-    if "query_id" not in df.columns:
-        logger.error("DataFrame must include a 'query_id' column.")
 
-        df["query_id"] = None
-        df["IATA_code"] = None
-        return df
-
-    df["IATA_code"] = df["query_id"].str[-3:]
-    return df
+    IATA_code: Series[str] = IataCodeField()
+    src_country: Series[str] = Iso3166CountryField(nullable=True)
+    src_lat: Series[float] = LatitudeField(nullable=True)
+    src_lon: Series[float] = LongitudeField(nullable=True)
 
 
-def merge_in_iata_geolocation_info(
-    combined_query_pandas, iata_info: Optional[DataFrame[IataInfoSchema]] = None
+_MergeInQueryGeolocationInputDataFrame = DataFrame[_MergeInQueryGeolocationInputSchema]
+_MergeInQueryGeolocationMixinDataFrame = DataFrame[_MergeInQueryGeolocationMixinSchema]
+
+
+@overload
+def merge_in_query_geolocation_info(
+    combined_queries: _MergeInQueryGeolocationInputDataFrame,
+    iata_info: Optional[IataInfoDataFrame] = None,
+) -> _MergeInQueryGeolocationMixinDataFrame:
+    pass
+
+
+@overload
+def merge_in_query_geolocation_info(
+    combined_queries: DataFrame,
+    iata_info: Optional[IataInfoDataFrame] = None,
+) -> DataFrame:
+    pass
+
+
+def merge_in_query_geolocation_info(
+    combined_queries,
+    iata_info=None,
 ):
     """
-    Merge IATA information into combined query data.
+    Merge in query (IATA code-based) geolocation information into combined query data.
 
-    This function merges two DataFrames: one containing IATA code information and another
-    containing combined query results. The merge is performed on the 'IATA_code' column.
+    This function extracts the IATA code from the 'query_id' column of the combined query
+    DataFrame and merges in the corresponding geolocation information from the IATA DataFrame.
+    The merge is performed on the 'IATA_code' column.
 
     Parameters:
-    combined_query_pandas (pandas.DataFrame): DataFrame containing combined query results.
-    iata_df (DataFrame[IataInfoSchema], optional): DataFrame containing IATA code information.
+    combined_queries: DataFrame containing combined queries data.
+    iata_info (optional): DataFrame containing IATA code information.
 
     Returns:
     pandas.DataFrame: A new DataFrame resulting from the right merge of the input DataFrames.
     """
+    # Extract the IATA code from the 'query_id' column of a DataFrame.
+    combined_queries["IATA_code"] = combined_queries["query_id"].str[-3:]
+
+    # Merge in the IATA information
     if iata_info is None:
         iata_info = get_iata_geolocation_info()
 
-    return pd.merge(
-        combined_query_pandas,
-        iata_info,
+    # Rename source (IATA) location columns
+    right_df = iata_info.rename(
+        columns={
+            "country": "src_country",
+            "latitude": "src_lat",
+            "longitude": "src_lon",
+        },
+    )
+
+    # Merge the combined query data with the IATA information
+    dataframe = pd.merge(
+        left=combined_queries,
+        right=right_df,
         on="IATA_code",
         how="left",
     )
 
-
-def process_combined_query_pandas(df):
-    """
-    Process and transform the combined query DataFrame to prepare it for further analysis.
-
-    This function performs several operations on the input DataFrame:
-    1. Adds an 'indexer_count' column
-    2. Renames certain columns
-    3. Creates an 'origin_loc' column from latitude and longitude
-    4. Drops unnecessary columns
-    5. Removes rows with NaN or invalid location data
-
-    Parameters:
-    df (pandas.DataFrame): Input DataFrame containing combined query results.
-
-    Returns:
-    pandas.DataFrame: Processed DataFrame with new and modified columns.
-
-    Note:
-    - The function expects columns: 'indexer', 'loc', 'country', 'latitude', 'longitude'
-    - New columns created: 'indexer_count', 'destination_loc', 'origin_country', 'origin_loc'
-    - Rows with NaN values or 'nan,nan' in 'origin_loc' or 'destination_loc' are dropped
-    - If the input DataFrame is empty, returns an empty DataFrame with expected columns
-    """
-    if df.empty:
-        # Return an empty DataFrame with the expected columns
-        return pd.DataFrame(
-            columns=[
-                "indexer",
-                "indexer_count",
-                "destination_loc",
-                "origin_country",
-                "origin_loc",
-            ]
-        )
-
-    # Add an indexer count
-    df["indexer_count"] = df.groupby("indexer")["indexer"].transform("count")
-
-    # Rename columns
-    df.rename(
-        columns={"loc": "destination_loc", "country": "origin_country"}, inplace=True
-    )
-
-    # Create 'origin_loc' column
-    df["origin_loc"] = (
-        df[["latitude", "longitude"]].astype(str).agg(",".join, axis=1)
-    )  # vectorized for speed
-
-    # Drop 'latitude' and 'longitude' columns
-    df.drop(columns=["latitude", "longitude"], inplace=True)
-
-    # Drop all NaNs and string NaNs
-    df.dropna(subset=["origin_loc", "destination_loc"], inplace=True)
-    df = df[~df["origin_loc"].str.contains("nan,nan", na=False)]
-    df = df[~df["destination_loc"].str.contains("nan,nan", na=False)]
-
-    return df
+    return dataframe
 
 
-def split_locations(df):
-    """
-    Split 'origin_loc' and 'destination_loc' columns into separate latitude and longitude columns.
-
-    This function takes a DataFrame with 'origin_loc' and 'destination_loc' columns containing
-    comma-separated coordinate pairs, and splits them into four new columns: 'origin_lat',
-    'origin_lon', 'dest_lat', and 'dest_lon'.The function handles non-numeric entries by converting
-    them to NaN.
-
-    Parameters:
-    df (DataFrame): The DataFrame containing 'origin_loc' and 'destination_loc' columns.
-
-    Returns:
-    pandas.DataFrame: The input DataFrame with four new columns added:
-        - 'origin_lat': Latitude of the origin location
-        - 'origin_lon': Longitude of the origin location
-        - 'dest_lat': Latitude of the destination location
-        - 'dest_lon': Longitude of the destination location
-    """
-    # Handle potential empty input df.
-    if df.empty:
-        return df.assign(origin_lat=[], origin_lon=[], dest_lat=[], dest_lon=[])
-
-    # Function to safely convert values to float
-    def safe_convert(coords):
-        # Convert non-numeric entries to NaN
-        if pd.isna(coords):
-            return pd.Series([np.nan, np.nan])
-
-        # Else split lat, long
-        try:
-            lat, lon, *_ = coords.split(",")
-            return pd.Series([float(lat), float(lon)])
-
-        # Handle errors as nan
-        except (ValueError, AttributeError):
-            return pd.Series([np.nan, np.nan])
-
-    # Apply safe conversion to both origin and destination columns
-    df[["origin_lat", "origin_lon"]] = df["origin_loc"].apply(safe_convert)
-    df[["dest_lat", "dest_lon"]] = df["destination_loc"].apply(safe_convert)
-
-    return df
-
-
-def calculate_distances(df):
-    """
-    Calculate the spherical distances between origin and destination coordinates.
-
-    This function applies the Haversine formula to compute the distance between each pair
-    of origin and destination coordinates in the input DataFrame.
-
-    Parameters:
-    df (pandas.DataFrame): Input DataFrame containing columns:
-        - 'origin_lon': Longitude of the origin location
-        - 'origin_lat': Latitude of the origin location
-        - 'dest_lon': Longitude of the destination location
-        - 'dest_lat': Latitude of the destination location
-
-    Returns:
-    pandas.DataFrame: The input DataFrame with an additional 'distance_miles' column
-                      containing the calculated distances in miles.
-    """
-    df["distance_miles"] = haversine_vectorized(
-        df["origin_lon"], df["origin_lat"], df["dest_lon"], df["dest_lat"]
-    )
-    return df
-
-
-def haversine_vectorized(lon1, lat1, lon2, lat2):
+def haversine_vectorized(
+    lon1: pd.Series,
+    lat1: pd.Series,
+    lon2: pd.Series,
+    lat2: pd.Series,
+) -> Series[float]:
     """
     Calculate the spherical distances between two sets of coordinates using the Haversine formula.
 
@@ -493,13 +264,13 @@ def haversine_vectorized(lon1, lat1, lon2, lat2):
     treating the Earth as a sphere. It uses a vectorized implementation for efficiency.
 
     Parameters:
-    lon1 (array-like): Longitudes of the first set of points
-    lat1 (array-like): Latitudes of the first set of points
-    lon2 (array-like): Longitudes of the second set of points
-    lat2 (array-like): Latitudes of the second set of points
+    lon1: Longitudes of the first set of points
+    lat1: Latitudes of the first set of points
+    lon2: Longitudes of the second set of points
+    lat2: Latitudes of the second set of points
 
     Returns:
-    numpy.ndarray: An array of distances in miles between each pair of points
+    An array of distances in miles between each pair of points
     """
     lon1, lat1, lon2, lat2 = np.radians([lon1, lat1, lon2, lat2])
     dlon = lon2 - lon1
@@ -507,36 +278,119 @@ def haversine_vectorized(lon1, lat1, lon2, lat2):
     a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
     c = 2 * np.arcsin(np.sqrt(a))
     r = 3956  # Radius of earth in miles
+
     return c * r
 
 
-def drop_intermediate_columns(df):
+class _CalculateDistancesInputSchema(pa.DataFrameModel):
     """
-    Remove specified intermediate columns from the DataFrame to conserve memory.
+    Schema for the calculate_distances function input DataFrame.
+    """
 
-    This function drops the columns used for intermediate calculations, specifically
-    the latitude and longitude columns for both origin and destination.
+    src_lat: Series[float] = LatitudeField(nullable=True)
+    src_lon: Series[float] = LongitudeField(nullable=True)
+    dst_lat: Series[float] = LatitudeField(nullable=True)
+    dst_lon: Series[float] = LongitudeField(nullable=True)
+
+
+class _CalculateDistancesMixinSchema(pa.DataFrameModel):
+    """
+    Schema for the combined query data with an additional column for calculated distances.
+    """
+
+    distance_miles: Series[float] = pa.Field(ge=0, nullable=True)
+
+
+_CalculateDistancesInputDataFrame = DataFrame[_CalculateDistancesInputSchema]
+_CalculateDistancesMixinDataFrame = DataFrame[_CalculateDistancesMixinSchema]
+
+
+@overload
+def calculate_distances(
+    data: _CalculateDistancesInputDataFrame,
+) -> _CalculateDistancesMixinDataFrame:
+    pass
+
+
+@overload
+def calculate_distances(
+    data: DataFrame,
+) -> DataFrame:
+    pass
+
+
+def calculate_distances(data):
+    """
+    Calculate the spherical distances between origin and destination coordinates.
+
+    This function applies the Haversine formula to compute the distance between each pair
+    of origin and destination coordinates in the input DataFrame and rounds the distances
+    to the nearest multiple of 250 miles to simplify distance measurements.
 
     Parameters:
-    df (pandas.DataFrame): Input DataFrame potentially containing intermediate columns.
+    data: Input DataFrame containing columns:
+        - 'src_lon': Longitude of the origin location
+        - 'src_lat': Latitude of the origin location
+        - 'dst_lon': Longitude of the destination location
+        - 'dst_lat': Latitude of the destination location
 
     Returns:
-    pandas.DataFrame: The input DataFrame with specified intermediate columns removed.
-
-    Note:
-    - Columns to be dropped: 'origin_lat', 'origin_lon', 'dest_lat', 'dest_lon'
-    - If any of these columns are not present in the DataFrame, they are simply ignored.
+    The input DataFrame minus the original coordinate columns, but with an additional 'distance_miles' column
+    containing the calculated distances in miles.
     """
-    columns_to_drop = ["origin_lat", "origin_lon", "dest_lat", "dest_lon"]
-    existing_columns = [col for col in columns_to_drop if col in df.columns]
+    data["distance_miles"] = haversine_vectorized(
+        data["src_lon"],
+        data["src_lat"],
+        data["dst_lon"],
+        data["dst_lat"],
+    )
 
-    if existing_columns:
-        df.drop(columns=existing_columns, inplace=True)
+    # Round the distance to the nearest multiple of 250 miles to simplify distance measurements
+    data["distance_miles"] = data["distance_miles"].apply(
+        lambda val: round(val / 250.0) * 250.0 if pd.notna(val) else val
+    )
 
-    return df
+    # Drop intermediate columns
+    data.drop(columns=["src_lat", "src_lon", "dst_lat", "dst_lon"], inplace=True)
+
+    return data
 
 
-def filter_status(df):
+class _FilterSuccessfulQueriesInputSchema(pa.DataFrameModel):
+    """
+    Schema for the filter_successful_queries function input DataFrame.
+    """
+
+    status: Series[str] = pa.Field(str_length={"min_value": 1}, nullable=True)
+
+
+class _FilterSuccessfulQueriesMixinSchema(pa.DataFrameModel):
+    """
+    Schema for the filtered DataFrame containing only successful queries.
+    """
+
+    status: Series[str] = pa.Field(isin=["200 OK"])
+
+
+_FilterSuccessfulQueriesInputDataFrame = DataFrame[_FilterSuccessfulQueriesInputSchema]
+_FilterSuccessfulQueriesMixinDataFrame = DataFrame[_FilterSuccessfulQueriesMixinSchema]
+
+
+@overload
+def filter_successful_queries(
+    data: _FilterSuccessfulQueriesInputDataFrame,
+) -> _FilterSuccessfulQueriesMixinDataFrame:
+    pass
+
+
+@overload
+def filter_successful_queries(
+    data: DataFrame,
+) -> DataFrame:
+    pass
+
+
+def filter_successful_queries(data):
     """
     Filter the DataFrame to include only rows where the status is '200 OK'.
 
@@ -544,48 +398,14 @@ def filter_status(df):
     DataFrame where the 'status' column has the value '200 OK'.
 
     Parameters:
-    df (pandas.DataFrame): Input DataFrame containing a 'status' column.
+    data: Input DataFrame containing a 'status' column.
 
     Returns:
-    pandas.DataFrame: A new DataFrame with only the rows where status is '200 OK'.
+    A new DataFrame with only the rows where status is '200 OK'.
     """
-    return df[df["status"] == "200 OK"].copy()
+    dataframe = data[data["status"] == "200 OK"].copy()
 
-
-def apply_round_distance(df):
-    """
-    Apply the round_distance function to the 'distance_miles' column of the DataFrame.
-
-    This function rounds the values in the 'distance_miles' column to the nearest x miles
-    using the round_distance function. Where x is set inside round_distance.
-
-    Parameters:
-    df (pandas.DataFrame): Input DataFrame containing a 'distance_miles' column.
-
-    Returns:
-    pandas.DataFrame: The input DataFrame with the 'distance_miles' column rounded.
-    """
-    if "distance_miles" in df.columns:
-        df["distance_miles"] = df["distance_miles"].apply(
-            lambda x: round_distance(x) if pd.notnull(x) else x
-        )
-    return df
-
-
-def round_distance(value):
-    """
-    Round a distance value to the nearest multiple of 250 miles.
-
-    This function takes a numeric distance value and rounds it to the nearest
-    multiple of 250. It's used for simplifying distance measurements.
-
-    Parameters:
-    value (float): The distance value to be rounded, in miles.
-
-    Returns:
-    float: The input value rounded to the nearest multiple of 250.
-    """
-    return round(value / 250) * 250
+    return dataframe
 
 
 def filter_columns(df, all_columns):
@@ -780,7 +600,6 @@ def perform_linear_regression(df, predictor, categorical, numeric):
 
     Returns:
     tuple: A tuple containing two elements:
-        - pandas.DataFrame: The original DataFrame with additional columns for regression results.
         - pandas.DataFrame: A DataFrame containing indexer rankings based on robust normalized coefficients.
     """
     # Preprocess the data
@@ -797,7 +616,7 @@ def perform_linear_regression(df, predictor, categorical, numeric):
     # Calculate robust normalized coefficients
     indexer_rankings = calculate_robust_normalized_coefficients(results_df)
 
-    return df, indexer_rankings
+    return indexer_rankings
 
 
 def preprocess_data_for_regression(df, predictor, categorical, numeric):

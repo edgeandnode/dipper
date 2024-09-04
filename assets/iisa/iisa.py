@@ -1,36 +1,32 @@
 import logging
 from datetime import date
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 from .bq import BigQueryProvider
+from .geoip import GeoipResolver
 from .iisa_functions import (
     adjust_rows,
     aggregate_indexer_info,
-    apply_location_details,
-    apply_round_distance,
     calculate_distances,
     calculate_indexer_success_rate,
     calculate_indexer_uptime,
     calculate_stake_to_fees,
     calculate_weighted_score,
-    drop_intermediate_columns,
-    extract_iata_code,
     filter_columns,
-    filter_status,
+    filter_successful_queries,
     hash_sampled_queries,
     iterative_filter,
     merge_and_prepare_dataframes,
-    merge_dataframes,
-    merge_in_iata_geolocation_info,
+    merge_in_indexers_info,
+    merge_in_query_geolocation_info,
     normalize_metrics,
     perform_linear_regression,
-    process_combined_query_pandas,
-    split_locations,
     strategic_sample,
 )
+from .network import NetworkProvider
 from .time import TimestampStr, derive_timestamps
 
 # Setup basic logging
@@ -46,6 +42,135 @@ ITERATIVE_FILTER_MIN_DEPLOYMENT_INDEXERS = 2
 ITERATIVE_FILTER_MIN_DEPLOYMENTS_PER_INDEXER = 1
 ITERATIVE_FILTER_MIN_QUERIES_PER_INDEXER = 250
 ITERATIVE_FILTER_MIN_QUERIES_PER_DEPLOYMENT = 250
+
+
+def _fetch_and_process_data(
+    bigquery: BigQueryProvider,
+    network: NetworkProvider,
+    *,
+    start_date: date,
+    start_ts: TimestampStr,
+    num_days: int,
+    target_rows: int = 20_000_000,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Fetch data from BigQuery and Network providers, process it, and return the results.
+
+    Parameters:
+        bigquery: BigQueryProvider instance.
+        network: NetworkProvider instance.
+        start_date: Start date for the data fetch.
+        start_ts: Start timestamp for the data fetch.
+        num_days: Number of days to look back for data.
+        target_rows: Target number of rows to fetch from the combined query.
+
+    Returns:
+        - A dataframe containing the combined queries processed data.
+        - Indexer rankings based on linear regression.
+    """
+    # Fetch the initial query results using the initial query as input
+    initial_query_results_pandas = bigquery.fetch_initial_query_results(
+        start_date, num_days
+    )
+
+    # Figure out how many queries to take from each [indexer, subgraph] combination to target n queries overall
+    target_rows_per_subgraph = adjust_rows(
+        initial_query_results_pandas,
+        target_rows,
+    )
+
+    # Fetch the combined query results using the combined query as input
+    combined_queries = bigquery.fetch_combined_query_results(
+        start_date, num_days, target_rows_per_subgraph
+    )
+
+    # Get the network indexers data as a pandas DataFrame
+    indexers_df = network.indexers()
+
+    # Merge the indexers info with the combined query data
+    combined_queries = merge_in_indexers_info(combined_queries, indexers_df)
+
+    # Extract IATA codes from the combined query data and merge in the IATA information
+    # with the combined query data
+    combined_queries = merge_in_query_geolocation_info(combined_queries)
+
+    # Apply the vectorized Haversine function to calculate the distance in miles
+    combined_queries = calculate_distances(combined_queries)
+
+    # Filter the data to only include rows where status is '200 OK'
+    combined_queries = filter_successful_queries(combined_queries)
+
+    # Specify the columns for regression
+    predictor = ["response_time_ms"]
+    categorical = ["indexer", "deployment_hash", "indexer_network", "query_id"]
+    numeric = ["distance_miles", "fee"]
+
+    # Filter the DataFrame to include only the specified columns for regression
+    filtered_data = filter_columns(combined_queries, predictor + categorical + numeric)
+
+    # Filter the DataFrame to include only the rows that have non nan values for numeric columns such as 'distance_miles'
+    filtered_data = filtered_data.dropna(subset=numeric)
+
+    # Apply iterative filtering
+    filtered_data = iterative_filter(
+        filtered_data,
+        ITERATIVE_FILTER_MIN_DEPLOYMENT_INDEXERS,
+        ITERATIVE_FILTER_MIN_DEPLOYMENTS_PER_INDEXER,
+        ITERATIVE_FILTER_MIN_QUERIES_PER_INDEXER,
+        ITERATIVE_FILTER_MIN_QUERIES_PER_DEPLOYMENT,
+    )
+
+    # Sample the query IDs to create a balanced representation across indexers
+    filtered_data, integer_root = strategic_sample(
+        filtered_data, target_rows_per_subgraph
+    )
+
+    # Hash the sampled query IDs to the hash mod of the integer root
+    filtered_data = hash_sampled_queries(filtered_data, integer_root)
+
+    # update categorical to use the hashed query id's instead of the raw query id's
+    categorical = [
+        "indexer",
+        "deployment_hash",
+        "indexer_network",
+        "sampled_query_id_hashed_mod_integer_root",
+    ]
+
+    # Perform linear regression on the results from the combined query
+    indexer_rankings = perform_linear_regression(
+        filtered_data, predictor, categorical, numeric
+    )
+
+    # Calculate indexer query success rate
+    indexer_success_rate = calculate_indexer_success_rate(combined_queries)
+
+    # Calculate indexer uptime
+    indexer_uptime = calculate_indexer_uptime(combined_queries)
+
+    # Get the initial stake to fees query results as a dataframe
+    # df headers are:
+    # "indexer",
+    # "recent_slashable_stake",
+    # "total_query_fees_sum",
+    # "stake_to_fees"
+    initial_stake_query_pandas = bigquery.fetch_initial_stake_to_fees(start_ts)
+
+    # Calculate stake to fees ratio
+    stake_to_fees = calculate_stake_to_fees(initial_stake_query_pandas)
+
+    # Group by 'indexer' and aggregate unique 'org' and 'destination_loc' values
+    agg_df = aggregate_indexer_info(combined_queries)
+
+    # Merge all data into the main dataframe
+    bigquery_data = merge_and_prepare_dataframes(
+        indexer_uptime,
+        indexer_rankings,
+        agg_df,
+        indexer_success_rate,
+        stake_to_fees,
+    )
+
+    return bigquery_data, indexer_rankings
 
 
 class DataManager:
@@ -70,176 +195,54 @@ class DataManager:
 
     def __init__(
         self,
-        bigquery,
+        bigquery: BigQueryProvider,
+        network: NetworkProvider,
         *,
         num_days: int = DATA_MANAGER_NUM_DAYS,
         end_date: Optional[date] = None,
     ):
         # Providers
         self._bq = bigquery
+        self._network = network
 
-        # Initialize the number of days to look back, and derive timestamps
+        # Initialize the number of days to look back
         self.num_days = num_days
         (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
-            derive_timestamps(self.num_days, end_date)
+            derive_timestamps(num_days, end_date)
         )
 
-        # Initialize data attributes
-        self.bigquery_data = None
-        self.indexer_rankings = None
-        self.indexer_success_rate = None
-        self.indexer_uptime = None
-        self.stake_to_fees = None
-        self.filtered_bigquery_data = None
-
-        # Fetch initial data upon instantiation
+        # Initialize the data and indexer rankings
         # TODO: Require calling explicitly fetch_data_and_update() to fetch data after instantiation
-        self._fetch_bigquery_data(self.start_date, self.start_ts, self.num_days)
+        self.bigquery_data, self.indexer_rankings = _fetch_and_process_data(
+            self._bq,
+            self._network,
+            start_date=self.start_date,
+            start_ts=self.start_ts,
+            num_days=self.num_days,
+        )
 
-    def _fetch_bigquery_data(
-        self,
-        start_date: date,
-        start_ts: TimestampStr,
-        num_days: int,
-        target_rows: int = 20_000_000,
+    def fetch_data_and_update(
+        self, *, num_days: Optional[int] = None, end_date: Optional[date] = None
     ):
         """
-        Fetch data from BigQuery and cache it for the application's runtime.
+        Fetch the latest data from BigQuery and update the data and indexer rankings information.
+
+        Parameters:
+            num_days (optional): Number of days to look back for data. Defaults to the instance attribute.
+            end_date (optional): End date for the data fetch. Defaults to the instance attribute.
         """
-        # Fetch the initial query results using the initial query as input
-        initial_query_results_pandas = self._bq.fetch_initial_query_results(
-            start_date, num_days
-        )
 
-        # Figure out how many queries to take from each [indexer, subgraph] combination to target n queries overall
-        target_rows_per_subgraph = adjust_rows(
-            initial_query_results_pandas,
-            target_rows,
-        )
-
-        # Fetch the combined query results using the combined query as input
-        bigquery_data = self._bq.fetch_combined_query_results(
-            start_date, num_days, target_rows_per_subgraph
-        )
-
-        # Fetch the URL data query results using the URL query as input
-        unique_urls_indexers_pandas = self._bq.fetch_url_data(start_date, num_days)
-
-        # Extract location/org details from the URL data. We should then have a df containing
-        # [['location', 'org', 'loc', 'ip']]  = [["country/region/city", "org", "lat,long", "ip"]]
-        unique_urls_indexers_pandas = apply_location_details(
-            unique_urls_indexers_pandas
-        )
-
-        # Merge the information contained inside unique_urls_indexers_pandas with combined_query_pandas
-        bigquery_data = merge_dataframes(bigquery_data, unique_urls_indexers_pandas)
-
-        # Extract IATA codes from the combined query data
-        bigquery_data = extract_iata_code(bigquery_data)
-
-        # Merge the IATA information with the combined query data
-        bigquery_data = merge_in_iata_geolocation_info(bigquery_data)
-
-        # Process the combined query DataFrame
-        bigquery_data = process_combined_query_pandas(bigquery_data)
-
-        # Split origin_loc and destination_loc into latitude and longitude
-        bigquery_data = split_locations(bigquery_data)
-
-        # Apply the vectorized Haversine function
-        bigquery_data = calculate_distances(bigquery_data)
-
-        # Drop the intermediate columns
-        bigquery_data = drop_intermediate_columns(bigquery_data)
-
-        # Filter the data to only include rows where status is '200 OK'
-        bigquery_data = filter_status(bigquery_data)
-
-        # Round the distance in miles
-        bigquery_data = apply_round_distance(bigquery_data)
-
-        # Specify the columns for regression
-        predictor = ["response_time_ms"]
-        categorical = ["indexer", "deployment_hash", "indexer_network", "query_id"]
-        numeric = ["distance_miles", "fee"]
-        all_columns = predictor + categorical + numeric
-
-        # Filter the DataFrame to include only the specified columns for regression
-        filtered_bigquery_data = filter_columns(bigquery_data, all_columns)
-
-        # Filter the DataFrame to include only the rows that have non nan values for numeric columns such as 'distance_miles'
-        filtered_bigquery_data = filtered_bigquery_data.dropna(subset=numeric)
-
-        # Apply iterative filtering
-        filtered_bigquery_data = iterative_filter(
-            filtered_bigquery_data,
-            ITERATIVE_FILTER_MIN_DEPLOYMENT_INDEXERS,
-            ITERATIVE_FILTER_MIN_DEPLOYMENTS_PER_INDEXER,
-            ITERATIVE_FILTER_MIN_QUERIES_PER_INDEXER,
-            ITERATIVE_FILTER_MIN_QUERIES_PER_DEPLOYMENT,
-        )
-
-        # Sample the query IDs to create a balanced representation across indexers
-        filtered_bigquery_data, integer_root = strategic_sample(
-            filtered_bigquery_data, target_rows_per_subgraph
-        )
-
-        # Hash the sampled query IDs to the hash mod of the integer root
-        filtered_bigquery_data = hash_sampled_queries(
-            filtered_bigquery_data, integer_root
-        )
-
-        # update categorical to use the hashed query id's instead of the raw query id's
-        categorical = [
-            "indexer",
-            "deployment_hash",
-            "indexer_network",
-            "sampled_query_id_hashed_mod_integer_root",
-        ]
-
-        # Perform linear regression on the results from the combined query
-        self.filtered_bigquery_data, self.indexer_rankings = perform_linear_regression(
-            filtered_bigquery_data, predictor, categorical, numeric
-        )
-
-        # Calculate indexer query success rate
-        self.indexer_success_rate = calculate_indexer_success_rate(bigquery_data)
-
-        # Calculate indexer uptime
-        self.indexer_uptime = calculate_indexer_uptime(bigquery_data)
-
-        # Get the initial stake to fees query results as a dataframe
-        # df headers are:
-        # "indexer",
-        # "recent_slashable_stake",
-        # "total_query_fees_sum",
-        # "stake_to_fees"
-        initial_stake_query_pandas = self._bq.fetch_initial_stake_to_fees(start_ts)
-
-        # Calculate stake to fees ratio
-        self.stake_to_fees = calculate_stake_to_fees(initial_stake_query_pandas)
-
-        # Group by 'indexer' and aggregate unique 'org' and 'destination_loc' values
-        agg_df = aggregate_indexer_info(bigquery_data)
-
-        # Merge all data into the main dataframe
-        self.bigquery_data = merge_and_prepare_dataframes(
-            self.indexer_uptime,
-            self.indexer_rankings,
-            agg_df,
-            self.indexer_success_rate,
-            self.stake_to_fees,
-        )
-
-    def fetch_data_and_update(self):
-        """
-        Fetch the latest data from BigQuery and update the internal data attributes.
-        """
         (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
-            derive_timestamps(self.num_days)
+            derive_timestamps(num_days or self.num_days, end_date)
         )
 
-        self._fetch_bigquery_data(self.start_date, self.start_ts, self.num_days)
+        self.bigquery_data, self.indexer_rankings = _fetch_and_process_data(
+            self._bq,
+            self._network,
+            start_date=self.start_date,
+            start_ts=self.start_ts,
+            num_days=self.num_days,
+        )
 
     def get_data(self):
         """
@@ -734,8 +737,10 @@ if __name__ == "__main__":
     try:
         # Initialize DataManager (done once at project creation)
         # This also performs the initial data fetch
+        geoip = GeoipResolver()
+        network_provider = NetworkProvider(geoip=geoip)
         bigquery_provider = BigQueryProvider("graph-mainnet", "US")
-        data_manager = DataManager(bigquery=bigquery_provider)
+        data_manager = DataManager(bigquery=bigquery_provider, network=network_provider)
 
         # Simulate periodic data update (should be done once every 24 hours)
         data_manager.fetch_data_and_update()
