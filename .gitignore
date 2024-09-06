@@ -2,7 +2,7 @@
 .vscode/
 .idea/
 
-## Rust
+### Rust
 /target
 
 # sled db dirs
