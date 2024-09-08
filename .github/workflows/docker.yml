@@ -39,5 +39,5 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         push: ${{ github.event_name != 'pull_request' }}
         pull: true
-        cache-from: type=registry,ref=${{ github.repository_owner }}/dipper-service:buildcache
-        cache-to: type=registry,ref=${{ github.repository_owner}}/dipper-service:buildcache,mode=max
+        cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/dipper-service:buildcache
+        cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner}}/dipper-service:buildcache,mode=max
