@@ -1,0 +1,43 @@
+name: docker
+on:
+  workflow_dispatch:
+  push:
+    branches: [ 'main' ]
+    tags: [ 'v*' ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
+
+    - uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3
+
+    - uses: docker/metadata-action@8e5442c4ef9f78752691e2d8f8d19755c6f78e81 # v5
+      id: meta
+      with:
+        images: ghcr.io/edgeandnode/dipper-service
+        tags: |
+          type=ref,event=tag
+          type=sha
+
+    - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6
+      with:
+        file: Dockerfile
+        context: .
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        push: ${{ github.event_name != 'pull_request' }}
+        pull: true
+        cache-from: type=registry,ref=${{ github.repository_owner }}/dipper-service:buildcache
+        cache-to: type=registry,ref=${{ github.repository_owner}}/dipper-service:buildcache,mode=max

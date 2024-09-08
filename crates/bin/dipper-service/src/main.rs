@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
         .init()?;
 
     log::info!("starting dipper-service");
-    let db = DbHandle::load_at(&opts.db_path.unwrap()).await.unwrap();
+    let db = DbHandle::load_at(&opts.db_path.unwrap()).await?;
     let app_state = AppState::new(db);
     let app = Router::new()
         .route(
@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .layer(tower::ServiceBuilder::new().layer(Extension(app_state)));
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:9091").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:9091").await?;
 
     let signal_task = async {
         let _signal = signal_task().await.unwrap();
