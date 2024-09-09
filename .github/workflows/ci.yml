@@ -77,7 +77,7 @@ jobs:
     steps:
     - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
 
-    - uses: astral-sh/setup-uv@663d8f70829702a37fcda5d723127b0582c125e8 # v2
+    - uses: astral-sh/setup-uv@b463f5b8ca435d9efcf9c84413cfed6b8e132012 # v2
       with:
         enable-cache: true
         github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -102,7 +102,7 @@ jobs:
     steps:
     - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
 
-    - uses: astral-sh/setup-uv@663d8f70829702a37fcda5d723127b0582c125e8 # v2
+    - uses: astral-sh/setup-uv@b463f5b8ca435d9efcf9c84413cfed6b8e132012 # v2
       with:
         enable-cache: true
         github-token: ${{ secrets.GITHUB_TOKEN }}
