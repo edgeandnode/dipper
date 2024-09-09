@@ -25,7 +25,7 @@ RUN cargo build --bin dipper-service --release
 
 ## Python builder
 # Package the python code (sdist)
-FROM python:3.11-bookworm AS python-builder
+FROM python:3.12-bookworm AS python-builder
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -36,7 +36,7 @@ COPY ./ ./
 RUN uv build --sdist
 
 ## Final image
-FROM python:3.11-slim-bookworm
+FROM python:3.12-slim-bookworm
 
 # Install dependencies
 RUN apt-get update \
