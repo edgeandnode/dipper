@@ -181,9 +181,9 @@ def _fetch_and_process_data(
     )
 
     return (
-        bigquery_data, 
-        latency_linear_regression_indexer_rankings, 
-        latency_linear_regression_results_df
+        bigquery_data,
+        latency_linear_regression_indexer_rankings,
+        latency_linear_regression_results_df,
     )
 
 
@@ -227,7 +227,11 @@ class DataManager:
 
         # Initialize the data and indexer rankings
         # TODO: Require calling explicitly fetch_data_and_update() to fetch data after instantiation
-        self.bigquery_data, self.indexer_rankings = _fetch_and_process_data(
+        (
+            self.bigquery_data,
+            self.latency_linear_regression_indexer_rankings,
+            self.latency_linear_regression_results_df,
+        ) = _fetch_and_process_data(
             self._bq,
             self._network,
             start_date=self.start_date,
@@ -250,7 +254,11 @@ class DataManager:
             derive_timestamps(num_days or self.num_days, end_date)
         )
 
-        self.bigquery_data, self.indexer_rankings = _fetch_and_process_data(
+        (
+            self.bigquery_data,
+            self.latency_linear_regression_indexer_rankings,
+            self.latency_linear_regression_results_df,
+        ) = _fetch_and_process_data(
             self._bq,
             self._network,
             start_date=self.start_date,
@@ -299,7 +307,7 @@ class DataProcessor:
         data,
         subgraph_id,
         prices,
-        bigquery,
+        bigquery: BigQueryProvider,
         existing_agreements=None,
         pending_agreements=None,
         blacklist=None,

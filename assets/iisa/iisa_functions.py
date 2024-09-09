@@ -813,7 +813,7 @@ def calculate_robust_normalized_coefficients_latency_linear_regression(results_d
     )
 
     # Calculate the latency coefficient + add a suitable error band on top.
-    indexer_rankings["Latency Coefficient + Error Confidence Intervall"] = (
+    indexer_rankings["Latency Coefficient + Error Confidence Interval"] = (
         indexer_rankings["Latency Coefficient"]
         + LATENCY_COEFFICIENT_STANDARD_ERROR_MULTIPLIER
         * indexer_rankings["Standard Error"]
@@ -1395,6 +1395,7 @@ def calculate_weighted_score(row, weights):
         column_name = f"norm_{metric}"
         value = row.get(column_name, np.nan)  # Uses np.nan if column is missing
         value = 0 if pd.isna(value) else value  # Treats NaN as 0
+        print(f"Metric: {metric}, Value: {value}, Weight: {weight}")
         weighted_sum += value * weight
 
     if weight_total == 0:
@@ -1402,5 +1403,4 @@ def calculate_weighted_score(row, weights):
             "Total sum of weights is 0. Sum of weights should be non-zero, ideally 1."
         )
         raise ValueError("Total weight cannot be 0.")
-
     return weighted_sum / weight_total
