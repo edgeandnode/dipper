@@ -1,7 +1,7 @@
 ## Rust builder
 # Compile the Rust code and link against the system libpython3-dev
 # The libpython3-dev package version must match the final image's python version
-FROM rust:1.80.1-bookworm AS rust-builder
+FROM rust:1.81.0-bookworm AS rust-builder
 
 # Install dependencies
 #  - libpython3-dev:
