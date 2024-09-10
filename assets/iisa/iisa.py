@@ -51,7 +51,7 @@ def _fetch_and_process_data(
     start_ts: TimestampStr,
     num_days: int,
     target_rows: int = 20_000_000,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Fetch data from BigQuery and Network providers, process it, and return the results.
 
