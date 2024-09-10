@@ -804,6 +804,7 @@ if __name__ == "__main__":
         pending_agreements,
         blacklist,
         weights=None,
+        bigquery=BigQueryProvider("graph-mainnet", "US"),
     ):
         processor = DataProcessor(
             data=data,
@@ -812,6 +813,7 @@ if __name__ == "__main__":
             existing_agreements=existing_agreements,
             pending_agreements=pending_agreements,
             blacklist=blacklist,
+            bigquery=bigquery,
             weights=weights
             or {
                 "lat_lin_reg_coefficient": 0.2424,
@@ -861,7 +863,6 @@ if __name__ == "__main__":
                 existing_agreements,
                 pending_agreements,
                 blacklist,
-                bigquery=bigquery_provider,
             )
             print(f"Initial processing - Added: {added}, Cancelled: {cancelled}")
 
@@ -905,7 +906,6 @@ if __name__ == "__main__":
                 new_existing_agreements,
                 new_pending_agreements,
                 new_blacklist,
-                bigquery=bigquery_provider,
                 weights=new_weights,
             )
             print(f"New subgraph processing - Added: {added}, Cancelled: {cancelled}")
@@ -928,11 +928,11 @@ if __name__ == "__main__":
                 data,
                 new_subgraph_id,
                 new_prices,
-                bigquery_provider,
                 existing_agreements=new_existing_agreements,
                 pending_agreements=new_pending_agreements,
                 blacklist=new_blacklist,
                 weights=new_weights,
+                bigquery=BigQueryProvider("graph-mainnet", "US"),
             )
 
             # Update and reprocess data
