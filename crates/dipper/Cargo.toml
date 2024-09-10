@@ -17,7 +17,8 @@ sled.workspace = true
 thegraph-core = { version = "0.6.0", features = ["subgraph-client", "serde"] }
 thegraph-graphql-http = "0.2.4"
 thiserror.workspace = true
-tracing = "0.1.40"
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing = { version = "0.1.40", default-features = false }
 
 [dev-dependencies]
 smol.workspace = true

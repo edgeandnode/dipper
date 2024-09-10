@@ -16,6 +16,6 @@ log.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 tower.workspace = true
 simple_logger.workspace = true
