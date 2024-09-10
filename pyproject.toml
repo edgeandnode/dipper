@@ -60,10 +60,7 @@ minversion = "6.0"
 testpaths = [
     "assets/tests"
 ]
-pythonpath = [
-    ".",
-    "assets"
-]
+
 
 # hatchling configuration
 [build-system]
