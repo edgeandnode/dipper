@@ -8,10 +8,5 @@
 //! processing should be done to verify the information and to use it in the application.
 //! The client module provides a high-level client API to query subgraphs.
 
-mod client;
-mod queries;
-
-#[cfg(test)]
-mod tests {
-    mod it_subgraph_client;
-}
+pub mod client;
+pub mod snapshot;
