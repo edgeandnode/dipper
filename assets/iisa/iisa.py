@@ -803,6 +803,7 @@ if __name__ == "__main__":
         existing_agreements,
         pending_agreements,
         blacklist,
+        weights=None,
     ):
         processor = DataProcessor(
             data=data,
@@ -811,6 +812,16 @@ if __name__ == "__main__":
             existing_agreements=existing_agreements,
             pending_agreements=pending_agreements,
             blacklist=blacklist,
+            weights=weights
+            or {
+                "lat_lin_reg_coefficient": 0.2424,
+                "uptime_score": 0.1667,
+                "existing_dips_agreements": 0.1212,
+                "stake_to_fees_iqr_deviation": 0.1023,
+                "success_rate": 0.0625,
+                "avg_sync_duration": 0.0625,
+                "indexing_agreement_acceptance_latency": 0.2424,
+            },
         )
         return processor.added_indexers, processor.cancelled_indexers
 
@@ -874,9 +885,16 @@ if __name__ == "__main__":
             **pending_agreements,
             "0xIndexer4": ["QmSubgraph5"],  # Add a new pending agreement
         }
-        new_blacklist = [x for x in blacklist if x != "0xBlacklistedIndexer"] + [
-            "0xNewBlacklistedIndexer"
-        ]
+        new_blacklist = ["0xBlacklistedIndexer", "0xNewBlacklistedIndexer"]
+        new_weights = {
+            "lat_lin_reg_coefficient": 0.1,
+            "uptime_score": 0.1,
+            "existing_dips_agreements": 0.1,
+            "stake_to_fees_iqr_deviation": 0.1,
+            "success_rate": 0.1,
+            "avg_sync_duration": 0.1,
+            "indexing_agreement_acceptance_latency": 0.4,
+        }
 
         # Process new subgraph
         try:
@@ -888,35 +906,23 @@ if __name__ == "__main__":
                 new_pending_agreements,
                 new_blacklist,
                 bigquery=bigquery_provider,
+                weights=new_weights,
             )
             print(f"New subgraph processing - Added: {added}, Cancelled: {cancelled}")
 
         except Exception as e:
             print(f"An error occurred during new subgraph processing: {e}")
 
-        # Demonstrate updating an existing subgraph with update_and_reprocess_data
-        updated_data = data_manager.get_data()
-        updated_prices = {**new_prices, "0xIndexer5": 30}
-        updated_existing_agreements = {
-            **new_existing_agreements,
-            "0xIndexer5": ["QmSubgraph6"],
-        }
-        updated_pending_agreements = {
-            **new_pending_agreements,
-            "0xIndexer6": ["QmSubgraph7"],
-        }
-        updated_blacklist = new_blacklist + ["0xAnotherBlacklistedIndexer"]
-        new_weights = {
-            "lat_lin_reg_coefficient": 0.1,
-            "uptime_score": 0.1,
-            "existing_dips_agreements": 0.1,
-            "stake_to_fees_iqr_deviation": 0.1,
-            "success_rate": 0.1,
-            "avg_sync_duration": 0.1,
-            "indexing_agreement_acceptance_latency": 0.4,
-        }
+        # Demonstrate blackisting indexers.
+        updated_blacklist = [
+            "0xBlacklistedIndexer",
+            "0xNewBlacklistedIndexer",
+            "0xAnotherBlacklistedIndexer" "0xIndexer1",
+            "0xIndexer2",
+            "0xNewIndexer",
+        ]
 
-        # Create a DataProcessor instance for the subgraph we want to update
+        # Create a DataProcessor instance
         try:
             data_processor = DataProcessor(
                 data,
@@ -930,23 +936,18 @@ if __name__ == "__main__":
             )
 
             # Update and reprocess data
-            data_processor.update_and_reprocess_data(
-                new_data=updated_data,
-                new_prices=updated_prices,
-                new_existing_agreements=updated_existing_agreements,
-                new_pending_agreements=updated_pending_agreements,
-                new_blacklist=updated_blacklist,
-                weights=new_weights,
+            cancelled_agreements = (
+                data_processor.update_blacklist_cancel_indexing_agreements(
+                    updated_blacklist
+                )
             )
 
-            # Get the updated results
-            added, cancelled = data_processor.get_indexer_selections()
             print(
-                f"After update_and_reprocess_data - Added: {added}, Cancelled: {cancelled}"
+                f"After update_blacklist_cancel_indexing_agreements - Cancelled: {cancelled_agreements}"
             )
 
         except Exception as e:
-            print(f"An error occurred during data processing update: {e}")
+            print(f"An error occurred during creation of DataProcessor instance: {e}")
 
     except Exception as e:
         print(f"An error occurred: {e}")
