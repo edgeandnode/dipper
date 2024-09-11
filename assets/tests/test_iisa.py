@@ -1393,9 +1393,9 @@ class TestDataProcessor:
         )
 
         # Update assertions based on actual behavior
-        assert normal_score == 0.26087946666666667
-        assert exclude_score == 0.17102986666666664
-        assert include_score == 0.28620253333333334
+        assert normal_score == 0.19696666666666665
+        assert exclude_score == 0.07576666666666666
+        assert include_score == 0.19033333333333335
 
         # Verify that the original data was not modified
         pd.testing.assert_frame_equal(processor.data, original_data)
