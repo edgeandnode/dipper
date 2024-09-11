@@ -444,9 +444,6 @@ class DataProcessor:
         This method updates the 'existing_dips_agreements' field in the df to reflect the number of
         current agreements each indexer has, as specified in the existing_agreements attribute passed by the rust server.
         """
-        # Create a copy of the data to avoid modifying the original at this stage
-        updated_data = self.data.copy()
-
         # Create a dictionary to store the number of agreements for each indexer
         agreement_counts = {
             indexer: len(subgraphs)
@@ -454,11 +451,11 @@ class DataProcessor:
         }
 
         # Update 'existing_dips_agreements' for all indexers at once
-        updated_data["existing_dips_agreements"] = (
-            updated_data["indexer"].map(agreement_counts).fillna(0).astype(int)
+        self.data["existing_dips_agreements"] = (
+            self.data["indexer"].map(agreement_counts).fillna(0).astype(int)
         )
 
-        return updated_data
+        return self.data
 
     def _get_current_group(self):
         """
