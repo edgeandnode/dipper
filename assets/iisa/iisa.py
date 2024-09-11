@@ -97,7 +97,7 @@ def _fetch_and_process_data(
     combined_queries = merge_in_query_geolocation_info(combined_queries)
 
     # Set data_for_uptime_calculations to be a filtered version of the combined_queries DataFrame
-    data_for_uptime_calculations = combined_queries[["indexer", "status"]].copy()
+    data_for_uptime_calculations = combined_queries[["indexer", "status", "timestamp"]].copy()
 
     # Apply the vectorized Haversine function to calculate the distance in miles
     combined_queries = calculate_distances(combined_queries)
