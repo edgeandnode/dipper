@@ -97,7 +97,9 @@ def _fetch_and_process_data(
     combined_queries = merge_in_query_geolocation_info(combined_queries)
 
     # Set data_for_uptime_calculations to be a filtered version of the combined_queries DataFrame
-    data_for_uptime_calculations = combined_queries[["indexer", "status", "timestamp"]].copy()
+    data_for_uptime_calculations = combined_queries[
+        ["indexer", "status", "timestamp"]
+    ].copy()
 
     # Apply the vectorized Haversine function to calculate the distance in miles
     combined_queries = calculate_distances(combined_queries)
@@ -342,7 +344,7 @@ class DataProcessor:
             "success_rate": 0.0625,
             "avg_sync_duration": 0.0625,
             "indexing_agreement_acceptance_latency": 0.2424,
-            #"initial/ongoing_sync_price" : 0.09 <- future weight, above weights will change slightly when implemented
+            # "initial/ongoing_sync_price" : 0.09 <- future weight, above weights will change slightly when implemented
         }
 
         # Process the data, we can then call update_blacklist_cancel_indexing_agreements,
@@ -812,7 +814,7 @@ if __name__ == "__main__":
         weights=None,
         bigquery=BigQueryProvider("graph-mainnet", "US"),
     ):
-        processor = DataProcessor(
+        return DataProcessor(
             data=data,
             subgraph_id=subgraph_id,
             prices=prices,
