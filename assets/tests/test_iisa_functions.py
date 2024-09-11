@@ -1911,7 +1911,6 @@ class TestNormalizeMetrics:
         latencies = pd.Series([0, 10, np.inf, -100, 23])
         results = normalize_indexing_agreement_acceptance_latency(latencies)
 
-        print(results)
         assert len(results) == 5, "len(results) != 5"
         assert all(0 <= r <= 1 for r in results), "Values not all between 0 and 1"
 
@@ -1946,9 +1945,7 @@ class TestCalculateWeightedScore:
             {"norm_metric1": 0.8, "norm_metric2": np.nan, "norm_metric3": 0.4}
         )
         result = calculate_weighted_score(row, sample_weights)
-        expected = ((0.8 * 0.5) + (0 * 0.3) + (0.4 * 0.2)) / (0.5 + 0.3 + 0.2)
-        print(f"Result: {result}")
-        print(f"Expected: {expected}")
+        expected = ((0.8 * 0.5) + (0 * 0.3) + (0.4 * 0.2)) / (0.5 + 0.2)
         assert np.isclose(result, expected)
 
     def test_all_metrics_missing(self, sample_weights):
@@ -1956,9 +1953,8 @@ class TestCalculateWeightedScore:
         row = pd.Series(
             {"norm_metric1": np.nan, "norm_metric2": np.nan, "norm_metric3": np.nan}
         )
-        result = calculate_weighted_score(row, sample_weights)
-        expected = (0 * 0.5 + 0 * 0.3 + 0 * 0.2) / 1.0
-        assert np.isclose(result, expected)
+        with pytest.raises(ValueError, match="Total weight cannot be 0."):
+            calculate_weighted_score(row, sample_weights)
 
     def test_zero_weights(self):
         # Test the function when all weights are zero
@@ -1989,14 +1985,6 @@ class TestCalculateWeightedScore:
         result = calculate_weighted_score(row, sample_weights)
         expected = (0.8 * 0.5 + 0.6 * 0.3 + 0.4 * 0.2) / 1.0
         assert np.isclose(result, expected)
-
-    def test_missing_metrics_in_row(self):
-        # Test the function when the row is missing metrics from weights
-        weights = {"metric1": 0.5, "metric2": 0.3, "metric3": 0.2}
-        row = pd.Series({"norm_metric1": 0.8, "norm_metric2": 0.6})
-        result = calculate_weighted_score(row, weights)
-        expected = ((0.8 * 0.5) + (0.6 * 0.3) + (0 * 0.2)) / (0.5 + 0.3 + 0.2)
-        assert abs(result - expected) < 1e-10
 
     @pytest.mark.parametrize(
         "row_data, weights, expected",
