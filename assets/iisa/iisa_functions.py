@@ -26,6 +26,10 @@ from .typing import (
     QueryIdField,
 )
 
+# Constants
+NON_ZERO_UPTIME_SUCCESS_RATE_SCORE_THRESHOLD = 0.97
+LATENCY_COEFFICIENT_STANDARD_ERROR_MULTIPLIER = 1.5
+
 # Setup basic logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -504,10 +508,11 @@ def strategic_sample(df, target_rows_per_subgraph):
 
     Note:
     - The function does not reduce the size of the input DataFrame. It only marks sampled rows.
-    - The actual number of sampled rows can (will) be greater than target_rows_per_subgraph, as sampling is done
-      separately for each (deployment_hash, indexer) combination.
+    - The actual number of sampled rows in the whole DataFrame will be greater than target_rows_per_subgraph,
+      the number of sampled rows should approximate to 'target_rows' (not passed here as a peramater but defined
+      inside the iisa.py) as sampling rows is done separately for each (deployment_hash, indexer) combination.
     - Each deployment_hash is sampled for (target_rows_per_subgraph // number_of_indexers) rows.
-    - The function aims for balance: it tries to sample an equal number of rows for each
+    - The function aims for balance: it tries to sample an equal number of rows uniformly for each
       indexer within a deployment_hash, subject to the calculated or provided cap for each deployment_hash.
     """
     if df.empty:
@@ -584,46 +589,64 @@ def hash_sampled_queries(df, integer_root):
     return result_df
 
 
-def perform_linear_regression(df, predictor, categorical, numeric):
+def perform_latency_linear_regression(df, predictor, categorical, numeric):
     """
-    Perform linear regression analysis on the given data.
+    Perform latency linear regression analysis on the given data.
 
-    This function orchestrates the entire linear regression process, including data preprocessing,
+    This function orchestrates the entire latency linear regression process, including data preprocessing,
     model fitting, prediction, and result analysis. It also calculates robust normalized coefficients
     for indexer rankings.
 
     Parameters:
-    df (pandas.DataFrame): The data to perform regression on.
+    df (pandas.DataFrame): The data to perform latency linear regression on.
     predictor (list): List of column names to be used as the dependent variable(s).
     categorical (list): List of column names containing categorical features.
     numeric (list): List of column names containing numeric features.
 
     Returns:
-    tuple: A tuple containing two elements:
-        - pandas.DataFrame: A DataFrame containing indexer rankings based on robust normalized coefficients.
+    tuple: A tuple containing three elements:
+        - pandas.DataFrame: The original DataFrame with additional columns from latency linear regression results.
+        - pandas.DataFrame: DataFrame containing indexer rankings - based on robust normalized coefficients.
+        - pandas.DataFrame: DataFrame containing results [Variable, Latency Coefficient, Standard Error, p-value]
+                            from the latency linear regression.
     """
     # Preprocess the data
-    X, y, preprocessor = preprocess_data_for_regression(
+    X, y, preprocessor = preprocess_data_for_latency_linear_regression(
         df, predictor, categorical, numeric
     )
 
-    # Perform linear regression
-    pipeline, y_pred = perform_regression(X, y, preprocessor)
+    # Perform latency linear regression
+    pipeline, y_pred = create_latency_linear_regression_pipeline(X, y, preprocessor)
 
     # Analyze the results
-    results_df = analyze_regression_results(pipeline, X, y, y_pred)
+    latency_linear_regression_results_df = analyze_latency_linear_regression_results(
+        pipeline, X, y, y_pred
+    )
 
     # Calculate robust normalized coefficients
-    indexer_rankings = calculate_robust_normalized_coefficients(results_df)
+    # TODO: Use latency_linear_regression_indexer_rankings for pre-filtering which indexers can be assigned
+    #       indexing agreements, so in this case we would consider dropping indexers who's ['Robust Normalized
+    #       Latency Coefficient + Error Confidence Interval'] is greater than a threshold. Indicating their
+    #       performance would not be sufficiently high to justify allocating them an indexing agreement even
+    #       via round robin approach.
+    latency_linear_regression_indexer_rankings = (
+        calculate_robust_normalized_coefficients_latency_linear_regression(
+            latency_linear_regression_results_df
+        )
+    )
 
-    return indexer_rankings
+    return (
+        df,
+        latency_linear_regression_indexer_rankings,
+        latency_linear_regression_results_df,
+    )
 
 
-def preprocess_data_for_regression(df, predictor, categorical, numeric):
+def preprocess_data_for_latency_linear_regression(df, predictor, categorical, numeric):
     """
-    Preprocess data for linear regression by encoding categorical variables and scaling numeric variables.
+    Preprocess data for latency linear regression by encoding categorical variables and scaling numeric variables.
 
-    This function prepares the input data for linear regression by separating features and target variables,
+    This function prepares the input data for latency linear regression by separating features and target variables,
     and applying appropriate preprocessing techniques to categorical and numeric features.
 
     Parameters:
@@ -660,9 +683,9 @@ def preprocess_data_for_regression(df, predictor, categorical, numeric):
     return X, y, preprocessor
 
 
-def perform_regression(X, y, preprocessor):
+def create_latency_linear_regression_pipeline(X, y, preprocessor):
     """
-    Perform linear regression using preprocessed data.
+    Perform latency linear regression using preprocessed data.
 
     This function creates a regression pipeline that includes the preprocessor and a linear regression model,
     fits the pipeline to the data, and generates predictions.
@@ -689,9 +712,9 @@ def perform_regression(X, y, preprocessor):
     return pipeline, y_pred
 
 
-def analyze_regression_results(pipeline, X, y, y_pred):
+def analyze_latency_linear_regression_results(pipeline, X, y, y_pred):
     """
-    Analyze the results of the linear regression model.
+    Analyze the results of the latency linear regression.
 
     This function computes various statistical measures to evaluate the performance of the regression model,
     including coefficients, standard errors, and p-values for each feature.
@@ -705,7 +728,7 @@ def analyze_regression_results(pipeline, X, y, y_pred):
     Returns:
     pandas.DataFrame: A DataFrame containing the following columns for each feature:
         - 'Variable': Name of the feature
-        - 'Coefficient': Estimated coefficient
+        - 'Latency Coefficient': Estimated coefficient
         - 'Standard Error': Standard error of the coefficient
         - 'p-value': p-value for the coefficient
     """
@@ -728,49 +751,49 @@ def analyze_regression_results(pipeline, X, y, y_pred):
     var_covar_matrix = mse * XtX_inv
     std_errors = np.sqrt(np.diag(var_covar_matrix))
 
-    # Calculate significance of regression coefficients
+    # Calculate significance of latency linear regression coefficients
     degfreedom = len(y) - len(coefficients)
     t_scores = coefficients / std_errors
     p_values = [2 * (1 - t.cdf(abs(t_score), degfreedom)) for t_score in t_scores]
 
-    # Create results_df
-    results_df = pd.DataFrame(
+    # Create results_df (latency_linear_regression_results_df)
+    latency_linear_regression_results_df = pd.DataFrame(
         {
             "Variable": feature_names,
-            "Coefficient": coefficients,
+            "Latency Coefficient": coefficients,
             "Standard Error": std_errors,
             "p-value": p_values,
         }
     )
 
-    return results_df
+    return latency_linear_regression_results_df
 
 
-def calculate_robust_normalized_coefficients(results_df):
+def calculate_robust_normalized_coefficients_latency_linear_regression(results_df):
     """
-    Calculate robust normalized coefficients for indexer rankings based on regression results.
+    Calculate robust normalized coefficients for indexer rankings based on latency linear regression results.
 
-    This function processes the regression results to create a ranking of indexers based on their
-    coefficients, adjusting for statistical uncertainty and normalizing the results.
+    This function processes the latency linear regression results to create a ranking of indexers based on
+    their coefficients, adjusting for statistical uncertainty and normalizing the results.
 
     Parameters:
-    results_df (pandas.DataFrame): DataFrame containing regression results, including coefficients
+    results_df (pandas.DataFrame): DataFrame containing latency linear regression results, including coefficients
                                    and standard errors for each variable.
 
     Returns:
     pandas.DataFrame: A DataFrame with columns:
         - 'indexer': Identifier for each indexer
-        - 'Coefficient': Original regression coefficient
+        - 'Latency Coefficient': Original latency linear regression coefficient
         - 'Standard Error': Standard error of the coefficient
         - 'p-value': p-value of the coefficient
-        - 'Coefficient + 1.5 SE': Coefficient adjusted by adding 1.5 times the standard error
-        - 'Robust Normalized Coefficient + 1.5 SE': Normalized version of the adjusted coefficient
+        - 'Latency Coefficient + Error Confidence Interval': Latency Coefficient adjusted by adding x times the standard error
+        - 'Robust Normalized Latency Coefficient + Error Confidence Interval': Normalized version of the adjusted coefficient
     """
     # Extract indexer coefficients
     indexer_rankings = results_df[
         (results_df["Variable"].str.startswith("one_hot__indexer_"))
         & (~results_df["Variable"].str.startswith("one_hot__indexer_network_"))
-    ].sort_values(by="Coefficient")
+    ].sort_values(by="Latency Coefficient")
 
     # Reset the index and remove the old index column for a clean, sequential index
     indexer_rankings.reset_index(inplace=True)
@@ -786,23 +809,33 @@ def calculate_robust_normalized_coefficients(results_df):
 
     # Drop nan's
     indexer_rankings.dropna(
-        subset=["Coefficient", "Standard Error", "p-value"], inplace=True
+        subset=["Latency Coefficient", "Standard Error", "p-value"], inplace=True
     )
 
-    # Calculate the coefficient + 1.5 standard errors.
-    indexer_rankings["Coefficient + 1.5 SE"] = (
-        indexer_rankings["Coefficient"] + 1.5 * indexer_rankings["Standard Error"]
+    # Calculate the latency coefficient + add a suitable error band on top.
+    indexer_rankings["Latency Coefficient + Error Confidence Interval"] = (
+        indexer_rankings["Latency Coefficient"]
+        + LATENCY_COEFFICIENT_STANDARD_ERROR_MULTIPLIER
+        * indexer_rankings["Standard Error"]
     )
 
     # Calculate the median and IQR
-    median_val = indexer_rankings["Coefficient + 1.5 SE"].median()
-    q1 = indexer_rankings["Coefficient + 1.5 SE"].quantile(0.25)
-    q3 = indexer_rankings["Coefficient + 1.5 SE"].quantile(0.75)
+    median_val = indexer_rankings[
+        "Latency Coefficient + Error Confidence Interval"
+    ].median()
+    q1 = indexer_rankings["Latency Coefficient + Error Confidence Interval"].quantile(
+        0.25
+    )
+    q3 = indexer_rankings["Latency Coefficient + Error Confidence Interval"].quantile(
+        0.75
+    )
     iqr_val = q3 - q1
 
-    # Normalize the Coefficient + 1.5 SE using median and IQR
-    indexer_rankings["Robust Normalized Coefficient + 1.5 SE"] = (
-        indexer_rankings["Coefficient + 1.5 SE"] - median_val
+    # Normalize the 'Latency Coefficient + Error Confidence Interval' using median and IQR
+    indexer_rankings[
+        "Robust Normalized Latency Coefficient + Error Confidence Interval"
+    ] = (
+        indexer_rankings["Latency Coefficient + Error Confidence Interval"] - median_val
     ) / iqr_val
 
     return indexer_rankings
@@ -985,7 +1018,7 @@ def calculate_indexer_uptime(df, threshold_seconds=120):
     return merged_uptime_both
 
 
-def calculate_stake_to_fees(stake_query_pandas):
+def calculate_indexer_stake_to_fees(stake_query_pandas):
     """
     Calculate the stake-to-fees ratio and its deviation from the median for each indexer.
 
@@ -1003,14 +1036,30 @@ def calculate_stake_to_fees(stake_query_pandas):
         - 'stake_to_fees_iqr_deviation': IQR-normalized deviation from the median ratio
     """
 
-    stake_to_fees = stake_query_pandas[["indexer", "stake_to_fees"]].copy()
+    stake_to_fees = stake_query_pandas[["stake_to_fees"]].copy()
+
     median_stake_to_fees = stake_to_fees["stake_to_fees"].median()
     q1 = stake_to_fees["stake_to_fees"].quantile(0.25)
     q3 = stake_to_fees["stake_to_fees"].quantile(0.75)
     iqr = q3 - q1
+
+    # TODO: Use stake_to_fees_iqr_deviation to pre-filter which indexers can be assigned
+    #       indexing agreements, so in this case we would consider dropping indexers who's
+    #       stake_to_fees_iqr_deviation is below a certain threshold, indicating the level of
+    #       economic security they provide for the amount of fees they are collecting is already
+    #       particularly low, so assigning them more indexing agreements might not be in our
+    #       best interest.
+
     stake_to_fees["stake_to_fees_iqr_deviation"] = (
         stake_to_fees["stake_to_fees"] - median_stake_to_fees
     ) / iqr
+
+    # Ensure the index is named 'indexer' before resetting
+    stake_to_fees.index.name = "indexer"
+
+    # Reset the index to make 'indexer' a column
+    stake_to_fees = stake_to_fees.reset_index()
+
     return stake_to_fees
 
 
@@ -1086,7 +1135,7 @@ def merge_and_prepare_dataframes(
     merged = merged.drop(columns=columns_to_drop)
 
     # Drop rows with no useful data if the columns exist
-    columns_to_check = ["Coefficient", "Standard Error", "p-value"]
+    columns_to_check = ["Latency Coefficient", "Standard Error", "p-value"]
     existing_columns = [col for col in columns_to_check if col in merged.columns]
     if existing_columns:
         merged = merged.dropna(subset=existing_columns)
@@ -1121,7 +1170,7 @@ def normalize_metrics(merged):
 
     Returns:
     pandas.DataFrame: The input DataFrame with additional columns for normalized metrics:
-        - 'norm_lin_reg_coefficient': Normalized linear regression coefficient
+        - 'norm_lat_lin_reg_coefficient': Normalized latency linear regression coefficient
         - 'norm_uptime_score': Normalized uptime score
         - 'norm_existing_dips_agreements': Normalized score for existing DIP agreements
         - 'norm_stake_to_fees_iqr_deviation': Normalized stake-to-fees ratio deviation
@@ -1140,7 +1189,7 @@ def normalize_metrics(merged):
     """
     if merged.empty:
         new_columns = [
-            "norm_lin_reg_coefficient",
+            "norm_lat_lin_reg_coefficient",
             "norm_uptime_score",
             "norm_existing_dips_agreements",
             "norm_stake_to_fees_iqr_deviation",
@@ -1152,13 +1201,13 @@ def normalize_metrics(merged):
             merged[col] = pd.Series(dtype=float)
         return merged
 
-    # Normalise linear regression score
-    if "Coefficient + 1.5 SE" in merged.columns:
-        merged["norm_lin_reg_coefficient"] = 1 - normalize_generic(
-            merged["Coefficient + 1.5 SE"]
+    # Normalise latency linear regression score
+    if "Latency Coefficient + Error Confidence Interval" in merged.columns:
+        merged["norm_lat_lin_reg_coefficient"] = 1 - normalize_generic(
+            merged["Latency Coefficient + Error Confidence Interval"]
         )  # lower is better
     else:
-        merged["norm_lin_reg_coefficient"] = np.nan
+        merged["norm_lat_lin_reg_coefficient"] = np.nan
 
     # Normalise uptime score
     if "% up_x" in merged.columns:
@@ -1210,9 +1259,9 @@ def normalize_metrics(merged):
     else:
         merged["norm_indexing_agreement_acceptance_latency"] = np.nan
 
-    # Fill NaN values with 0.5
+    # Fill NaN values with 0
     norm_columns = [col for col in merged.columns if col.startswith("norm_")]
-    merged[norm_columns] = merged[norm_columns].fillna(0.5)
+    merged[norm_columns] = merged[norm_columns].fillna(0)
 
     return merged
 
@@ -1233,25 +1282,19 @@ def normalize_generic(series):
     Note:
     - If the input series is empty or contains only one unique value, it returns a series of 0.5.
     """
-    if series.empty or series.max() == series.min():
-        return pd.Series(0.5, index=series.index)
-
     min_val = series.min()
     max_val = series.max()
-    # Handle cases where all values are the same
-    if min_val == max_val:
-        return pd.Series(0.5, index=series.index)
 
     # Normalize to between 0 and 1 range
     normalized = (series - min_val) / (max_val - min_val)
 
     # Handle any potential NaN or inf values
-    normalized = normalized.fillna(0.5)
+    normalized = normalized.fillna(0)
 
     return normalized
 
 
-def normalize_uptime_and_success_rate(series, is_raw_data=True):
+def normalize_uptime_and_success_rate(series):
     """
     Normalize either uptime or success rate data using a piecewise linear scaling method.
 
@@ -1263,79 +1306,64 @@ def normalize_uptime_and_success_rate(series, is_raw_data=True):
 
     Parameters:
     series (pandas.Series): The input series containing uptime or success rate data.
-    is_raw_data (bool, optional): Flag indicating if the data is raw (True) or already normalized (False).
-                                  Defaults to True.
 
     Returns:
     pandas.Series: A new series with normalized values between 0 and 1.
     """
-    if series.empty or series.isnull().all() or series.max() == series.min():
-        return pd.Series(0.5, index=series.index)
+    # Find the best uptime/success rate score in the series first.
+    best = series.max()
 
-    if is_raw_data:
-        # Remove NaN values for calculations.
-        valid_series = series.dropna()
+    # Threshold whereby indexers that have less uptime/success rate than this get no score.
+    threshold = best * NON_ZERO_UPTIME_SUCCESS_RATE_SCORE_THRESHOLD
 
-        # Find the best uptime/success rate score in the series first.
-        best = valid_series.max()
-
-        # Threshold whereby indexers that have less uptime/success rate than this get no score.
-        threshold = best - 0.03
-
-        # Linear score between the threshold and the best.
-        normalized = valid_series.apply(
-            lambda x: max(0, min(1, (x - threshold) / 0.03))
+    # Linear score between the threshold and the best.
+    normalized = series.apply(
+        lambda x: max(
+            0,
+            min(1, (x - threshold) / (best - threshold)),
         )
+    )
 
-        # Reindex and fill NaN with 0.5.
-        normalized = normalized.reindex(series.index).fillna(0.5)
+    # Reindex and fill NaN's with 0.
+    normalized = normalized.reindex(series.index).fillna(0)
 
-        return normalized
-
-    else:
-        # If this is already normalized data, return it as is, filling NaN with 0.5
-        return series.fillna(0.5)
+    return normalized
 
 
-def normalize_indexing_agreement_acceptance_latency(latency_series, L=1, k=0.5, x0=12):
+def normalize_indexing_agreement_acceptance_latency(latency_series, L=1, k=0.65, x0=12):
     """
     Normalize indexing agreement acceptance latency using a logistic function.
 
     This function applies a logistic normalization to the acceptance latency data,
-    creating a smooth logistic transition between high and low latency values.
+    creating a smooth transition between high and low latency values.
 
     Parameters:
     latency_series (pandas.Series): The input series containing latency data in hours.
     L (float, optional): The logistic function's maximum value. Defaults to 1.
-    k (float, optional): The steepness of the curve. Defaults to 0.5.
+    k (float, optional): The steepness of the curve. Defaults to 0.65.
     x0 (float, optional): The x-value of the sigmoid's midpoint. Defaults to 12 hours.
 
     Returns:
     pandas.Series: A new series with normalized values between 0 and 1.
 
     Note:
-    - Indexing agreement acceptancy latency should be measured in hours, not minutes or seconds.
+    - Indexing agreement acceptancy latency should be measured in hours to 2 d.p, not minutes or seconds.
     - Lower latency results in higher normalized values.
     - Negative latency values are clipped to 0 before normalization.
-    - Very large latency values are clipped to a maximum of 1000 hours to prevent overflow.
-    - If the input series is empty or constant, it returns a series of 0.5.
-    - NaN values in the input are replaced with 0.5 in the output.
+    - Very large latency values are clipped to a maximum of 24 hours, after this the score is 0 anyway.
     """
-    if latency_series.empty or latency_series.max() == latency_series.min():
-        return pd.Series(0.5, index=latency_series.index)
-
     # Replace negative values with 0 (as negative latency doesn't make sense)
     latency_series = latency_series.clip(lower=0)
 
-    # Clip very large values to avoid overflow
-    max_latency = 1000  # Adjust this value based on your expected maximum latency
+    # Configure max input latency and clip the series so all values are <= the max value.
+    max_latency = 24
     clipped_latency = np.clip(latency_series, 0, max_latency)
 
-    # Logistic function to normalize acceptance latency
-    normalized = L / (1 + np.exp(k * (clipped_latency - x0)))
+    # Logistic function to normalize acceptance latency. Max score 1. Min score 0.
+    normalized = round(L / (1 + np.exp(k * (clipped_latency - x0))), 3)
 
-    # Handle any potential NaN or inf values
-    normalized = normalized.fillna(0.5)
+    # Handle NaN's
+    normalized = normalized.fillna(0)
 
     return normalized
 
@@ -1345,7 +1373,8 @@ def calculate_weighted_score(row, weights):
     Calculate a weighted score for an indexer based on multiple normalized metrics.
 
     This function computes a single score by combining multiple performance metrics,
-    each weighted according to predefined weights.
+    each weighted according to predefined weights. NaN values and missing metrics
+    are treated as 0, but all weights contribute to the total score.
 
     Parameters:
     row (pandas.Series): A series containing normalized metric values for an indexer.
@@ -1354,15 +1383,24 @@ def calculate_weighted_score(row, weights):
                     Keys should match the suffix of the 'norm_' columns in the row.
 
     Returns:
-    float: The calculated weighted score, or np.nan if no valid metrics are found.
+    float: The calculated weighted score.
+
+    Raises:
+    ValueError: If the total weight is 0.
     """
     weighted_sum = 0
-    weight_total = 0
-    for metric, weight in weights.items():
-        if f"norm_{metric}" in row and not pd.isna(row[f"norm_{metric}"]):
-            weighted_sum += row[f"norm_{metric}"] * weight
-            weight_total += weight
-    if weight_total == 0:
-        return np.nan
+    weight_total = sum(weights.values())
 
+    for metric, weight in weights.items():
+        column_name = f"norm_{metric}"
+        value = row.get(column_name, np.nan)  # Uses np.nan if column is missing
+        value = 0 if pd.isna(value) else value  # Treats NaN as 0
+        print(f"Metric: {metric}, Value: {value}, Weight: {weight}")
+        weighted_sum += value * weight
+
+    if weight_total == 0:
+        logger.error(
+            "Total sum of weights is 0. Sum of weights should be non-zero, ideally 1."
+        )
+        raise ValueError("Total weight cannot be 0.")
     return weighted_sum / weight_total

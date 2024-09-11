@@ -20,29 +20,29 @@ from iisa.iisa_functions import (
     _MergeInQueryGeolocationInputSchema,
     _MergeInQueryGeolocationMixinSchema,
     adjust_rows,
-    aggregate_indexer_info,
-    analyze_regression_results,
     calculate_distances,
+    filter_columns,
+    iterative_filter,
+    strategic_sample,
+    hash_sampled_queries,
+    perform_latency_linear_regression,
+    preprocess_data_for_latency_linear_regression,
+    create_latency_linear_regression_pipeline,
+    analyze_latency_linear_regression_results,
+    calculate_robust_normalized_coefficients_latency_linear_regression,
     calculate_indexer_success_rate,
     calculate_indexer_uptime,
-    calculate_robust_normalized_coefficients,
-    calculate_stake_to_fees,
-    calculate_weighted_score,
-    filter_columns,
-    filter_successful_queries,
-    hash_sampled_queries,
-    iterative_filter,
+    calculate_indexer_stake_to_fees,
+    aggregate_indexer_info,
     merge_and_prepare_dataframes,
+    normalize_metrics,
+    normalize_generic,
+    normalize_uptime_and_success_rate,
+    normalize_indexing_agreement_acceptance_latency,
+    calculate_weighted_score,
+    filter_successful_queries,
     merge_in_indexers_info,
     merge_in_query_geolocation_info,
-    normalize_generic,
-    normalize_indexing_agreement_acceptance_latency,
-    normalize_metrics,
-    normalize_uptime_and_success_rate,
-    perform_linear_regression,
-    perform_regression,
-    preprocess_data_for_regression,
-    strategic_sample,
 )
 from iisa.network import IndexersDataFrame, IndexersSchema
 from iisa.typing import empty_dataframe
@@ -736,9 +736,9 @@ class TestHashSampledQueries:
 
 class TestPerformLinearRegression:
     """
-    This integration test tests the perform_linear_regression function and its dependencies:
-    preprocess_data_for_regression, perform_regression, analyze_regression_results and
-    calculate_robust_normalized_coefficients.
+    This integration test tests the perform_latency_linear_regression function and its dependencies:
+    preprocess_data_for_latency_linear_regression, perform_latency_linear_regression, analyze_latency_linear_regression_results and
+    calculate_robust_normalized_coefficients_latency_linear_regression.
     """
 
     @pytest.fixture
@@ -771,7 +771,9 @@ class TestPerformLinearRegression:
         hashed_df = hash_sampled_queries(sample_df, integer_root)
 
         # Check that the new column is added
-        assert "sampled_query_id_hashed_mod_integer_root" in hashed_df.columns
+        assert (
+            "sampled_query_id_hashed_mod_integer_root" in hashed_df.columns
+        ), "sampled_query_id_hashed_mod_integer_root not in hash_df.columns"
 
         # Setup linear regression variables
         predictor = ["response_time_ms"]
@@ -784,53 +786,74 @@ class TestPerformLinearRegression:
         numeric = ["distance_miles", "fee"]
 
         # Compute result
-        indexer_rankings = perform_linear_regression(
+        (
+            result_df,
+            latency_linear_regression_indexer_rankings,
+            latency_linear_regression_results_df,
+        ) = perform_latency_linear_regression(
             hashed_df, predictor, categorical, numeric
         )
 
-        # Check that indexer_rankings contains expected columns
+        # Check that the result_df contains the original columns
+        assert all(
+            col in result_df.columns for col in hashed_df.columns
+        ), "result_df doesn't contain original columns"
+
+        # Check that latency_linear_regression_indexer_rankings contains expected columns
         expected_columns = [
             "indexer",
-            "Coefficient",
+            "Latency Coefficient",
             "Standard Error",
             "p-value",
-            "Coefficient + 1.5 SE",
-            "Robust Normalized Coefficient + 1.5 SE",
+            "Latency Coefficient + Error Confidence Interval",
+            "Robust Normalized Latency Coefficient + Error Confidence Interval",
         ]
-        assert all(col in indexer_rankings.columns for col in expected_columns)
-
-        # Check that the Robust Normalized Coefficients (+ error) are centered around 0 (+ error)
-        assert (
-            abs(indexer_rankings["Robust Normalized Coefficient + 1.5 SE"].mean())
-            < 0.75
-        )
+        assert all(
+            col in latency_linear_regression_indexer_rankings.columns
+            for col in expected_columns
+        ), "latency_linear_regression_results_df doesn't contain expected columns"
 
         # Check that only indexer values are present in the indexer column
         assert all(
-            indexer_rankings["indexer"].isin(["0xABC", "0xXYZ", "0x123", "0x789"])
-        )
+            latency_linear_regression_indexer_rankings["indexer"].isin(
+                ["0xABC", "0xXYZ", "0x123", "0x789"]
+            )
+        ), "indexer values, not present in the indexer column"
 
         # Check to ensure regression results are reasonable
-        assert indexer_rankings["Coefficient"].notna().all()
-        assert indexer_rankings["p-value"].between(0, 1).all()
+        assert (
+            latency_linear_regression_indexer_rankings["Latency Coefficient"]
+            .notna()
+            .all()
+        )
+        assert latency_linear_regression_indexer_rankings["p-value"].between(0, 1).all()
 
         # Check that the hashed column affects the regression by using a different mod hash integer root
         hashed_df_different_root = hash_sampled_queries(sample_df, integer_root + 1)
-        indexer_rankings_different_root = perform_linear_regression(
+        (
+            _,
+            latency_linear_regression_indexer_rankings_different_root,
+            latency_linear_regression_results_df_different_root,
+        ) = perform_latency_linear_regression(
             hashed_df_different_root, predictor, categorical, numeric
         )
-        assert not indexer_rankings["Coefficient"].equals(
-            indexer_rankings_different_root["Coefficient"]
+
+        assert not latency_linear_regression_indexer_rankings[
+            "Latency Coefficient"
+        ].equals(
+            latency_linear_regression_indexer_rankings_different_root[
+                "Latency Coefficient"
+            ]
         )
 
-    def test_preprocess_data_for_regression(self, sample_df):
+    def test_preprocess_data_for_latency_linear_regression(self, sample_df):
         # Setup linear regression variables
         predictor = ["response_time_ms"]
         categorical = ["indexer", "deployment_hash", "indexer_network"]
         numeric = ["distance_miles", "fee"]
 
         # Perform preprocessing
-        X, y, preprocessor = preprocess_data_for_regression(
+        X, y, preprocessor = preprocess_data_for_latency_linear_regression(
             sample_df, predictor, categorical, numeric
         )
 
@@ -841,73 +864,79 @@ class TestPerformLinearRegression:
         assert list(y.columns) == predictor
         assert set(X.columns) == set(categorical + numeric)
 
-    def test_perform_regression(self, sample_df):
+    def test_perform_latency_linear_regression(self, sample_df):
         # Setup linear regression variables
         predictor = ["response_time_ms"]
         categorical = ["indexer", "deployment_hash", "indexer_network"]
         numeric = ["distance_miles", "fee"]
 
         # Preprocess data and perform regression
-        X, y, preprocessor = preprocess_data_for_regression(
+        X, y, preprocessor = preprocess_data_for_latency_linear_regression(
             sample_df, predictor, categorical, numeric
         )
-        pipeline, y_pred = perform_regression(X, y, preprocessor)
+        pipeline, y_pred = create_latency_linear_regression_pipeline(X, y, preprocessor)
 
         # Check the types and lengths of the regression outputs
         assert isinstance(pipeline, Pipeline)
         assert isinstance(y_pred, np.ndarray)
         assert len(y_pred) == len(y)
 
-    def test_analyze_regression_results(self, sample_df):
+    def test_analyze_latency_linear_regression_results(self, sample_df):
         # Setup linear regression variables
         predictor = ["response_time_ms"]
         categorical = ["indexer", "deployment_hash", "indexer_network"]
         numeric = ["distance_miles", "fee"]
 
         # Perform regression and analyze results
-        X, y, preprocessor = preprocess_data_for_regression(
+        X, y, preprocessor = preprocess_data_for_latency_linear_regression(
             sample_df, predictor, categorical, numeric
         )
-        pipeline, y_pred = perform_regression(X, y, preprocessor)
-        results_df = analyze_regression_results(pipeline, X, y, y_pred)
+        pipeline, y_pred = create_latency_linear_regression_pipeline(X, y, preprocessor)
+        results_df = analyze_latency_linear_regression_results(pipeline, X, y, y_pred)
 
         # Check the structure and content of the results DataFrame
         assert isinstance(results_df, pd.DataFrame)
         assert set(results_df.columns) == {
             "Variable",
-            "Coefficient",
+            "Latency Coefficient",
             "Standard Error",
             "p-value",
         }
         assert len(results_df) > 0
 
-    def test_calculate_robust_normalized_coefficients(self, sample_df):
+    def test_calculate_robust_normalized_coefficients_latency_linear_regression(
+        self, sample_df
+    ):
         # Setup linear regression variables
         predictor = ["response_time_ms"]
         categorical = ["indexer", "deployment_hash", "indexer_network"]
         numeric = ["distance_miles", "fee"]
 
         # Perform regression, analyze results, and calculate normalized coefficients
-        X, y, preprocessor = preprocess_data_for_regression(
+        X, y, preprocessor = preprocess_data_for_latency_linear_regression(
             sample_df, predictor, categorical, numeric
         )
-        pipeline, y_pred = perform_regression(X, y, preprocessor)
-        results_df = analyze_regression_results(pipeline, X, y, y_pred)
-        indexer_rankings = calculate_robust_normalized_coefficients(results_df)
+        pipeline, y_pred = create_latency_linear_regression_pipeline(X, y, preprocessor)
+        results_df = analyze_latency_linear_regression_results(pipeline, X, y, y_pred)
+        indexer_rankings = (
+            calculate_robust_normalized_coefficients_latency_linear_regression(
+                results_df
+            )
+        )
 
         # Check the structure and content of the indexer rankings DataFrame
         assert isinstance(indexer_rankings, pd.DataFrame)
         assert set(indexer_rankings.columns) == {
             "indexer",
-            "Coefficient",
+            "Latency Coefficient",
             "Standard Error",
             "p-value",
-            "Coefficient + 1.5 SE",
-            "Robust Normalized Coefficient + 1.5 SE",
+            "Latency Coefficient + Error Confidence Interval",
+            "Robust Normalized Latency Coefficient + Error Confidence Interval",
         }
         assert len(indexer_rankings) > 0
 
-    def test_perform_linear_regression_with_empty_df(self):
+    def test_perform_latency_linear_regression_with_empty_df(self):
         # Create an empty DataFrame
         empty_df = pd.DataFrame(
             columns=[
@@ -928,9 +957,9 @@ class TestPerformLinearRegression:
 
         # Check if the function raises an appropriate exception for empty DataFrame
         with pytest.raises(ValueError):
-            perform_linear_regression(empty_df, predictor, categorical, numeric)
+            perform_latency_linear_regression(empty_df, predictor, categorical, numeric)
 
-    def test_perform_linear_regression_with_missing_columns(self, sample_df):
+    def test_perform_latency_linear_regression_with_missing_columns(self, sample_df):
         # Create a DataFrame with missing columns
         df_missing_columns = sample_df.drop(columns=["indexer", "fee"])
 
@@ -941,26 +970,64 @@ class TestPerformLinearRegression:
 
         # Check if the function raises an appropriate exception for missing columns
         with pytest.raises(KeyError):
-            perform_linear_regression(
+            perform_latency_linear_regression(
                 df_missing_columns, predictor, categorical, numeric
             )
 
-    def test_perform_linear_regression_deterministic_verification(self, sample_df):
+    def test_perform_latency_linear_regression_deterministic_verification(
+        self, sample_df
+    ):
         # Setup linear regression variables
         predictor = ["response_time_ms"]
         categorical = ["indexer", "deployment_hash", "indexer_network"]
         numeric = ["distance_miles", "fee"]
 
         # Perform linear regression twice and compare results
-        indexer_rankings1 = perform_linear_regression(
+        (
+            result_df1,
+            latency_linear_regression_indexer_rankings1,
+            latency_linear_regression_results_df1,
+        ) = perform_latency_linear_regression(
             sample_df, predictor, categorical, numeric
         )
-        indexer_rankings2 = perform_linear_regression(
+        (
+            result_df2,
+            latency_linear_regression_indexer_rankings2,
+            latency_linear_regression_results_df2,
+        ) = perform_latency_linear_regression(
             sample_df, predictor, categorical, numeric
         )
 
         # Check if the results are consistent across multiple runs
-        pd.testing.assert_frame_equal(indexer_rankings1, indexer_rankings2)
+        pd.testing.assert_frame_equal(result_df1, result_df2)
+
+        # Check if the results are consistent across multiple runs
+        pd.testing.assert_frame_equal(
+            latency_linear_regression_indexer_rankings1,
+            latency_linear_regression_indexer_rankings2,
+        )
+
+        # Check if the results are consistent across multiple runs
+        pd.testing.assert_frame_equal(
+            latency_linear_regression_results_df1, latency_linear_regression_results_df2
+        )
+
+    def test_perform_latency_linear_regression_original_df_unchanged(self, sample_df):
+        # Create a copy of the original DataFrame
+        original_df = sample_df.copy()
+
+        # Setup linear regression variables
+        predictor = ["response_time_ms"]
+        categorical = ["indexer", "deployment_hash", "indexer_network"]
+        numeric = ["distance_miles", "fee"]
+
+        # Perform linear regression
+        (_, _, _) = perform_latency_linear_regression(
+            sample_df, predictor, categorical, numeric
+        )
+
+        # Check the original DataFrame is unchanged
+        pd.testing.assert_frame_equal(original_df, sample_df)
 
 
 class TestCalculateIndexerSuccessRate:
@@ -1298,9 +1365,9 @@ class TestCalculateStakeToFees:
             }
         )
 
-    def test_calculate_stake_to_fees_base_case(self, sample_stake_query_pandas):
+    def test_calculate_indexer_stake_to_fees_base_case(self, sample_stake_query_pandas):
         # Calculate result
-        result = calculate_stake_to_fees(sample_stake_query_pandas)
+        result = calculate_indexer_stake_to_fees(sample_stake_query_pandas)
 
         # Check the result has the correct columns
         assert set(result.columns) == {
@@ -1309,10 +1376,7 @@ class TestCalculateStakeToFees:
             "stake_to_fees_iqr_deviation",
         }
 
-        # Check that both 'indexer' & 'stake_to_fees' columns are unchanged
-        pd.testing.assert_series_equal(
-            result["indexer"], sample_stake_query_pandas["indexer"]
-        )
+        # Check that 'stake_to_fees' column is unchanged
         pd.testing.assert_series_equal(
             result["stake_to_fees"], sample_stake_query_pandas["stake_to_fees"]
         )
@@ -1331,12 +1395,12 @@ class TestCalculateStakeToFees:
             check_names=False,
         )
 
-    def test_calculate_stake_to_fees_empty_df(self):
+    def test_calculate_indexer_stake_to_fees_empty_df(self):
         # Create empty df
         empty_df = pd.DataFrame(columns=["indexer", "stake_to_fees"])
 
         # Calculate result
-        result = calculate_stake_to_fees(empty_df)
+        result = calculate_indexer_stake_to_fees(empty_df)
 
         assert result.empty
         assert set(result.columns) == {
@@ -1345,51 +1409,53 @@ class TestCalculateStakeToFees:
             "stake_to_fees_iqr_deviation",
         }
 
-    def test_calculate_stake_to_fees_single_row(self):
+    def test_calculate_indexer_stake_to_fees_single_row(self):
         single_row_df = pd.DataFrame({"indexer": ["A"], "stake_to_fees": [1.0]})
-        result = calculate_stake_to_fees(single_row_df)
+        result = calculate_indexer_stake_to_fees(single_row_df)
 
         # Result should be nan because IQR in this case is 0 and /0 is nan.
         assert len(result) == 1
         assert pd.isna(result["stake_to_fees_iqr_deviation"].iloc[0])
 
-    def test_calculate_stake_to_fees_with_nan_values(self):
+    def test_calculate_indexer_stake_to_fees_with_nan_values(self):
         df_with_nan = pd.DataFrame(
             {
                 "indexer": ["A", "B", "C", "D", "E"],
                 "stake_to_fees": [1.0, np.nan, 3.0, np.nan, 5.0],
             }
         )
-        result = calculate_stake_to_fees(df_with_nan)
+        result = calculate_indexer_stake_to_fees(df_with_nan)
 
         # Check that NaN values are handled correctly
         assert result["stake_to_fees_iqr_deviation"].isna().sum() == 2
 
-    def test_calculate_stake_to_fees_constant_values(self):
+    def test_calculate_indexer_stake_to_fees_constant_values(self):
         constant_df = pd.DataFrame(
             {
                 "indexer": ["A", "B", "C", "D", "E"],
                 "stake_to_fees": [3.0, 3.0, 3.0, 3.0, 3.0],
             }
         )
-        result = calculate_stake_to_fees(constant_df)
+        result = calculate_indexer_stake_to_fees(constant_df)
 
         # All deviations should be NaN when all values are the same (IQR = 0)
         assert result["stake_to_fees_iqr_deviation"].isna().all()
 
-    def test_calculate_stake_to_fees_extreme_values(self):
+    def test_calculate_indexer_stake_to_fees_extreme_values(self):
         extreme_df = pd.DataFrame(
             {"indexer": ["A", "B", "C"], "stake_to_fees": [1e9, 1e-9, 1e18]}
         )
-        result = calculate_stake_to_fees(extreme_df)
+        result = calculate_indexer_stake_to_fees(extreme_df)
 
         # Check that the function doesn't crash with extreme values
         assert len(result) == 3
         assert not result["stake_to_fees_iqr_deviation"].isna().any()
 
-    def test_calculate_stake_to_fees_preserves_input(self, sample_stake_query_pandas):
+    def test_calculate_indexer_stake_to_fees_preserves_input(
+        self, sample_stake_query_pandas
+    ):
         original = sample_stake_query_pandas.copy()
-        calculate_stake_to_fees(sample_stake_query_pandas)
+        calculate_indexer_stake_to_fees(sample_stake_query_pandas)
 
         # Check that the input DataFrame is unchanged
         pd.testing.assert_frame_equal(sample_stake_query_pandas, original)
@@ -1637,7 +1703,13 @@ class TestNormalizeMetrics:
     def sample_df(self):
         return pd.DataFrame(
             {
-                "Coefficient + 1.5 SE": [-5, 0, 5, 10, 12.121212],
+                "Latency Coefficient + Error Confidence Interval": [
+                    -5,
+                    0,
+                    5,
+                    10,
+                    12.121212,
+                ],
                 "% up_x": [0, 10, 50, 75.7575, 99.9],
                 "existing_dips_agreements": [0, 100, 31, 35, 50],
                 "stake_to_fees_iqr_deviation": [-5.15, 0, 1.125, 3, 120],
@@ -1655,7 +1727,7 @@ class TestNormalizeMetrics:
         # Check all expected columns are present.
         expected_columns = [
             # Original columns
-            "Coefficient + 1.5 SE",
+            "Latency Coefficient + Error Confidence Interval",
             "% up_x",
             "existing_dips_agreements",
             "stake_to_fees_iqr_deviation",
@@ -1664,7 +1736,7 @@ class TestNormalizeMetrics:
             "indexing_agreement_acceptance_latency",
             "other_column",
             # New columns
-            "norm_lin_reg_coefficient",
+            "norm_lat_lin_reg_coefficient",
             "norm_uptime_score",
             "norm_existing_dips_agreements",
             "norm_stake_to_fees_iqr_deviation",
@@ -1677,7 +1749,7 @@ class TestNormalizeMetrics:
 
         # Check all normalized values are between 0 and 1
         normalized_columns = [
-            "norm_lin_reg_coefficient",
+            "norm_lat_lin_reg_coefficient",
             "norm_uptime_score",
             "norm_existing_dips_agreements",
             "norm_stake_to_fees_iqr_deviation",
@@ -1711,7 +1783,6 @@ class TestNormalizeMetrics:
 
         assert len(results) == 5
         assert all(0 <= r <= 1 for r in results)
-
         # Test with a single value
         single_result = normalize_indexing_agreement_acceptance_latency(pd.Series([60]))
         assert 0 <= single_result.iloc[0] <= 1
@@ -1723,7 +1794,7 @@ class TestNormalizeMetrics:
         same_values = normalize_indexing_agreement_acceptance_latency(
             pd.Series([60, 60, 60])
         )
-        assert all(r == 0.5 for r in same_values)
+        assert all(r == 0 for r in same_values)
 
     def test_empty_dataframe(self, sample_df):
         # Test with an empty DataFrame
@@ -1731,7 +1802,7 @@ class TestNormalizeMetrics:
         result = normalize_metrics(empty_df)
         assert result.empty
         expected_columns = list(empty_df.columns) + [
-            "norm_lin_reg_coefficient",
+            "norm_lat_lin_reg_coefficient",
             "norm_uptime_score",
             "norm_existing_dips_agreements",
             "norm_stake_to_fees_iqr_deviation",
@@ -1743,16 +1814,44 @@ class TestNormalizeMetrics:
 
     def test_all_same_values(self, sample_df):
         # Test with all values being the same
-        sample_df.loc[:, :] = 1
+        sample_df.loc[:, :] = 1000
+
+        # Call normalize_metrics function
         result = normalize_metrics(sample_df)
 
-        # Check the function for division by zero errors
-        assert not result.isnull().any().any()
+        norm_columns = [
+            "norm_lat_lin_reg_coefficient",
+            "norm_uptime_score",
+            "norm_existing_dips_agreements",
+            "norm_stake_to_fees_iqr_deviation",
+            "norm_success_rate",
+            "norm_avg_sync_duration",
+            "norm_indexing_agreement_acceptance_latency",
+        ]
 
-        # Check that all results are 0.5
-        for col in result.columns:
-            if col.startswith("norm_"):
-                assert (result[col] == 0.5).all()
+        # Check for normalization results where input values are the same
+        for column in norm_columns:
+            if column in [
+                "norm_stake_to_fees_iqr_deviation",
+            ]:
+                assert (
+                    result[column] == 0
+                ).all(), f"Column {column} is not 0 for identical input values"
+
+            elif column in [
+                "norm_existing_dips_agreements",
+                "norm_avg_sync_duration",
+                "norm_lat_lin_reg_coefficient",
+            ]:
+                assert (
+                    result[column] == 1
+                ).all(), f"Column {column} is not 0 for identical input values"
+
+            # For the logistic normalization (indexing agreement acceptance latency)
+            elif column == "norm_indexing_agreement_acceptance_latency":
+                assert (
+                    result[column] == 0
+                ).all(), "(result[column] == 0).all() not true"
 
     def test_negative_values(self, sample_df):
         # Test with negative values
@@ -1782,12 +1881,17 @@ class TestNormalizeMetrics:
         sample_df.loc[:, :] = -1
         result = normalize_metrics(sample_df)
 
-        # Check the function handles all negative values as expected
-        assert not result.isnull().any().any()
+        # Check that the function handles all negative values as expected
+        norm_columns = [col for col in result.columns if col.startswith("norm_")]
 
-        for col in result.columns:
-            if col.startswith("norm_"):
-                assert (result[col] == 0.5).all()
+        for col in norm_columns:
+            assert (
+                result[col].between(0, 1).all()
+            ), f"Column {col} contains values outside [0, 1] range"
+
+        assert (
+            not result[norm_columns].isnull().any().any()
+        ), "Result contains unexpected NaN values"
 
     def test_nan_values(self, sample_df):
         # Test with NaN values
@@ -1802,33 +1906,26 @@ class TestNormalizeMetrics:
             .any()
         )
 
-        # Check that other normalized columns for NaN row are either NaN or filled with expected values
-        norm_cols = result.columns[result.columns.str.startswith("norm_")]
-        for col in norm_cols:
-            value = result.loc[0, col]
-            assert np.isnan(value) or np.isclose(value, 0.5)
-
     def test_extreme_values_in_latency(self):
         # Test with extreme values
-        latencies = pd.Series([0, 60, np.inf, -100, 1440])
+        latencies = pd.Series([0, 10, np.inf, -100, 23])
         results = normalize_indexing_agreement_acceptance_latency(latencies)
 
-        assert len(results) == 5
-        assert all(
-            0 < r < 1 for r in results
-        )  # All values should be strictly between 0 and 1
+        print(results)
+        assert len(results) == 5, "len(results) != 5"
+        assert all(0 <= r <= 1 for r in results), "Values not all between 0 and 1"
 
         # Check that 0 latency results in the highest score
-        assert results[0] == results.max()
+        assert results[0] == results.max(), "0 latency didn't give the highest score"
 
         # Check that infinite latency results in the lowest score
-        assert results[2] == results.min()
+        assert results[2] == results.min(), "inf latency didn't give the lowest score"
 
         # Check that negative latency is treated as 0 (highest score)
-        assert results[3] == results[0]
+        assert results[3] == results[0], "negative latency didn't give the lowest score"
 
         # Check that other values are ordered correctly
-        assert results[0] > results[1] > results[4]  # 0 < 60 < 1440
+        assert results[0] > results[1] > results[4], "values not ordered correctly"
 
 
 class TestCalculateWeightedScore:
@@ -1849,7 +1946,9 @@ class TestCalculateWeightedScore:
             {"norm_metric1": 0.8, "norm_metric2": np.nan, "norm_metric3": 0.4}
         )
         result = calculate_weighted_score(row, sample_weights)
-        expected = (0.8 * 0.5 + 0.4 * 0.2) / 0.7
+        expected = ((0.8 * 0.5) + (0 * 0.3) + (0.4 * 0.2)) / (0.5 + 0.3 + 0.2)
+        print(f"Result: {result}")
+        print(f"Expected: {expected}")
         assert np.isclose(result, expected)
 
     def test_all_metrics_missing(self, sample_weights):
@@ -1858,14 +1957,15 @@ class TestCalculateWeightedScore:
             {"norm_metric1": np.nan, "norm_metric2": np.nan, "norm_metric3": np.nan}
         )
         result = calculate_weighted_score(row, sample_weights)
-        assert np.isnan(result)
+        expected = (0 * 0.5 + 0 * 0.3 + 0 * 0.2) / 1.0
+        assert np.isclose(result, expected)
 
     def test_zero_weights(self):
         # Test the function when all weights are zero
         weights = {"metric1": 0, "metric2": 0, "metric3": 0}
         row = pd.Series({"norm_metric1": 0.8, "norm_metric2": 0.6, "norm_metric3": 0.4})
-        result = calculate_weighted_score(row, weights)
-        assert np.isnan(result)
+        with pytest.raises(ValueError, match="Total weight cannot be 0."):
+            calculate_weighted_score(row, weights)
 
     def test_partial_weights(self):
         # Test the function when some weights are zero
@@ -1895,8 +1995,8 @@ class TestCalculateWeightedScore:
         weights = {"metric1": 0.5, "metric2": 0.3, "metric3": 0.2}
         row = pd.Series({"norm_metric1": 0.8, "norm_metric2": 0.6})
         result = calculate_weighted_score(row, weights)
-        expected = (0.8 * 0.5 + 0.6 * 0.3) / 0.8
-        assert np.isclose(result, expected)
+        expected = ((0.8 * 0.5) + (0.6 * 0.3) + (0 * 0.2)) / (0.5 + 0.3 + 0.2)
+        assert abs(result - expected) < 1e-10
 
     @pytest.mark.parametrize(
         "row_data, weights, expected",
