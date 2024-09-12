@@ -1,0 +1,88 @@
+use std::path::PathBuf;
+
+use pyo3::{
+    prelude::{PyAnyMethods, PyListMethods},
+    types::PyList,
+    Bound, Python,
+};
+use tracing_log::LogTracer;
+use tracing_subscriber::{fmt::TestWriter, EnvFilter};
+
+use crate::indexer_selection::logging;
+
+/// Get project root path.
+fn project_root_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf()
+}
+
+/// Get the path to the assets directory for testing.
+fn assets_path() -> PathBuf {
+    let mut path = project_root_path();
+    path.push("assets");
+    path
+}
+
+/// Add the assets directory to the Python path.
+pub fn add_assets_dir_to_sys_path() {
+    pyo3::prepare_freethreaded_python();
+    Python::with_gil(|py| {
+        let sys_path = py
+            .import_bound("sys")
+            .expect("Failed to import sys")
+            .getattr("path")
+            .expect("Failed to get sys.path");
+        let sys_path: Bound<PyList> = sys_path
+            .extract()
+            .expect("Failed to convert sys.path to PyList");
+
+        // Add the assets directory to the Python path, if it is not already there
+        let assets_path = assets_path();
+        let assets_path_str = assets_path.to_string_lossy();
+        let is_in_sys_path = sys_path
+            .iter()
+            .any(|path| path.extract::<String>().unwrap() == assets_path_str);
+        if !is_in_sys_path {
+            sys_path
+                .insert(0, assets_path)
+                .expect("Failed to insert iisa module into sys.path");
+        }
+        tracing::debug!("sys.path: {:?}", sys_path);
+    });
+}
+
+/// Test method to initialize the tests tracing subscriber.
+pub fn init_test_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .compact()
+        .with_writer(TestWriter::default())
+        .try_init();
+}
+
+/// Initialize the Python `logging` module to redirect logs to the test writer.
+pub fn init_python_logging(target: &str) {
+    // Register the `RustHostHandler` logger in the Python logging module
+    logging::register(target).expect("Failed to register host logger");
+
+    // Initialize the Python logging module's root logger
+    Python::with_gil(|py| {
+        py.run_bound(
+            indoc::indoc! {r#"
+                import logging
+                logging.basicConfig(level=logging.DEBUG)
+                logging.captureWarnings(True)
+                "#},
+            None,
+            None,
+        )
+        .expect("Failed to initialize Python logging module");
+    });
+
+    // Configure the global `log` logger to redirect all logs to `tracing` logger
+    let _ = LogTracer::init_with_filter(log::LevelFilter::Trace);
+}

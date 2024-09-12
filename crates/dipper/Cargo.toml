@@ -8,7 +8,7 @@ anyhow.workspace = true
 bincode.workspace = true
 indoc = "2.0.5"
 log.workspace = true
-pyo3 = { workspace = true, features = ["auto-initialize"] }
+pyo3 = "0.22.2"
 reqwest = { workspace = true, features = ["json"] }
 semver = { version = "1.0.23", features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }

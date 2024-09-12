@@ -2,7 +2,7 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [ main ]
+    branches: [ 'main' ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -20,7 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
 
-      - uses: actions-rust-lang/setup-rust-toolchain@1fbea72663f6d4c03efaab13560c8a24cfd2a7cc # v1
+      - name: Prepare build env
+        run: sudo apt-get install -y lld
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@1fbea72663f6d4c03efaab13560c8a24cfd2a7cc # v1
         with:
           components: clippy
           cache: false
@@ -28,12 +32,26 @@ jobs:
       - name: Cache rust build files
         uses: Leafwing-Studios/cargo-cache@8763a8b3c2f500b6c17550b7aed48ff4bc86aee6 # v2
 
-      - name: Prepare build env
-        run: sudo apt-get install -y lld
-
+      ## Check
       - run: cargo clippy -- -D warnings --force-warn deprecated --force-warn dead-code
 
       ## Test
+      # Install uv (to manage Python versions and dependencies)
+      - name: Setup uv
+        uses: astral-sh/setup-uv@b463f5b8ca435d9efcf9c84413cfed6b8e132012 # v2
+        with:
+          enable-cache: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python and install dependencies
+        id: python
+        run: |
+          # Install Python dependencies
+          uv sync --frozen --no-dev --no-install-project
+          
+          # Set PYTHON_LIB_DIR output param to the directory containing the libpython shared library
+          echo "PYTHON_LIB_DIR=$(dirname `uv tool run find_libpython`)" >> $GITHUB_OUTPUT
+
       # Install sops (needed for decrypting tests .env file)
       - name: Setup sops
         uses: nhedger/setup-sops@358bac533e4e92f9ce9f9da563d6265929c88cda # v2
@@ -46,17 +64,28 @@ jobs:
         uses: LNSD/sops-exec-action@6da1fbca63459d9796097496d5f5e6233555b31a # v1
         env:
           SOPS_AGE_KEY: ${{ secrets.IT_TESTS_AGE_KEY }}
+          PYTHON_LIB_DIR: ${{ steps.python.outputs.PYTHON_LIB_DIR }}
         with:
           env_file: .env
-          run: cargo test 'tests::' -- --skip 'tests::it_'
+          run: uv run --frozen cargo test 'tests::' -- --skip 'tests::it_'
 
       - name: Integration tests (in-tree)
         uses: LNSD/sops-exec-action@6da1fbca63459d9796097496d5f5e6233555b31a # v1
         env:
           SOPS_AGE_KEY: ${{ secrets.IT_TESTS_AGE_KEY }}
+          PYTHON_LIB_DIR: ${{ steps.python.outputs.PYTHON_LIB_DIR }}
         with:
           env_file: .env
-          run: cargo test 'tests::it_'
+          run: uv run --frozen cargo test 'tests::it_'
+
+      - name: Integration tests (public api)
+        uses: LNSD/sops-exec-action@6da1fbca63459d9796097496d5f5e6233555b31a # v1
+        env:
+          SOPS_AGE_KEY: ${{ secrets.IT_TESTS_AGE_KEY }}
+          PYTHON_LIB_DIR: ${{ steps.python.outputs.PYTHON_LIB_DIR }}
+        with:
+          env_file: .env
+          run: uv run --frozen cargo test --test '*'
 
   format-rust:
     runs-on: ubuntu-latest
@@ -82,20 +111,17 @@ jobs:
         enable-cache: true
         github-token: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Set up Python
-      run: uv python install 3.11
-
-    - name: Install Python dependencies
-      run: uv sync --frozen --all-extras --dev
+    - name: Set up Python and install dependencies
+      run: uv sync --frozen --dev
 
     - name: Check Python code (ruff)
-      run: uv run ruff check assets
+      run: uv run --frozen ruff check assets
 
     - name: Run mypy static type checker
-      run: uv run mypy assets
+      run: uv run --frozen mypy assets
 
     - name: Run Python tests
-      run: uv run pytest assets
+      run: uv run --frozen pytest assets
 
   format-python:
     runs-on: ubuntu-latest
@@ -106,9 +132,6 @@ jobs:
       with:
         enable-cache: true
         github-token: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Set up Python
-      run: uv python install 3.11
 
     - name: Check Python code formatting (ruff)
       run: uv run --frozen ruff format --check assets

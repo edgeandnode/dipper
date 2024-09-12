@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use pyo3::Python;
 use tokio::sync::{mpsc, oneshot};
 
@@ -71,7 +73,7 @@ pub fn new() -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()>) {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let service_task = move || {
         // Register the Python logging to Rust log handler
-        logging::register("dipper::indexer_selection");
+        logging::register("dipper::indexer_selection").expect("Failed to register host logger");
 
         // Set up Python logging
         Python::with_gil(|py| {
@@ -79,6 +81,7 @@ pub fn new() -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()>) {
                 indoc::indoc! {r#"
                 import logging
                 logging.basicConfig(level=logging.INFO)
+                logging.captureWarnings(True)
                 
                 # Set up the logger for the indexer_selection service
                 logger = logging.getLogger(__name__)
@@ -107,7 +110,7 @@ pub fn new() -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()>) {
                             None,
                         )
                     })?;
-                    std::thread::sleep(std::time::Duration::from_secs(2)); // Simulation
+                    std::thread::sleep(Duration::from_secs(2)); // Simulation
 
                     // Abort service if the response channel's receiver side has been dropped.
                     if tx.send(Ok(())).is_err() {
@@ -126,7 +129,7 @@ pub fn new() -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()>) {
                             None,
                         )
                     })?;
-                    std::thread::sleep(std::time::Duration::from_millis(100)); // Simulation
+                    std::thread::sleep(Duration::from_millis(100)); // Simulation
 
                     // Abort service if the response channel's receiver side has been dropped.
                     if tx.send(Ok(())).is_err() {
@@ -140,7 +143,7 @@ pub fn new() -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()>) {
                     Python::with_gil(|py| {
                         py.run_bound(r#"logger.info("updating agreements list")"#, None, None)
                     })?;
-                    std::thread::sleep(std::time::Duration::from_millis(100)); // Simulation
+                    std::thread::sleep(Duration::from_millis(100)); // Simulation
 
                     // Abort service if the response channel's receiver side has been dropped.
                     if tx.send(Ok(())).is_err() {
