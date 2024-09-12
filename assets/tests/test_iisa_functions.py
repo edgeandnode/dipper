@@ -1908,7 +1908,7 @@ class TestNormalizeMetrics:
 
     def test_extreme_values_in_latency(self):
         # Test with extreme values
-        latencies = pd.Series([0, 10, np.inf, -100, 23])
+        latencies = pd.Series([0, 5, np.inf, -100, 7])
         results = normalize_indexing_agreement_acceptance_latency(latencies)
 
         print(results)

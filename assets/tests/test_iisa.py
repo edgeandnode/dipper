@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pandas as pd
 import pytest
+import numpy as np
 
 from iisa.iisa import DataManager, DataProcessor, GeoipResolver, NetworkProvider
 from iisa.time import TimestampStr
@@ -1392,10 +1393,10 @@ class TestDataProcessor:
             ["A", "B"], indexer_to_include="D"
         )
 
-        # Update assertions based on actual behavior
-        assert normal_score == 0.26087946666666667
-        assert exclude_score == 0.17102986666666664
-        assert include_score == 0.28620253333333334
+        # How allclose() works: It considers two values a and b to be "close" if: |a - b| <= (atol + rtol * |b|)
+        assert np.allclose(normal_score, 0.19696666666666665, rtol=1e-9, atol=1e-9)
+        assert np.allclose(exclude_score, 0.07576666666666666, rtol=1e-9, atol=1e-9)
+        assert np.allclose(include_score, 0.19033333333333335, rtol=1e-9, atol=1e-9)
 
         # Verify that the original data was not modified
         pd.testing.assert_frame_equal(processor.data, original_data)

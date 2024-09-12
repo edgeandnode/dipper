@@ -12,6 +12,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from scipy.misc import derivative
 
 from .iata import IataInfoDataFrame, get_iata_geolocation_info
 from .network import IndexersDataFrame
@@ -1330,18 +1331,16 @@ def normalize_uptime_and_success_rate(series):
     return normalized
 
 
-def normalize_indexing_agreement_acceptance_latency(latency_series, L=1, k=0.65, x0=12):
+def normalize_indexing_agreement_acceptance_latency(latency_series, L=1.002, k=1, x0=6):
     """
-    Normalize indexing agreement acceptance latency using a logistic function.
-
-    This function applies a logistic normalization to the acceptance latency data,
-    creating a smooth transition between high and low latency values.
+    Normalize indexing agreement acceptance latency using a piecewise function:
+    logistic for x ≤ x0, linear for x > x0.
 
     Parameters:
     latency_series (pandas.Series): The input series containing latency data in hours.
-    L (float, optional): The logistic function's maximum value. Defaults to 1.
-    k (float, optional): The steepness of the curve. Defaults to 0.65.
-    x0 (float, optional): The x-value of the sigmoid's midpoint. Defaults to 12 hours.
+    L (float, optional): The logistic function's maximum value. Defaults to 1.002.
+    k (float, optional): The steepness of the curve. Defaults to 1.
+    x0 (float, optional): The x-value of the sigmoid's midpoint. Defaults to 6 hours.
 
     Returns:
     pandas.Series: A new series with normalized values between 0 and 1.
@@ -1350,17 +1349,42 @@ def normalize_indexing_agreement_acceptance_latency(latency_series, L=1, k=0.65,
     - Indexing agreement acceptancy latency should be measured in hours to 2 d.p, not minutes or seconds.
     - Lower latency results in higher normalized values.
     - Negative latency values are clipped to 0 before normalization.
-    - Very large latency values are clipped to a maximum of 24 hours, after this the score is 0 anyway.
+    - Large latency values are clipped to a maximum of 8 hours, after this the score is 0 anyway.
     """
+
+    def logistic(x):
+        """
+        This function creates the smooth transition from high scores
+        for low latencies to low scores for high latencies.
+
+        x: time in hours
+        """
+        return L / (1 + np.exp(k * (x - x0)))
+
+    # x0 is the midpoint of the logistic function, we need to find the gradient of the slope through that point
+    def slope_at_x0():
+        """
+        Calculate the slope of the logistic function at x0.
+        """
+        return derivative(logistic, x0, dx=1e-6)
+
+    m = slope_at_x0()
+
+    def piecewise_function(x):
+        """
+        Apply a piecewise function: logistic for x ≤ x0, linear for x > x0.
+        """
+        return np.where(x <= x0, logistic(x), logistic(x0) + m * (x - x0))
+
     # Replace negative values with 0 (as negative latency doesn't make sense)
     latency_series = latency_series.clip(lower=0)
 
     # Configure max input latency and clip the series so all values are <= the max value.
-    max_latency = 24
+    max_latency = 8
     clipped_latency = np.clip(latency_series, 0, max_latency)
 
-    # Logistic function to normalize acceptance latency. Max score 1. Min score 0.
-    normalized = round(L / (1 + np.exp(k * (clipped_latency - x0))), 3)
+    # Apply the piecewise function to normalize acceptance latency
+    normalized = pd.Series(piecewise_function(clipped_latency)).round(3)
 
     # Handle NaN's
     normalized = normalized.fillna(0)
