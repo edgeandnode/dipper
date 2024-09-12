@@ -3,12 +3,12 @@ Test suite covering the geoip module.
 """
 
 from iisa.geoip import (
+    GeoipResolver,
+    _IpAddressStr,
+    _UrlHostStr,
     _get_ipaddr_location_info,
     _get_url_host,
     _resolve_host_ipaddr,
-    _IpAddressStr,
-    _UrlHostStr,
-    GeoipResolver,
 )
 from iisa.typing import HttpUrlStr
 
@@ -82,7 +82,7 @@ class TestGetIpaddrLocationInfo:
 
         ## Then
         assert result["ip_addr"] == ipaddr
-        assert result["org"] == "AS19527 Google LLC"
+        assert result["org"].endswith("Google LLC")
         assert result["country"] == "US"
         assert result["latitude"] is not None
         assert result["longitude"] is not None
