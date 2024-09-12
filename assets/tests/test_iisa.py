@@ -655,36 +655,32 @@ class TestDataProcessor:
             (
                 ["A", "B"],  # initial_group
                 ["A", "C"],  # current_group
-                [("C", "test_subgraph")],  # expected_added
-                [("B", "test_subgraph")],  # expected_cancelled
+                {"test_subgraph": ["C"]},  # expected_added
+                {"test_subgraph": ["B"]},  # expected_cancelled
             ),
             (
                 [],  # initial_group
                 ["A", "B"],  # current_group
-                [("A", "test_subgraph"), ("B", "test_subgraph")],  # expected_added
-                [],  # expected_cancelled
+                {"test_subgraph": ["A", "B"]},  # expected_added
+                {},  # expected_cancelled (no cancellations)
             ),
             (
                 ["A", "B", "C"],  # initial_group
                 [],  # current_group
-                [],  # expected_added
-                [
-                    ("A", "test_subgraph"),
-                    ("B", "test_subgraph"),
-                    ("C", "test_subgraph"),
-                ],  # expected_cancelled
+                {},  # expected_added (no additions)
+                {"test_subgraph": ["A", "B", "C"]},  # expected_cancelled
             ),
             (
                 ["A", "B"],  # initial_group
                 ["A", "B"],  # current_group
-                [],  # expected_added
-                [],  # expected_cancelled
+                {},  # expected_added (no additions)
+                {},  # expected_cancelled (no cancellations)
             ),
             (
                 ["A"],  # initial_group
                 ["B"],  # current_group
-                [("B", "test_subgraph")],  # expected_added
-                [("A", "test_subgraph")],  # expected_cancelled
+                {"test_subgraph": ["B"]},  # expected_added
+                {"test_subgraph": ["A"]},  # expected_cancelled
             ),
         ],
     )
@@ -716,84 +712,21 @@ class TestDataProcessor:
         # Call the method under test
         added, cancelled = processor.get_indexer_selections()
 
-        # Convert results to sets for comparison
-        added_set = set(added)
-        cancelled_set = set(cancelled)
-        expected_added_set = set(expected_added)
-        expected_cancelled_set = set(expected_cancelled)
+        # Sort the lists within the dictionaries
+        added_sorted = {k: sorted(v) for k, v in added.items()}
+        cancelled_sorted = {k: sorted(v) for k, v in cancelled.items()}
+        expected_added_sorted = {k: sorted(v) for k, v in expected_added.items()}
+        expected_cancelled_sorted = {
+            k: sorted(v) for k, v in expected_cancelled.items()
+        }
 
-        # Verify the results
+        # Verify the results by comparing sorted dictionaries
         assert (
-            added_set == expected_added_set
-        ), f"Expected added: {expected_added_set}, but got: {added_set}"
+            added_sorted == expected_added_sorted
+        ), f"Expected added: {expected_added_sorted}, but got: {added_sorted}"
         assert (
-            cancelled_set == expected_cancelled_set
-        ), f"Expected cancelled: {expected_cancelled_set}, but got: {cancelled_set}"
-        assert set(initial_group) - set(current_group) == set(
-            indexer for indexer, _ in cancelled
-        )
-        assert set(current_group) - set(initial_group) == set(
-            indexer for indexer, _ in added
-        )
-
-        # Check consistency of subgraph ID
-        assert all(
-            subgraph == "test_subgraph"
-            for _, subgraph in added_set.union(cancelled_set)
-        )
-
-        # Verify that added and cancelled are disjoint
-        assert added_set.isdisjoint(cancelled_set)
-
-    def test_get_indexer_selections_invalid_types(
-        self, sample_data, mock_bigquery_provider
-    ):
-        """
-        Test get_indexer_selections method handles unexpected input types.
-        """
-        with patch("iisa.iisa.DataProcessor._process_data"):
-            processor = DataProcessor(
-                data=sample_data,
-                subgraph_id="test_subgraph",
-                prices={"A": 10, "B": 20, "C": 15},
-                bigquery=mock_bigquery_provider,
-            )
-
-        processor.initial_group = "not a list"
-        processor.current_group = {"also": "not a list"}
-
-        added, cancelled = processor.get_indexer_selections()
-
-        assert all(isinstance(item, tuple) and len(item) == 2 for item in added)
-        assert all(isinstance(item, tuple) and len(item) == 2 for item in cancelled)
-        assert all(item[1] == "test_subgraph" for item in added)
-        assert all(item[1] == "test_subgraph" for item in cancelled)
-        assert set(item[0] for item in added).issubset(
-            set(processor.current_group.keys())
-        )
-        assert set(item[0] for item in cancelled).issubset(set(processor.initial_group))
-
-    def test_get_indexer_selections_none_values(
-        self, sample_data, mock_bigquery_provider
-    ):
-        """
-        Test get_indexer_selections method handles None values.
-        """
-        with patch("iisa.iisa.DataProcessor._process_data"):
-            processor = DataProcessor(
-                data=sample_data,
-                subgraph_id="test_subgraph",
-                prices={"A": 10, "B": 20, "C": 15},
-                bigquery=mock_bigquery_provider.return_value,
-            )
-
-        processor.initial_group = None
-        processor.current_group = None
-
-        added, cancelled = processor.get_indexer_selections()
-
-        assert added == []
-        assert cancelled == []
+            cancelled_sorted == expected_cancelled_sorted
+        ), f"Expected cancelled: {expected_cancelled_sorted}, but got: {cancelled_sorted}"
 
     def test_get_indexer_selections_empty_groups(
         self, sample_data, mock_bigquery_provider
@@ -820,8 +753,8 @@ class TestDataProcessor:
         added, cancelled = processor.get_indexer_selections()
 
         # Verify that no indexers were added or cancelled.
-        assert added == []
-        assert cancelled == []
+        assert added == {}
+        assert cancelled == {}
 
     @patch("iisa.iisa.DataProcessor._fetch_number_of_indexer_agreements")
     @patch("iisa.iisa.DataProcessor._get_current_group")

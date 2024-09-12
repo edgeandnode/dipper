@@ -1260,8 +1260,13 @@ def normalize_metrics(merged):
     else:
         merged["norm_indexing_agreement_acceptance_latency"] = np.nan
 
-    # Fill NaN values with 0
-    norm_columns = [col for col in merged.columns if col.startswith("norm_")]
+    # Fill NaN values with 0 for all norm_ columns except norm_indexing_agreement_acceptance_latency
+    norm_columns = [
+        col
+        for col in merged.columns
+        if col.startswith("norm_")
+        and col != "norm_indexing_agreement_acceptance_latency"
+    ]
     merged[norm_columns] = merged[norm_columns].fillna(0)
 
     return merged
@@ -1413,18 +1418,31 @@ def calculate_weighted_score(row, weights):
     ValueError: If the total weight is 0.
     """
     weighted_sum = 0
-    weight_total = sum(weights.values())
+    weight_total = 0
+    missing_columns = []
 
     for metric, weight in weights.items():
         column_name = f"norm_{metric}"
+
+        # Append any missing columns to the list
+        if column_name not in row.index:
+            missing_columns.append(column_name)
+            continue
+
         value = row.get(column_name, np.nan)  # Uses np.nan if column is missing
-        value = 0 if pd.isna(value) else value  # Treats NaN as 0
-        print(f"Metric: {metric}, Value: {value}, Weight: {weight}")
-        weighted_sum += value * weight
+
+        # So long as the column has a value that isn't nan, then:
+        if not pd.isna(value):
+            weighted_sum += value * weight
+            weight_total += weight
+
+    if missing_columns:
+        logger.warning(f"Missing columns in input data: {', '.join(missing_columns)}")
 
     if weight_total == 0:
         logger.error(
             "Total sum of weights is 0. Sum of weights should be non-zero, ideally 1."
         )
         raise ValueError("Total weight cannot be 0.")
+
     return weighted_sum / weight_total

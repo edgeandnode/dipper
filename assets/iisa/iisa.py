@@ -97,7 +97,9 @@ def _fetch_and_process_data(
     combined_queries = merge_in_query_geolocation_info(combined_queries)
 
     # Set data_for_uptime_calculations to be a filtered version of the combined_queries DataFrame
-    data_for_uptime_calculations = combined_queries[["indexer", "status"]].copy()
+    data_for_uptime_calculations = combined_queries[
+        ["indexer", "status", "timestamp"]
+    ].copy()
 
     # Apply the vectorized Haversine function to calculate the distance in miles
     combined_queries = calculate_distances(combined_queries)
@@ -342,6 +344,7 @@ class DataProcessor:
             "success_rate": 0.0625,
             "avg_sync_duration": 0.0625,
             "indexing_agreement_acceptance_latency": 0.2424,
+            # "initial/ongoing_sync_price" : 0.09 <- future weight, above weights will change slightly when implemented
         }
 
         # Process the data, we can then call update_blacklist_cancel_indexing_agreements,
@@ -390,24 +393,29 @@ class DataProcessor:
 
     def get_indexer_selections(self):
         """
-        Returns the indexer-subgraph pairs that have recently been assigned or cancelled.
-        This method should be called after data processing to fetch any updates.
+        Returns the indexers that have recently been assigned to or removed from the subgraph.
+
+        This method compares the initial and current groups of indexers to determine
+        which indexers have been added or removed.
+
+        Returns:
+            tuple: Two dictionaries:
+                - added_dict: A dictionary where the key is the subgraph_id and the value is a list of newly added indexers
+                - cancelled_dict: A dictionary where the key is the subgraph_id and the value is a list of removed indexers
+
+        Note:
+            If no indexers were added or removed, the respective dictionary will be empty.
         """
-        # TODO: we could call self._process_data() inside this method.
-
-        # Handle None values
-        current_group = self.current_group or set()
-        initial_group = self.initial_group or set()
-
         # Compare initial and current groups to determine changes
-        added = set(current_group) - set(initial_group)
-        cancelled = set(initial_group) - set(current_group)
+        added = set(self.current_group) - set(self.initial_group)
+        cancelled = set(self.initial_group) - set(self.current_group)
 
-        # Format results as pairs
-        added_pairs = [(indexer, self.subgraph_id) for indexer in added]
-        cancelled_pairs = [(indexer, self.subgraph_id) for indexer in cancelled]
+        # Create dictionaries with subgraph_id as key and list of indexers as value
+        added_dict = {self.subgraph_id: list(added)} if added else {}
+        cancelled_dict = {self.subgraph_id: list(cancelled)} if cancelled else {}
 
-        return added_pairs, cancelled_pairs
+        # Return two separate dictionaries
+        return added_dict, cancelled_dict
 
     def _process_data(self):
         """
@@ -436,9 +444,6 @@ class DataProcessor:
         This method updates the 'existing_dips_agreements' field in the df to reflect the number of
         current agreements each indexer has, as specified in the existing_agreements attribute passed by the rust server.
         """
-        # Create a copy of the data to avoid modifying the original at this stage
-        updated_data = self.data.copy()
-
         # Create a dictionary to store the number of agreements for each indexer
         agreement_counts = {
             indexer: len(subgraphs)
@@ -446,11 +451,11 @@ class DataProcessor:
         }
 
         # Update 'existing_dips_agreements' for all indexers at once
-        updated_data["existing_dips_agreements"] = (
-            updated_data["indexer"].map(agreement_counts).fillna(0).astype(int)
+        self.data["existing_dips_agreements"] = (
+            self.data["indexer"].map(agreement_counts).fillna(0).astype(int)
         )
 
-        return updated_data
+        return self.data
 
     def _get_current_group(self):
         """
@@ -806,7 +811,7 @@ if __name__ == "__main__":
         weights=None,
         bigquery=BigQueryProvider("graph-mainnet", "US"),
     ):
-        processor = DataProcessor(
+        return DataProcessor(
             data=data,
             subgraph_id=subgraph_id,
             prices=prices,
@@ -825,7 +830,6 @@ if __name__ == "__main__":
                 "indexing_agreement_acceptance_latency": 0.2424,
             },
         )
-        return processor.added_indexers, processor.cancelled_indexers
 
     try:
         # Initialize DataManager (done once at project creation)
@@ -856,7 +860,7 @@ if __name__ == "__main__":
 
         # Process subgraph
         try:
-            added, cancelled = process_subgraph(
+            processor = process_subgraph(
                 data,
                 subgraph_id,
                 prices,
@@ -864,6 +868,7 @@ if __name__ == "__main__":
                 pending_agreements,
                 blacklist,
             )
+            added, cancelled = processor.get_indexer_selections()
             print(f"Initial processing - Added: {added}, Cancelled: {cancelled}")
 
         except Exception as e:
@@ -899,7 +904,7 @@ if __name__ == "__main__":
 
         # Process new subgraph
         try:
-            added, cancelled = process_subgraph(
+            processor = process_subgraph(
                 data,
                 new_subgraph_id,
                 new_prices,
@@ -908,6 +913,7 @@ if __name__ == "__main__":
                 new_blacklist,
                 weights=new_weights,
             )
+            added, cancelled = processor.get_indexer_selections()
             print(f"New subgraph processing - Added: {added}, Cancelled: {cancelled}")
 
         except Exception as e:
