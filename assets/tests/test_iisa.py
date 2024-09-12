@@ -830,11 +830,6 @@ class TestDataProcessor:
         assert processor.current_group == ["A", "B"]
         assert processor.initial_group == ["A", "B"]
 
-        # Verify that the data is sorted by weighted score
-        assert processor.data.equals(
-            mock_normalize.return_value.sort_values(by="weighted_score", ascending=True)
-        )
-
     def test_fetch_number_of_indexer_agreements(
         self, sample_data, mock_bigquery_provider
     ):
@@ -849,8 +844,9 @@ class TestDataProcessor:
                 subgraph_id="test_subgraph",
                 prices={"A": 10, "B": 20, "C": 15},
                 existing_agreements={
-                    "A": ["subgraph1", "subgraph2"],
-                    "B": ["subgraph3"],
+                    "subgraph1": ["A", "B", "A"],
+                    "subgraph2": ["A", "B"],
+                    "subgraph3": ["A"],
                 },
                 bigquery=mock_bigquery_provider.return_value,
             )
@@ -863,20 +859,20 @@ class TestDataProcessor:
             updated_data.loc[
                 updated_data["indexer"] == "A", "existing_dips_agreements"
             ].iloc[0]
-            == 2
-        )
+            == 4
+        ), "A issue"
         assert (
             updated_data.loc[
                 updated_data["indexer"] == "B", "existing_dips_agreements"
             ].iloc[0]
-            == 1
-        )
+            == 2
+        ), "B issue"
         assert (
             updated_data.loc[
                 updated_data["indexer"] == "C", "existing_dips_agreements"
             ].iloc[0]
             == 0
-        )
+        ), "C issue"
 
     @pytest.fixture
     def processor(self, sample_data, mock_bigquery_provider):
@@ -892,10 +888,9 @@ class TestDataProcessor:
         Test _get_current_group with multiple indexers assigned to the subgraph.
         """
         processor.existing_agreements = {
-            "A": ["test_subgraph", "other_subgraph"],
-            "B": ["test_subgraph"],
-            "C": ["other_subgraph"],
-            "D": ["test_subgraph", "another_subgraph"],
+            "test_subgraph": ["A", "B", "D"],
+            "other_subgraph": ["A", "C"],
+            "another_subgraph": ["D"],
         }
         result = processor._get_current_group()
         expected = ["A", "B", "D"]
@@ -1099,7 +1094,9 @@ class TestDataProcessor:
             bigquery=mock_bigquery_provider.return_value,
         )
 
-        with patch("iisa.iisa.DataProcessor._select_next_best_indexer") as mock_select:
+        with patch(
+            "iisa.iisa.DataProcessor._find_best_replacement_or_select_best_indexer"
+        ) as mock_select:
             mock_select.side_effect = ["B", "C", "D", None]
             processor.current_group = initial_group.copy()
 
@@ -1114,7 +1111,8 @@ class TestDataProcessor:
 
         # Test when no suitable indexers are found
         with patch(
-            "iisa.iisa.DataProcessor._select_next_best_indexer", return_value=None
+            "iisa.iisa.DataProcessor._find_best_replacement_or_select_best_indexer",
+            return_value=None,
         ):
             processor.current_group = ["A"]
             processor._add_indexers_to_group()
@@ -1217,7 +1215,7 @@ class TestDataProcessor:
         )
 
         with patch(
-            "iisa.iisa.DataProcessor._find_best_replacement"
+            "iisa.iisa.DataProcessor._find_best_replacement_or_select_best_indexer"
         ) as mock_find, patch(
             "iisa.iisa.DataProcessor._calculate_group_score"
         ) as mock_score:
@@ -1232,9 +1230,9 @@ class TestDataProcessor:
             assert mock_find.call_count == 3
             assert mock_score.call_count == 2
 
-    def test_find_best_replacement(self, mock_bigquery_provider):
+    def test_find_best_replacement_or_select_best_indexer(self, mock_bigquery_provider):
         """
-        Test the _find_best_replacement method of DataProcessor.
+        Test the _find_best_replacement_or_select_best_indexer method of DataProcessor.
 
         This test verifies:
         1. The method returns the best replacement that meets decentralization requirements.
@@ -1263,7 +1261,7 @@ class TestDataProcessor:
         ) as mock_decentralization:
             mock_decentralization.side_effect = [True]
 
-            result = processor._find_best_replacement()
+            result = processor._find_best_replacement_or_select_best_indexer()
 
             # Verify the best replacement is D, not E, due to blacklisting.
             assert result == "D"
@@ -1341,9 +1339,9 @@ class TestDataProcessor:
         Test the update_blacklist_cancel_indexing_agreements method of DataProcessor.
 
         This test verifies:
-        1. The update_blacklist_cancel_indexing_agreements method is
-        2. The update_blacklist_cancel_indexing_agreements method is
-        3. The update_blacklist_cancel_indexing_agreements method is
+        1. The method correctly identifies agreements to be cancelled based on the new blacklist.
+        2. The method returns the correct dictionary of cancelled agreements.
+        3. The method updates the internal blacklist of the DataProcessor.
         """
         # Initialize DataProcessor
         processor = DataProcessor(
@@ -1351,30 +1349,32 @@ class TestDataProcessor:
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15},
             existing_agreements={
-                "A": ["subgraph1", "subgraph2", "subgraph4", "subgraph7", "subgraph10"],
-                "B": ["subgraph2", "subgraph3", "subgraph5", "subgraph9", "subgraph12"],
-                "C": [
-                    "subgraph10",
-                    "subgraph20",
-                    "subgraph40",
-                    "subgraph70",
-                    "subgraph100",
-                ],
-                "D": ["subgraph0", "subgraph2", "subgraph4"],
-                "E": ["subgraph11", "subgraph12", "subgraph14", "subgraph15"],
-                "F": [
-                    "subgraph6",
-                    "subgraph9",
-                    "subgraph16",
-                    "subgraph23",
-                    "subgraph41",
-                    "subgraph45",
-                ],
+                "subgraph1": ["A"],
+                "subgraph2": ["A", "B"],
+                "subgraph3": ["B"],
+                "subgraph4": ["A", "D"],
+                "subgraph5": ["B"],
+                "subgraph6": ["F"],
+                "subgraph7": ["A"],
+                "subgraph9": ["B", "F"],
+                "subgraph10": ["A", "C"],
+                "subgraph11": ["E"],
+                "subgraph12": ["B", "E"],
+                "subgraph14": ["E"],
+                "subgraph15": ["E"],
+                "subgraph16": ["F"],
+                "subgraph20": ["C"],
+                "subgraph23": ["F"],
+                "subgraph40": ["C"],
+                "subgraph41": ["F"],
+                "subgraph45": ["F"],
+                "subgraph70": ["C"],
+                "subgraph100": ["C"],
             },
             pending_agreements={
-                "B": ["subgraph13"],
-                "G": ["subgraph70"],
-                "I": ["subgraph90"],
+                "subgraph13": ["B"],
+                "subgraph70": ["G"],
+                "subgraph90": ["I"],
             },
             blacklist=["H"],
             bigquery=mock_bigquery_provider.return_value,
@@ -1395,3 +1395,10 @@ class TestDataProcessor:
         # Check state after update
         print("Newly cancelled indexing agreements: ", newly_cancelled_agreements)
         assert newly_cancelled_agreements == expected_newly_cancelled_agreements
+
+        # Verify that the blacklist has been updated
+        assert processor.blacklist == new_blacklist
+
+        # Verify that 'H' and 'NOT_IN_LIST' don't appear in cancelled agreements
+        assert "H" not in newly_cancelled_agreements
+        assert "NOT_IN_LIST" not in newly_cancelled_agreements
