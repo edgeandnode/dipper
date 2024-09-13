@@ -12,7 +12,6 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from scipy.misc import derivative
 
 from .iata import IataInfoDataFrame, get_iata_geolocation_info
 from .network import IndexersDataFrame
@@ -1371,7 +1370,8 @@ def normalize_indexing_agreement_acceptance_latency(latency_series, L=1.002, k=1
         """
         Calculate the slope of the logistic function at x0.
         """
-        return derivative(logistic, x0, dx=1e-6)
+        h = 1e-6
+        return (logistic(x0 + h) - logistic(x0 - h)) / (2 * h)
 
     m = slope_at_x0()
 
