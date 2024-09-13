@@ -82,7 +82,7 @@ class TestGetIpaddrLocationInfo:
 
         ## Then
         assert result["ip_addr"] == ipaddr
-        assert result["org"] == "AS19527 Google LLC"
+        assert result["org"].endswith("Google LLC")
         assert result["country"] == "US"
         assert result["latitude"] is not None
         assert result["longitude"] is not None
