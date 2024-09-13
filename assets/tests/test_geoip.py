@@ -3,12 +3,12 @@ Test suite covering the geoip module.
 """
 
 from iisa.geoip import (
+    GeoipResolver,
+    _IpAddressStr,
+    _UrlHostStr,
     _get_ipaddr_location_info,
     _get_url_host,
     _resolve_host_ipaddr,
-    _IpAddressStr,
-    _UrlHostStr,
-    GeoipResolver,
 )
 from iisa.typing import HttpUrlStr
 
