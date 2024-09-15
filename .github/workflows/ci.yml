@@ -30,7 +30,9 @@ jobs:
           cache: false
 
       - name: Cache rust build files
-        uses: Leafwing-Studios/cargo-cache@5d5d363fa3b9886d45c4705228c5c73ccea17636 # v2
+        uses: leafwing-studios/cargo-cache@5d5d363fa3b9886d45c4705228c5c73ccea17636 # v2
+        with:
+          sweep-cache: true
 
       ## Check
       - run: cargo clippy -- -D warnings --force-warn deprecated --force-warn dead-code
