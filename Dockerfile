@@ -1,31 +1,34 @@
 ## Rust builder
-# Compile the Rust code and link against the system libpython3-dev
+# Compile the Rust code and link against the uv installed libpython
 # The libpython3-dev package version must match the final image's python version
 FROM rust:1.81.0-bookworm AS rust-builder
 
-# Install dependencies
-#  - libpython3-dev:
-#        Required for building the pyo3 crate
-#        For debian bookworm, python3-dev version is 3.11.2-1
-#        https://packages.debian.org/bookworm/libpython3-dev
-RUN apt-get update \
-  && apt-get install -y \
+RUN --mount=type=cache,target=/var/cache/apt \
+  apt-get update \
+  && apt-get install -y --no-install-recommends \
       build-essential \
       clang \
-      cmake \
       git \
-      libpython3-dev \
   && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /src
 COPY ./ ./
 
+# Set build environment variables
+#  - Copy packages from the global cache into the site-packages directory
+ENV UV_LINK_MODE=copy
+# - Set the C/C++ compiler to clang
 ENV CC=clang CXX=clang++
-RUN cargo build --bin dipper-service --release
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv run cargo build --bin dipper-service --release
 
 ## Python builder
 # Package the python code (sdist)
-FROM python:3.11-bookworm AS python-builder
+FROM python:3.11.10-bookworm AS python-builder
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -36,12 +39,7 @@ COPY ./ ./
 RUN uv build --sdist
 
 ## Final image
-FROM python:3.11-slim-bookworm
-
-# Install dependencies
-RUN apt-get update \
-  && apt-get install -y ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+FROM python:3.11.10-slim-bookworm
 
 # Set uv environment variables
 #  - Use the system python

@@ -33,7 +33,10 @@ fn main() {
                     .to_string();
                 Some(path)
             }
-            _ => None,
+            _ => {
+                println!("cargo:warning=Failed to determine libpython path using `uv tool run find_libpython`");
+                None
+            }
         }
     };
 
