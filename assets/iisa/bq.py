@@ -85,7 +85,7 @@ class BigQueryProvider:
         # Configure the Google BigQuery dataframes project and location
         bpd.options.bigquery.project = project
         bpd.options.bigquery.location = location
-        # bpd.options.display.progress_bar = None
+        bpd.options.display.progress_bar = None
 
     @retry(
         retry=retry_if_exception_type((ConnectionError, socket.timeout)),
