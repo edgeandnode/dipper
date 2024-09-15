@@ -41,7 +41,7 @@ jobs:
       ## Test
       # Install uv (to manage Python versions and dependencies)
       - name: Setup uv
-        uses: astral-sh/setup-uv@b463f5b8ca435d9efcf9c84413cfed6b8e132012 # v2
+        uses: astral-sh/setup-uv@6dfebec6ddbcd197e02256fbdf54deb334fb7f06 # v2
         with:
           enable-cache: true
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -109,7 +109,7 @@ jobs:
     steps:
     - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
 
-    - uses: astral-sh/setup-uv@b463f5b8ca435d9efcf9c84413cfed6b8e132012 # v2
+    - uses: astral-sh/setup-uv@6dfebec6ddbcd197e02256fbdf54deb334fb7f06 # v2
       with:
         enable-cache: true
         github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -131,7 +131,7 @@ jobs:
     steps:
     - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4
 
-    - uses: astral-sh/setup-uv@b463f5b8ca435d9efcf9c84413cfed6b8e132012 # v2
+    - uses: astral-sh/setup-uv@6dfebec6ddbcd197e02256fbdf54deb334fb7f06 # v2
       with:
         enable-cache: true
         github-token: ${{ secrets.GITHUB_TOKEN }}
