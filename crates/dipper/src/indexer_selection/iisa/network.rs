@@ -4,8 +4,8 @@ use pyo3::{
     exceptions::PyTypeError,
     intern,
     sync::GILOnceCell,
-    types::{PyAnyMethods, PyList, PyListMethods, PyType},
-    Bound, FromPyObject, Py, PyAny, PyResult, Python,
+    types::{PyAny, PyAnyMethods, PyList, PyListMethods, PyType},
+    Bound, FromPyObject, Py, PyResult, Python,
 };
 
 use super::{geoip::PyGeoipResolver, import_iisa_module};
@@ -79,7 +79,6 @@ impl<'py> PyNetworkProvider<'py> {
     /// Create a new `PyNetworkProvider` instance.
     pub fn new(py: Python<'py>, geoip_resolver: PyGeoipResolver<'py>) -> PyResult<Self> {
         let inner = new_network_provider(py, geoip_resolver.into_any())?;
-
         Ok(Self { inner })
     }
 
@@ -137,10 +136,10 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
             //* Given
-
             let geoip_resolver_any = PyGeoipResolver::new(py)
                 .expect("Failed to create GeoipResolver instance")
                 .into_any();
+
             let network_provider_any = new_network_provider(py, geoip_resolver_any)
                 .expect("Failed to create NetworkProvider instance");
 

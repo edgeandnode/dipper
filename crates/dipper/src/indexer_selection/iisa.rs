@@ -1,10 +1,12 @@
 //! Rust wrapper for the `iisa` Python module.
 
 mod bq;
+mod data_manager;
 mod geoip;
 mod network;
 
 pub use bq::PyBigQueryProvider;
+pub use data_manager::PyDataManager;
 pub use geoip::PyGeoipResolver;
 pub use network::PyNetworkProvider;
 use pyo3::{
