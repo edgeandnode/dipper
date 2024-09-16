@@ -1,12 +1,17 @@
-from datetime import date, datetime, timedelta
+from datetime import datetime
+from typing import Optional, Tuple
 from unittest.mock import MagicMock, call, patch
 
+import numpy as np
 import pandas as pd
 import pytest
-import numpy as np
 
-from iisa.iisa import DataManager, DataProcessor, GeoipResolver, NetworkProvider
-from iisa.time import TimestampStr
+from iisa.iisa import (
+    DataManager,
+    DataProcessor,
+    GeoipResolver,
+    NetworkProvider,
+)
 from tests.__fixtures__ import network as network_fixture
 
 
@@ -89,29 +94,33 @@ def mock_combined_query_results():
 
 
 @pytest.fixture
-def mock_bigquery_provider(mock_combined_query_results):
-    mock = MagicMock()
-    mock.return_value.fetch_initial_query_results.return_value = pd.DataFrame(
-        {
-            "deployment_hash": ["hash1", "hash2", "hash3"],
-            "indexer": ["indexer1", "indexer2", "indexer3"],
-            "num_rows": [1000, 2000, 3000],
-        }
+def mock__bigquery_provider(mock_combined_query_results):
+    bigquery_provider = MagicMock()
+    bigquery_provider.return_value.fetch_initial_query_results.return_value = (
+        pd.DataFrame(
+            {
+                "deployment_hash": ["hash1", "hash2", "hash3"],
+                "indexer": ["indexer1", "indexer2", "indexer3"],
+                "num_rows": [1000, 2000, 3000],
+            }
+        )
     )
-    mock.return_value.fetch_combined_query_results.return_value = (
+    bigquery_provider.return_value.fetch_combined_query_results.return_value = (
         mock_combined_query_results
     )
-    mock.return_value.fetch_initial_stake_to_fees.return_value = pd.DataFrame(
-        {
-            "indexer": ["indexer1", "indexer2", "indexer3"],
-            "stake_to_fees": [1.0, 2.0, 3.0],
-        }
+    bigquery_provider.return_value.fetch_initial_stake_to_fees.return_value = (
+        pd.DataFrame(
+            {
+                "indexer": ["indexer1", "indexer2", "indexer3"],
+                "stake_to_fees": [1.0, 2.0, 3.0],
+            }
+        )
     )
-    return mock
+    return bigquery_provider
 
 
 @pytest.fixture
-def mock_network_provider():
+def mock__network_provider():
     ## Given
     resolver = GeoipResolver()
     provider = NetworkProvider(geoip=resolver)
@@ -123,72 +132,40 @@ def mock_network_provider():
     return provider
 
 
-class TestInitializeDataManager:
+class TestDataManager:
     """
-    This class verifies the initialize_data_manager function creates/returns
-    a DataManager instance with the correct configuration and handles errors.
+    This class contains tests to ensure that the DataManager class
+    correctly initializes, fetches data, and provides access to its data.
     """
 
     def test_initialize_data_manager(
-        self, mock_bigquery_provider, mock_network_provider
+        self, mock__bigquery_provider, mock__network_provider
     ):
-        """
-        This test verifies:
-        1. The function returns a DataManager instance.
-        2. The BigQueryProvider is created with the correct parameters.
-        3. The returned DataManager uses the created BigQueryProvider.
-        4. The DataManager's attributes are correctly set and populated.
-        """
+        ## Given
+        bigquery_provider = mock__bigquery_provider.return_value
+        network_provider = mock__network_provider
 
-        def mock_perform_latency_linear_regression(*args):
-            """
-            Creates and returns mock data for latency linear regression results.
+        ## When
+        result = DataManager(bigquery_provider, network_provider)
 
-            This function simulates the output of a linear regression process,
-            providing mock data for:
-            1. filtered_data: A DataFrame with query and indexer information.
-            2. latency_linear_regression_indexer_rankings: A DataFrame with indexer rankings and scores.
-            """
-            filtered_data = pd.DataFrame(
-                {
-                    "query_id": ["id1", "id2"],
-                    "deployment_hash": ["hash1", "hash2"],
-                    "indexer": ["indexer1", "indexer2"],
-                    "indexer_network": ["net1", "net2"],
-                    "fee": [0.1, 0.2],
-                    "response_time_ms": [100, 200],
-                    "distance_miles": [100, 200],
-                    "sampled_query_id_hashed_mod_integer_root": [0, 1],
-                }
-            )
-            latency_linear_regression_indexer_rankings = pd.DataFrame(
-                {
-                    "indexer": ["indexer1", "indexer2", "indexer3"],
-                    "rank": [1, 2, 3],
-                    "score": [0.9, 0.8, 0.7],
-                }
-            )
+        ## Then
+        # Verify the num_days and end_date attributes
+        assert isinstance(result.num_days, int)
+        assert isinstance(result.end_date, Optional[datetime])
 
-            # Set the attributes if 'self' is passed as the first argument
-            if args and hasattr(args[0], "filtered_data"):
-                args[0].filtered_data = filtered_data
-            if args and hasattr(args[0], "latency_linear_regression_indexer_rankings"):
-                args[
-                    0
-                ].latency_linear_regression_indexer_rankings = (
-                    latency_linear_regression_indexer_rankings
-                )
+        # Verify data outputs are None
+        assert result.get_data() is None
+        assert result.get_latency_linear_regression_indexer_rankings() is None
+        assert result.get_latency_linear_regression_results() is None
 
-            return filtered_data, latency_linear_regression_indexer_rankings
+    def test_fetch_and_update(self, mock__bigquery_provider, mock__network_provider):
+        ## Given
+        bigquery_provider = mock__bigquery_provider.return_value
+        network_provider = mock__network_provider
 
         def mock__fetch_and_process_data(
-            bigquery_provider,
-            network_provider,
-            start_date: date,
-            start_ts: TimestampStr,
-            num_days: int,
-            target_rows: int = 20_000_000,
-        ):
+            *args, **kwargs
+        ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
             """
             Creates and returns mock data simulating BigQuery fetch results.
 
@@ -240,75 +217,122 @@ class TestInitializeDataManager:
                 latency_linear_regression_results_df_mock_data,
             )
 
-        # Apply patches for the test
+        data_manager = DataManager(bigquery_provider, network_provider)
+
+        ## When
+        # Patch internal implementation for the test
         with patch(
-            "iisa.iisa.derive_timestamps",
-            return_value=(
-                datetime.now(),
-                datetime.now(),
-                "2024-01-01T00:00:00Z",
-                "2024-01-28T23:59:59Z",
-            ),
+            "iisa.iisa._fetch_and_process_data",
+            mock__fetch_and_process_data,
         ):
-            with patch(
-                "iisa.iisa_functions.perform_latency_linear_regression",
-                side_effect=mock_perform_latency_linear_regression,
-            ):
-                with patch(
-                    "iisa.iisa._fetch_and_process_data",
-                    mock__fetch_and_process_data,
-                ):
-                    result = DataManager(
-                        bigquery=mock_bigquery_provider.return_value,
-                        network=mock_network_provider,
-                    )
+            data_manager.fetch_data_and_update()
 
-        # Verify that the result is an instance of DataManager
-        assert isinstance(result, DataManager)
+        ## Then
+        # Verify cached data is present and non-empty
+        data = data_manager.get_data()
+        assert data is not None
+        assert not data.empty
 
-        # Verify that the bigquery_data attribute is not None and that bigquery_data contains some rows.
-        assert result.bigquery_data is not None
-        assert len(result.bigquery_data) > 0
-
+        # TODO: Use a Pandera schema to verify dataframe
         # Verify that 'day_partition' exists in bigquery_data
-        assert "day_partition" in result.bigquery_data.columns
-
+        assert "day_partition" in data.columns
         # Verify that 'destination_loc' exists in bigquery_data and contains string values
-        assert "destination_loc" in result.bigquery_data.columns
-        assert result.bigquery_data["destination_loc"].dtype == "object"
+        assert "destination_loc" in data.columns
+        assert data["destination_loc"].dtype == "object"
 
         # Verify that latency_linear_regression_indexer_rankings is not None
-        assert result.latency_linear_regression_indexer_rankings is not None
+        assert data_manager.get_latency_linear_regression_indexer_rankings is not None
 
         # Verify that latency_linear_regression_results_df is not None
-        assert result.latency_linear_regression_results_df is not None
+        assert data_manager.get_latency_linear_regression_results is not None
 
-        # Verify the date and timestamp attributes
-        assert isinstance(result.start_date, datetime)
-        assert isinstance(result.end_date, datetime)
-        assert isinstance(result.start_ts, str)
-        assert isinstance(result.end_ts, str)
-
-    def test_initialize_data_manager_exception_handling(
-        self, mock_bigquery_provider, mock_network_provider
+    def test_fetch_and_update_failure(
+        self, mock__bigquery_provider, mock__network_provider
     ):
         """
         This test verifies that initialize_data_manager handles exceptions gracefully.
         """
-        # Set up the mock to raise an exception when instantiated
-        mock_bigquery_provider.return_value.fetch_initial_query_results.side_effect = (
-            Exception("Simulated error")
+        ## Given
+        # Set up the mock to raise an exception when fetching BigQuery data
+        mock__bigquery_provider.return_value.fetch_initial_query_results.side_effect = (
+            RuntimeError("Mock error")
         )
 
-        # Verify the function raises the expected exception
-        with pytest.raises(Exception) as exc_info:
-            DataManager(
-                bigquery=mock_bigquery_provider.return_value,
-                network=mock_network_provider,
-            )
+        bigquery_provider = mock__bigquery_provider.return_value
+        network_provider = mock__network_provider
 
-            # Verify the exception message matches
-        assert str(exc_info.value) == "Simulated error"
+        data_manager = DataManager(bigquery_provider, network_provider)
+
+        ## When
+        # Verify the function raises the expected exception
+        with pytest.raises(RuntimeError) as ex:
+            data_manager.fetch_data_and_update()
+
+        ## Then
+        # Assert the exception message
+        assert str(ex.value) == "Mock error"
+
+    def test_get_data(self, mock__bigquery_provider, mock__network_provider):
+        ## Given
+        bigquery_provider = mock__bigquery_provider.return_value
+        network_provider = mock__network_provider
+
+        # Initialize a DataManager instance
+        data_manager = DataManager(bigquery_provider, network_provider)
+
+        # Mock the `_fetch_and_process_data` method to avoid actual data fetching
+        mock__data = pd.DataFrame(
+            {
+                "indexer": ["indexer1", "indexer2", "indexer3"],
+                "score": [0.9, 0.8, 0.7],
+                "query_count": [100, 200, 300],
+            }
+        )
+        with patch(
+            "iisa.iisa._fetch_and_process_data", return_value=(mock__data, None, None)
+        ):
+            data_manager.fetch_data_and_update()
+
+        ## When
+        result = data_manager.get_data()
+
+        ## Then
+        # Verify returned data is the same as the mock data
+        pd.testing.assert_frame_equal(result, mock__data)
+
+    def test_get_latency_linear_regression_indexer_rankings(
+        self, mock__bigquery_provider, mock__network_provider
+    ):
+        ## Given
+        bigquery_provider = mock__bigquery_provider.return_value
+        network_provider = mock__network_provider
+
+        # Initialize a DataManager instance
+        data_manager = DataManager(bigquery_provider, network_provider)
+
+        # Mock the `_fetch_and_process_data` method to avoid actual data fetching
+        mock__data = pd.DataFrame({"column1": [1, 2, 3]})
+        mock__indexer_rankings = pd.DataFrame(
+            {"indexer": ["A", "B", "C"], "rank": [1, 2, 3]}
+        )
+        mock__regression_results = pd.DataFrame({"result": [4, 5, 6]})
+        with patch(
+            "iisa.iisa._fetch_and_process_data",
+            return_value=(
+                mock__data,
+                mock__indexer_rankings,
+                mock__regression_results,
+            ),
+        ):
+            data_manager.fetch_data_and_update()
+
+        ## When
+        indexer_rankings = data_manager.get_latency_linear_regression_indexer_rankings()
+        regression_results = data_manager.get_latency_linear_regression_results()
+
+        # Verify returned data is the same as the mock data.
+        pd.testing.assert_frame_equal(indexer_rankings, mock__indexer_rankings)
+        pd.testing.assert_frame_equal(regression_results, mock__regression_results)
 
 
 class TestProcessSubgraph:
@@ -320,7 +344,7 @@ class TestProcessSubgraph:
     @pytest.mark.skip(reason="Flaky test: high dependency on internal details")
     @patch("iisa.iisa.DataProcessor")
     def test_process_subgraph(
-        self, mock_data_processor, sample_data, mock_bigquery_provider
+        self, mock__data_processor, sample_data, mock__bigquery_provider
     ):
         """
         Test the process_subgraph function creates a DataProcessor instance and returns the expected results.
@@ -330,7 +354,7 @@ class TestProcessSubgraph:
         2. processor.cancelled_indexers
         """
         # Set up mock DataProcessor instance
-        mock_instance = mock_data_processor.return_value
+        mock_instance = mock__data_processor.return_value
         mock_instance.added_indexers = [
             ("indexer1", "test_subgraph"),
             ("indexer2", "test_subgraph"),
@@ -351,7 +375,7 @@ class TestProcessSubgraph:
         # Apply patch for the test
         with patch(
             "iisa.iisa.BigQueryProvider",
-            return_value=mock_bigquery_provider.return_value,
+            return_value=mock__bigquery_provider.return_value,
         ):
             # Process the subgraph
             added, cancelled = process_subgraph(
@@ -364,11 +388,11 @@ class TestProcessSubgraph:
             )
 
         # Verify an instance of DataProcessor was created with expected parameters
-        mock_data_processor.assert_called_once_with(
+        mock__data_processor.assert_called_once_with(
             data=sample_data,
             subgraph_id=subgraph_id,
             prices=prices,
-            bigquery=mock_bigquery_provider.return_value,
+            bigquery=mock__bigquery_provider.return_value,
             existing_agreements=existing_agreements,
             pending_agreements=pending_agreements,
             blacklist=blacklist,
@@ -382,184 +406,6 @@ class TestProcessSubgraph:
         # Verify pairs are associated with the expected respective subgraphs
         assert all(pair[1] == subgraph_id for pair in added)
         assert all(pair[1] == subgraph_id for pair in cancelled)
-
-
-class TestDataManager:
-    """
-    This class contains tests to ensure that the DataManager class
-    correctly initializes, fetches data, and provides access to its data.
-    """
-
-    @patch("iisa.iisa.derive_timestamps")
-    def test_data_manager_constructor(
-        self, mock_derive_timestamps, mock_bigquery_provider, mock_network_provider
-    ):
-        """
-        Tests the initialization of the DataManager class to ensure it sets up with
-        default values and proper initialization of dependencies.
-
-        This test checks:
-        1. That DataManager uses the expected default number of days for data fetching.
-        2. That BigQueryProvider and NetworkProvider are properly instantiated.
-        3. That the derive_timestamps function is called with the appropriate parameters, and the
-           return values are correctly used to set the start and end dates and timestamps.
-        4. That internal data attributes are initialized correctly.
-        """
-        # Mock the return value of derive_timestamps
-        mock_derive_timestamps.return_value = (
-            datetime(2024, 1, 1),
-            datetime(2024, 1, 28),
-            "2024-01-01T00:00:00Z",
-            "2024-01-28T23:59:59Z",
-        )
-
-        # Mock data for _fetch_and_process_data
-        mock_bigquery_data = pd.DataFrame({"mock": [1, 2, 3]})
-        mock_indexer_rankings = pd.DataFrame({"mock": [4, 5, 6]})
-        mock_results_df = pd.DataFrame({"mock": [7, 8, 9]})
-
-        with patch(
-            "iisa.iisa._fetch_and_process_data",
-            return_value=(mock_bigquery_data, mock_indexer_rankings, mock_results_df),
-        ):
-            # Initialize DataManager
-            dm = DataManager(
-                bigquery=mock_bigquery_provider.return_value,
-                network=mock_network_provider,
-            )
-
-        # Verify default values
-        assert dm.num_days == 28
-
-        # Check date calculations
-        assert dm.start_date == datetime(2024, 1, 1)
-        assert dm.end_date == datetime(2024, 1, 28)
-        assert dm.start_ts == "2024-01-01T00:00:00Z"
-        assert dm.end_ts == "2024-01-28T23:59:59Z"
-
-        # Verify initial data attributes
-        assert dm.bigquery_data is mock_bigquery_data
-        assert dm.latency_linear_regression_indexer_rankings is mock_indexer_rankings
-        assert dm.latency_linear_regression_results_df is mock_results_df
-
-        # Verify that BigQueryProvider and NetworkProvider are correctly set
-        assert dm._bq is mock_bigquery_provider.return_value
-        assert dm._network is mock_network_provider
-
-        # Ensure derive_timestamps was called with correct argument
-        mock_derive_timestamps.assert_called_once_with(28, None)
-
-    @patch("iisa.iisa._fetch_and_process_data", return_value=(None, None, None))
-    def test_fetch_and_update(
-        self, mock_fetch, mock_bigquery_provider, mock_network_provider
-    ):
-        """
-        This test verifies:
-        1. The update_and_fetch_data method updates the start and end dates.
-        2. The fetch_data method is called after updating dates.
-        """
-        # Initialize a DataManager instance
-        dm = DataManager(
-            bigquery=mock_bigquery_provider.return_value, network=mock_network_provider
-        )
-
-        # Set initial variables
-        initial_start_date = dm.start_date
-        initial_end_date = dm.end_date
-
-        # Reset mock_fetch to clear the call from initialization
-        mock_fetch.reset_mock()
-
-        # Call update_and_fetch_data
-        with patch(
-            "iisa.iisa.derive_timestamps",
-            return_value=(
-                dm.start_date + timedelta(days=1),
-                dm.end_date + timedelta(days=1),
-                "",
-                "",
-            ),
-        ):
-            dm.fetch_data_and_update()
-
-        # Verify date updates
-        assert dm.start_date >= initial_start_date
-        assert dm.end_date > initial_end_date
-
-        # Verify fetch_data was called
-        mock_fetch.assert_called_once()
-
-    def test_get_data(self, mock_bigquery_provider, mock_network_provider):
-        """
-        This test verifies:
-        1. The get_data method returns the bigquery_data.
-        2. The returned data matches the explicitly defined mock data.
-        """
-        # Define mock data
-        mock_data = pd.DataFrame(
-            {
-                "indexer": ["indexer1", "indexer2", "indexer3"],
-                "score": [0.9, 0.8, 0.7],
-                "query_count": [100, 200, 300],
-            }
-        )
-
-        # Mock the fetch_data method to avoid actual data fetching
-        with patch(
-            "iisa.iisa._fetch_and_process_data", return_value=(mock_data, None, None)
-        ):
-            # Initialize a DataManager instance
-            dm = DataManager(
-                bigquery=mock_bigquery_provider.return_value,
-                network=mock_network_provider,
-            )
-
-        # Call get_data method
-        result = dm.get_data()
-
-        # Verify returned data is the same as the mock data
-        pd.testing.assert_frame_equal(result, mock_data)
-
-        # Additional assertions
-        assert result.shape == (3, 3)
-        assert list(result.columns) == ["indexer", "score", "query_count"]
-        assert result["indexer"].tolist() == ["indexer1", "indexer2", "indexer3"]
-        assert result["score"].tolist() == [0.9, 0.8, 0.7]
-        assert result["query_count"].tolist() == [100, 200, 300]
-
-    def test_get_latency_linear_regression_indexer_rankings(
-        self, mock_bigquery_provider, mock_network_provider
-    ):
-        """
-        This test verifies:
-        1. The get_latency_linear_regression_indexer_rankings method returns the indexer rankings.
-        """
-        # Create sample data for the mock return value
-        sample_bigquery_data = pd.DataFrame({"column1": [1, 2, 3]})
-        sample_indexer_rankings = pd.DataFrame(
-            {"indexer": ["A", "B", "C"], "rank": [1, 2, 3]}
-        )
-        sample_results_df = pd.DataFrame({"result": [4, 5, 6]})
-
-        # Initialize a DataManager instance
-        with patch(
-            "iisa.iisa._fetch_and_process_data",
-            return_value=(
-                sample_bigquery_data,
-                sample_indexer_rankings,
-                sample_results_df,
-            ),
-        ):
-            dm = DataManager(
-                bigquery=mock_bigquery_provider,
-                network=mock_network_provider,
-            )
-
-        # Call get_latency_linear_regression_indexer_rankings method
-        result = dm.get_latency_linear_regression_indexer_rankings()
-
-        # Verify returned data is the same as the sample data.
-        pd.testing.assert_frame_equal(result, sample_indexer_rankings)
 
 
 class TestDataProcessor:
@@ -591,11 +437,11 @@ class TestDataProcessor:
         )
 
     @pytest.fixture
-    def mock_bigquery_provider(self):
+    def mock__bigquery_provider(self):
         return MagicMock()
 
     @pytest.mark.skip(reason="Flaky test: high dependency on internal details")
-    def test_data_processor_constructor(self, sample_data, mock_bigquery_provider):
+    def test_data_processor_constructor(self, sample_data, mock__bigquery_provider):
         """
         Test the initialization of the DataProcessor class.
 
@@ -624,7 +470,7 @@ class TestDataProcessor:
             data=sample_data,
             subgraph_id=subgraph_id,
             prices=prices,
-            bigquery=mock_bigquery_provider,
+            bigquery=mock__bigquery_provider,
             existing_agreements=existing_agreements,
             pending_agreements=pending_agreements,
             blacklist=blacklist,
@@ -633,7 +479,7 @@ class TestDataProcessor:
         # Verify that all instance variables are set correctly
         assert processor.subgraph_id == subgraph_id
         assert processor.prices == prices
-        assert processor.bigquery == mock_bigquery_provider
+        assert processor.bigquery == mock__bigquery_provider
         assert processor.existing_agreements == existing_agreements
         assert processor.pending_agreements == pending_agreements
         assert processor.blacklist == blacklist
@@ -643,7 +489,7 @@ class TestDataProcessor:
             data=sample_data,
             subgraph_id=subgraph_id,
             prices=prices,
-            bigquery=mock_bigquery_provider,
+            bigquery=mock__bigquery_provider,
         )
         assert processor_default.existing_agreements == {}
         assert processor_default.pending_agreements == {}
@@ -691,7 +537,7 @@ class TestDataProcessor:
         current_group,
         expected_added,
         expected_cancelled,
-        mock_bigquery_provider,
+        mock__bigquery_provider,
     ):
         """
         This test verifies the get_indexer_selections method correctly identifies the
@@ -703,7 +549,7 @@ class TestDataProcessor:
                 data=sample_data,
                 subgraph_id="test_subgraph",
                 prices={"A": 10, "B": 20, "C": 15},
-                bigquery=mock_bigquery_provider.return_value,
+                bigquery=mock__bigquery_provider.return_value,
             )
 
         processor.initial_group = initial_group
@@ -729,7 +575,7 @@ class TestDataProcessor:
         ), f"Expected cancelled: {expected_cancelled_sorted}, but got: {cancelled_sorted}"
 
     def test_get_indexer_selections_empty_groups(
-        self, sample_data, mock_bigquery_provider
+        self, sample_data, mock__bigquery_provider
     ):
         """
         Test get_indexer_selections method when both initial_group and current_group are empty.
@@ -744,7 +590,7 @@ class TestDataProcessor:
                 data=sample_data,
                 subgraph_id="test_subgraph",
                 prices={"A": 10, "B": 20, "C": 15},
-                bigquery=mock_bigquery_provider.return_value,
+                bigquery=mock__bigquery_provider.return_value,
             )
 
         processor.initial_group = []
@@ -765,9 +611,9 @@ class TestDataProcessor:
         mock_assign,
         mock_normalize,
         mock_get_group,
-        mock_fetch,
+        mock__fetch,
         sample_data,
-        mock_bigquery_provider,
+        mock__bigquery_provider,
     ):
         """
         Test the _process_data method of the DataProcessor class.
@@ -784,17 +630,17 @@ class TestDataProcessor:
             data=sample_data,
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15},
-            bigquery=mock_bigquery_provider.return_value,
+            bigquery=mock__bigquery_provider.return_value,
         )
 
         # Reset all mock call counts after initialization
-        mock_fetch.reset_mock()
+        mock__fetch.reset_mock()
         mock_get_group.reset_mock()
         mock_normalize.reset_mock()
         mock_assign.reset_mock()
 
         # Set up mock return values
-        mock_fetch.return_value = pd.DataFrame(
+        mock__fetch.return_value = pd.DataFrame(
             {"indexer": ["A", "B", "C"], "existing_dips_agreements": [1, 2, 3]}
         )
         mock_get_group.return_value = ["A", "B"]
@@ -806,7 +652,7 @@ class TestDataProcessor:
         processor._process_data()
 
         # Verify that all expected methods were called only once
-        assert mock_fetch.call_count == 1
+        assert mock__fetch.call_count == 1
         assert mock_get_group.call_count == 1
         assert mock_normalize.call_count == 1
         assert mock_assign.call_count == 1
@@ -819,7 +665,7 @@ class TestDataProcessor:
             call._assign_indexers_to_subgraph(),
         ]
         actual_calls = (
-            mock_fetch.mock_calls
+            mock__fetch.mock_calls
             + [mock_get_group.mock_calls[0]]
             + mock_normalize.mock_calls
             + mock_assign.mock_calls
@@ -831,7 +677,7 @@ class TestDataProcessor:
         assert processor.initial_group == ["A", "B"]
 
     def test_fetch_number_of_indexer_agreements(
-        self, sample_data, mock_bigquery_provider
+        self, sample_data, mock__bigquery_provider
     ):
         """
         This test verifies the _fetch_number_of_indexer_agreements method updates the
@@ -848,7 +694,7 @@ class TestDataProcessor:
                     "subgraph2": ["A", "B"],
                     "subgraph3": ["A"],
                 },
-                bigquery=mock_bigquery_provider.return_value,
+                bigquery=mock__bigquery_provider.return_value,
             )
 
         # Call the method under test
@@ -875,12 +721,12 @@ class TestDataProcessor:
         ), "C issue"
 
     @pytest.fixture
-    def processor(self, sample_data, mock_bigquery_provider):
+    def processor(self, sample_data, mock__bigquery_provider):
         return DataProcessor(
             data=sample_data,
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15, "D": 25},
-            bigquery=mock_bigquery_provider.return_value,
+            bigquery=mock__bigquery_provider.return_value,
         )
 
     def test_get_current_group_normal_case(self, processor):
@@ -917,7 +763,7 @@ class TestDataProcessor:
         assert result == []
 
     def test_get_current_group_subgraph_not_in_agreements(
-        self, processor, mock_bigquery_provider
+        self, processor, mock__bigquery_provider
     ):
         """
         Test _get_current_group when the subgraph 'test_subgraph' is not in any agreement.
@@ -932,7 +778,7 @@ class TestDataProcessor:
     @patch("iisa.iisa.normalize_metrics")
     @patch("iisa.iisa.calculate_weighted_score")
     def test_normalize_and_score(
-        self, mock_calculate_score, mock_normalize, sample_data, mock_bigquery_provider
+        self, mock_calculate_score, mock_normalize, sample_data, mock__bigquery_provider
     ):
         """
         Test the _normalize_and_score method.
@@ -958,7 +804,7 @@ class TestDataProcessor:
                 data=sample_data,
                 subgraph_id="test_subgraph",
                 prices={"A": 10, "B": 20, "C": 15},
-                bigquery=mock_bigquery_provider.return_value,
+                bigquery=mock__bigquery_provider.return_value,
             )
 
         # Set up mock return values
@@ -1011,7 +857,7 @@ class TestDataProcessor:
         )
         pd.testing.assert_series_equal(result["weighted_score"], expected_scores)
 
-    def test_assign_indexers_to_subgraph(self, sample_data, mock_bigquery_provider):
+    def test_assign_indexers_to_subgraph(self, sample_data, mock__bigquery_provider):
         """
         Test the _assign_indexers_to_subgraph method of DataProcessor.
 
@@ -1027,7 +873,7 @@ class TestDataProcessor:
                     data=sample_data,
                     subgraph_id="test_subgraph",
                     prices={"A": 10, "B": 20, "C": 15},
-                    bigquery=mock_bigquery_provider.return_value,
+                    bigquery=mock__bigquery_provider.return_value,
                 )
 
                 # Test with fewer than 3 indexers
@@ -1077,7 +923,7 @@ class TestDataProcessor:
         initial_group,
         expected_calls,
         expected_final_group,
-        mock_bigquery_provider,
+        mock__bigquery_provider,
     ):
         """
         Test the _add_indexers_to_group method of DataProcessor.
@@ -1091,7 +937,7 @@ class TestDataProcessor:
             data=sample_data,
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15, "D": 25},
-            bigquery=mock_bigquery_provider.return_value,
+            bigquery=mock__bigquery_provider.return_value,
         )
 
         with patch(
@@ -1118,7 +964,7 @@ class TestDataProcessor:
             processor._add_indexers_to_group()
             assert processor.current_group == ["A"]
 
-    def test_meets_decentralization_requirements(self, mock_bigquery_provider):
+    def test_meets_decentralization_requirements(self, mock__bigquery_provider):
         """
         Test the _meets_decentralization_requirements method of DataProcessor.
 
@@ -1128,7 +974,7 @@ class TestDataProcessor:
         3. A group that does not _meets_decentralization_requirements will not be marked as true.
 
         Note:
-        _meets_decentralization_requirements accepts new_indexer as an input perameter.
+        _meets_decentralization_requirements accepts new_indexer as an input parameter.
         """
         processor = DataProcessor(
             data=pd.DataFrame(
@@ -1140,7 +986,7 @@ class TestDataProcessor:
             ),
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15, "D": 25},
-            bigquery=mock_bigquery_provider.return_value,
+            bigquery=mock__bigquery_provider.return_value,
         )
 
         # Test with fewer than 2 indexers
@@ -1164,7 +1010,7 @@ class TestDataProcessor:
         assert not processor._meets_decentralization_requirements("A")
 
     def test_meets_decentralization_requirements_edge_cases(
-        self, mock_bigquery_provider
+        self, mock__bigquery_provider
     ):
         """
         Test _meets_decentralization_requirements with various edge cases.
@@ -1179,7 +1025,7 @@ class TestDataProcessor:
             ),
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15, "D": 25, "E": 30, "F": 35},
-            bigquery=mock_bigquery_provider.return_value,
+            bigquery=mock__bigquery_provider.return_value,
         )
 
         # Test with empty current group
@@ -1198,7 +1044,7 @@ class TestDataProcessor:
         assert not processor._meets_decentralization_requirements("A")
 
     def test_replace_underperforming_indexers(
-        self, sample_data, mock_bigquery_provider
+        self, sample_data, mock__bigquery_provider
     ):
         """
         Test the _replace_underperforming_indexers method of DataProcessor.
@@ -1211,7 +1057,7 @@ class TestDataProcessor:
             data=sample_data,
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15, "D": 25},
-            bigquery=mock_bigquery_provider.return_value,
+            bigquery=mock__bigquery_provider.return_value,
         )
 
         with patch(
@@ -1230,7 +1076,9 @@ class TestDataProcessor:
             assert mock_find.call_count == 3
             assert mock_score.call_count == 2
 
-    def test_find_best_replacement_or_select_best_indexer(self, mock_bigquery_provider):
+    def test_find_best_replacement_or_select_best_indexer(
+        self, mock__bigquery_provider
+    ):
         """
         Test the _find_best_replacement_or_select_best_indexer method of DataProcessor.
 
@@ -1250,7 +1098,7 @@ class TestDataProcessor:
             ),
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15, "D": 25, "E": 30},
-            bigquery=mock_bigquery_provider.return_value,
+            bigquery=mock__bigquery_provider.return_value,
         )
 
         processor.current_group = ["A", "B", "C"]
@@ -1269,7 +1117,7 @@ class TestDataProcessor:
             # Verify the number of decentralization requirement checks
             assert mock_decentralization.call_count == 1
 
-    def test_calculate_group_score(self, mock_bigquery_provider):
+    def test_calculate_group_score(self, mock__bigquery_provider):
         """
         Test the _calculate_group_score method of the DataProcessor class.
 
@@ -1301,7 +1149,7 @@ class TestDataProcessor:
             data=raw_data,
             subgraph_id="test_subgraph",
             prices={"A": 10, "B": 20, "C": 15, "D": 25},
-            bigquery=mock_bigquery_provider.return_value,
+            bigquery=mock__bigquery_provider.return_value,
         )
 
         processor.weights = {
@@ -1333,7 +1181,7 @@ class TestDataProcessor:
         pd.testing.assert_frame_equal(processor.data, original_data)
 
     def test_update_blacklist_cancel_indexing_agreements(
-        self, sample_data, mock_bigquery_provider
+        self, sample_data, mock__bigquery_provider
     ):
         """
         Test the update_blacklist_cancel_indexing_agreements method of DataProcessor.
@@ -1377,7 +1225,7 @@ class TestDataProcessor:
                 "subgraph90": ["I"],
             },
             blacklist=["H"],
-            bigquery=mock_bigquery_provider.return_value,
+            bigquery=mock__bigquery_provider.return_value,
         )
 
         # update the blacklist to cancel agreements

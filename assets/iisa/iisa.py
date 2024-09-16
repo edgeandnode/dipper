@@ -216,34 +216,23 @@ class DataManager:
         *,
         num_days: int = DATA_MANAGER_NUM_DAYS,
         end_date: Optional[date] = None,
-    ):
-        # Providers
+    ) -> None:
+        # Dependencies
         self._bq = bigquery
         self._network = network
 
         # Initialize the number of days to look back
-        self.num_days = num_days
-        (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
-            derive_timestamps(num_days, end_date)
-        )
+        self.num_days: int = num_days
+        self.end_date: Optional[date] = end_date
 
         # Initialize the data and indexer rankings
-        # TODO: Require calling explicitly fetch_data_and_update() to fetch data after instantiation
-        (
-            self.bigquery_data,
-            self.latency_linear_regression_indexer_rankings,
-            self.latency_linear_regression_results_df,
-        ) = _fetch_and_process_data(
-            self._bq,
-            self._network,
-            start_date=self.start_date,
-            start_ts=self.start_ts,
-            num_days=self.num_days,
-        )
+        self._data: Optional[pd.DataFrame] = None
+        self._latency_linear_regression_indexer_rankings: Optional[pd.DataFrame] = None
+        self._latency_linear_regression_results: Optional[pd.DataFrame] = None
 
     def fetch_data_and_update(
         self, *, num_days: Optional[int] = None, end_date: Optional[date] = None
-    ):
+    ) -> None:
         """
         Fetch the latest data from BigQuery and update the data and indexer rankings information.
 
@@ -251,40 +240,45 @@ class DataManager:
             num_days (optional): Number of days to look back for data. Defaults to the instance attribute.
             end_date (optional): End date for the data fetch. Defaults to the instance attribute.
         """
+        # If no num_days/end_date is provided, use the default value from the instance attribute
+        num_days = num_days or self.num_days
+        end_date = end_date or self.end_date
 
-        (self.start_date, self.end_date, self.start_ts, self.end_ts) = (
-            derive_timestamps(num_days or self.num_days, end_date)
-        )
-
+        # Derive the start and end dates based on the number of days and the end date
+        # and fetch and process data
+        (start_date, end_date, start_ts, end_ts) = derive_timestamps(num_days, end_date)
         (
-            self.bigquery_data,
-            self.latency_linear_regression_indexer_rankings,
-            self.latency_linear_regression_results_df,
+            self._data,
+            self._latency_linear_regression_indexer_rankings,
+            self._latency_linear_regression_results,
         ) = _fetch_and_process_data(
             self._bq,
             self._network,
-            start_date=self.start_date,
-            start_ts=self.start_ts,
-            num_days=self.num_days,
+            start_date=start_date,
+            start_ts=start_ts,
+            num_days=num_days,
         )
 
-    def get_data(self):
+    def get_data(self) -> Optional[pd.DataFrame]:
         """
-        Return the cached BigQuery data.
+        Return the cached  data.
         """
-        return self.bigquery_data
+        # TODO: Type-annotate this dataframe
+        return self._data
 
-    def get_latency_linear_regression_indexer_rankings(self):
+    def get_latency_linear_regression_indexer_rankings(self) -> Optional[pd.DataFrame]:
         """
         Return the indexer rankings from the latency linear regression.
         """
-        return self.latency_linear_regression_indexer_rankings
+        # TODO: Type-annotate this dataframe
+        return self._latency_linear_regression_indexer_rankings
 
-    def get_latency_linear_regression_results_df(self):
+    def get_latency_linear_regression_results(self) -> Optional[pd.DataFrame]:
         """
-        Return the results df from the latency linear regression.
+        Return the results dataframe from the latency linear regression.
         """
-        return self.latency_linear_regression_results_df
+        # TODO: Type-annotate this dataframe
+        return self._latency_linear_regression_results
 
 
 class DataProcessor:
@@ -860,6 +854,8 @@ if __name__ == "__main__":
 
         # Get the latest data
         data = data_manager.get_data()
+        if data is None:
+            raise ValueError("DataManager initial fetch required")
 
         # Save the data to a CSV file
         data.to_csv("DataManager_GetData_DataFrame.csv", index=False)
