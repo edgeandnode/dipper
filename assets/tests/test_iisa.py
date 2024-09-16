@@ -10,7 +10,12 @@ from iisa.iisa import (
     DataManager,
     DataProcessor,
     GeoipResolver,
+    IndexerRankingsDataFrame,
+    IndexerRankingsSchema,
+    LinearRegressionResultsSchema,
     NetworkProvider,
+    RequestHistoryDataFrame,
+    RequestHistorySchema,
 )
 from tests.__fixtures__ import network as network_fixture
 
@@ -49,7 +54,7 @@ def sample_data():
 
 
 @pytest.fixture
-def mock_regression_results():
+def mock__regression_results():
     filtered_df = pd.DataFrame(
         {
             "indexer": ["indexer1", "indexer2", "indexer3"],
@@ -64,16 +69,12 @@ def mock_regression_results():
 
 
 @pytest.fixture
-def mock_combined_query_results():
+def mock__combined_query_results(faker):
     return pd.DataFrame(
         {
-            "query_id": [
-                "855e9b7776ebb2e8-MAN",
-                "855e3da797201b9f-FRA",
-                "855e42a084ae0a23-ARN",
-            ],
-            "deployment_hash": ["hash1", "hash2", "hash3"],
-            "indexer": ["indexer1", "indexer2", "indexer3"],
+            "query_id": [faker.query_id() for _ in range(3)],
+            "deployment_hash": [faker.deployment_id() for _ in range(3)],
+            "indexer": [faker.indexer_id() for _ in range(3)],
             "indexer_network": ["net1", "net2", "net3"],
             "org": ["hetzner", "amazon aws", "google"],
             "fee": [0.1, 0.2, 0.3],
@@ -83,7 +84,7 @@ def mock_combined_query_results():
             "status": ["200 OK", "200 OK", "200 OK"],
             "day_partition": ["2024-01-01", "2024-01-02", "2024-01-03"],
             "subgraph_network": ["network1", "network2", "network3"],
-            "url": ["url1", "url2", "url3"],
+            "url": [faker.url() for _ in range(3)],
             "origin_loc": ["0,20", "40,40", "60,60"],
             "destination_loc": ["20,40", "40,60", "60,80"],
             "loc": ["0,20", "40,40", "60,60"],
@@ -94,24 +95,24 @@ def mock_combined_query_results():
 
 
 @pytest.fixture
-def mock__bigquery_provider(mock_combined_query_results):
+def mock__bigquery_provider(faker, mock__combined_query_results):
     bigquery_provider = MagicMock()
     bigquery_provider.return_value.fetch_initial_query_results.return_value = (
         pd.DataFrame(
             {
-                "deployment_hash": ["hash1", "hash2", "hash3"],
-                "indexer": ["indexer1", "indexer2", "indexer3"],
+                "deployment_hash": [faker.deployment_id() for _ in range(3)],
+                "indexer": [faker.indexer_id() for _ in range(3)],
                 "num_rows": [1000, 2000, 3000],
             }
         )
     )
     bigquery_provider.return_value.fetch_combined_query_results.return_value = (
-        mock_combined_query_results
+        mock__combined_query_results
     )
     bigquery_provider.return_value.fetch_initial_stake_to_fees.return_value = (
         pd.DataFrame(
             {
-                "indexer": ["indexer1", "indexer2", "indexer3"],
+                "indexer": [faker.indexer_id() for _ in range(3)],
                 "stake_to_fees": [1.0, 2.0, 3.0],
             }
         )
@@ -121,7 +122,6 @@ def mock__bigquery_provider(mock_combined_query_results):
 
 @pytest.fixture
 def mock__network_provider():
-    ## Given
     resolver = GeoipResolver()
     provider = NetworkProvider(geoip=resolver)
 
@@ -158,7 +158,9 @@ class TestDataManager:
         assert result.get_latency_linear_regression_indexer_rankings() is None
         assert result.get_latency_linear_regression_results() is None
 
-    def test_fetch_and_update(self, mock__bigquery_provider, mock__network_provider):
+    def test_fetch_and_update(
+        self, faker, mock__bigquery_provider, mock__network_provider
+    ):
         ## Given
         bigquery_provider = mock__bigquery_provider.return_value
         network_provider = mock__network_provider
@@ -170,50 +172,36 @@ class TestDataManager:
             Creates and returns mock data simulating BigQuery fetch results.
 
             This function generates mock data for:
-            1. bigquery_data: A DataFrame with various indexer and query metrics.
+            1. query_data: A DataFrame with various indexer and query metrics.
             3. indexer_rankings: A DataFrame with indexer rankings and scores.
             """
-            mock_data = pd.DataFrame(
+            request_data = RequestHistoryDataFrame(
                 {
-                    "query_id": ["id1", "id2", "id3"],
-                    "deployment_hash": ["hash1", "hash2", "hash3"],
-                    "indexer": ["indexer1", "indexer2", "indexer3"],
-                    "indexer_network": ["net1", "net2", "net3"],
-                    "org": ["org1", "org2", "org3"],
-                    "fee": [0.1, 0.2, 0.3],
-                    "timestamp": ["2024-01-01", "2024-01-02", "2024-01-03"],
-                    "blocks_behind": [1, 2, 3],
-                    "response_time_ms": [100, 200, 300],
-                    "status": ["200 OK", "200 OK", "200 OK"],
-                    "day_partition": ["2024-01-01", "2024-01-02", "2024-01-03"],
-                    "subgraph_network": ["network1", "network2", "network3"],
-                    "url": ["url1", "url2", "url3"],
-                    "origin_loc": ["0,20", "40,40", "60,60"],
-                    "destination_loc": ["20,40", "40,60", "60,80"],
-                    "loc": ["0,20", "40,40", "60,60"],
-                    "distance_miles": [100, 200, 300],
-                    "sampled_query_id_hashed_mod_integer_root": [0, 1, 2],
+                    "query_id": [faker.query_id() for _ in range(3)],
+                    "deployment_hash": [faker.deployment_id() for _ in range(3)],
+                    "indexer": [faker.indexer_id() for _ in range(3)],
+                    "url": [faker.url() for _ in range(3)],
                 }
             )
-            latency_linear_regression_indexer_rankings_mock_data = pd.DataFrame(
+            latency_linear_regression_indexer_rankings = IndexerRankingsDataFrame(
                 {
-                    "indexer": ["indexer1", "indexer2", "indexer3"],
+                    "indexer": [faker.indexer_id() for _ in range(3)],
                     "rank": [1, 2, 3],
                     "score": [0.9, 0.8, 0.7],
                 }
             )
             latency_linear_regression_results_df_mock_data = pd.DataFrame(
                 {
-                    "Variable": ["var1", "var2", "var3"],
-                    "Coefficient": [0.1, 0.2, 0.3],
-                    "Standard Error": [0.01, 0.02, 0.03],
-                    "p-value": [0.001, 0.002, 0.003],
+                    "variable": ["var1", "var2", "var3"],
+                    "coefficient": [0.1, 0.2, 0.3],
+                    "standard_error": [0.01, 0.02, 0.03],
+                    "p_value": [0.001, 0.002, 0.003],
                 }
             )
 
             return (
-                mock_data,
-                latency_linear_regression_indexer_rankings_mock_data,
+                request_data,
+                latency_linear_regression_indexer_rankings,
                 latency_linear_regression_results_df_mock_data,
             )
 
@@ -228,23 +216,22 @@ class TestDataManager:
             data_manager.fetch_data_and_update()
 
         ## Then
-        # Verify cached data is present and non-empty
         data = data_manager.get_data()
+        indexer_rankings = data_manager.get_latency_linear_regression_indexer_rankings()
+        regression_results = data_manager.get_latency_linear_regression_results()
+
+        # Verify data is present and non-empty, and that it conforms to the Pandera schema
         assert data is not None
         assert not data.empty
+        RequestHistorySchema.validate(data)
 
-        # TODO: Use a Pandera schema to verify dataframe
-        # Verify that 'day_partition' exists in bigquery_data
-        assert "day_partition" in data.columns
-        # Verify that 'destination_loc' exists in bigquery_data and contains string values
-        assert "destination_loc" in data.columns
-        assert data["destination_loc"].dtype == "object"
+        assert indexer_rankings is not None
+        assert not indexer_rankings.empty
+        IndexerRankingsSchema.validate(indexer_rankings)
 
-        # Verify that latency_linear_regression_indexer_rankings is not None
-        assert data_manager.get_latency_linear_regression_indexer_rankings is not None
-
-        # Verify that latency_linear_regression_results_df is not None
-        assert data_manager.get_latency_linear_regression_results is not None
+        assert regression_results is not None
+        assert not regression_results.empty
+        LinearRegressionResultsSchema.validate(regression_results)
 
     def test_fetch_and_update_failure(
         self, mock__bigquery_provider, mock__network_provider

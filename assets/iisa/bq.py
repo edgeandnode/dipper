@@ -21,9 +21,9 @@ from tenacity import (
 from .time import DateStr, TimestampStr
 from .typing import (
     ArrowDate32Field,
-    EthAddressField,
+    DeploymentIdField,
     HttpUrlField,
-    IpfsHashField,
+    IndexerIdField,
     QueryIdField,
 )
 
@@ -37,8 +37,8 @@ class InitialQuerySchema(pa.DataFrameModel):
     See BigQueryProvider.fetch_initial_query_results for more information.
     """
 
-    deployment_hash: Series[str] = IpfsHashField()
-    indexer: Series[str] = EthAddressField()
+    deployment_hash: Series[str] = DeploymentIdField()
+    indexer: Series[str] = IndexerIdField()
     num_rows: Series[int] = pa.Field(ge=0)
 
 
@@ -50,15 +50,15 @@ class CombinedQuerySchema(pa.DataFrameModel):
     """
 
     query_id: Series[str] = QueryIdField()
-    deployment_hash: Series[str] = IpfsHashField()
+    deployment_hash: Series[str] = DeploymentIdField()
     fee: Series[float] = pa.Field()
     # timestamp: Series[pd.Timestamp] = pa.Field()
     blocks_behind: Series[int] = pa.Field(ge=0)
     response_time_ms: Series[int] = pa.Field(ge=0)
-    indexer: Series[str] = EthAddressField()
+    indexer: Series[str] = IndexerIdField()
     status: Series[str] = pa.Field()
     day_partition: Series[pd.ArrowDtype] = ArrowDate32Field()
-    subgraph_network: Series[str] = pa.Field(str_matches=r"[a-zA-Z0-9-]+")
+    subgraph_network: Series[str] = pa.Field(str_length={"min_value": 1})
     url: Series[str] = HttpUrlField()
 
 
@@ -67,7 +67,7 @@ class StakeToFeesSchema(pa.DataFrameModel):
     Schema for the stake-to-fees ratio dataframe.
     """
 
-    indexer: Index[str] = EthAddressField()
+    indexer: Index[str] = IndexerIdField()
     recent_slashable_stake: Series[float] = pa.Field(ge=0)
     total_query_fees_sum: Series[float] = pa.Field(ge=0)
     stake_to_fees: Series[float] = pa.Field(ge=0)

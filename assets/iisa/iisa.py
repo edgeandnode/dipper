@@ -4,6 +4,8 @@ from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import pandera as pa
+from pandera.typing import DataFrame, Series
 
 from .bq import BigQueryProvider
 from .geoip import GeoipResolver
@@ -28,6 +30,7 @@ from .iisa_functions import (
 )
 from .network import NetworkProvider
 from .time import TimestampStr, derive_timestamps
+from .typing import DeploymentIdField, HttpUrlField, IndexerIdField, QueryIdField
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO)
@@ -43,6 +46,49 @@ ITERATIVE_FILTER_MIN_QUERIES_PER_INDEXER = 250
 ITERATIVE_FILTER_MIN_QUERIES_PER_DEPLOYMENT = 250
 
 
+class RequestHistorySchema(pa.DataFrameModel):
+    """
+    Schema for the `DataManager` "data" data frame.
+
+    This is a partial schema. Not all columns are included.
+    """
+
+    query_id: Series[str] = QueryIdField()
+    deployment_hash: Series[str] = DeploymentIdField()
+    indexer: Series[str] = IndexerIdField()
+    url: Series[str] = HttpUrlField()
+
+
+RequestHistoryDataFrame = DataFrame[RequestHistorySchema]
+
+
+class IndexerRankingsSchema(pa.DataFrameModel):
+    """
+    Schema for the `DataManager` "latency_linear_regression_indexer_rankings" data frame.
+    """
+
+    indexer: Series[str] = IndexerIdField()
+    rank: Series[int] = pa.Field(ge=1)
+    score: Series[float] = pa.Field(ge=0.0, le=1.0)
+
+
+IndexerRankingsDataFrame = DataFrame[IndexerRankingsSchema]
+
+
+class LinearRegressionResultsSchema(pa.DataFrameModel):
+    """
+    Schema for the `DataManager` "latency_linear_regression_results" data frame.
+    """
+
+    variable: Series[str]
+    coefficient: Series[float]
+    standard_error: Series[float]
+    p_value: Series[float]
+
+
+LinearRegressionResultsDataFrame = DataFrame[LinearRegressionResultsSchema]
+
+
 def _fetch_and_process_data(
     bigquery: BigQueryProvider,
     network: NetworkProvider,
@@ -51,7 +97,11 @@ def _fetch_and_process_data(
     start_ts: TimestampStr,
     num_days: int,
     target_rows: int = 20_000_000,
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> Tuple[
+    RequestHistoryDataFrame,
+    IndexerRankingsDataFrame,
+    LinearRegressionResultsDataFrame,
+]:
     """
     Fetch data from BigQuery and Network providers, process it, and return the results.
 
@@ -226,9 +276,13 @@ class DataManager:
         self.end_date: Optional[date] = end_date
 
         # Initialize the data and indexer rankings
-        self._data: Optional[pd.DataFrame] = None
-        self._latency_linear_regression_indexer_rankings: Optional[pd.DataFrame] = None
-        self._latency_linear_regression_results: Optional[pd.DataFrame] = None
+        self._data: Optional[RequestHistoryDataFrame] = None
+        self._latency_linear_regression_indexer_rankings: Optional[
+            IndexerRankingsDataFrame
+        ] = None
+        self._latency_linear_regression_results: Optional[
+            LinearRegressionResultsDataFrame
+        ] = None
 
     def fetch_data_and_update(
         self, *, num_days: Optional[int] = None, end_date: Optional[date] = None
@@ -259,25 +313,26 @@ class DataManager:
             num_days=num_days,
         )
 
-    def get_data(self) -> Optional[pd.DataFrame]:
+    def get_data(self) -> Optional[RequestHistoryDataFrame]:
         """
-        Return the cached  data.
+        Return the cached data.
         """
-        # TODO: Type-annotate this dataframe
         return self._data
 
-    def get_latency_linear_regression_indexer_rankings(self) -> Optional[pd.DataFrame]:
+    def get_latency_linear_regression_indexer_rankings(
+        self,
+    ) -> Optional[IndexerRankingsDataFrame]:
         """
         Return the indexer rankings from the latency linear regression.
         """
-        # TODO: Type-annotate this dataframe
         return self._latency_linear_regression_indexer_rankings
 
-    def get_latency_linear_regression_results(self) -> Optional[pd.DataFrame]:
+    def get_latency_linear_regression_results(
+        self,
+    ) -> Optional[LinearRegressionResultsDataFrame]:
         """
         Return the results dataframe from the latency linear regression.
         """
-        # TODO: Type-annotate this dataframe
         return self._latency_linear_regression_results
 
 
@@ -935,7 +990,8 @@ if __name__ == "__main__":
         updated_blacklist = [
             "0xBlacklistedIndexer",
             "0xNewBlacklistedIndexer",
-            "0xAnotherBlacklistedIndexer" "0xIndexer1",
+            "0xAnotherBlacklistedIndexer",
+            "0xIndexer1",
             "0xIndexer2",
             "0xNewIndexer",
         ]

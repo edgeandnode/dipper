@@ -19,6 +19,8 @@ dependencies = [
 
 [tool.uv]
 dev-dependencies = [
+    "faker>=28.4.1",
+    "faker-airtravel>=0.4",
     "freezegun>=1.5.1",
     "mypy>=1.11.2",
     "pandera[mypy]>=0.20.4",

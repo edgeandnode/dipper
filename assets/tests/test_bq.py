@@ -75,7 +75,7 @@ class TestFetchData:
     def bigquery(self):
         return BigQueryProvider("graph-mainnet", "US")
 
-    def test_successful_fetch(self, mocker, bigquery):
+    def test_successful_fetch(self, faker, mocker, bigquery):
         ## Given
         # Test timeframe
         start_date = datetime.strptime("2024-08-01", "%Y-%m-%d")
@@ -84,20 +84,8 @@ class TestFetchData:
         # Setup sample data and the DataFrame to be returned by the 'to_pandas' method
         expected_df = InitialQueryDataFrame(
             {
-                "deployment_hash": [
-                    "QmWATWQ7fVPP2EFGu71UkfnqhYXDYH566qy47CnJDgvs8u",
-                    "QmPK1s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB",
-                    "QmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n",
-                    "QmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
-                    "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY",
-                ],
-                "indexer": [
-                    "0x0058223c6617cca7ce76fc929ec9724cd43d4542",
-                    "0x015cb4f88c16dfaf90fa350af5338c4424a0d490",
-                    "0x01e110178f15aeec1cccc507939109175dc9c121",
-                    "0x01f17c392614c7ea586e7272ed348efee21b90a3",
-                    "0x07ca020fdde5c57c1c3a783befdb08929cf77fec",
-                ],
+                "deployment_hash": [faker.deployment_id() for _ in range(5)],
+                "indexer": [faker.indexer_id() for _ in range(5)],
                 "num_rows": [10, 20, 15, 5, 25],
                 "timestamp": [
                     "2024-08-01T12:00:00Z",
@@ -159,7 +147,7 @@ class TestFetchData:
         # Assertions to check the result is an empty DataFrame
         assert result_df.empty
 
-    def test_fail_on_generic_error(self, mocker, bigquery):
+    def test_fail_on_generic_error(self, faker, mocker, bigquery):
         """
         Check the retry mechanism does not capture generic errors.
         """
@@ -171,20 +159,8 @@ class TestFetchData:
         # Setup sample data and the DataFrame to be returned by the 'to_pandas' method
         expected_df = InitialQueryDataFrame(
             {
-                "deployment_hash": [
-                    "QmWATWQ7fVPP2EFGu71UkfnqhYXDYH566qy47CnJDgvs8u",
-                    "QmPK1s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB",
-                    "QmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n",
-                    "QmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
-                    "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY",
-                ],
-                "indexer": [
-                    "0x0058223c6617cca7ce76fc929ec9724cd43d4542",
-                    "0x015cb4f88c16dfaf90fa350af5338c4424a0d490",
-                    "0x01e110178f15aeec1cccc507939109175dc9c121",
-                    "0x01f17c392614c7ea586e7272ed348efee21b90a3",
-                    "0x07ca020fdde5c57c1c3a783befdb08929cf77fec",
-                ],
+                "deployment_hash": [faker.deployment_id() for _ in range(5)],
+                "indexer": [faker.indexer_id() for _ in range(5)],
                 "num_rows": [10, 20, 15, 5, 25],
                 "timestamp": [
                     "2024-08-01T12:00:00Z",
@@ -212,7 +188,7 @@ class TestFetchData:
         with pytest.raises(Exception, match="Generic error. Query failed."):
             bigquery.fetch_initial_query_results(start_date, num_days)
 
-    def test_rerty_on_connection_error(self, mocker, bigquery):
+    def test_rerty_on_connection_error(self, faker, mocker, bigquery):
         """
         Check the retry mechanism works as expected when a connection error is raised.
         """
@@ -224,20 +200,8 @@ class TestFetchData:
         # Setup sample data and the DataFrame to be returned by the 'to_pandas' method
         expected_df = pd.DataFrame(
             {
-                "deployment_hash": [
-                    "QmWATWQ7fVPP2EFGu71UkfnqhYXDYH566qy47CnJDgvs8u",
-                    "QmPK1s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB",
-                    "QmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n",
-                    "QmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
-                    "QmSWxvd8SaQK6qZKJ7xtfxCCGoRzGnoi2WNzmJYYJW9BXY",
-                ],
-                "indexer": [
-                    "0x0058223c6617cca7ce76fc929ec9724cd43d4542",
-                    "0x015cb4f88c16dfaf90fa350af5338c4424a0d490",
-                    "0x01e110178f15aeec1cccc507939109175dc9c121",
-                    "0x01f17c392614c7ea586e7272ed348efee21b90a3",
-                    "0x07ca020fdde5c57c1c3a783befdb08929cf77fec",
-                ],
+                "deployment_hash": [faker.deployment_id() for _ in range(5)],
+                "indexer": [faker.indexer_id() for _ in range(5)],
                 "num_rows": [10, 20, 15, 5, 25],
                 "timestamp": [
                     "2024-08-01T12:00:00Z",
