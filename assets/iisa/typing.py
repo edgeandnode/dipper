@@ -11,6 +11,9 @@ import pyarrow
 from pandera import DataFrameModel
 from pandera.typing import DataFrame
 
+BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+QueryIdStr = NewType("QueryIdStr", str)
 HttpUrlStr = NewType("HttpUrlStr", str)
 SubgraphId = NewType("SubgraphId", str)
 IpfsHashStr = NewType("IpfsHashStr", str)
@@ -53,6 +56,8 @@ EthAddressField = partial(
     pa.Field, description="Ethereum address string", str_matches=r"0x[a-fA-F0-9]{40}"
 )
 
+IndexerIdField = partial(EthAddressField, description="Indexer ID string")
+
 HttpUrlField = partial(
     pa.Field, description="HTTP URL string", str_matches=r"https?://[^\s]+"
 )
@@ -65,6 +70,12 @@ IpV4AddressField = partial(
 
 IpfsHashField = partial(
     pa.Field, description="IPFS hash string", str_matches=r"Qm[a-zA-Z0-9]{44}"
+)
+
+DeploymentIdField = partial(IpfsHashField, description="Deployment ID string")
+
+SubgraphIdField = partial(
+    pa.Field, description="Subgraph ID string", str_matches=f"[{BASE58_ALPHABET}]{{44}}"
 )
 
 QueryIdField = partial(
