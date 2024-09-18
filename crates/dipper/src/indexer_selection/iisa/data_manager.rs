@@ -9,7 +9,7 @@ use pyo3::{
 
 use super::{import_iisa_module, PyBigQueryProvider, PyNetworkProvider};
 
-/// Import the `iisa.DataManager` class.
+/// Import the `iisa.data_manager.DataManager` class.
 fn import_data_manager_class(py: Python) -> PyResult<&Bound<PyType>> {
     static DATA_MANAGER_CLASS: GILOnceCell<Py<PyType>> = GILOnceCell::new();
     DATA_MANAGER_CLASS
@@ -34,7 +34,7 @@ fn new_data_manager<'py>(
 }
 
 /// Python data manager.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PyDataManager<'py> {
     inner: Bound<'py, PyAny>,
 }
@@ -71,23 +71,29 @@ impl<'py> PyDataManager<'py> {
     }
 
     /// Return the cached BigQuery data.
-    // TODO: Wrap the return value in a Rust newtype.
-    pub fn get_data(&self) -> PyResult<Bound<'py, PyAny>> {
-        self.inner.call_method0("get_data")
+    pub fn get_data(&self) -> PyResult<PyRequestHistoryDataFrame<'py>> {
+        let dataframe = self.inner.call_method0("get_data")?;
+        Ok(PyRequestHistoryDataFrame { inner: dataframe })
     }
 
     /// Return the indexer rankings from the latency linear regression.
-    // TODO: Wrap the return value in a Rust newtype.
-    pub fn get_latency_linear_regression_indexer_rankings(&self) -> PyResult<Bound<'py, PyAny>> {
-        self.inner
-            .call_method0("get_latency_linear_regression_indexer_rankings")
+    pub fn get_latency_linear_regression_indexer_rankings(
+        &self,
+    ) -> PyResult<PyIndexerRankingsDataFrame<'py>> {
+        let dataframe = self
+            .inner
+            .call_method0("get_latency_linear_regression_indexer_rankings")?;
+        Ok(PyIndexerRankingsDataFrame { inner: dataframe })
     }
 
     /// Return the results df from the latency linear regression.
-    // TODO: Wrap the return value in a Rust newtype.
-    pub fn get_latency_linear_regression_results_df(&self) -> PyResult<Bound<'py, PyAny>> {
-        self.inner
-            .call_method0("get_latency_linear_regression_results_df")
+    pub fn get_latency_linear_regression_results(
+        &self,
+    ) -> PyResult<PyRegressionResultsDataFrame<'py>> {
+        let dataframe = self
+            .inner
+            .call_method0("get_latency_linear_regression_results")?;
+        Ok(PyRegressionResultsDataFrame { inner: dataframe })
     }
 }
 
@@ -99,6 +105,120 @@ impl<'py> FromPyObject<'py> for PyDataManager<'py> {
         }
 
         Ok(Self { inner: ob.clone() })
+    }
+}
+
+impl std::fmt::Debug for PyDataManager<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.inner, f)
+    }
+}
+
+/// Python requests history data frame.
+///
+/// This is a wrapper around a `iisa.iisa.RequestsHistoryDataFrame` instance.
+#[derive(Clone)]
+pub struct PyRequestHistoryDataFrame<'py> {
+    inner: Bound<'py, PyAny>,
+}
+
+impl<'py> PyRequestHistoryDataFrame<'py> {
+    /// Cast to `Bound<'py PyAny>`.
+    pub fn as_any(&self) -> &Bound<'py, PyAny> {
+        &self.inner
+    }
+
+    /// Cast to `Bound<'py PyAny>`, transferring ownership.
+    pub fn into_any(self) -> Bound<'py, PyAny> {
+        self.inner
+    }
+
+    /// Whether the data frame is empty.
+    pub fn is_empty(&self) -> PyResult<bool> {
+        self.inner.getattr("empty")?.extract()
+    }
+
+    /// Get the data frame shape.
+    pub fn shape(&self) -> PyResult<(usize, usize)> {
+        self.inner.getattr("shape")?.extract()
+    }
+}
+
+impl std::fmt::Debug for PyRequestHistoryDataFrame<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.inner, f)
+    }
+}
+
+/// Python indexer rankings data frame.
+///
+/// This is a wrapper around a `iisa.iisa.IndexerRankingsDataFrame` instance.
+#[derive(Clone)]
+pub struct PyIndexerRankingsDataFrame<'py> {
+    inner: Bound<'py, PyAny>,
+}
+
+impl<'py> PyIndexerRankingsDataFrame<'py> {
+    /// Cast to `Bound<'py PyAny>`.
+    pub fn as_any(&self) -> &Bound<'py, PyAny> {
+        &self.inner
+    }
+
+    /// Cast to `Bound<'py PyAny>`, transferring ownership.
+    pub fn into_any(self) -> Bound<'py, PyAny> {
+        self.inner
+    }
+
+    /// Whether the data frame is empty.
+    pub fn is_empty(&self) -> PyResult<bool> {
+        self.inner.getattr("empty")?.extract()
+    }
+
+    /// Get the data frame shape.
+    pub fn shape(&self) -> PyResult<(usize, usize)> {
+        self.inner.getattr("shape")?.extract()
+    }
+}
+
+impl std::fmt::Debug for PyIndexerRankingsDataFrame<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.inner, f)
+    }
+}
+
+/// Python linear regression results data frame.
+///
+/// This is a wrapper around a `iisa.iisa.LinearRegressionResultsDataFrame` instance.
+#[derive(Clone)]
+pub struct PyRegressionResultsDataFrame<'py> {
+    inner: Bound<'py, PyAny>,
+}
+
+impl<'py> PyRegressionResultsDataFrame<'py> {
+    /// Cast to `Bound<'py PyAny>`.
+    pub fn as_any(&self) -> &Bound<'py, PyAny> {
+        &self.inner
+    }
+
+    /// Cast to `Bound<'py PyAny>`, transferring ownership.
+    pub fn into_any(self) -> Bound<'py, PyAny> {
+        self.inner
+    }
+
+    /// Whether the data frame is empty.
+    pub fn is_empty(&self) -> PyResult<bool> {
+        self.inner.getattr("empty")?.extract()
+    }
+
+    /// Get the data frame shape.
+    pub fn shape(&self) -> PyResult<(usize, usize)> {
+        self.inner.getattr("shape")?.extract()
+    }
+}
+
+impl std::fmt::Debug for PyRegressionResultsDataFrame<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.inner, f)
     }
 }
 

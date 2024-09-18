@@ -161,7 +161,13 @@ class BigQueryProvider:
         dataframe = self._read_gbq_dataframe(query)
 
         if not dataframe.empty:
+            # Drop rows with missing values in the "url" column
             dataframe.dropna(subset=["url"], inplace=True)
+
+            # Add trailing slash if not present
+            dataframe["url"] = dataframe["url"].apply(
+                lambda url: url if url.endswith("/") else url + "/"
+            )
 
         return cast(CombinedQueryDataFrame, dataframe)
 

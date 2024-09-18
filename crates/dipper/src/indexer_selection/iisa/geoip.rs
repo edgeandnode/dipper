@@ -30,7 +30,7 @@ fn new_geoip_resolver(py: Python) -> PyResult<Bound<PyAny>> {
 }
 
 /// Python GeoIP resolver provider wrapper.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PyGeoipResolver<'py> {
     inner: Bound<'py, PyAny>,
 }
@@ -67,6 +67,12 @@ impl<'py> FromPyObject<'py> for PyGeoipResolver<'py> {
         }
 
         Ok(Self { inner: ob.clone() })
+    }
+}
+
+impl std::fmt::Debug for PyGeoipResolver<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.inner, f)
     }
 }
 
