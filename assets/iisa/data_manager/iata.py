@@ -6,7 +6,7 @@ import pandas as pd
 import pandera as pa
 from pandera.typing import DataFrame, Index, Series
 
-from .typing import IataCodeField, Iso3166CountryField, LatitudeField, LongitudeField
+from ..typing import IataCodeField, Iso3166CountryField, LatitudeField, LongitudeField
 
 __all__ = [
     "IataInfoDataFrame",
