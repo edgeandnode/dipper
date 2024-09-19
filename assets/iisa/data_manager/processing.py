@@ -2,7 +2,7 @@
 Helper functions for the data_manager module.
 """
 
-from typing import Optional, overload
+from typing import Optional, Tuple, overload
 
 import numpy as np
 import pandas as pd
@@ -17,6 +17,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from .iata import IataInfoDataFrame, get_iata_geolocation_info
+from ..bq import StakeToFeesDataFrame
 from ..network import IndexersDataFrame
 from ..typing import (
     HttpUrlField,
@@ -304,6 +305,10 @@ class _CalculateDistancesMixinSchema(pa.DataFrameModel):
     Schema for the combined query data with an additional column for calculated distances.
     """
 
+    src_lat: Series[float] = LatitudeField(nullable=True)
+    src_lon: Series[float] = LongitudeField(nullable=True)
+    dst_lat: Series[float] = LatitudeField(nullable=True)
+    dst_lon: Series[float] = LongitudeField(nullable=True)
     distance_miles: Series[float] = pa.Field(ge=0, nullable=True)
 
 
@@ -355,9 +360,6 @@ def calculate_distances(data):
     data["distance_miles"] = data["distance_miles"].apply(
         lambda val: round(val / 250.0) * 250.0 if pd.notna(val) else val
     )
-
-    # Drop intermediate columns
-    data.drop(columns=["src_lat", "src_lon", "dst_lat", "dst_lon"], inplace=True)
 
     return data
 
@@ -573,7 +575,9 @@ def hash_sampled_queries(df, integer_root):
     return result_df
 
 
-def perform_latency_linear_regression(df, predictor, categorical, numeric):
+def perform_latency_linear_regression(
+    df, predictor, categorical, numeric
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Perform latency linear regression analysis on the given data.
 
@@ -620,7 +624,6 @@ def perform_latency_linear_regression(df, predictor, categorical, numeric):
     )
 
     return (
-        df,
         latency_linear_regression_indexer_rankings,
         latency_linear_regression_results_df,
     )
@@ -1005,7 +1008,7 @@ def calculate_indexer_uptime(df, threshold_seconds=120):
     return merged_uptime_both
 
 
-def calculate_indexer_stake_to_fees(stake_query_pandas):
+def calculate_indexer_stake_to_fees(stake_query_pandas: StakeToFeesDataFrame):
     """
     Calculate the stake-to-fees ratio and its deviation from the median for each indexer.
 

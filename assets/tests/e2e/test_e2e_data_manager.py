@@ -8,6 +8,7 @@ import os
 import pytest
 
 from iisa import BigQueryProvider, DataManager, GeoipResolver, NetworkProvider
+from iisa.data_manager import DEFAULT_NUM_DAYS, DEFAULT_TARGET_ROWS
 from tests.__fixtures__.network import load_fixture_data
 
 
@@ -52,7 +53,10 @@ def test_fetch_and_update(bigquery_provider, network_provider):
     data_manager = DataManager(bigquery_provider, network_provider)
 
     ## When
-    data_manager.fetch_data_and_update(num_days=2, target_rows=1_000)
+    data_manager.fetch_data_and_update(
+        num_days=DEFAULT_NUM_DAYS,
+        target_rows=DEFAULT_TARGET_ROWS,
+    )
 
     processed_data = data_manager.get_data()
     indexer_rankings = data_manager.get_latency_linear_regression_indexer_rankings()

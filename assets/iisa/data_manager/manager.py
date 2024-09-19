@@ -1,6 +1,6 @@
 import logging
 from datetime import date
-from typing import Optional, Tuple
+from typing import Optional, Tuple, cast
 
 import pandera as pa
 from pandera.typing import DataFrame, Series
@@ -200,7 +200,6 @@ def _fetch_and_process_data(
 
     # Perform linear regression on the results from the combined query
     (
-        filtered_data,
         latency_linear_regression_indexer_rankings,
         latency_linear_regression_results_df,
     ) = perform_latency_linear_regression(
@@ -235,10 +234,17 @@ def _fetch_and_process_data(
         stake_to_fees,
     )
 
-    return (
-        bigquery_data,
-        latency_linear_regression_indexer_rankings,
-        latency_linear_regression_results_df,
+    return cast(
+        Tuple[
+            RequestHistoryDataFrame,
+            IndexerRankingsDataFrame,
+            LinearRegressionResultsDataFrame,
+        ],
+        (
+            bigquery_data,
+            latency_linear_regression_indexer_rankings,
+            latency_linear_regression_results_df,
+        ),
     )
 
 
