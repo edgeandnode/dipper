@@ -36,7 +36,7 @@ fn new_bigquery_provider<'py>(
 }
 
 /// Python BigQuery provider wrapper.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PyBigQueryProvider<'py> {
     inner: Bound<'py, PyAny>,
 }
@@ -78,6 +78,12 @@ impl<'py> FromPyObject<'py> for PyBigQueryProvider<'py> {
         }
 
         Ok(Self { inner: ob.clone() })
+    }
+}
+
+impl std::fmt::Debug for PyBigQueryProvider<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.inner, f)
     }
 }
 

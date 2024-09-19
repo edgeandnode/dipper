@@ -50,7 +50,12 @@ fn network_snapshot_to_python_list<'py, 'snapshot>(
     // Create a list of `iisa.network.Indexer` instances from the latest network snapshot
     let indexers = PyList::empty_bound(py);
     for indexer in snapshot {
-        let indexer = indexer_class.call1((indexer.id.to_string(), indexer.url.to_string()))?;
+        // Use LowerHex to format the ID as a hexadecimal string
+        // See: https://docs.rs/thegraph-core/0.6.0/thegraph_core/struct.IndexerId.html#formatting
+        let indexer_id = format!("{:#x}", indexer.id);
+        let indexer_url = indexer.url.to_string();
+
+        let indexer = indexer_class.call1((indexer_id, indexer_url))?;
         indexers.append(indexer)?;
     }
 
@@ -70,7 +75,7 @@ fn new_network_provider<'py>(
 ///
 /// This struct is used to interact with the Python network provider and update the
 /// network snapshot in the Python network provider.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PyNetworkProvider<'py> {
     inner: Bound<'py, PyAny>,
 }
@@ -119,6 +124,12 @@ impl<'py> FromPyObject<'py> for PyNetworkProvider<'py> {
         }
 
         Ok(Self { inner: ob.clone() })
+    }
+}
+
+impl std::fmt::Debug for PyNetworkProvider<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.inner, f)
     }
 }
 

@@ -3,4 +3,7 @@
 pub mod service;
 mod subgraph;
 
-pub use subgraph::snapshot::{Deployment, Indexer, Snapshot, Subgraph, SubgraphVersion};
+pub use subgraph::{
+    client::Client as SubgraphClient,
+    snapshot::{Deployment, Indexer, Snapshot, Subgraph, SubgraphVersion},
+};

@@ -29,6 +29,7 @@ fn import_iisa_module(py: Python) -> PyResult<&Bound<PyModule>> {
 mod tests {
     mod common;
     mod it_iisa_bq;
+    mod it_iisa_data_manager;
     mod it_iisa_geoip;
     mod it_iisa_network;
 }
