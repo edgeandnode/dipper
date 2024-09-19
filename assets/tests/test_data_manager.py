@@ -1056,17 +1056,11 @@ class TestPerformLinearRegression:
 
         # Compute result
         (
-            result_df,
             latency_linear_regression_indexer_rankings,
             latency_linear_regression_results_df,
         ) = perform_latency_linear_regression(
             hashed_df, predictor, categorical, numeric
         )
-
-        # Check that the result_df contains the original columns
-        assert all(
-            col in result_df.columns for col in hashed_df.columns
-        ), "result_df doesn't contain original columns"
 
         # Check that latency_linear_regression_indexer_rankings contains expected columns
         expected_columns = [
@@ -1100,7 +1094,6 @@ class TestPerformLinearRegression:
         # Check that the hashed column affects the regression by using a different mod hash integer root
         hashed_df_different_root = hash_sampled_queries(sample_df, integer_root + 1)
         (
-            _,
             latency_linear_regression_indexer_rankings_different_root,
             latency_linear_regression_results_df_different_root,
         ) = perform_latency_linear_regression(
@@ -1259,22 +1252,17 @@ class TestPerformLinearRegression:
 
         # Perform linear regression twice and compare results
         (
-            result_df1,
             latency_linear_regression_indexer_rankings1,
             latency_linear_regression_results_df1,
         ) = perform_latency_linear_regression(
             sample_df, predictor, categorical, numeric
         )
         (
-            result_df2,
             latency_linear_regression_indexer_rankings2,
             latency_linear_regression_results_df2,
         ) = perform_latency_linear_regression(
             sample_df, predictor, categorical, numeric
         )
-
-        # Check if the results are consistent across multiple runs
-        pd.testing.assert_frame_equal(result_df1, result_df2)
 
         # Check if the results are consistent across multiple runs
         pd.testing.assert_frame_equal(
@@ -1297,7 +1285,7 @@ class TestPerformLinearRegression:
         numeric = ["distance_miles", "fee"]
 
         # Perform linear regression
-        (_, _, _) = perform_latency_linear_regression(
+        (_, _) = perform_latency_linear_regression(
             sample_df, predictor, categorical, numeric
         )
 
