@@ -4,7 +4,7 @@ Test suite covering the IATA code to geolocation info mapping.
 
 import pytest
 
-from iisa.iata import get_iata_geolocation_info
+from iisa.data_manager.iata import get_iata_geolocation_info
 
 
 class TestIATAInfo:
