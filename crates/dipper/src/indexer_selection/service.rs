@@ -1,9 +1,22 @@
-use std::time::Duration;
-
+use anyhow::Context;
 use pyo3::Python;
+use reqwest::Url;
+use thegraph_core::IndexerId;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{indexer_selection::logging, network::Indexer};
+use super::{
+    iisa::{PyBigQueryProvider, PyDataManager, PyGeoipResolver, PyNetworkProvider},
+    logging,
+};
+
+/// An indexer in the network
+#[derive(Debug, Clone)]
+pub struct Indexer {
+    /// The indexer ID
+    pub id: IndexerId,
+    /// The indexer URL
+    pub url: Url,
+}
 
 /// The `Command` enum represents the commands that can be sent to the `IndexerSelectionService`.
 enum Command {
@@ -18,15 +31,6 @@ enum Command {
     UpdateNetworkIndexersList {
         /// The latest network snapshot's indexers list.
         indexers: Vec<Indexer>,
-
-        /// The response channel to send the result of the operation.
-        tx: oneshot::Sender<anyhow::Result<()>>,
-    },
-
-    /// Update `DataProcessor` with the agreements list.
-    UpdateAgreementsList {
-        /// The agreements list.
-        agreements: Vec<()>, // TODO: Add the agreement type.
 
         /// The response channel to send the result of the operation.
         tx: oneshot::Sender<anyhow::Result<()>>,
@@ -56,15 +60,6 @@ impl ServiceHandle {
             .send(Command::UpdateNetworkIndexersList { indexers, tx })?;
         rx.await?
     }
-
-    /// Update `DataProcessor` with the agreements list.
-    /// TODO: Add the agreement type.
-    pub async fn update_agreements_list(&self, agreements: Vec<()>) -> anyhow::Result<()> {
-        let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(Command::UpdateAgreementsList { agreements, tx })?;
-        rx.await?
-    }
 }
 
 /// Creates a new `IndexerSelectionService` and returns a handle to it along with a function that
@@ -75,87 +70,96 @@ pub fn new() -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()>) {
         // Register the Python logging to Rust log handler
         logging::register("dipper::indexer_selection").expect("Failed to register host logger");
 
-        // Set up Python logging
         Python::with_gil(|py| {
+            // Set up Python logging
             py.run_bound(
                 indoc::indoc! {r#"
                 import logging
+                
                 logging.basicConfig(level=logging.INFO)
                 logging.captureWarnings(True)
-                
-                # Set up the logger for the indexer_selection service
-                logger = logging.getLogger(__name__)
-            "#},
+                "#},
                 None,
                 None,
             )
-        })?;
+            .context("Failed to set up Python logging")?;
 
-        loop {
-            let cmd = match rx.blocking_recv() {
-                Some(cmd) => cmd,
-                None => {
-                    tracing::info!("Service handle dropped, aborting service.");
-                    break;
-                }
-            };
+            // Instantiate the data manager class
+            let (data_manager, network_provider) = {
+                let geoip_resolver = PyGeoipResolver::new(py)?;
+                let network_provider = PyNetworkProvider::new(py, geoip_resolver)?;
+                let bigquery_provider = PyBigQueryProvider::new(py, "graph-mainnet", "US")?;
+                let data_manager =
+                    PyDataManager::new(py, bigquery_provider, network_provider.clone())?;
 
-            match cmd {
-                Command::FetchAndUpdateHistoricalData { tx } => {
-                    // TODO: Implement the logic to fetch, process and update the indexer performance
-                    Python::with_gil(|py| {
-                        py.run_bound(
-                            r#"logger.info("fetching and updating historical data")"#,
-                            None,
-                            None,
-                        )
-                    })?;
-                    std::thread::sleep(Duration::from_secs(2)); // Simulation
+                Ok::<_, anyhow::Error>((data_manager, network_provider))
+            }?;
 
-                    // Abort service if the response channel's receiver side has been dropped.
-                    if tx.send(Ok(())).is_err() {
-                        return Err(anyhow::anyhow!(
-                            "Failed to send the result of the operation."
-                        ));
+            // Start listening for commands
+            loop {
+                let cmd = match rx.blocking_recv() {
+                    Some(cmd) => cmd,
+                    None => {
+                        tracing::info!("Service handle dropped, aborting service");
+                        break;
                     }
-                }
+                };
 
-                Command::UpdateNetworkIndexersList { tx, .. } => {
-                    // TODO: Implement the actual logic
-                    Python::with_gil(|py| {
-                        py.run_bound(
-                            r#"logger.info("updating network indexers list")"#,
-                            None,
-                            None,
-                        )
-                    })?;
-                    std::thread::sleep(Duration::from_millis(100)); // Simulation
-
-                    // Abort service if the response channel's receiver side has been dropped.
-                    if tx.send(Ok(())).is_err() {
-                        return Err(anyhow::anyhow!(
-                            "Failed to send the result of the operation."
-                        ));
+                match cmd {
+                    Command::FetchAndUpdateHistoricalData { tx } => {
+                        match data_manager.fetch_data_and_update() {
+                            Ok(_) => {
+                                if tx.send(Ok(())).is_err() {
+                                    // Abort service if the response channel's receiver side has been dropped.
+                                    return Err(anyhow::anyhow!(
+                                        "Failed to send the result of the operation"
+                                    ));
+                                }
+                            }
+                            Err(err) => {
+                                if tx
+                                    .send(Err(anyhow::anyhow!(err)
+                                        .context("Failed to fetch and update historical data")))
+                                    .is_err()
+                                {
+                                    // Abort service if the response channel's receiver side has been dropped.
+                                    return Err(anyhow::anyhow!(
+                                        "Failed to send the result of the operation"
+                                    ));
+                                }
+                            }
+                        }
                     }
-                }
-                Command::UpdateAgreementsList { tx, .. } => {
-                    // TODO: Implement the actual logic
-                    Python::with_gil(|py| {
-                        py.run_bound(r#"logger.info("updating agreements list")"#, None, None)
-                    })?;
-                    std::thread::sleep(Duration::from_millis(100)); // Simulation
 
-                    // Abort service if the response channel's receiver side has been dropped.
-                    if tx.send(Ok(())).is_err() {
-                        return Err(anyhow::anyhow!(
-                            "Failed to send the result of the operation."
-                        ));
+                    Command::UpdateNetworkIndexersList { tx, indexers } => {
+                        match network_provider.set_snapshot(py, &indexers) {
+                            Ok(_) => {
+                                if tx.send(Ok(())).is_err() {
+                                    // Abort service if the response channel's receiver side has been dropped.
+                                    return Err(anyhow::anyhow!(
+                                        "Failed to send the result of the operation"
+                                    ));
+                                }
+                            }
+                            Err(err) => {
+                                if tx
+                                    .send(Err(anyhow::anyhow!(err)
+                                        .context("Failed to update network indexers list")))
+                                    .is_err()
+                                {
+                                    // Abort service if the response channel's receiver side has been dropped.
+                                    return Err(anyhow::anyhow!(
+                                        "Failed to send the result of the operation"
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
             }
-        }
 
-        Ok(())
+            Ok(())
+        })
     };
 
     (ServiceHandle { tx }, service_task)

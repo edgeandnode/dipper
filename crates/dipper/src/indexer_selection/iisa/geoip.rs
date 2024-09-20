@@ -42,11 +42,6 @@ impl<'py> PyGeoipResolver<'py> {
         Ok(Self { inner })
     }
 
-    /// Cast to `Bound<'py, PyAny>`.
-    pub fn as_any(&self) -> &Bound<'py, PyAny> {
-        &self.inner
-    }
-
     /// Cast to `Bound<'py, PyAny>`, transferring ownership.
     pub fn into_any(self) -> Bound<'py, PyAny> {
         self.inner

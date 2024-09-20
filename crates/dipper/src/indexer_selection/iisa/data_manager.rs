@@ -54,11 +54,6 @@ impl<'py> PyDataManager<'py> {
         Ok(Self { inner })
     }
 
-    /// Cast to `Bound<'py PyAny>`.
-    pub fn as_any(&self) -> &Bound<'py, PyAny> {
-        &self.inner
-    }
-
     /// Cast to `Bound<'py PyAny>`, transferring ownership.
     pub fn into_any(self) -> Bound<'py, PyAny> {
         self.inner
@@ -123,11 +118,6 @@ pub struct PyRequestHistoryDataFrame<'py> {
 }
 
 impl<'py> PyRequestHistoryDataFrame<'py> {
-    /// Cast to `Bound<'py PyAny>`.
-    pub fn as_any(&self) -> &Bound<'py, PyAny> {
-        &self.inner
-    }
-
     /// Cast to `Bound<'py PyAny>`, transferring ownership.
     pub fn into_any(self) -> Bound<'py, PyAny> {
         self.inner
@@ -159,11 +149,6 @@ pub struct PyIndexerRankingsDataFrame<'py> {
 }
 
 impl<'py> PyIndexerRankingsDataFrame<'py> {
-    /// Cast to `Bound<'py PyAny>`.
-    pub fn as_any(&self) -> &Bound<'py, PyAny> {
-        &self.inner
-    }
-
     /// Cast to `Bound<'py PyAny>`, transferring ownership.
     pub fn into_any(self) -> Bound<'py, PyAny> {
         self.inner
@@ -195,11 +180,6 @@ pub struct PyRegressionResultsDataFrame<'py> {
 }
 
 impl<'py> PyRegressionResultsDataFrame<'py> {
-    /// Cast to `Bound<'py PyAny>`.
-    pub fn as_any(&self) -> &Bound<'py, PyAny> {
-        &self.inner
-    }
-
     /// Cast to `Bound<'py PyAny>`, transferring ownership.
     pub fn into_any(self) -> Bound<'py, PyAny> {
         self.inner
