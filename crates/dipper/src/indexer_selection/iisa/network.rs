@@ -9,7 +9,7 @@ use pyo3::{
 };
 
 use super::{geoip::PyGeoipResolver, import_iisa_module};
-use crate::network::Indexer;
+use crate::indexer_selection::service::Indexer;
 
 /// Import the `iisa.network.NetworkProvider` class.
 fn import_network_provider_class(py: Python) -> PyResult<&Bound<PyType>> {
@@ -85,11 +85,6 @@ impl<'py> PyNetworkProvider<'py> {
     pub fn new(py: Python<'py>, geoip_resolver: PyGeoipResolver<'py>) -> PyResult<Self> {
         let inner = new_network_provider(py, geoip_resolver.into_any())?;
         Ok(Self { inner })
-    }
-
-    /// Cast to `Bound<'py, PyAny>`.
-    pub fn as_any(&self) -> &Bound<'py, PyAny> {
-        &self.inner
     }
 
     /// Cast to `Bound<'py, PyAny>`, transferring ownership.
