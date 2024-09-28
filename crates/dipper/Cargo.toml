@@ -26,6 +26,6 @@ tracing-log = "0.2.0"
 smol.workspace = true
 smol-potat = "1.1.2"
 tempfile.workspace = true
-test-with = { version = "0.13.0", default-features = false }
+test-with = { version = "0.14.0", default-features = false }
 tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
