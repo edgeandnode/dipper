@@ -2,30 +2,25 @@ use pyo3::prelude::*;
 use thegraph_core::indexer_id;
 
 use super::common;
-use crate::{
-    indexer_selection::iisa::{PyGeoipResolver, PyNetworkProvider},
-    network::Indexer,
+use crate::indexer_selection::{
+    iisa::{PyGeoipResolver, PyNetworkProvider},
+    service::Indexer,
 };
 
 #[test]
 fn set_snapshot() {
     common::add_assets_dir_to_sys_path();
     common::init_python_logging("it_iisa_network::set_snapshot");
-    common::init_test_tracing();
 
     Python::with_gil(|py| {
         //* Given
         let indexer1 = Indexer {
             id: indexer_id!("a0803Bab25068a0FdA2f39C52ef7caed4574CC2F"),
             url: "https://one.one.one.one".parse().expect("invalid url"), // 1.0.0.1 or 1.1.1.1
-            staked_tokens: Default::default(),
-            indexings: Default::default(),
         };
         let indexer2 = Indexer {
             id: indexer_id!("229eB37fC17FF7387D5c51Ddb973D53c13Abfc12"),
             url: "https://dns.google".parse().expect("invalid url"), // 8.8.8.8 or 8.8.4.4
-            staked_tokens: Default::default(),
-            indexings: Default::default(),
         };
 
         // Instantiate the NetworkProvider class
