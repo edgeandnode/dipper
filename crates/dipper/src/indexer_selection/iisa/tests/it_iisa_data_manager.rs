@@ -6,8 +6,9 @@ use thegraph_core::{deployment_id, DeploymentId};
 
 use super::common;
 use crate::{
-    indexer_selection::iisa::{
-        PyBigQueryProvider, PyDataManager, PyGeoipResolver, PyNetworkProvider,
+    indexer_selection::{
+        iisa::{PyBigQueryProvider, PyDataManager, PyGeoipResolver, PyNetworkProvider},
+        service::Indexer,
     },
     network::{service as network_service, Snapshot, SubgraphClient},
 };
@@ -75,8 +76,15 @@ async fn fetch_data_and_process() {
             .expect("Failed to create a new PyDataManager instance");
 
         // Set the network snapshot
+        let indexers = snapshot
+            .indexers_iter()
+            .map(|indexer| Indexer {
+                id: indexer.id,
+                url: indexer.url.clone(),
+            })
+            .collect::<Vec<_>>();
         network_provider
-            .set_snapshot(py, snapshot.indexers_iter())
+            .set_snapshot(py, indexers.iter())
             .expect("set network provider snapshot");
 
         //* When
