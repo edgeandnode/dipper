@@ -138,7 +138,7 @@ wheels = [
 
 [[package]]
 name = "bigframes"
-version = "1.20.0"
+version = "1.21.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cloudpickle" },
@@ -169,9 +169,9 @@ dependencies = [
     { name = "sqlglot" },
     { name = "tabulate" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1c/96/0d433319a584b5a00453cfec5de0f5f02cb53365ecec843bc9c3cd0d8c1b/bigframes-1.20.0.tar.gz", hash = "sha256:8ca64cd4c45c59a4f54c788091ea3a7209ce14f5390cfc6382c519872b788fae", size = 750234 }
+sdist = { url = "https://files.pythonhosted.org/packages/d8/59/b7e8250d535e879e60158d6038e6f796f297976af8982a1cad6f60b41f71/bigframes-1.21.0.tar.gz", hash = "sha256:25df4b65bf33fe62891981e9ae61ea21134aeaa33133d23beb7820c8c1839388", size = 761465 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4b/5f/843a8ad1e2608201396d8bf71b35a20cac49cc758414c238e219c06b720d/bigframes-1.20.0-py2.py3-none-any.whl", hash = "sha256:638e25dd36ae488e1f940c02e00026ea9c66c0dd7612debe22406db655cc3705", size = 705818 },
+    { url = "https://files.pythonhosted.org/packages/ce/00/0c4775fd500a6aaf89c984b136ca52ce5364f681179cf1f270fe8d9dabc2/bigframes-1.21.0-py2.py3-none-any.whl", hash = "sha256:4d61c6ba4b9e9701d64fb5bd20f673b3fe44cdbf54e1aa386a69fe735faefb66", size = 716683 },
 ]
 
 [[package]]
@@ -2048,15 +2048,15 @@ wheels = [
 
 [[package]]
 name = "rich"
-version = "13.8.1"
+version = "13.9.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "markdown-it-py" },
     { name = "pygments" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/92/76/40f084cb7db51c9d1fa29a7120717892aeda9a7711f6225692c957a93535/rich-13.8.1.tar.gz", hash = "sha256:8260cda28e3db6bf04d2d1ef4dbc03ba80a824c88b0e7668a0f23126a424844a", size = 222080 }
+sdist = { url = "https://files.pythonhosted.org/packages/b3/78/87d00a1df7c457ad9aa0139f01b8a11c67209f27f927c503b0109bf2ed6c/rich-13.9.1.tar.gz", hash = "sha256:097cffdf85db1babe30cc7deba5ab3a29e1b9885047dab24c57e9a7f8a9c1466", size = 222907 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b0/11/dadb85e2bd6b1f1ae56669c3e1f0410797f9605d752d68fb47b77f525b31/rich-13.8.1-py3-none-any.whl", hash = "sha256:1760a3c0848469b97b558fc61c85233e3dafb69c7a071b4d60c38099d3cd4c06", size = 241608 },
+    { url = "https://files.pythonhosted.org/packages/ab/71/cd9549551f1aa11cf7e5f92bae5817979e8b3a19e31e8810c15f3f45c311/rich-13.9.1-py3-none-any.whl", hash = "sha256:b340e739f30aa58921dc477b8adaa9ecdb7cecc217be01d93730ee1bc8aa83be", size = 242147 },
 ]
 
 [[package]]
