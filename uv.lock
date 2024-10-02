@@ -420,29 +420,29 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "airportsdata", specifier = ">=20240806" },
-    { name = "bigframes", specifier = ">=1.16.0" },
-    { name = "community", specifier = ">=1.0.0b1" },
-    { name = "networkx", specifier = ">=3.3" },
-    { name = "numpy", specifier = ">=1.26.4" },
-    { name = "pandas", specifier = ">=2.2.2" },
-    { name = "pandera", specifier = ">=0.20.4" },
-    { name = "requests", specifier = ">=2.32.3" },
-    { name = "scikit-learn", specifier = ">=1.5.1" },
-    { name = "scipy", specifier = ">=1.14.1" },
-    { name = "tenacity", specifier = ">=9.0.0" },
+    { name = "bigframes", specifier = ">=1.16.0,<2.0" },
+    { name = "community", specifier = ">=1.0.0b1,<2.0" },
+    { name = "networkx", specifier = ">=3.3,<4.0" },
+    { name = "numpy", specifier = ">=2.1.1,<3.0" },
+    { name = "pandas", specifier = ">=2.2.2,<3.0" },
+    { name = "pandera", specifier = ">=0.20.4,<0.21" },
+    { name = "requests", specifier = ">=2.32.3,<3.0" },
+    { name = "scikit-learn", specifier = ">=1.5.1,<2.0" },
+    { name = "scipy", specifier = ">=1.14.1,<2.0" },
+    { name = "tenacity", specifier = ">=9.0.0,<10.0" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "faker", specifier = ">=28.4.1" },
-    { name = "faker-airtravel", specifier = ">=0.4" },
-    { name = "freezegun", specifier = ">=1.5.1" },
-    { name = "mypy", specifier = ">=1.11.2" },
-    { name = "pandera", extras = ["mypy"], specifier = ">=0.20.4" },
-    { name = "pytest", specifier = ">=8.3.2" },
-    { name = "pytest-mock", specifier = ">=3.14.0" },
-    { name = "ruff", specifier = ">=0.6.4" },
-    { name = "types-requests", specifier = ">=2.32.0.20240905" },
+    { name = "faker", specifier = ">=30.1.0,<31.0" },
+    { name = "faker-airtravel", specifier = ">=0.4,<0.5" },
+    { name = "freezegun", specifier = ">=1.5.1,<2.0" },
+    { name = "mypy", specifier = ">=1.11.2,<2.0" },
+    { name = "pandera", extras = ["mypy"], specifier = ">=0.20.4,<0.21" },
+    { name = "pytest", specifier = ">=8.3.2,<9.0" },
+    { name = "pytest-mock", specifier = ">=3.14.0,<4.0" },
+    { name = "ruff", specifier = ">=0.6.4,<0.7" },
+    { name = "types-requests", specifier = ">=2.32.0.20240905,<3.0" },
 ]
 
 [[package]]
@@ -1964,6 +1964,7 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a1/8b/96bc8c8f3eca4eb7fa3758fde0b755d1df30a19f494376e3ee8de1ef4e79/pyproj-3.7.0-cp312-cp312-win_amd64.whl", hash = "sha256:0692f806224e8ed82fe4acfa57268ff444fdaf9f330689f24c0d96e59480cce1", size = 6224720 },
     { url = "https://files.pythonhosted.org/packages/bf/da/a17c452bea1ff4cd58d6dc573055b9c8fb6af114b7d2c694782aec770865/pyproj-3.7.0-cp313-cp313-macosx_12_0_x86_64.whl", hash = "sha256:94e8b903a9e83448fd2379c49dec3e8cd83c9ed36f54354e68b601cef56d5426", size = 6254898 },
     { url = "https://files.pythonhosted.org/packages/c2/31/ab07b389f2caa527c95ab2ea1940d28879bd2a19e67b2529cb3e94648d26/pyproj-3.7.0-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:64cb5c17d6f6305a8b978a40f95560c87c5b363fcac40632337955664437875a", size = 4628612 },
+    { url = "https://files.pythonhosted.org/packages/1d/24/def3ded6529db3e3d8351ad73481730249ab57d8d876d502f86d7958ce06/pyproj-3.7.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:2c54e9bdda7ab9c4a5af50f9d6e6ee7704e05fafd504896b96ed1208c7aea098", size = 6315895 },
     { url = "https://files.pythonhosted.org/packages/dd/14/07314f78302105d199fb25e73376d723efe9c2ef3906463aae209913a6d3/pyproj-3.7.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:24fa4e9e0abba875f9524808410cc520067eaf38fd5549ed0ef7c43ac39923c9", size = 9466144 },
     { url = "https://files.pythonhosted.org/packages/00/f2/2a116920db3496e3ff3c94d7d8d15da41374f35cfe1b9e79682eca500a61/pyproj-3.7.0-cp313-cp313-win32.whl", hash = "sha256:b9e8353fc3c79dc14d1f5ac758a1a6e4eee04102c3c0b138670f121f5ac52eb4", size = 5807180 },
     { url = "https://files.pythonhosted.org/packages/f8/33/3c8c6302717096b54aa14ccbb271045ba04629e21cbf348f2f2dc94f69b4/pyproj-3.7.0-cp313-cp313-win_amd64.whl", hash = "sha256:10a8dc6ec61af97c89ff032647d743f8dc023645773da42ef43f7ae1125b3509", size = 6218036 },
