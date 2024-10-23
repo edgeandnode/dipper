@@ -8,6 +8,8 @@ RUN --mount=type=cache,target=/var/cache/apt \
   && apt-get install -y --no-install-recommends \
       build-essential \
       clang \
+      cmake \
+      lld \
       git \
   && rm -rf /var/lib/apt/lists/*
 
@@ -22,6 +24,8 @@ COPY ./ ./
 ENV UV_LINK_MODE=copy
 # - Set the C/C++ compiler to clang
 ENV CC=clang CXX=clang++
+# - Set the Rust flags to use lld as the linker
+ENV RUSTFLAGS="-C link-arg=-fuse-ld=lld"
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv run cargo build --bin dipper-service --release

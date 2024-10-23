@@ -12,6 +12,9 @@ use thiserror::Error;
 
 mod config;
 
+#[global_allocator]
+static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
+
 #[derive(Clone)]
 struct AppState {
     db: DbHandle,
