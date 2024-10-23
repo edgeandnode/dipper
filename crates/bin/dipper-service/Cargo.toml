@@ -19,3 +19,4 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tower.workspace = true
 simple_logger.workspace = true
+snmalloc-rs = "0.3.6"
