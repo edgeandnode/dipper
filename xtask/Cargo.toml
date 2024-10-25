@@ -6,4 +6,4 @@ edition = "2021"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-duct.workspace = true
+duct = "0.13.7"
