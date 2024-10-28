@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+pub mod postgres;
+
 /// A job in the queue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job<M> {
