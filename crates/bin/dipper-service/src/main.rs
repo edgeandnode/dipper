@@ -1,8 +1,8 @@
 use async_signal::{Signal, Signals};
 use axum::{routing, Router};
 use futures_lite::StreamExt;
-use log::LevelFilter;
 use thiserror::Error;
+use tracing::level_filters::LevelFilter;
 
 mod config;
 
@@ -21,11 +21,14 @@ impl AppState {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let opts = config::StartArgs::parse_and_merge()?;
-    simple_logger::SimpleLogger::new()
-        .with_level(opts.log_level.unwrap_or(LevelFilter::Info))
-        .init()?;
 
-    log::info!("starting dipper-service");
+    // Set up logging
+    tracing_subscriber::fmt()
+        .with_max_level(opts.log_level.unwrap_or(LevelFilter::INFO))
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    tracing::info!("starting dipper-service");
 
     let app_state = AppState::new();
     let app = Router::new()
