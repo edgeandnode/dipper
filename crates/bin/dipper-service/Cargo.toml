@@ -12,11 +12,11 @@ async-select.workspace = true
 async-signal.workspace = true
 clap.workspace = true 
 futures-lite.workspace = true
-log.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
+snmalloc-rs = "0.3.6"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tower.workspace = true
-simple_logger.workspace = true
-snmalloc-rs = "0.3.6"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }

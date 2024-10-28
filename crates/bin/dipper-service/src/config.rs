@@ -17,12 +17,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use clap::Parser;
-use log::LevelFilter;
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use clap::Parser as _;
+use serde::Deserialize;
+use tracing::level_filters::LevelFilter;
 
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum StartArgsError {
     #[error("io error: {0}")]
     Io(std::io::Error),
@@ -34,7 +33,7 @@ pub enum StartArgsError {
     MissingConfigPath,
 }
 
-#[derive(Parser, Debug, Deserialize, Serialize)]
+#[derive(Debug, clap::Parser, Deserialize)]
 #[command(name = "start")]
 pub struct StartArgs {
     #[arg(short, long)]
@@ -44,7 +43,19 @@ pub struct StartArgs {
     pub db_path: Option<PathBuf>,
 
     #[arg(short, long)]
+    #[serde(deserialize_with = "deserialize_log_level")]
     pub log_level: Option<LevelFilter>,
+}
+
+fn deserialize_log_level<'de, D>(deserializer: D) -> Result<Option<LevelFilter>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let level: Option<String> = Option::deserialize(deserializer)?;
+    match level {
+        None => Ok(None),
+        Some(level) => level.parse().map(Some).map_err(serde::de::Error::custom),
+    }
 }
 
 impl StartArgs {
