@@ -1,10 +1,12 @@
+//! PostgreSQL-baacked message queue implementation.
+
 use async_trait::async_trait;
 use serde::Serialize;
 use sqlx::{types::JsonValue, Pool, Postgres};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::queue::{Job, Queue};
+use super::{Job, Queue};
 
 /// The default maximum number of attempts before a job is considered failed.
 const DEFAULT_MAX_ATTEMPTS: i32 = 3;
@@ -134,23 +136,27 @@ where
 
         // Update the job status and increment the number of failed attempts
         // If the number of failed attempts is greater than the maximum number of attempts,
-        // mark the job as failed
+        // mark the job as failed and do not reschedule it
+        // Otherwise, reschedule the job for the next execution date
         // TODO: Return the updated job status and failed attempts, so the caller can check if the
         //  job was marked as failed
         sqlx::query!(
             r#"UPDATE pgmq_queue
-            SET status = (CASE
-                WHEN failed_attempts + 1 >= $1 THEN $2::int ELSE $3::int
-            END),
-            updated_at = $4,
-            scheduled_for = $5,
-            failed_attempts = failed_attempts + 1
+            SET 
+                failed_attempts = failed_attempts + 1,
+                status = (CASE
+                    WHEN failed_attempts + 1 >= $1 THEN $2::int ELSE $3::int
+                END),
+                scheduled_for = (CASE
+                    WHEN failed_attempts + 1 < $1 THEN $4 ELSE scheduled_for
+                END),
+                updated_at = $5
             WHERE id = $6"#,
             self.max_attempts as i32,
             PgJobStatus::Failed as i32,
             PgJobStatus::Queued as i32,
-            now,
             scheduled_for,
+            now,
             id,
         )
         .execute(&self.pool)
