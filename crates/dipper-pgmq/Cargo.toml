@@ -1,0 +1,18 @@
+[package]
+name = "dipper-pgmq"
+description = "A simple PostgreSQL-backed message queue"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx = { workspace = true, features = ["runtime-tokio"] }
+thiserror.workspace = true
+time.workspace = true
+uuid = { workspace = true, features = ["v7", "serde"] }
+
+[dev-dependencies]
+sqlx = { workspace = true, features = ["runtime-tokio"] }
