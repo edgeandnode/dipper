@@ -5,6 +5,7 @@ members = [
     "crates/bin/dipper-service",
     "crates/dipper",
     "crates/dipper-core",
+    "crates/dipper-iisa",
     "crates/dipper-pgmq",
     "crates/dipper-registry",
     "crates/integration-tests",
@@ -24,7 +25,6 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 reqwest = "0.12"
 sqlx = { version = "0.8.2", features = ["postgres", "time", "uuid"] }
-tempfile = "3"
 thegraph-core = "0.7.0"
 thiserror = "1.0"
 time = "0.3"

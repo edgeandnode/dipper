@@ -1,22 +1,16 @@
 use anyhow::Context;
+use async_trait::async_trait;
 use pyo3::Python;
-use reqwest::Url;
-use thegraph_core::IndexerId;
+use thegraph_core::DeploymentId;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    iisa::{PyBigQueryProvider, PyDataManager, PyGeoipResolver, PyNetworkProvider},
-    logging,
+    api::{CandidateSelection, Indexer},
+    py::{
+        iisa::{PyBigQueryProvider, PyDataManager, PyGeoipResolver, PyNetworkProvider},
+        logging,
+    },
 };
-
-/// An indexer in the network
-#[derive(Debug, Clone)]
-pub struct Indexer {
-    /// The indexer ID
-    pub id: IndexerId,
-    /// The indexer URL
-    pub url: Url,
-}
 
 /// The `Command` enum represents the commands that can be sent to the `IndexerSelectionService`.
 enum Command {
@@ -34,6 +28,33 @@ enum Command {
 
         /// The response channel to send the result of the operation.
         tx: oneshot::Sender<anyhow::Result<()>>,
+    },
+
+    /// Select one indexer from the given list of candidates.
+    SelectOneIndexer {
+        /// The deployment ID for which the indexer is being selected.
+        deployment_id: DeploymentId,
+
+        /// The list of candidates to select from.
+        candidates: Vec<Indexer>,
+
+        /// The response channel to send the result of the operation.
+        tx: oneshot::Sender<anyhow::Result<Option<Indexer>>>,
+    },
+
+    /// Select indexers from the given list of candidates.
+    SelectIndexers {
+        /// The deployment ID for which the indexers are being selected.
+        deployment_id: DeploymentId,
+
+        /// The list of candidates to select from.
+        candidates: Vec<Indexer>,
+
+        /// The number of indexers to select.
+        num_candidates: usize,
+
+        /// The response channel to send the result of the operation.
+        tx: oneshot::Sender<anyhow::Result<Vec<Indexer>>>,
     },
 }
 
@@ -62,6 +83,68 @@ impl ServiceHandle {
     }
 }
 
+/// The `SelectionError` enum represents the errors that can occur during the candidate selection
+/// process.
+#[derive(Debug, thiserror::Error)]
+pub enum SelectionError {
+    /// Indexer Selection service is not available.
+    ///
+    /// An error occurred while sending a request to the IISA service.
+    #[error("IISA service is not available")]
+    IisaServiceUnavailable,
+
+    /// An error occurred during the selection process.
+    #[error(transparent)]
+    Error(#[from] anyhow::Error),
+}
+
+#[async_trait]
+impl CandidateSelection for ServiceHandle {
+    type Error = SelectionError;
+
+    async fn select_one(
+        &self,
+        deployment_id: DeploymentId,
+        candidates: Vec<Indexer>,
+    ) -> Result<Option<Indexer>, Self::Error> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::SelectOneIndexer {
+                deployment_id,
+                candidates,
+                tx,
+            })
+            .map_err(|_| SelectionError::IisaServiceUnavailable)?;
+        let res = rx
+            .await
+            .map_err(|_| SelectionError::IisaServiceUnavailable)?;
+
+        res.map_err(SelectionError::Error)
+    }
+
+    async fn select(
+        &self,
+        deployment_id: DeploymentId,
+        candidates: Vec<Indexer>,
+        num_candidates: usize,
+    ) -> Result<Vec<Indexer>, Self::Error> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::SelectIndexers {
+                deployment_id,
+                candidates,
+                num_candidates,
+                tx,
+            })
+            .map_err(|_| SelectionError::IisaServiceUnavailable)?;
+        let res = rx
+            .await
+            .map_err(|_| SelectionError::IisaServiceUnavailable)?;
+
+        res.map_err(SelectionError::Error)
+    }
+}
+
 /// Creates a new `IndexerSelectionService` and returns a handle to it along with a function that
 /// should be called to start the service.
 pub fn new() -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()>) {
@@ -75,7 +158,7 @@ pub fn new() -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()>) {
             py.run_bound(
                 indoc::indoc! {r#"
                 import logging
-                
+
                 logging.basicConfig(level=logging.INFO)
                 logging.captureWarnings(True)
                 "#},
@@ -154,6 +237,12 @@ pub fn new() -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()>) {
                                 }
                             }
                         }
+                    }
+                    Command::SelectOneIndexer { .. } => {
+                        todo!("SelectOneIndexer command")
+                    }
+                    Command::SelectIndexers { .. } => {
+                        todo!("SelectIndexers command")
                     }
                 }
             }

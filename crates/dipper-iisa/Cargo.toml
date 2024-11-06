@@ -1,0 +1,23 @@
+[package]
+name = "dipper-iisa"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+indoc = "2.0.5"
+log = "0.4.22"
+pyo3 = "0.22.6"
+thegraph-core.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+tracing-log = "0.2.0"
+url.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+test-with = { version = "0.14.0", default-features = false }
+tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }

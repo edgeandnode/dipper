@@ -1,7 +1,7 @@
 use pyo3::{prelude::*, types::PyDate};
 
 use super::common;
-use crate::indexer_selection::iisa::PyBigQueryProvider;
+use crate::py::iisa::PyBigQueryProvider;
 
 #[test]
 #[ignore = "requires Google BigQuery credentials"]

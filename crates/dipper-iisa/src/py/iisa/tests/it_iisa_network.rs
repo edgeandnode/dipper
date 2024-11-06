@@ -2,9 +2,9 @@ use pyo3::prelude::*;
 use thegraph_core::indexer_id;
 
 use super::common;
-use crate::indexer_selection::{
-    iisa::{PyGeoipResolver, PyNetworkProvider},
-    service::Indexer,
+use crate::{
+    api::Indexer,
+    py::iisa::{PyGeoipResolver, PyNetworkProvider},
 };
 
 #[test]
