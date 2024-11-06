@@ -7,14 +7,13 @@ edition = "2021"
 anyhow.workspace = true
 indoc = "2.0.5"
 reqwest = { workspace = true, features = ["json"] }
-semver = { version = "1.0.23", features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
-serde_json = "1.0.125"
+serde_json = { version = "1.0.125", features = ["raw_value"] }
 serde_with = "3.9.0"
-thegraph-core = { version = "0.7.0", features = ["subgraph-client", "serde"] }
-thegraph-graphql-http = "0.2.4"
+thegraph-core = { version = "0.7.0", features = ["serde"] }
+thegraph-graphql-http = { version = "0.2.4", features = ["http-client-reqwest"] }
 thiserror.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "sync"] }
 tracing.workspace = true
 
 [dev-dependencies]
