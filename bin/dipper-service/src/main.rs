@@ -5,7 +5,9 @@ use thiserror::Error;
 use tracing::level_filters::LevelFilter;
 
 mod config;
+mod indexers;
 mod network;
+mod worker;
 
 #[global_allocator]
 static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
