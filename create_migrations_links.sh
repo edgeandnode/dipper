@@ -16,9 +16,13 @@ fi
 
 # Create symbolic links from the source directories
 for SRC_DIR in "${SRC_DIRS[@]}"; do
-	if [ ! -L "$TARGET_DIR/$(basename "$SRC_DIR")" ]; then
-		ln -s -f "$SRC_DIR"/* "$TARGET_DIR"/
+	# If the source directory does not exist (or it's empty), skip it
+	if [ ! -d "$SRC_DIR" ] || [ -z "$(ls -A "$SRC_DIR")" ]; then
+		continue
 	fi
+
+	# Create symbolic links relative to the target directory
+	ln --symbolic --relative --force "$SRC_DIR"/* "$TARGET_DIR"/
 done
 
 echo "Symbolic links created in '$TARGET_DIR'"

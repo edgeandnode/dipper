@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE pgmq_queue\n            SET \n                failed_attempts = failed_attempts + 1,\n                status = (CASE\n                    WHEN failed_attempts + 1 >= $1 THEN $2::int ELSE $3::int\n                END),\n                scheduled_for = (CASE\n                    WHEN failed_attempts + 1 < $1 THEN $4 ELSE scheduled_for\n                END),\n                updated_at = $5\n            WHERE id = $6",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Int4",
+        "Timestamptz",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ec7ae37140e36deb9bf3482d12f2d4c82e70205bb2fe962b7ce51987850af5a1"
+}
