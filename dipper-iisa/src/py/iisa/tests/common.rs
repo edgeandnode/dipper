@@ -15,8 +15,6 @@ fn project_root_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
-        .parent()
-        .unwrap()
         .to_path_buf()
 }
 
