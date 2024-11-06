@@ -17,7 +17,7 @@ thegraph-core = { version = "0.7.0", features = ["subgraph-client", "serde"] }
 thegraph-graphql-http = "0.2.4"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
-tracing = { workspace = true, default-features = false }
+tracing.workspace = true
 tracing-log = "0.2.0"
 
 [dev-dependencies]
