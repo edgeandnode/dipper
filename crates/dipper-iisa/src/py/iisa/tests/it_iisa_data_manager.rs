@@ -1,16 +1,14 @@
 use std::time::Duration;
 
 use pyo3::prelude::*;
-use reqwest::Url;
 use thegraph_core::{deployment_id, DeploymentId};
+use url::Url;
 
 use super::common;
 use crate::{
-    indexer_selection::{
-        iisa::{PyBigQueryProvider, PyDataManager, PyGeoipResolver, PyNetworkProvider},
-        service::Indexer,
-    },
+    candidate_selection::Indexer,
     network::{service as network_service, Snapshot, SubgraphClient},
+    py::iisa::{PyBigQueryProvider, PyDataManager, PyGeoipResolver, PyNetworkProvider},
 };
 
 /// Test helper to get the gateway base url from the environment.

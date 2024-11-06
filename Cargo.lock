@@ -973,21 +973,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "indoc",
- "log",
- "pyo3",
  "reqwest",
  "semver 1.0.23",
  "serde",
  "serde_json",
  "serde_with",
- "tempfile",
  "test-with",
  "thegraph-core",
  "thegraph-graphql-http",
  "thiserror",
  "tokio",
  "tracing",
- "tracing-log",
  "tracing-subscriber",
 ]
 
@@ -1006,6 +1002,26 @@ dependencies = [
  "serde",
  "sqlx",
  "uuid",
+]
+
+[[package]]
+name = "dipper-iisa"
+version = "0.1.0"
+dependencies = [
+    "anyhow",
+    "async-trait",
+    "indoc",
+    "log",
+    "pyo3",
+    "reqwest",
+    "test-with",
+    "thegraph-core",
+    "thiserror",
+    "tokio",
+    "tracing",
+    "tracing-log",
+    "tracing-subscriber",
+    "url",
 ]
 
 [[package]]

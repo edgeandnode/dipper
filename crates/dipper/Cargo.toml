@@ -6,8 +6,6 @@ edition = "2021"
 [dependencies]
 anyhow.workspace = true
 indoc = "2.0.5"
-log = "0.4.22"
-pyo3 = "0.22.2"
 reqwest = { workspace = true, features = ["json"] }
 semver = { version = "1.0.23", features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
@@ -16,12 +14,10 @@ serde_with = "3.9.0"
 thegraph-core = { version = "0.7.0", features = ["subgraph-client", "serde"] }
 thegraph-graphql-http = "0.2.4"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
-tracing-log = "0.2.0"
 
 [dev-dependencies]
-tempfile.workspace = true
 test-with = { version = "0.14.0", default-features = false }
 tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }

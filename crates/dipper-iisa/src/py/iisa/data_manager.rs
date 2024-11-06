@@ -210,7 +210,7 @@ mod tests {
     };
 
     use super::{new_data_manager, PyBigQueryProvider, PyDataManager, PyNetworkProvider};
-    use crate::indexer_selection::iisa::PyGeoipResolver;
+    use crate::py::iisa::PyGeoipResolver;
 
     #[test]
     fn extract_from_any() {

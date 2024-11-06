@@ -8,7 +8,7 @@ use pyo3::{
 use tracing_log::LogTracer;
 use tracing_subscriber::{fmt::TestWriter, EnvFilter};
 
-use crate::indexer_selection::logging;
+use crate::py::logging;
 
 /// Get project root path.
 fn project_root_path() -> PathBuf {

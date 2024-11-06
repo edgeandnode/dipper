@@ -1,7 +1,7 @@
 use pyo3::{prelude::*, types::PyDict};
 
 use super::common;
-use crate::indexer_selection::iisa::PyGeoipResolver;
+use crate::py::iisa::PyGeoipResolver;
 
 #[test]
 fn resolve_url_host_info() {
