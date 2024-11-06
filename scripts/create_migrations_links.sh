@@ -1,12 +1,12 @@
 #!/bin/env bash
 
 # The script location
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 TARGET_DIR="${ROOT_DIR}/migrations"
 SRC_DIRS=(
-	"${ROOT_DIR}/crates/dipper-pgmq/migrations"
-	"${ROOT_DIR}/crates/dipper-registry/migrations"
+	"${ROOT_DIR}/dipper-pgmq/migrations"
+	"${ROOT_DIR}/dipper-registry/migrations"
 )
 
 # Check if the target directory exists

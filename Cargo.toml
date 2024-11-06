@@ -1,15 +1,15 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/bin/dipper-cli",
-    "crates/bin/dipper-service",
-    "crates/dipper",
-    "crates/dipper-core",
-    "crates/dipper-iisa",
-    "crates/dipper-indexer-client",
-    "crates/dipper-pgmq",
-    "crates/dipper-registry",
-    "crates/integration-tests",
+    "bin/dipper-cli",
+    "bin/dipper-service",
+    "dipper",
+    "dipper-core",
+    "dipper-iisa",
+    "dipper-indexer-client",
+    "dipper-pgmq",
+    "dipper-registry",
+    "integration-tests",
     "xtask"
 ]
 
