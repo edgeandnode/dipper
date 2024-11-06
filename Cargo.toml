@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "bin/dipper-cli",
     "bin/dipper-service",
-    "dipper",
     "dipper-core",
     "dipper-iisa",
     "dipper-indexer-client",
@@ -15,22 +14,16 @@ members = [
 
 [workspace.dependencies]
 anyhow = "1.0"
-async-select = "0.2"
-async-signal = "0.2"
 async-trait = "0.1"
-axum = "0.7.5"
 clap = { version = "4.5.4", features = ["derive"] }
-futures-lite = "2.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_yaml = "0.9"
 reqwest = "0.12"
 sqlx = { version = "0.8.2", features = ["postgres", "time", "uuid"] }
-thegraph-core = "0.7.0"
-thiserror = "1.0"
+thegraph-core = { version = "0.7.0", default-features = false }
+thiserror = "2.0"
 time = "0.3"
 tokio = { version = "1.40", default-features = false }
-tower = "0.4"
 tracing = "0.1"
 url = "2.5"
 uuid = { version = "1.11.0", features = ["v7"] }
