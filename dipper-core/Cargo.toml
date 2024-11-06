@@ -6,4 +6,10 @@ edition = "2021"
 [dependencies]
 serde.workspace = true
 sqlx.workspace = true
+thegraph-core.workspace = true
+thiserror.workspace = true
 uuid = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+alloy-signer-local = "0.4"
+alloy-sol-types = "0.8.11"
