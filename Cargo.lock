@@ -125,7 +125,7 @@ dependencies = [
  "auto_impl",
  "elliptic-curve",
  "k256",
- "thiserror",
+ "thiserror 1.0.68",
 ]
 
 [[package]]
@@ -523,7 +523,7 @@ dependencies = [
  "serde_urlencoded",
  "sync_wrapper 1.0.1",
  "tokio",
- "tower 0.5.1",
+ "tower",
  "tower-layer",
  "tower-service",
  "tracing",
@@ -968,25 +968,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dipper"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "indoc",
- "reqwest",
- "serde",
- "serde_json",
- "serde_with",
- "test-with",
- "thegraph-core",
- "thegraph-graphql-http",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "dipper-cli"
 version = "0.1.0"
 dependencies = [
@@ -1015,7 +996,7 @@ dependencies = [
  "reqwest",
  "test-with",
  "thegraph-core",
- "thiserror",
+ "thiserror 2.0.0",
  "tokio",
  "tracing",
  "tracing-log",
@@ -1036,7 +1017,7 @@ dependencies = [
  "serde_with",
  "thegraph-core",
  "thegraph-graphql-http",
- "thiserror",
+ "thiserror 2.0.0",
  "url",
 ]
 
@@ -1049,7 +1030,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
- "thiserror",
+ "thiserror 2.0.0",
  "time",
  "uuid",
 ]
@@ -1065,7 +1046,7 @@ dependencies = [
  "sqlx",
  "test-with",
  "thegraph-core",
- "thiserror",
+ "thiserror 2.0.0",
  "time",
  "url",
  "uuid",
@@ -1080,14 +1061,20 @@ dependencies = [
  "async-signal",
  "axum",
  "clap",
- "dipper",
  "futures-lite",
+ "indoc",
+ "reqwest",
  "serde",
+ "serde_json",
+ "serde_with",
  "serde_yaml",
  "snmalloc-rs",
- "thiserror",
+ "test-with",
+ "thegraph-core",
+ "thegraph-graphql-http",
+ "thiserror 2.0.0",
  "tokio",
- "tower 0.4.13",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1368,10 +1355,7 @@ version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f1fa2f9765705486b33fd2acf1577f8ec449c2ba1f318ae5447697b7c08d210"
 dependencies = [
- "fastrand",
  "futures-core",
- "futures-io",
- "parking",
  "pin-project-lite",
 ]
 
@@ -1895,7 +1879,6 @@ checksum = "b248f5224d1d606005e02c97f5aa4e88eeb230488bcc03bc9ca4d7991399f2b5"
 name = "integration-tests"
 version = "0.1.0"
 dependencies = [
- "dipper",
  "tokio",
 ]
 
@@ -2369,7 +2352,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "879952a81a83930934cbf1786752d6dedc3b1f29e8f8fb2ad1d0a36f377cf442"
 dependencies = [
  "memchr",
- "thiserror",
+ "thiserror 1.0.68",
  "ucd-trie",
 ]
 
@@ -3318,7 +3301,7 @@ dependencies = [
  "sha2",
  "smallvec",
  "sqlformat",
- "thiserror",
+ "thiserror 1.0.68",
  "time",
  "tokio",
  "tokio-stream",
@@ -3403,7 +3386,7 @@ dependencies = [
  "smallvec",
  "sqlx-core",
  "stringprep",
- "thiserror",
+ "thiserror 1.0.68",
  "time",
  "tracing",
  "uuid",
@@ -3443,7 +3426,7 @@ dependencies = [
  "smallvec",
  "sqlx-core",
  "stringprep",
- "thiserror",
+ "thiserror 1.0.68",
  "time",
  "tracing",
  "uuid",
@@ -3641,7 +3624,7 @@ dependencies = [
  "bs58",
  "serde",
  "serde_with",
- "thiserror",
+ "thiserror 1.0.68",
  "url",
 ]
 
@@ -3655,7 +3638,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 1.0.68",
 ]
 
 [[package]]
@@ -3664,7 +3647,16 @@ version = "1.0.68"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02dd99dc800bbb97186339685293e1cc5d9df1f8fae2d0aecd9ff1c77efea892"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 1.0.68",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15291287e9bff1bc6f9ff3409ed9af665bec7a5fc8ac079ea96be07bca0e2668"
+dependencies = [
+ "thiserror-impl 2.0.0",
 ]
 
 [[package]]
@@ -3672,6 +3664,17 @@ name = "thiserror-impl"
 version = "1.0.68"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7c61ec9a6f64d2793d8a45faba21efbe3ced62a886d44c36a009b2b519b4c7e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.87",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22efd00f33f93fa62848a7cab956c3d38c8d43095efda1decfc2b3a5dc0b8972"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3840,17 +3843,6 @@ dependencies = [
  "indexmap 2.6.0",
  "toml_datetime",
  "winnow",
-]
-
-[[package]]
-name = "tower"
-version = "0.4.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8fa9be0de6cf49e536ce1851f987bd21a43b771b09473c3549a6c853db37c1c"
-dependencies = [
- "tower-layer",
- "tower-service",
- "tracing",
 ]
 
 [[package]]

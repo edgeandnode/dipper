@@ -4,19 +4,26 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-dipper = { path = "../../dipper" }
-
-axum.workspace = true
 anyhow.workspace = true
-async-select.workspace = true
-async-signal.workspace = true
-clap.workspace = true 
-futures-lite.workspace = true
+async-select = "0.2.0"
+async-signal = "0.2.10"
+axum = "0.7.7"
+clap.workspace = true
+futures-lite = { version = "2.4.0", default-features = false }
+indoc = "2.0.5"
+reqwest = { workspace = true, features = ["json"] }
 serde.workspace = true
-serde_yaml.workspace = true
+serde_json.workspace = true
+serde_with = "3.11.0"
+serde_yaml = "0.9"
 snmalloc-rs = "0.3.6"
+thegraph-core = { workspace = true, features = ["serde"] }
+thegraph-graphql-http = { version = "0.2.4", features = ["http-client-reqwest"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
-tower.workspace = true
+tower = "0.5.1"
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+
+[dev-dependencies]
+test-with = { version = "0.14.4", default-features = false }

@@ -7,5 +7,4 @@ edition = "2021"
 integration-tests = []
 
 [dependencies]
-dipper = { path = "../dipper" }
-tokio.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
