@@ -1008,20 +1008,20 @@ dependencies = [
 name = "dipper-iisa"
 version = "0.1.0"
 dependencies = [
-    "anyhow",
-    "async-trait",
-    "indoc",
-    "log",
-    "pyo3",
-    "reqwest",
-    "test-with",
-    "thegraph-core",
-    "thiserror",
-    "tokio",
-    "tracing",
-    "tracing-log",
-    "tracing-subscriber",
-    "url",
+ "anyhow",
+ "async-trait",
+ "indoc",
+ "log",
+ "pyo3",
+ "reqwest",
+ "test-with",
+ "thegraph-core",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -1042,17 +1042,17 @@ dependencies = [
 name = "dipper-registry"
 version = "0.1.0"
 dependencies = [
-    "async-trait",
-    "dipper-core",
-    "num-derive",
-    "num-traits",
-    "sqlx",
-    "test-with",
-    "thegraph-core",
-    "thiserror",
-    "time",
-    "url",
-    "uuid",
+ "async-trait",
+ "dipper-core",
+ "num-derive",
+ "num-traits",
+ "sqlx",
+ "test-with",
+ "thegraph-core",
+ "thiserror",
+ "time",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -2160,9 +2160,9 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed3955f1a9c7c0c15e092f9c887db08b1fc683305fdf6eb6684f22555355e202"
 dependencies = [
-    "proc-macro2",
-    "quote",
-    "syn 2.0.87",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.87",
 ]
 
 [[package]]
