@@ -5,8 +5,6 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-pub mod postgres;
-
 /// A job in the queue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job<M> {
@@ -19,10 +17,13 @@ pub struct Job<M> {
 /// This trait is used to interact with the message queue.
 #[async_trait]
 pub trait Queue<M>: Send + Sync + 'static {
-    /// Pushes a job to the queue.
+    /// Pushes a job to the queue for immediate processing.
+    async fn push(&self, job: M) -> anyhow::Result<()>;
+
+    /// Pushes a job to the queue to be scheduled for later.
     ///
-    /// The job can be scheduled for a specific date.
-    async fn push(&self, job: M, scheduled_for: Option<OffsetDateTime>) -> anyhow::Result<()>;
+    /// If `OffsetDateTime` is in the past, the job will be executed immediately.
+    async fn push_scheduled(&self, job: M, scheduled_for: OffsetDateTime) -> anyhow::Result<()>;
 
     /// Pulls a job from the queue.
     ///
