@@ -7,8 +7,13 @@ edition = "2021"
 anyhow.workspace = true
 async-select = "0.2.0"
 async-signal = "0.2.10"
+async-trait.workspace = true
 axum = "0.7.7"
 clap.workspace = true
+dipper-core = { version = "0.1.0", path = "../../dipper-core" }
+dipper-iisa = { path = "../../dipper-iisa" }
+dipper-pgmq = { path = "../../dipper-pgmq" }
+dipper-registry = { path = "../../dipper-registry" }
 futures-lite = { version = "2.4.0", default-features = false }
 indoc = "2.0.5"
 reqwest = { workspace = true, features = ["json"] }
@@ -20,10 +25,12 @@ snmalloc-rs = "0.3.6"
 thegraph-core = { workspace = true, features = ["serde"] }
 thegraph-graphql-http = { version = "0.2.4", features = ["http-client-reqwest"] }
 thiserror.workspace = true
+time.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tower = "0.5.1"
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+url.workspace = true
 
 [dev-dependencies]
 test-with = { version = "0.14.4", default-features = false }

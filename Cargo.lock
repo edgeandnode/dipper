@@ -1059,8 +1059,13 @@ dependencies = [
  "anyhow",
  "async-select",
  "async-signal",
+ "async-trait",
  "axum",
  "clap",
+ "dipper-core",
+ "dipper-iisa",
+ "dipper-pgmq",
+ "dipper-registry",
  "futures-lite",
  "indoc",
  "reqwest",
@@ -1073,10 +1078,12 @@ dependencies = [
  "thegraph-core",
  "thegraph-graphql-http",
  "thiserror 2.0.0",
+ "time",
  "tokio",
  "tower",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
