@@ -1,0 +1,20 @@
+[package]
+name = "dipper-registry"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait.workspace = true
+dipper-core = { version = "0.1.0", path = "../dipper-core" }
+num-derive = "0.4.2"
+num-traits = "0.2.19"
+sqlx = { workspace = true, features = ["runtime-tokio"] }
+thegraph-core.workspace = true
+thiserror.workspace = true
+time.workspace = true
+url.workspace = true
+uuid = { version = "1.11.0", features = ["v4"] }
+
+[dev-dependencies]
+test-with = { version = "0.14.4", default-features = false }
+uuid = { workspace = true, features = ["v7"] }
