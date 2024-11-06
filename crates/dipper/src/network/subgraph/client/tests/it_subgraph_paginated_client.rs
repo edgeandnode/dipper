@@ -4,17 +4,16 @@ use std::time::Duration;
 
 use reqwest::Url;
 use serde::Deserialize;
-use thegraph_core::{
-    client::{
-        queries::{
-            meta::send_bootstrap_meta_query,
-            page::{send_subgraph_page_query, BlockHeight},
-        },
-        Client as SubgraphClient,
-    },
-    BlockPointer, SubgraphId,
-};
+use thegraph_core::{BlockPointer, SubgraphId};
 use tracing_subscriber::{fmt::TestWriter, EnvFilter};
+
+use crate::network::subgraph::client::{
+    paginated_client::Client,
+    queries::{
+        meta::send_bootstrap_meta_query,
+        page::{send_subgraph_page_query, BlockHeight},
+    },
+};
 
 /// Initialize the tests tracing subscriber.
 fn init_test_tracing() {
@@ -143,9 +142,7 @@ async fn client_send_query() {
     let auth_token = test_auth_token();
 
     let http_client = reqwest::Client::new();
-    let client = SubgraphClient::builder(http_client, subgraph_url)
-        .with_auth_token(Some(auth_token))
-        .build();
+    let client = Client::new(http_client, subgraph_url, auth_token);
 
     // Subgraph meta query
     const SUBGRAPH_META_QUERY_DOCUMENT: &str = r#"{ meta: _meta { block { number hash } } }"#;
@@ -186,9 +183,7 @@ async fn send_subgraph_paginated() {
 
     let http_client = reqwest::Client::new();
 
-    let client = SubgraphClient::builder(http_client, subgraph_url)
-        .with_auth_token(Some(auth_token))
-        .build();
+    let client = Client::new(http_client, subgraph_url, auth_token);
 
     // Query all subgraph ids.
     const SUBGRAPHS_QUERY_DOCUMENT: &str = r#"
@@ -237,9 +232,7 @@ async fn send_subgraph_paginated_empty_response() {
 
     let http_client = reqwest::Client::new();
 
-    let client = SubgraphClient::builder(http_client, subgraph_url)
-        .with_auth_token(Some(auth_token))
-        .build();
+    let client = Client::new(http_client, subgraph_url, auth_token);
 
     // Query all subgraph ids. As 'entityVersion' is set to 9999, we expect no results.
     const SUBGRAPHS_QUERY_DOCUMENT: &str = r#"

@@ -26,10 +26,34 @@ pub fn status_url<U: Borrow<Url>>(url: U) -> StatusUrl {
     StatusUrl(url)
 }
 
-/// Newtype wrapper around `Url` to provide type safety.
+/// Builds the URL to the cost endpoint of the indexer.
+///
+/// # Panics
+/// The function panics if the URL cannot be built.
+pub fn cost_url<U: Borrow<Url>>(url: U) -> CostUrl {
+    let url = url
+        .borrow()
+        .join("cost/")
+        .expect("failed to build indexer DIPs URL");
+    CostUrl(url)
+}
+
+/// Builds the URL to the DIPs endpoint of the indexer.
+///
+/// # Panics
+/// The function panics if the URL cannot be built.
+pub fn dips_url<U: Borrow<Url>>(url: U) -> DipsUrl {
+    let url = url
+        .borrow()
+        .join("dips/")
+        .expect("failed to build indexer DIPs URL");
+    DipsUrl(url)
+}
+
+/// New-type wrapper around `Url` to provide type safety.
 macro_rules! url_new_type {
     ($name:ident) => {
-        /// Newtype wrapper around `Url` to provide type safety.
+        /// Newt-ype wrapper around `Url` to provide type safety.
         #[derive(Clone, PartialEq, Eq, Hash)]
         pub struct $name(Url);
 
@@ -71,17 +95,18 @@ macro_rules! url_new_type {
 url_new_type!(VersionUrl);
 url_new_type!(StatusUrl);
 url_new_type!(CostUrl);
+url_new_type!(DipsUrl);
 
 #[cfg(test)]
 mod tests {
     use reqwest::Url;
 
-    use super::{status_url, version_url};
+    use super::{cost_url, dips_url, status_url, version_url};
 
     /// Ensure the different URL builder functions accept owned and borrowed URL parameters.
     #[test]
     fn check_url_builders() {
-        let url = Url::parse("http://localhost:8020").expect("Invalid URL");
+        let url: Url = "http://localhost:8020".parse().expect("Invalid URL");
 
         // Version URL
         let _ = version_url(&url);
@@ -90,5 +115,13 @@ mod tests {
         // Status URL
         let _ = status_url(&url);
         let _ = status_url(url.clone());
+
+        // Cost URL
+        let _ = cost_url(&url);
+        let _ = cost_url(url.clone());
+
+        // DIPs URL
+        let _ = dips_url(&url);
+        let _ = dips_url(url.clone());
     }
 }

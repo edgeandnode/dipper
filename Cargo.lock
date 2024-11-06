@@ -974,7 +974,6 @@ dependencies = [
  "anyhow",
  "indoc",
  "reqwest",
- "semver 1.0.23",
  "serde",
  "serde_json",
  "serde_with",
@@ -1021,6 +1020,23 @@ dependencies = [
  "tracing",
  "tracing-log",
  "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "dipper-indexer-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "indoc",
+ "reqwest",
+ "semver 1.0.23",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thegraph-core",
+ "thegraph-graphql-http",
+ "thiserror",
  "url",
 ]
 
@@ -3623,14 +3639,9 @@ dependencies = [
  "alloy-signer",
  "alloy-sol-types",
  "bs58",
- "indoc",
- "reqwest",
  "serde",
- "serde_json",
  "serde_with",
- "thegraph-graphql-http",
  "thiserror",
- "tracing",
  "url",
 ]
 

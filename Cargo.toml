@@ -6,6 +6,7 @@ members = [
     "crates/dipper",
     "crates/dipper-core",
     "crates/dipper-iisa",
+    "crates/dipper-indexer-client",
     "crates/dipper-pgmq",
     "crates/dipper-registry",
     "crates/integration-tests",

@@ -1,4 +1,4 @@
-//! Payment-related functionality for indexers.
+//! DIPs-related functionality for indexers.
 //!
 //! See: https://github.com/graphprotocol/indexer/tree/indexer-payments-cycle-1/packages/indexer-common/src/direct-indexer-payments
 
@@ -8,7 +8,7 @@ use thegraph_graphql_http::{
     http_client::ReqwestExt,
 };
 
-use super::urls::StatusUrl;
+use super::urls::DipsUrl;
 
 const CREATE_AGREEMENT_MUTATION_DOCUMENT: &str = indoc::indoc! {r#"
      mutation CreateAgreement($signature: String!, $data: String!) {
@@ -87,7 +87,7 @@ pub struct CreateAgreementResponse {
 /// Create a new agreement with the indexer.
 pub async fn create_agreement(
     client: &reqwest::Client,
-    url: StatusUrl,
+    url: DipsUrl,
     signature: String,
     data: String,
 ) -> anyhow::Result<CreateAgreementResponse> {
@@ -115,7 +115,7 @@ impl IntoDocumentWithVariables for CancelIndexingAgreementRequest {
 /// Cancel an existing agreement with the indexer.
 pub async fn cancel_agreement(
     client: &reqwest::Client,
-    url: StatusUrl,
+    url: DipsUrl,
     signature: String,
 ) -> anyhow::Result<()> {
     let _resp = client
@@ -150,7 +150,7 @@ pub struct GetAgreementResponse {
 /// Get an existing agreement with the indexer.
 pub async fn get_agreement(
     client: &reqwest::Client,
-    url: StatusUrl,
+    url: DipsUrl,
     signature: String,
 ) -> anyhow::Result<GetAgreementResponse> {
     let _resp = client
@@ -191,7 +191,7 @@ pub struct GetPriceResponse {
 /// Get the price for indexing on the indexer.
 pub async fn get_indexing_price(
     client: &reqwest::Client,
-    url: StatusUrl,
+    url: DipsUrl,
     protocol_network: String,
     chain_id: String,
 ) -> anyhow::Result<GetPriceResponse> {
@@ -225,7 +225,7 @@ pub struct IndexingPrice {
 /// Get all prices for indexing on the indexer.
 pub async fn get_all_indexing_prices(
     client: &reqwest::Client,
-    url: StatusUrl,
+    url: DipsUrl,
 ) -> anyhow::Result<GetAllPricesResponse> {
     let _resp = client
         .post(url.into_inner())
