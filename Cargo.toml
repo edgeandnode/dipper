@@ -4,6 +4,7 @@ members = [
     "crates/bin/dipper-cli",
     "crates/bin/dipper-service",
     "crates/dipper",
+    "crates/dipper-core",
     "crates/dipper-pgmq",
     "crates/integration-tests",
     "xtask"
