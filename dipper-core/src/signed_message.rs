@@ -180,8 +180,8 @@ where
     }
 
     /// Get the signer's address
-    pub fn address(&self) -> &Address {
-        &self.address
+    pub fn address(&self) -> Address {
+        self.address
     }
 
     /// Sign a message using the [EIP-712] standard
@@ -415,7 +415,7 @@ mod tests {
         let signed_message = eip712_signer.sign(message).expect("message signing failed");
 
         // Verify the signed message
-        let result = eip712_signer.verify(&signed_message, eip712_signer.address());
+        let result = eip712_signer.verify(&signed_message, &eip712_signer.address());
 
         //* Then
         // The signature should be valid

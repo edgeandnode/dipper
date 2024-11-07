@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+base64 = "0.22.1"
 serde.workspace = true
 sqlx.workspace = true
 thegraph-core.workspace = true
