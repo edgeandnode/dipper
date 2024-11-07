@@ -34,6 +34,11 @@ macro_rules! uuid_new_type_impls {
                 Self(::uuid::Uuid::now_v7())
             }
 
+            /// Parse a [`$name`] from bytes.
+            pub fn from_bytes(bytes: [u8; 16]) -> Self {
+                Self(::uuid::Uuid::from_bytes(bytes))
+            }
+
             /// Unwrap the [`$name`] into the inner [`Uuid`].
             ///
             /// [`Uuid`]: uuid::Uuid
