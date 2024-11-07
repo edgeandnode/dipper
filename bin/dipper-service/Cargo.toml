@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+alloy-signer-local = "0.4"
+alloy-sol-types = "0.8.11"
 anyhow.workspace = true
 async-select = "0.2.0"
 async-signal = "0.2.10"
@@ -31,6 +33,7 @@ tower = "0.5.1"
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 url.workspace = true
+uuid = { workspace = true, features = ["serde", "v7"] }
 
 [dev-dependencies]
 test-with = { version = "0.14.4", default-features = false }

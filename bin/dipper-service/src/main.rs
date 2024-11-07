@@ -1,10 +1,10 @@
 use async_signal::{Signal, Signals};
-use axum::{routing, Router};
 use futures_lite::StreamExt;
 use thiserror::Error;
 use tracing::level_filters::LevelFilter;
 
 mod config;
+mod http_server;
 mod indexers;
 mod network;
 mod worker;
@@ -33,19 +33,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("starting dipper-service");
 
-    let app_state = AppState::new();
-    let app = Router::new()
-        .route("/", routing::get(|| async { "OK" }))
-        .with_state(app_state);
-
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:9091").await?;
-
-    let _app_task = axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _signal = signal_task().await.unwrap();
-        })
-        .await;
-    Ok(())
+    todo!("start the service");
 }
 
 pub enum AppSignal {
