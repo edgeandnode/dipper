@@ -2,5 +2,5 @@
 
 pub mod dips;
 pub mod status;
-mod urls;
+pub mod urls;
 pub mod version;
