@@ -59,7 +59,7 @@ macro_rules! url_new_type {
 
         impl $name {
             /// Return the internal representation.
-            pub(super) fn into_inner(self) -> Url {
+            pub fn into_inner(self) -> Url {
                 self.0
             }
         }
