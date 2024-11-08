@@ -12,5 +12,5 @@ thiserror.workspace = true
 uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
-alloy-signer-local = "0.4"
+thegraph-core = { workspace = true, features = ["alloy-signer-local"] }
 alloy-sol-types = "0.8.11"

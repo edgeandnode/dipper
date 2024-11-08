@@ -6,7 +6,10 @@
 
 use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId};
 use sqlx::{postgres::PgRow, Error, Row as _};
-use thegraph_core::{alloy_primitives::B256, Address, AllocationId, ProofOfIndexing};
+use thegraph_core::{
+    alloy::primitives::{Address, B256},
+    AllocationId, ProofOfIndexing,
+};
 use time::OffsetDateTime;
 
 /// An Indexing Receipt represents the redeemable receipt associated with a given indexing

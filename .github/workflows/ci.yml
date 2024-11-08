@@ -29,6 +29,7 @@ jobs:
         with:
           components: clippy
           cache: false
+          rustflags: ''
 
       - name: Cache rust build files
         uses: leafwing-studios/cargo-cache@5d5d363fa3b9886d45c4705228c5c73ccea17636 # v2
@@ -51,7 +52,7 @@ jobs:
         run: |
           # Install Python dependencies
           uv sync --frozen --no-dev --no-install-project
-          
+
           # Set PYTHON_LIB_DIR output param to the directory containing the libpython shared library
           echo "PYTHON_LIB_DIR=$(dirname `uv tool run find_libpython`)" >> $GITHUB_OUTPUT
 

@@ -17,7 +17,7 @@ use std::{str::FromStr, time::Duration};
 
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use sqlx::{postgres::PgRow, Error, Row as _};
-use thegraph_core::{Address, IndexerId};
+use thegraph_core::{alloy::primitives::Address, IndexerId};
 use time::OffsetDateTime;
 use url::Url;
 

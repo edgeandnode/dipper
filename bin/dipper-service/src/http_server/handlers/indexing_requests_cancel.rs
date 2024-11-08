@@ -1,7 +1,5 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use alloy_signer_local::PrivateKeySigner;
-use alloy_sol_types::private::primitives::B128;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -13,7 +11,10 @@ use dipper_core::{
 use dipper_pgmq::queue::Queue;
 use dipper_registry::{Error, Registry};
 use serde::{Deserialize, Serialize};
-use thegraph_core::Address;
+use thegraph_core::alloy::{
+    primitives::{Address, B128},
+    signers::local::PrivateKeySigner,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -155,12 +156,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloy_signer_local::PrivateKeySigner;
-    use alloy_sol_types::{eip712_domain, Eip712Domain};
     use dipper_core::{
         signed_message::Eip712Signer, signed_message_serde::SignedMessage as SignedMessageSerde,
     };
-    use thegraph_core::{address, alloy_primitives::b256};
+    use thegraph_core::alloy::{
+        primitives::{address, b256},
+        signers::local::PrivateKeySigner,
+        sol_types::{eip712_domain, Eip712Domain},
+    };
     use uuid::uuid;
 
     use super::{CancelIndexingRequest, CancelIndexingRequestSol};

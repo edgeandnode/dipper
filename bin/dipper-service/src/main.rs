@@ -22,7 +22,7 @@ impl AppState {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+pub async fn main() -> anyhow::Result<()> {
     let opts = config::StartArgs::parse_and_merge()?;
 
     // Set up logging

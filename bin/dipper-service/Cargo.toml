@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-alloy-signer-local = "0.4"
 alloy-sol-types = "0.8.11"
 anyhow.workspace = true
 async-select = "0.2.0"
@@ -24,7 +23,7 @@ serde_json.workspace = true
 serde_with = "3.11.0"
 serde_yaml = { version = "0.10.0", package = "serde_yaml_ng" }
 snmalloc-rs = "0.3.6"
-thegraph-core = { workspace = true, features = ["serde"] }
+thegraph-core = { workspace = true, features = ["serde", "alloy-signer-local"] }
 thegraph-graphql-http = { version = "0.2.4", features = ["http-client-reqwest"] }
 thiserror.workspace = true
 time.workspace = true

@@ -1,6 +1,5 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use alloy_signer_local::PrivateKeySigner;
 use axum::{extract::State, http::StatusCode, Json};
 use dipper_core::{
     ids::IndexingRequestId, signed_message::Eip712Signer, signed_message_serde::SignedMessage,
@@ -8,7 +7,13 @@ use dipper_core::{
 use dipper_pgmq::queue::Queue;
 use dipper_registry::Registry;
 use serde::{Deserialize, Serialize};
-use thegraph_core::{alloy_primitives::B256, Address, DeploymentId};
+use thegraph_core::{
+    alloy::{
+        primitives::{Address, B256},
+        signers::local::PrivateKeySigner,
+    },
+    DeploymentId,
+};
 
 use crate::{
     http_server::context::Ctx,
@@ -146,12 +151,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloy_signer_local::PrivateKeySigner;
-    use alloy_sol_types::{eip712_domain, Eip712Domain};
     use dipper_core::{
         signed_message::Eip712Signer, signed_message_serde::SignedMessage as SignedMessageSerde,
     };
-    use thegraph_core::{address, alloy_primitives::b256, deployment_id};
+    use thegraph_core::{
+        alloy::{
+            primitives::{address, b256},
+            signers::local::PrivateKeySigner,
+            sol_types::{eip712_domain, Eip712Domain},
+        },
+        deployment_id,
+    };
 
     use super::{NewIndexingRequest, NewIndexingRequestSol};
 

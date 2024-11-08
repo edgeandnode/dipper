@@ -6,7 +6,7 @@
 
 use dipper_core::ids::IndexingRequestId;
 use sqlx::{postgres::PgRow, Error, Row as _};
-use thegraph_core::{Address, DeploymentId};
+use thegraph_core::{alloy::primitives::Address, DeploymentId};
 use time::OffsetDateTime;
 
 /// An Indexing Request represents the request for indexing services initiated by the customer.

@@ -1,6 +1,6 @@
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 use serde::ser::SerializeStruct as _;
-use thegraph_core::alloy_primitives::Signature;
+use thegraph_core::alloy::primitives::PrimitiveSignature as Signature;
 
 use super::signed_message::SignedMessage as InnerSignedMessage;
 

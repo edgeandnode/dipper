@@ -6,7 +6,7 @@ use axum::{
 use dipper_core::ids::IndexingRequestId;
 use dipper_registry::{IndexingRequest, IndexingRequestStatus, Registry};
 use serde_with::serde_as;
-use thegraph_core::{Address, DeploymentId};
+use thegraph_core::{alloy::primitives::Address, DeploymentId};
 use time::OffsetDateTime;
 
 use crate::http_server::context::Ctx;

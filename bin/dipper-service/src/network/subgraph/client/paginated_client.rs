@@ -1,7 +1,7 @@
 use std::sync::{atomic::AtomicU64, Arc};
 
 use serde::de::Deserialize;
-use thegraph_core::{BlockNumber, BlockPointer};
+use thegraph_core::{alloy::primitives::BlockNumber, BlockPointer};
 use thegraph_graphql_http::{
     graphql::IntoDocument, http::request::IntoRequestParameters, http_client::ResponseError,
 };

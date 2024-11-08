@@ -18,7 +18,7 @@ struct Arguments {
     command: Command,
 }
 
-fn main() -> Result<(), anyhow::Error> {
+pub fn main() -> Result<(), anyhow::Error> {
     let args = Arguments::try_parse()?;
     match args.command {
         Command::Todo => {

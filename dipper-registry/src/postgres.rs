@@ -3,7 +3,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
 use sqlx::{Pool, Postgres};
-use thegraph_core::{Address, AllocationId, DeploymentId, IndexerId, ProofOfIndexing};
+use thegraph_core::{
+    alloy::primitives::Address, AllocationId, DeploymentId, IndexerId, ProofOfIndexing,
+};
 use url::Url;
 
 use super::{
