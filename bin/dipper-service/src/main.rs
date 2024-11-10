@@ -7,6 +7,7 @@ mod config;
 mod http_server;
 mod indexers;
 mod network;
+mod signer;
 mod worker;
 
 #[global_allocator]

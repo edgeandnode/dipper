@@ -2,21 +2,19 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use axum::{extract::State, http::StatusCode, Json};
 use dipper_core::{
-    ids::IndexingRequestId, signed_message::Eip712Signer, signed_message_serde::SignedMessage,
+    ids::IndexingRequestId,
+    signed_message::{serde::SignedMessage, ToSolStruct},
 };
 use dipper_pgmq::queue::Queue;
 use dipper_registry::Registry;
-use serde::{Deserialize, Serialize};
 use thegraph_core::{
-    alloy::{
-        primitives::{Address, B256},
-        signers::local::PrivateKeySigner,
-    },
+    alloy::{primitives::Address, signers::local::PrivateKeySigner},
     DeploymentId,
 };
 
 use crate::{
     http_server::context::Ctx,
+    signer::Eip712Signer,
     worker::messages::{Message, ProcessNewIndexingRequest},
 };
 
@@ -49,56 +47,29 @@ where
 
 alloy_sol_types::sol! {
     /// The new indexing request message (Solidity version)
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct NewIndexingRequestSol {
         /// The deployment ID of the subgraph that should be indexed
-        #[serde(
-            serialize_with = "serialize_as_deployment_id",
-            deserialize_with = "deserialize_as_deployment_id"
-        )]
         bytes32 deployment_id;
     }
 }
 
-fn serialize_as_deployment_id<S>(value: &B256, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    DeploymentId::from(*value).serialize(serializer)
-}
-
-fn deserialize_as_deployment_id<'de, D>(deserializer: D) -> Result<B256, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    DeploymentId::deserialize(deserializer).map(Into::into)
-}
-
 /// The new indexing request message (Rust version)
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct NewIndexingRequest {
     deployment_id: DeploymentId,
 }
 
-impl From<NewIndexingRequestSol> for NewIndexingRequest {
-    fn from(value: NewIndexingRequestSol) -> Self {
-        Self {
-            deployment_id: value.deployment_id.into(),
-        }
-    }
-}
-
-impl From<NewIndexingRequest> for NewIndexingRequestSol {
-    fn from(value: NewIndexingRequest) -> Self {
-        Self {
-            deployment_id: value.deployment_id.into(),
+impl ToSolStruct<NewIndexingRequestSol> for NewIndexingRequest {
+    fn to_sol_struct(&self) -> NewIndexingRequestSol {
+        NewIndexingRequestSol {
+            deployment_id: self.deployment_id.into(),
         }
     }
 }
 
 pub async fn register_new_indexing_request<R, W>(
     State(ctx): State<NewIndexingRequestCtx<R, W>>,
-    Json(payload): Json<SignedMessage<NewIndexingRequestSol>>,
+    Json(payload): Json<SignedMessage<NewIndexingRequest>>,
 ) -> Result<Json<IndexingRequestId>, StatusCode>
 where
     R: Registry,
@@ -151,9 +122,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use dipper_core::{
-        signed_message::Eip712Signer, signed_message_serde::SignedMessage as SignedMessageSerde,
-    };
+    use dipper_core::signed_message::serde::SignedMessage as SignedMessageSerde;
     use thegraph_core::{
         alloy::{
             primitives::{address, b256},
@@ -163,7 +132,8 @@ mod tests {
         deployment_id,
     };
 
-    use super::{NewIndexingRequest, NewIndexingRequestSol};
+    use super::NewIndexingRequest;
+    use crate::signer::Eip712Signer;
 
     /// A test EIP-712 domain
     const EIP712_DOMAIN: Eip712Domain = eip712_domain! {
@@ -186,17 +156,13 @@ mod tests {
         let deployment_id = deployment_id!("QmZTy9EJHu8rfY9QbEk3z1epmmvh5XHhT2Wqhkfbyt8k9Z");
         let request = NewIndexingRequest { deployment_id };
 
-        let request_sol: NewIndexingRequestSol = request.into();
-
         //* When
-        let signed_message: SignedMessageSerde<NewIndexingRequestSol> = eip712_signer
-            .sign(request_sol)
-            .expect("signing failed")
-            .into();
+        let signed_message: SignedMessageSerde<NewIndexingRequest> =
+            eip712_signer.sign(request).expect("signing failed").into();
 
         let serialized = serde_json::to_string(&signed_message).expect("serialization failed");
         let deserialized =
-            serde_json::from_str::<SignedMessageSerde<NewIndexingRequestSol>>(&serialized)
+            serde_json::from_str::<SignedMessageSerde<NewIndexingRequest>>(&serialized)
                 .expect("deserialization failed");
 
         //* Then

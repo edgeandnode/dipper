@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-base64 = "0.22.1"
 serde.workspace = true
+serde_with = { workspace = true, features = ["base64"] }
 sqlx.workspace = true
 thegraph-core.workspace = true
 thiserror.workspace = true

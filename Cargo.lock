@@ -1698,8 +1698,8 @@ name = "dipper-core"
 version = "0.1.0"
 dependencies = [
  "alloy-sol-types",
- "base64 0.22.1",
  "serde",
+ "serde_with",
  "sqlx",
  "thegraph-core",
  "thiserror 2.0.3",

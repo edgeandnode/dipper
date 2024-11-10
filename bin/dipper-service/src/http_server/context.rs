@@ -1,11 +1,10 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use dipper_core::signed_message::Eip712Signer;
 use dipper_pgmq::queue::Queue;
 use dipper_registry::Registry;
 use thegraph_core::alloy::{primitives::Address, signers::local::PrivateKeySigner};
 
-use crate::worker::messages::Message;
+use crate::{signer::Eip712Signer, worker::messages::Message};
 
 /// The maximum number of candidates to select.
 const DEFAULT_MAX_CANDIDATES: usize = 3;
@@ -153,10 +152,7 @@ mod tests {
     use std::{collections::BTreeSet, time::Duration};
 
     use async_trait::async_trait;
-    use dipper_core::{
-        ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId},
-        signed_message::Eip712Signer,
-    };
+    use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
     use dipper_pgmq::queue::{Job, Queue};
     use dipper_registry::{Error, IndexingAgreement, IndexingReceipt, IndexingRequest, Registry};
     use thegraph_core::{
@@ -172,6 +168,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::CtxBuilder;
+    use crate::signer::Eip712Signer;
 
     pub struct DummyRegistry;
 

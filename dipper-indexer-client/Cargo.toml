@@ -10,7 +10,7 @@ reqwest = { workspace = true, features = ["json"] }
 semver = { version = "1.0.23", features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
-serde_with = "3.11.0"
+serde_with.workspace = true
 thegraph-core.workspace = true
 thegraph-graphql-http = { version = "0.2.4", features = ["http-client-reqwest"] }
 thiserror.workspace = true
