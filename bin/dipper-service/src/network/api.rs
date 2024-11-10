@@ -1,5 +1,5 @@
 use reqwest::Url;
-use thegraph_core::{Address, DeploymentId, IndexerId};
+use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId};
 
 /// An indexer.
 pub struct Indexer {

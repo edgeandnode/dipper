@@ -1,10 +1,9 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use alloy_signer_local::PrivateKeySigner;
 use dipper_core::signed_message::Eip712Signer;
 use dipper_pgmq::queue::Queue;
 use dipper_registry::Registry;
-use thegraph_core::Address;
+use thegraph_core::alloy::{primitives::Address, signers::local::PrivateKeySigner};
 
 use crate::worker::messages::Message;
 
@@ -153,8 +152,6 @@ where
 mod tests {
     use std::{collections::BTreeSet, time::Duration};
 
-    use alloy_signer_local::PrivateKeySigner;
-    use alloy_sol_types::{eip712_domain, private::Address};
     use async_trait::async_trait;
     use dipper_core::{
         ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId},
@@ -163,7 +160,12 @@ mod tests {
     use dipper_pgmq::queue::{Job, Queue};
     use dipper_registry::{Error, IndexingAgreement, IndexingReceipt, IndexingRequest, Registry};
     use thegraph_core::{
-        address, alloy_primitives::b256, AllocationId, DeploymentId, IndexerId, ProofOfIndexing,
+        alloy::{
+            primitives::{address, b256},
+            signers::local::PrivateKeySigner,
+            sol_types::{eip712_domain, private::Address},
+        },
+        AllocationId, DeploymentId, IndexerId, ProofOfIndexing,
     };
     use time::OffsetDateTime;
     use url::Url;

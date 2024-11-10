@@ -1,4 +1,4 @@
-use thegraph_core::{Address, DeploymentId, IndexerId};
+use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId};
 
 use super::{api::NetworkProvider, service::ServiceHandle};
 use crate::network::api::Indexer;

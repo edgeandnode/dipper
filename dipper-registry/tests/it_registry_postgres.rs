@@ -3,7 +3,7 @@ use std::time::Duration;
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_registry::{postgres::PgRegistry, Error, IndexingRequestStatus, Registry};
 use sqlx::{Pool, Postgres};
-use thegraph_core::{address, allocation_id, deployment_id, indexer_id};
+use thegraph_core::{allocation_id, alloy::primitives::address, deployment_id, indexer_id};
 use uuid::uuid;
 
 #[test_with::env(DATABASE_URL)]

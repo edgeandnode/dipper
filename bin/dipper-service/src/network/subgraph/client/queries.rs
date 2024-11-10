@@ -79,7 +79,7 @@ pub mod meta {
 pub mod page {
     use serde::{ser::SerializeMap as _, Deserialize, Serialize, Serializer};
     use serde_json::value::RawValue;
-    use thegraph_core::{BlockHash, BlockNumber};
+    use thegraph_core::alloy::primitives::{BlockHash, BlockNumber};
     use thegraph_graphql_http::{
         graphql::{Document, IntoDocument, IntoDocumentWithVariables},
         http_client::ResponseResult,

@@ -17,12 +17,14 @@
 //! [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
 // TODO: Move this to thegraph-core
 
-pub use thegraph_core::{
-    alloy_primitives::{b256, Signature, SignatureError},
-    alloy_signer::{k256::ecdsa::Error as EcdsaError, SignerSync, UnsupportedSignerOperation},
-    alloy_sol_types::{eip712_domain, sol, Eip712Domain, SolStruct},
+use thegraph_core::alloy::{
+    primitives::{Address, PrimitiveSignature as Signature, SignatureError},
+    signers::{
+        k256::ecdsa::Error as EcdsaError, Error as SignerError, SignerSync,
+        UnsupportedSignerOperation,
+    },
+    sol_types::{Eip712Domain, SolStruct},
 };
-use thegraph_core::{alloy_signer, Address};
 
 /// Errors that can occur when signing a message.
 #[derive(Debug, thiserror::Error)]
@@ -88,23 +90,21 @@ where
     let signature = signer
         .sign_typed_data_sync(&message, domain)
         .map_err(|err| match err {
-            alloy_signer::Error::UnsupportedOperation(err) => {
-                SigningError::UnsupportedOperation(err)
-            }
-            alloy_signer::Error::DynAbiError(_) => {
-                unreachable!("sign_typed_data_sync should not return DynAbiError")
-            }
-            alloy_signer::Error::Ecdsa(err) => SigningError::Ecdsa(err),
-            alloy_signer::Error::HexError(_) => {
-                unreachable!("sign_typed_data_sync should not return HexError")
-            }
-            alloy_signer::Error::Other(err) => SigningError::Other(err),
-            alloy_signer::Error::TransactionChainIdMismatch { .. } => {
+            SignerError::UnsupportedOperation(err) => SigningError::UnsupportedOperation(err),
+            SignerError::TransactionChainIdMismatch { .. } => {
                 unreachable!("sign_typed_data_sync should not return TransactionChainIdMismatch")
             }
-            alloy_signer::Error::SignatureError(_) => {
+            SignerError::DynAbiError(_) => {
+                unreachable!("sign_typed_data_sync should not return DynAbiError")
+            }
+            SignerError::Ecdsa(err) => SigningError::Ecdsa(err),
+            SignerError::HexError(_) => {
+                unreachable!("sign_typed_data_sync should not return HexError")
+            }
+            SignerError::SignatureError(_) => {
                 unreachable!("sign_typed_data_sync should not return SignatureError")
             }
+            SignerError::Other(err) => SigningError::Other(err),
         })?;
     Ok(SignedMessage { message, signature })
 }
@@ -230,10 +230,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloy_signer_local::PrivateKeySigner;
-    use thegraph_core::{
-        alloy_primitives::{address, b256, keccak256, Signature},
-        alloy_sol_types::{eip712_domain, Eip712Domain},
+    use thegraph_core::alloy::{
+        primitives::{address, b256, keccak256, PrimitiveSignature as Signature},
+        signers::local::PrivateKeySigner,
+        sol_types::{eip712_domain, Eip712Domain},
     };
 
     use super::{
@@ -325,8 +325,7 @@ mod tests {
                 b256!("ca457b3f821e5c03545944e0318868a783d0e6b438c85a82537d52a619decfe2"),
                 b256!("26a9f36fcf89431476aa556021ee77959dc480fb3458054f26d068b52d525cc4"),
                 false,
-            )
-            .expect("invalid signature format"),
+            ),
         };
 
         //* When
