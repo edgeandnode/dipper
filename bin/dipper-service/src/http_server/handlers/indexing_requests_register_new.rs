@@ -2,19 +2,16 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use axum::{extract::State, http::StatusCode, Json};
 use dipper_core::{
-    ids::IndexingRequestId,
-    signed_message::{serde::SignedMessage, ToSolStruct},
+    api::admin::indexing_requests::NewIndexingRequest, ids::IndexingRequestId,
+    signed_message::serde::SignedMessage,
 };
 use dipper_pgmq::queue::Queue;
 use dipper_registry::Registry;
-use thegraph_core::{
-    alloy::{primitives::Address, signers::local::PrivateKeySigner},
-    DeploymentId,
-};
+use thegraph_core::alloy::primitives::Address;
 
 use crate::{
     http_server::context::Ctx,
-    signer::Eip712Signer,
+    signer::PrivateKeyEip712Signer,
     worker::messages::{Message, ProcessNewIndexingRequest},
 };
 
@@ -22,7 +19,7 @@ use crate::{
 ///
 /// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
 pub struct NewIndexingRequestCtx<R, W> {
-    signer: Arc<Eip712Signer<PrivateKeySigner>>,
+    signer: Arc<PrivateKeyEip712Signer>,
     allowlist: Arc<BTreeSet<Address>>,
     registry: R,
     worker: W,
@@ -41,28 +38,6 @@ where
             registry: ctx.registry.clone(),
             worker: ctx.worker.clone(),
             max_candidates: ctx.max_candidates,
-        }
-    }
-}
-
-thegraph_core::alloy::sol! {
-    /// The new indexing request message (Solidity version)
-    struct NewIndexingRequestSol {
-        /// The deployment ID of the subgraph that should be indexed
-        bytes32 deployment_id;
-    }
-}
-
-/// The new indexing request message (Rust version)
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct NewIndexingRequest {
-    deployment_id: DeploymentId,
-}
-
-impl ToSolStruct<NewIndexingRequestSol> for NewIndexingRequest {
-    fn to_sol_struct(&self) -> NewIndexingRequestSol {
-        NewIndexingRequestSol {
-            deployment_id: self.deployment_id.into(),
         }
     }
 }

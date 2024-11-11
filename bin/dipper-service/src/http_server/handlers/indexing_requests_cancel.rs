@@ -6,16 +6,16 @@ use axum::{
     Json,
 };
 use dipper_core::{
-    ids::IndexingRequestId,
-    signed_message::{serde::SignedMessage, ToSolStruct},
+    api::admin::indexing_requests::CancelIndexingRequest, ids::IndexingRequestId,
+    signed_message::serde::SignedMessage,
 };
 use dipper_pgmq::queue::Queue;
 use dipper_registry::{Error, Registry};
-use thegraph_core::alloy::{primitives::Address, signers::local::PrivateKeySigner};
+use thegraph_core::alloy::primitives::Address;
 
 use crate::{
     http_server::context::Ctx,
-    signer::Eip712Signer,
+    signer::PrivateKeyEip712Signer,
     worker::messages::{Message, ProcessIndexingRequestCancellation},
 };
 
@@ -23,7 +23,7 @@ use crate::{
 ///
 /// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
 pub struct CancelIndexingRequestCtx<R, W> {
-    signer: Arc<Eip712Signer<PrivateKeySigner>>,
+    signer: Arc<PrivateKeyEip712Signer>,
     allowlist: Arc<BTreeSet<Address>>,
     registry: R,
     worker: W,
@@ -40,28 +40,6 @@ where
             allowlist: ctx.allowlist.clone(),
             registry: ctx.registry.clone(),
             worker: ctx.worker.clone(),
-        }
-    }
-}
-
-thegraph_core::alloy::sol! {
-    /// The cancel indexing request message (Solidity version)
-    struct CancelIndexingRequestSol {
-        /// The deployment ID of the subgraph that should be indexed
-        bytes16 id;
-    }
-}
-
-/// The cancel indexing request message (Rust version)
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct CancelIndexingRequest {
-    id: IndexingRequestId,
-}
-
-impl ToSolStruct<CancelIndexingRequestSol> for CancelIndexingRequest {
-    fn to_sol_struct(&self) -> CancelIndexingRequestSol {
-        CancelIndexingRequestSol {
-            id: self.id.as_bytes().into(),
         }
     }
 }

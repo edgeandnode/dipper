@@ -22,7 +22,7 @@ serde_json.workspace = true
 serde_with.workspace = true
 serde_yaml = { version = "0.10.0", package = "serde_yaml_ng" }
 snmalloc-rs = "0.3.6"
-thegraph-core = { workspace = true, features = ["serde", "alloy-signer-local"] }
+thegraph-core = { workspace = true, features = ["alloy-signer-local"] }
 thegraph-graphql-http = { version = "0.2.4", features = ["http-client-reqwest"] }
 thiserror.workspace = true
 time.workspace = true
