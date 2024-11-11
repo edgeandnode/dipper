@@ -6,19 +6,16 @@ use axum::{
     Json,
 };
 use dipper_core::{
-    ids::IndexingRequestId, signed_message::Eip712Signer, signed_message_serde::SignedMessage,
+    ids::IndexingRequestId,
+    signed_message::{serde::SignedMessage, ToSolStruct},
 };
 use dipper_pgmq::queue::Queue;
 use dipper_registry::{Error, Registry};
-use serde::{Deserialize, Serialize};
-use thegraph_core::alloy::{
-    primitives::{Address, B128},
-    signers::local::PrivateKeySigner,
-};
-use uuid::Uuid;
+use thegraph_core::alloy::{primitives::Address, signers::local::PrivateKeySigner};
 
 use crate::{
     http_server::context::Ctx,
+    signer::Eip712Signer,
     worker::messages::{Message, ProcessIndexingRequestCancellation},
 };
 
@@ -49,49 +46,22 @@ where
 
 alloy_sol_types::sol! {
     /// The cancel indexing request message (Solidity version)
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct CancelIndexingRequestSol {
         /// The deployment ID of the subgraph that should be indexed
-        #[serde(
-            serialize_with = "serialize_as_uuid",
-            deserialize_with = "deserialize_as_uuid"
-        )]
         bytes16 id;
     }
 }
 
-fn serialize_as_uuid<S>(value: &B128, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    Uuid::from_bytes((*value).into()).serialize(serializer)
-}
-
-fn deserialize_as_uuid<'de, D>(deserializer: D) -> Result<B128, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Uuid::deserialize(deserializer).map(|uuid| B128::from(uuid.into_bytes()))
-}
-
 /// The cancel indexing request message (Rust version)
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct CancelIndexingRequest {
     id: IndexingRequestId,
 }
 
-impl From<CancelIndexingRequestSol> for CancelIndexingRequest {
-    fn from(value: CancelIndexingRequestSol) -> Self {
-        Self {
-            id: IndexingRequestId::from_bytes(value.id.into()),
-        }
-    }
-}
-
-impl From<CancelIndexingRequest> for CancelIndexingRequestSol {
-    fn from(value: CancelIndexingRequest) -> Self {
-        Self {
-            id: value.id.as_bytes().into(),
+impl ToSolStruct<CancelIndexingRequestSol> for CancelIndexingRequest {
+    fn to_sol_struct(&self) -> CancelIndexingRequestSol {
+        CancelIndexingRequestSol {
+            id: self.id.as_bytes().into(),
         }
     }
 }
@@ -100,7 +70,7 @@ impl From<CancelIndexingRequest> for CancelIndexingRequestSol {
 pub async fn cancel_indexing_request<R, W>(
     State(ctx): State<CancelIndexingRequestCtx<R, W>>,
     Path(path_indexing_request_id): Path<IndexingRequestId>,
-    Json(payload): Json<SignedMessage<CancelIndexingRequestSol>>,
+    Json(payload): Json<SignedMessage<CancelIndexingRequest>>,
 ) -> Result<(), StatusCode>
 where
     R: Registry,
@@ -156,9 +126,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use dipper_core::{
-        signed_message::Eip712Signer, signed_message_serde::SignedMessage as SignedMessageSerde,
-    };
+    use dipper_core::signed_message::serde::SignedMessage as SignedMessageSerde;
     use thegraph_core::alloy::{
         primitives::{address, b256},
         signers::local::PrivateKeySigner,
@@ -166,7 +134,8 @@ mod tests {
     };
     use uuid::uuid;
 
-    use super::{CancelIndexingRequest, CancelIndexingRequestSol};
+    use super::CancelIndexingRequest;
+    use crate::signer::Eip712Signer;
 
     /// A test EIP-712 domain
     const EIP712_DOMAIN: Eip712Domain = eip712_domain! {
@@ -191,17 +160,13 @@ mod tests {
             id: indexing_request_id,
         };
 
-        let request_sol: CancelIndexingRequestSol = request.into();
-
         //* When
-        let signed_message: SignedMessageSerde<CancelIndexingRequestSol> = eip712_signer
-            .sign(request_sol)
-            .expect("signing failed")
-            .into();
+        let signed_message: SignedMessageSerde<CancelIndexingRequest> =
+            eip712_signer.sign(request).expect("signing failed").into();
 
         let serialized = serde_json::to_string(&signed_message).expect("serialization failed");
         let deserialized =
-            serde_json::from_str::<SignedMessageSerde<CancelIndexingRequestSol>>(&serialized)
+            serde_json::from_str::<SignedMessageSerde<CancelIndexingRequest>>(&serialized)
                 .expect("deserialization failed");
 
         //* Then
