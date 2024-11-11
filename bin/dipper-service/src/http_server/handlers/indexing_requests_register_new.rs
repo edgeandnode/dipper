@@ -45,7 +45,7 @@ where
     }
 }
 
-alloy_sol_types::sol! {
+thegraph_core::alloy::sol! {
     /// The new indexing request message (Solidity version)
     struct NewIndexingRequestSol {
         /// The deployment ID of the subgraph that should be indexed

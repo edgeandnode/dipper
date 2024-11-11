@@ -13,4 +13,3 @@ uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 thegraph-core = { workspace = true, features = ["alloy-signer-local"] }
-alloy-sol-types = "0.8.11"

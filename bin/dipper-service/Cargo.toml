@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-alloy-sol-types = "0.8.11"
 anyhow.workspace = true
 async-select = "0.2.0"
 async-signal = "0.2.10"
