@@ -44,7 +44,7 @@ where
     }
 }
 
-alloy_sol_types::sol! {
+thegraph_core::alloy::sol! {
     /// The cancel indexing request message (Solidity version)
     struct CancelIndexingRequestSol {
         /// The deployment ID of the subgraph that should be indexed

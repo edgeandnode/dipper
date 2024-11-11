@@ -151,7 +151,7 @@ mod tests {
         salt: b256!("66eb090e6dbb9668c7d32c0ee7ba5e8f08d84385804485d316dd5f5692273593")
     };
 
-    alloy_sol_types::sol! {
+    thegraph_core::alloy::sol! {
         /// Test struct for EIP712 message
         struct Message {
             bytes32 data;

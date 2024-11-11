@@ -1697,7 +1697,6 @@ dependencies = [
 name = "dipper-core"
 version = "0.1.0"
 dependencies = [
- "alloy-sol-types",
  "serde",
  "serde_with",
  "sqlx",
@@ -1778,7 +1777,6 @@ dependencies = [
 name = "dipper-service"
 version = "0.1.0"
 dependencies = [
- "alloy-sol-types",
  "anyhow",
  "async-select",
  "async-signal",
