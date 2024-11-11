@@ -8,9 +8,12 @@ use dipper_core::signed_message::{
 };
 use thegraph_core::alloy::{
     primitives::Address,
-    signers::SignerSync,
+    signers::{local::PrivateKeySigner, SignerSync},
     sol_types::{Eip712Domain, SolStruct},
 };
+
+/// An [`Eip712Signer`] using a [`PrivateKeySigner`] as the ECDSA signer
+pub type PrivateKeyEip712Signer = Eip712Signer<PrivateKeySigner>;
 
 /// An [`Eip712Signer`] wraps a ECDSA signer and an [EIP-712] domain separator.
 ///

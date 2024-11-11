@@ -2,9 +2,9 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use dipper_pgmq::queue::Queue;
 use dipper_registry::Registry;
-use thegraph_core::alloy::{primitives::Address, signers::local::PrivateKeySigner};
+use thegraph_core::alloy::primitives::Address;
 
-use crate::{signer::Eip712Signer, worker::messages::Message};
+use crate::{signer::PrivateKeyEip712Signer, worker::messages::Message};
 
 /// The maximum number of candidates to select.
 const DEFAULT_MAX_CANDIDATES: usize = 3;
@@ -13,7 +13,7 @@ const DEFAULT_MAX_CANDIDATES: usize = 3;
 #[derive(Clone)]
 pub struct Ctx<R, W> {
     /// The EIP-712 signer
-    pub(super) signer: Arc<Eip712Signer<PrivateKeySigner>>,
+    pub(super) signer: Arc<PrivateKeyEip712Signer>,
 
     /// The allowlist of addresses that are allowed to make requests to the DIPs gateway
     pub(super) allowlist: Arc<BTreeSet<Address>>,
@@ -39,7 +39,7 @@ pub struct CtxBuilder<S, R, W> {
 
 struct NotSet;
 
-struct SignerSet(Eip712Signer<PrivateKeySigner>);
+struct SignerSet(PrivateKeyEip712Signer);
 
 struct RegistrySet<R>(R);
 
@@ -84,10 +84,7 @@ impl<S, R, W> CtxBuilder<S, R, W> {
 
 impl<R, W> CtxBuilder<NotSet, R, W> {
     /// Sets the EIP-712 signer.
-    pub fn with_signer(
-        self,
-        signer: Eip712Signer<PrivateKeySigner>,
-    ) -> CtxBuilder<SignerSet, R, W> {
+    pub fn with_signer(self, signer: PrivateKeyEip712Signer) -> CtxBuilder<SignerSet, R, W> {
         CtxBuilder {
             signer: SignerSet(signer),
             allowlist: self.allowlist,
@@ -168,7 +165,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::CtxBuilder;
-    use crate::signer::Eip712Signer;
+    use crate::signer::PrivateKeyEip712Signer;
 
     pub struct DummyRegistry;
 
@@ -359,7 +356,7 @@ mod tests {
                 salt: b256!("66eb090e6dbb9668c7d32c0ee7ba5e8f08d84385804485d316dd5f5692273593")
             };
 
-            Eip712Signer::new(signer, signer_address, domain)
+            PrivateKeyEip712Signer::new(signer, signer_address, domain)
         };
         let allowlist = BTreeSet::from([address!("A3A933720D7BAE63a102e70869D1Ca96E2329428")]);
         let registry = DummyRegistry;
