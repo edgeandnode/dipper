@@ -1702,7 +1702,7 @@ dependencies = [
  "serde",
  "sqlx",
  "thegraph-core",
- "thiserror 2.0.0",
+ "thiserror 2.0.3",
  "uuid",
 ]
 
@@ -1718,7 +1718,7 @@ dependencies = [
  "reqwest",
  "test-with",
  "thegraph-core",
- "thiserror 2.0.0",
+ "thiserror 2.0.3",
  "tokio",
  "tracing",
  "tracing-log",
@@ -1739,7 +1739,7 @@ dependencies = [
  "serde_with",
  "thegraph-core",
  "thegraph-graphql-http",
- "thiserror 2.0.0",
+ "thiserror 2.0.3",
  "url",
 ]
 
@@ -1752,7 +1752,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
- "thiserror 2.0.0",
+ "thiserror 2.0.3",
  "time",
  "uuid",
 ]
@@ -1768,7 +1768,7 @@ dependencies = [
  "sqlx",
  "test-with",
  "thegraph-core",
- "thiserror 2.0.0",
+ "thiserror 2.0.3",
  "time",
  "url",
  "uuid",
@@ -1800,7 +1800,7 @@ dependencies = [
  "test-with",
  "thegraph-core",
  "thegraph-graphql-http",
- "thiserror 2.0.0",
+ "thiserror 2.0.3",
  "time",
  "tokio",
  "tower 0.5.1",
@@ -4861,11 +4861,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.0"
+version = "2.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15291287e9bff1bc6f9ff3409ed9af665bec7a5fc8ac079ea96be07bca0e2668"
+checksum = "c006c85c7651b3cf2ada4584faa36773bd07bac24acfb39f3c431b36d7e667aa"
 dependencies = [
- "thiserror-impl 2.0.0",
+ "thiserror-impl 2.0.3",
 ]
 
 [[package]]
@@ -4881,9 +4881,9 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.0"
+version = "2.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22efd00f33f93fa62848a7cab956c3d38c8d43095efda1decfc2b3a5dc0b8972"
+checksum = "f077553d607adc1caf65430528a576c757a71ed73944b66ebb58ef2bbd243568"
 dependencies = [
  "proc-macro2",
  "quote",
