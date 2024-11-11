@@ -24,24 +24,19 @@ jobs:
       - name: Prepare build env
         run: sudo apt-get install -y lld
 
-      - name: Setup Rust toolchain
+      - name: Set up Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@11df97af8e8102fd60b60a77dfbf58d40cd843b8 # v1
         with:
           components: clippy
           cache: false
           rustflags: ''
 
-      - name: Cache rust build files
+      - name: Cache Rust build files
         uses: leafwing-studios/cargo-cache@5d5d363fa3b9886d45c4705228c5c73ccea17636 # v2
         with:
           sweep-cache: true
 
-      ## Check
-      - run: cargo clippy -- -D warnings --force-warn deprecated --force-warn dead-code
-
-      ## Test
-      # Install uv (to manage Python versions and dependencies)
-      - name: Setup uv
+      - name: Set up uv
         uses: astral-sh/setup-uv@2e657c127d5b1635d5a8e3fa40e0ac50a5bf6992 # v3
         with:
           enable-cache: true
@@ -56,6 +51,12 @@ jobs:
           # Set PYTHON_LIB_DIR output param to the directory containing the libpython shared library
           echo "PYTHON_LIB_DIR=$(dirname `uv tool run find_libpython`)" >> $GITHUB_OUTPUT
 
+      ## Check
+      - run: cargo clippy -- -D warnings --force-warn deprecated --force-warn dead-code
+        env:
+            PYTHON_LIB_DIR: ${{ steps.python.outputs.PYTHON_LIB_DIR }}
+
+      ## Test
       # Install sops (needed for decrypting tests .env file)
       - name: Setup sops
         uses: nhedger/setup-sops@358bac533e4e92f9ce9f9da563d6265929c88cda # v2
