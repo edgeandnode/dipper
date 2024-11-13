@@ -44,7 +44,7 @@ pub trait AdminIndexingRequestsRpc {
     #[method(name = "cancel_indexing_request")]
     async fn cancel_indexing_request(
         &self,
-        req: SignedMessage<CancelIndexingRequest>,
+        req: SignedMessage<CancelIndexingRequestById>,
     ) -> RpcResult<()>;
 }
 
@@ -74,12 +74,12 @@ thegraph_core::alloy::sol! {
 
 /// The cancel indexing request message
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct CancelIndexingRequest {
+pub struct CancelIndexingRequestById {
     /// The deployment ID of the subgraph that should be indexed
     pub id: IndexingRequestId,
 }
 
-impl ToSolStruct<CancelIndexingRequestSol> for CancelIndexingRequest {
+impl ToSolStruct<CancelIndexingRequestSol> for CancelIndexingRequestById {
     fn to_sol_struct(&self) -> CancelIndexingRequestSol {
         CancelIndexingRequestSol {
             id: self.id.as_bytes().into(),
