@@ -74,6 +74,7 @@ macro_rules! uuid_new_type_impls {
             }
         }
 
+        #[cfg(feature = "serde")]
         impl ::serde::Serialize for $name {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
@@ -83,6 +84,7 @@ macro_rules! uuid_new_type_impls {
             }
         }
 
+        #[cfg(feature = "serde")]
         impl<'de> ::serde::Deserialize<'de> for $name {
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
@@ -93,12 +95,14 @@ macro_rules! uuid_new_type_impls {
             }
         }
 
+        #[cfg(feature = "sqlx")]
         impl ::sqlx::Type<::sqlx::Postgres> for $name {
             fn type_info() -> <::sqlx::Postgres as ::sqlx::Database>::TypeInfo {
                 ::uuid::Uuid::type_info()
             }
         }
 
+        #[cfg(feature = "sqlx")]
         impl<'q> ::sqlx::Encode<'q, ::sqlx::Postgres> for $name {
             fn encode_by_ref(
                 &self,
@@ -108,6 +112,7 @@ macro_rules! uuid_new_type_impls {
             }
         }
 
+        #[cfg(feature = "sqlx")]
         impl<'r> ::sqlx::Decode<'r, ::sqlx::Postgres> for $name {
             fn decode(
                 value: <::sqlx::Postgres as ::sqlx::Database>::ValueRef<'r>,
