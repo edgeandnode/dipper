@@ -4,6 +4,8 @@
 //! from indexers. The DIPs Gateway service (Dipper) is responsible for finding appropriate
 //! indexers to fulfill the request.
 
+use std::convert::Infallible;
+
 use dipper_core::ids::IndexingRequestId;
 use sqlx::{postgres::PgRow, Error, Row as _};
 use thegraph_core::{alloy::primitives::Address, DeploymentId};
@@ -133,6 +135,12 @@ pub enum Status {
     Unknown = i32::MAX,
 }
 
+impl From<i32> for Status {
+    fn from(value: i32) -> Self {
+        num_traits::FromPrimitive::from_i32(value).unwrap_or(Status::Unknown)
+    }
+}
+
 impl std::fmt::Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let status = match self {
@@ -144,8 +152,15 @@ impl std::fmt::Display for Status {
     }
 }
 
-impl From<i32> for Status {
-    fn from(value: i32) -> Self {
-        num_traits::FromPrimitive::from_i32(value).unwrap_or(Status::Unknown)
+impl std::str::FromStr for Status {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let status = match s {
+            "OPEN" => Status::Open,
+            "CANCELED" => Status::Canceled,
+            _ => Status::Unknown,
+        };
+        Ok(status)
     }
 }

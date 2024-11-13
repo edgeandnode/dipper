@@ -19,6 +19,7 @@
 // TODO: Move this to thegraph-core
 
 mod message;
+#[cfg(feature = "serde")]
 pub mod serde;
 pub mod signing;
 

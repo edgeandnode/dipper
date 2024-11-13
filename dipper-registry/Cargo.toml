@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 async-trait.workspace = true
-dipper-core = { version = "0.1.0", path = "../dipper-core" }
+dipper-core = { version = "0.1.0", path = "../dipper-core", features = ["sqlx"] }
 num-derive = "0.4.2"
 num-traits = "0.2.19"
 sqlx = { workspace = true, features = ["runtime-tokio"] }

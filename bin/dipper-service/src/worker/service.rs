@@ -1,12 +1,13 @@
 use std::{future::Future, time::Duration};
 
+use dipper_core::state::FromState;
 use dipper_iisa::CandidateSelection;
 use dipper_pgmq::{queue::Queue, result::JobResult};
 use dipper_registry::Registry;
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
-use super::{handlers, messages::Message, state::FromState};
+use super::{handlers, messages::Message};
 use crate::{indexers::DipsClient, network::api::NetworkProvider};
 
 /// Default period to pull tasks from the queue.

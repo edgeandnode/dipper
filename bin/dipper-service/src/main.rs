@@ -4,9 +4,9 @@ use thiserror::Error;
 use tracing::level_filters::LevelFilter;
 
 mod config;
-mod http_server;
 mod indexers;
 mod network;
+mod rpc_server;
 mod signer;
 mod worker;
 

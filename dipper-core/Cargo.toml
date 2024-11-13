@@ -3,13 +3,20 @@ name = "dipper-core"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+rpc = ["dep:jsonrpsee", "serde", "dep:time"]
+serde = ["dep:serde", "dep:serde_with", "thegraph-core/serde", "uuid/serde"]
+sqlx = ["dep:sqlx"]
+
 [dependencies]
-serde.workspace = true
-serde_with = { workspace = true, features = ["base64"] }
-sqlx.workspace = true
-thegraph-core = { workspace = true, features = ["serde"] }
+jsonrpsee = { workspace = true, optional = true, features = ["server", "client", "macros"] }
+serde = { workspace = true, optional = true }
+serde_with = { workspace = true, optional = true, features = ["base64"] }
+sqlx = { workspace = true, optional = true }
+thegraph-core.workspace = true
 thiserror.workspace = true
-uuid = { workspace = true, features = ["serde"] }
+time = { workspace = true, optional = true, features = ["formatting", "parsing", "serde"] }
+uuid.workspace = true
 
 [dev-dependencies]
 thegraph-core = { workspace = true, features = ["alloy-signer-local"] }
