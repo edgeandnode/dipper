@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use dipper_core::{
     ids::IndexingRequestId,
     rpc::indexing_requests::{
-        AdminIndexingRequestsRpcServer, CancelIndexingRequest, IndexingRequest,
+        AdminIndexingRequestsRpcServer, CancelIndexingRequestById, IndexingRequest,
         IndexingRequestStatus, IndexingRequestsRpcServer, NewIndexingRequest,
     },
     signed_message::serde::SignedMessage,
@@ -207,7 +207,7 @@ where
 
     async fn cancel_indexing_request(
         &self,
-        req: SignedMessage<CancelIndexingRequest>,
+        req: SignedMessage<CancelIndexingRequestById>,
     ) -> RpcResult<()> {
         // Check if the signer is authorized to make this request
         let requested_by = match self.signer.recover_signer(&req) {
@@ -223,7 +223,7 @@ where
             todo!("Return error");
         }
 
-        let CancelIndexingRequest {
+        let CancelIndexingRequestById {
             id: indexing_request_id,
         } = req.into_message();
 

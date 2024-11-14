@@ -1,3 +1,4 @@
+pub mod config;
 pub mod ids;
 #[cfg(feature = "rpc")]
 pub mod rpc;
