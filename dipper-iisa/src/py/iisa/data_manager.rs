@@ -222,7 +222,7 @@ mod tests {
             let network_provider_any = PyNetworkProvider::new(py, geoip_resolver)
                 .expect("Failed to create NetworkProvider instance")
                 .into_any();
-            let bigquery_provider_any = PyBigQueryProvider::new(py, "project", "us")
+            let bigquery_provider_any = PyBigQueryProvider::new(py, "project", "US")
                 .expect("Failed to create BigQueryProvider instance")
                 .into_any();
 

@@ -2,6 +2,8 @@
 Test suite covering the geoip module.
 """
 
+import pytest
+
 from iisa.geoip import (
     GeoipResolver,
     _IpAddressStr,
@@ -67,6 +69,7 @@ class TestResolveUrlHostIpaddr:
         assert result is None
 
 
+@pytest.mark.skip("Requires a valid ipinfo.io API key")
 class TestGetIpaddrLocationInfo:
     def test_get_geolocation_info_for_ipaddr(self):
         ## Given
@@ -103,6 +106,7 @@ class TestGetIpaddrLocationInfo:
         assert result["longitude"] is None
 
 
+@pytest.mark.skip("Requires a valid ipinfo.io API key")
 class TestGeoipResolver:
     def test_resolve_url_host_info(self):
         ## Given

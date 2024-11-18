@@ -8,6 +8,7 @@ use crate::{
 };
 
 #[test]
+#[ignore = "Requires a valid ipinfo.io API key"]
 fn set_snapshot() {
     common::add_assets_dir_to_sys_path();
     common::init_python_logging("it_iisa_network::set_snapshot");
