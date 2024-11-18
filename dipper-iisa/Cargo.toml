@@ -8,7 +8,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 indoc = "2.0.5"
 log = "0.4.22"
-pyo3 = "0.22.6"
+pyo3 = "0.23.0"
 thegraph-core.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
