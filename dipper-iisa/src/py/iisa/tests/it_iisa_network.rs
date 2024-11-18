@@ -7,11 +7,15 @@ use crate::{
     py::iisa::{PyGeoipResolver, PyNetworkProvider},
 };
 
+#[test_with::env(IT_TEST_IPINFO_IO_AUTH)]
 #[test]
 #[ignore = "Requires a valid ipinfo.io API key"]
 fn set_snapshot() {
     common::add_assets_dir_to_sys_path();
     common::init_python_logging("it_iisa_network::set_snapshot");
+
+    // Get the `ipinfo.io` API key from the environment
+    let geoip_auth = common::ipinfo_io_auth();
 
     Python::with_gil(|py| {
         //* Given
@@ -26,7 +30,8 @@ fn set_snapshot() {
 
         // Instantiate the NetworkProvider class
         let network_provider = {
-            let geoip_resolver = PyGeoipResolver::new(py).expect("instantiate geoip resolver");
+            let geoip_resolver =
+                PyGeoipResolver::new(py, &geoip_auth).expect("instantiate geoip resolver");
             PyNetworkProvider::new(py, geoip_resolver).expect("convert network provider")
         };
 

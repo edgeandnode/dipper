@@ -85,3 +85,8 @@ pub fn init_python_logging(target: &str) {
     // Configure the global `log` logger to redirect all logs to `tracing` logger
     let _ = LogTracer::init_with_filter(log::LevelFilter::Trace);
 }
+
+/// Get the `ipinfo.io` API key from the environment.
+pub fn ipinfo_io_auth() -> String {
+    std::env::var("IT_TEST_IPINFO_IO_AUTH").expect("Missing IT_TEST_IPINFO_IO_AUTH env var")
+}

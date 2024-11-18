@@ -3,6 +3,7 @@ use pyo3::{prelude::*, types::PyDict};
 use super::common;
 use crate::py::iisa::PyGeoipResolver;
 
+#[test_with::env(IT_TEST_IPINFO_IO_AUTH)]
 #[test]
 #[ignore = "Requires a valid ipinfo.io API key"]
 fn resolve_url_host_info() {
@@ -10,12 +11,15 @@ fn resolve_url_host_info() {
     common::init_python_logging("it_iisa_geoip::resolve_url_host_info");
     common::init_test_tracing();
 
+    // Get the `ipinfo.io` API key from the environment
+    let geoip_auth = common::ipinfo_io_auth();
+
     Python::with_gil(|py| {
         //* Given
         let url_str = "https://one.one.one.one";
 
-        let geoip_resolver =
-            PyGeoipResolver::new(py).expect("Failed to create PyGeoipResolver instance");
+        let geoip_resolver = PyGeoipResolver::new(py, &geoip_auth)
+            .expect("Failed to create PyGeoipResolver instance");
 
         //* When
         let result = geoip_resolver

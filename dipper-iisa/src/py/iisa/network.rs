@@ -142,7 +142,7 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
             //* Given
-            let geoip_resolver_any = PyGeoipResolver::new(py)
+            let geoip_resolver_any = PyGeoipResolver::new(py, "test_auth")
                 .expect("Failed to create GeoipResolver instance")
                 .into_any();
 

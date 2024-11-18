@@ -217,8 +217,8 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
             //* Given
-            let geoip_resolver =
-                PyGeoipResolver::new(py).expect("Failed to create GeoipResolver instance");
+            let geoip_resolver = PyGeoipResolver::new(py, "test_auth")
+                .expect("Failed to create GeoipResolver instance");
             let network_provider_any = PyNetworkProvider::new(py, geoip_resolver)
                 .expect("Failed to create NetworkProvider instance")
                 .into_any();
