@@ -1,6 +1,6 @@
 use anyhow::Context;
 use async_trait::async_trait;
-use pyo3::Python;
+use pyo3::{ffi::c_str, Python};
 use thegraph_core::DeploymentId;
 use tokio::sync::{mpsc, oneshot};
 
@@ -155,13 +155,13 @@ pub fn new() -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()>) {
 
         Python::with_gil(|py| {
             // Set up Python logging
-            py.run_bound(
-                indoc::indoc! {r#"
+            py.run(
+                c_str!(indoc::indoc! {r#"
                 import logging
 
                 logging.basicConfig(level=logging.INFO)
                 logging.captureWarnings(True)
-                "#},
+                "#}),
                 None,
                 None,
             )

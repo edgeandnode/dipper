@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use pyo3::{
+    ffi::c_str,
     prelude::{PyAnyMethods, PyListMethods},
     types::PyList,
     Bound, Python,
@@ -30,7 +31,7 @@ pub fn add_assets_dir_to_sys_path() {
     pyo3::prepare_freethreaded_python();
     Python::with_gil(|py| {
         let sys_path = py
-            .import_bound("sys")
+            .import("sys")
             .expect("Failed to import sys")
             .getattr("path")
             .expect("Failed to get sys.path");
@@ -69,12 +70,12 @@ pub fn init_python_logging(target: &str) {
 
     // Initialize the Python logging module's root logger
     Python::with_gil(|py| {
-        py.run_bound(
-            indoc::indoc! {r#"
+        py.run(
+            c_str!(indoc::indoc! {r#"
                 import logging
                 logging.basicConfig(level=logging.DEBUG)
                 logging.captureWarnings(True)
-                "#},
+                "#}),
             None,
             None,
         )
