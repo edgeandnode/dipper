@@ -31,7 +31,7 @@ fn import_indexer_class(py: Python) -> PyResult<&Bound<PyType>> {
     INDEXER_CLASS
         .get_or_try_init(py, || {
             let type_object = py
-                .import_bound("iisa.network")?
+                .import("iisa.network")?
                 .getattr("Indexer")?
                 .downcast_into()?;
             Ok(type_object.unbind())
@@ -48,7 +48,7 @@ fn network_snapshot_to_python_list<'py, 'snapshot>(
     let indexer_class = import_indexer_class(py)?;
 
     // Create a list of `iisa.network.Indexer` instances from the latest network snapshot
-    let indexers = PyList::empty_bound(py);
+    let indexers = PyList::empty(py);
     for indexer in snapshot {
         // Use LowerHex to format the ID as a hexadecimal string
         // See: https://docs.rs/thegraph-core/0.6.0/thegraph_core/struct.IndexerId.html#formatting
@@ -162,7 +162,7 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
             //* Given
-            let invalid_instance = PyDict::new_bound(py);
+            let invalid_instance = PyDict::new(py);
 
             //* When
             let result: PyResult<PyNetworkProvider> = invalid_instance.extract();

@@ -21,7 +21,7 @@ use pyo3::{
 fn import_iisa_module(py: Python) -> PyResult<&Bound<PyModule>> {
     static IISA_MODULE: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
     IISA_MODULE
-        .get_or_try_init(py, || py.import_bound("iisa")?.extract())
+        .get_or_try_init(py, || py.import("iisa")?.extract())
         .map(|module| module.bind(py))
 }
 

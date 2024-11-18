@@ -13,7 +13,7 @@ fn fetch_initial_query_results() {
     Python::with_gil(|py| {
         //* Given
         let start_date =
-            PyDate::new_bound(py, 2024, 9, 1).expect("Failed to create a new PyDate instance");
+            PyDate::new(py, 2024, 9, 1).expect("Failed to create a new PyDate instance");
         let num_days = 10;
 
         let bigquery_provider = PyBigQueryProvider::new(py, "graph-mainnet", "US")

@@ -1,5 +1,8 @@
+use std::ffi::CString;
+
 use log::{logger, Level, MetadataBuilder, Record};
 use pyo3::{
+    ffi::c_str,
     intern, pyfunction,
     sync::GILOnceCell,
     types::{PyAny, PyAnyMethods, PyListMethods, PyModule, PyModuleMethods},
@@ -10,7 +13,7 @@ use pyo3::{
 fn import_logging(py: Python) -> PyResult<&Bound<PyModule>> {
     static MODULE: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
     MODULE
-        .get_or_try_init(py, || py.import_bound("logging")?.extract())
+        .get_or_try_init(py, || py.import("logging")?.extract())
         .map(|module| module.bind(py))
 }
 
@@ -91,8 +94,8 @@ fn setup_logging(py: Python, target: &str) -> PyResult<()> {
     logging.setattr("_host_log", wrap_pyfunction!(host_log, logging)?)?;
 
     // Define the `HostLogHandler` class in the Python `logging` module
-    py.run_bound(
-        indoc::indoc! {r#"
+    py.run(
+        c_str!(indoc::indoc! {r#"
             class HostLogHandler(Handler):
                 def __init__(self, target, level=NOTSET):
                     super().__init__(level)
@@ -101,7 +104,7 @@ fn setup_logging(py: Python, target: &str) -> PyResult<()> {
                 def emit(self, record):
                     _host_log(self._target, record)
             "#,
-        },
+        }),
         Some(&logging.dict()),
         None,
     )?;
@@ -111,10 +114,10 @@ fn setup_logging(py: Python, target: &str) -> PyResult<()> {
     all.append("HostLogHandler")?;
 
     // Replace the default `logging.basicConfig` function with a custom implementation
-    py.run_bound(
-        indoc::formatdoc! {r#"
+    py.run(
+        CString::new(indoc::formatdoc! {r#"
             _basicConfig = basicConfig
-            
+
             def basicConfig(*args, **kwargs):
                 if "handlers" not in kwargs:
                     kwargs["handlers"] = [HostLogHandler("{target}")]
@@ -122,8 +125,9 @@ fn setup_logging(py: Python, target: &str) -> PyResult<()> {
                 return _basicConfig(*args, **kwargs)
             "#,
             target=target
-        }
-        .as_str(),
+        })
+        .expect("Failed to format basicConfig replacement")
+        .as_ref(),
         Some(&logging.dict()),
         None,
     )?;

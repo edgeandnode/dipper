@@ -98,7 +98,7 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
             //* Given
-            let invalid_instance = PyDict::new_bound(py);
+            let invalid_instance = PyDict::new(py);
 
             //* When
             let result: PyResult<PyGeoipResolver> = invalid_instance.extract();
