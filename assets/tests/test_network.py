@@ -2,18 +2,15 @@
 Test suite for the network module.
 """
 
-import pytest
-
 from iisa.geoip import GeoipResolver
 from iisa.network import IndexersSchema, NetworkProvider
 from tests.__fixtures__ import network as network_fixture
 
 
-@pytest.mark.skip("Requires a valid ipinfo.io API key")
 class TestNetworkIndexersDataframe:
-    def test_indexers_dataframe_conversion(self):
+    def test_indexers_dataframe_conversion(self, ipinfo_io_auth):
         ## Given
-        resolver = GeoipResolver()
+        resolver = GeoipResolver(ipinfo_io_auth)
         provider = NetworkProvider(geoip=resolver)
 
         # Initialize the network provider with test data

@@ -6,6 +6,7 @@ import gzip
 import json
 import logging
 import socket
+from struct import unpack
 from typing import Dict, NewType, Optional, TypedDict
 from urllib.parse import urlparse
 
@@ -64,6 +65,39 @@ def _resolve_host_ipaddr(host: _UrlHostStr) -> Optional[_IpAddressStr]:
     return _IpAddressStr(ip_addrs[0])
 
 
+def _is_private_ipaddr(ip_addr: _IpAddressStr) -> bool:
+    """
+    Check if an IP address is a private address (RFC 1918 & RFC 3330).
+
+    The following private IP address ranges are checked:
+
+    | IP Network   | Subnet Mask  | RFC                                     |
+    |--------------|--------------|-----------------------------------------|
+    | 127.0.0.0    | 255.0.0.0    | https://www.rfc-editor.org/rfc/rfc3330  |
+    | 192.168.0.0  | 255.255.0.0  | https://www.rfc-editor.org/rfc/rfc1918  |
+    | 172.16.0.0   | 255.240.0.0  | https://www.rfc-editor.org/rfc/rfc1918  |
+    | 10.0.0.0     | 255.0.0.0    | https://www.rfc-editor.org/rfc/rfc1918  |
+
+    Source: https://stackoverflow.com/a/8339939/1099999
+
+    :param ip_addr: IP address to check.
+    :return: True if the IP address is private, otherwise False.
+    """
+    (ip,) = unpack("!I", socket.inet_pton(socket.AF_INET, ip_addr))  # type: ignore
+
+    private_networks = (
+        # 127.0.0.0,   255.0.0.0   https://www.rfc-editor.org/rfc/rfc3330
+        (0x7F000000, 0xFF000000),
+        # 192.168.0.0, 255.255.0.0 https://www.rfc-editor.org/rfc/rfc1918
+        (0xC0A80000, 0xFFFF0000),
+        # 172.16.0.0,  255.240.0.0 https://www.rfc-editor.org/rfc/rfc1918
+        (0xAC100000, 0xFFF00000),
+        # 10.0.0.0,    255.0.0.0   https://www.rfc-editor.org/rfc/rfc1918
+        (0x0A000000, 0xFF000000),
+    )
+    return any((ip & mask) == network for network, mask in private_networks)
+
+
 def _get_url_host(url: HttpUrlStr) -> Optional[_UrlHostStr]:
     """
     Get the hostname from a URL.
@@ -92,7 +126,7 @@ _ExceptionsToRetry = (ConnectionError, ReqConnectionError, HTTPError, socket.tim
     stop=stop_after_attempt(10),
     wait=wait_exponential(multiplier=1, max=60),
 )
-def _get_ipaddr_location_info(auth: str, ip_addr: _IpAddressStr) -> IpInfoLocation:
+def _get_ipaddr_location_info(ip_addr: _IpAddressStr, *, auth: str) -> IpInfoLocation:
     """
     Fetch location and organizational details for a given IP address using an external API (ipinfo.io).
 
@@ -100,12 +134,9 @@ def _get_ipaddr_location_info(auth: str, ip_addr: _IpAddressStr) -> IpInfoLocati
     organizational information associated with the provided IP address. It includes a retry
     mechanism to handle potential network issues or API failures.
 
-    Parameters:
-    auth (str): The API token for ipinfo.io.
-    ip_addr (str): The IP address to query.
-
-    Returns:
-    dict: A dictionary containing the following keys:
+    :param ip_addr: The IP address to query.
+    :param auth: The API token for ipinfo.io.
+    :returns: A dictionary containing the following keys:
         - 'org': Organization associated with the IP
         - 'loc': Geographical coordinates
         - 'ip': The queried IP address
@@ -220,7 +251,6 @@ class GeoipResolver:
         # If the IP address for the host is not in the cache,
         # resolve it and cache the result
         ipaddr = self._host_ipaddr_cache.get(url_host, _resolve_host_ipaddr(url_host))
-
         if ipaddr is not None:
             self._host_ipaddr_cache[url_host] = ipaddr
         else:
@@ -233,11 +263,21 @@ class GeoipResolver:
                 "longitude": None,
             }
 
+        # If the IP address is private, return None
+        if _is_private_ipaddr(ipaddr):
+            return {
+                "ip_addr": ipaddr,
+                "org": None,
+                "country": None,
+                "latitude": None,
+                "longitude": None,
+            }
+
         # If the IP address geolocation info is not in the cache,
         # resolve it and cache the result
         if ipaddr not in self._ipinfo_cache:
             self._ipinfo_cache[ipaddr] = _get_ipaddr_location_info(
-                self._ipinfo_io_auth, ipaddr
+                ipaddr, auth=self._ipinfo_io_auth
             )
 
         return self._ipinfo_cache[ipaddr]

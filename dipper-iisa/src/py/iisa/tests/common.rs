@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use pyo3::{
     ffi::c_str,
     prelude::{PyAnyMethods, PyListMethods},
-    types::PyList,
+    types::{IntoPyDict, PyList},
     Bound, Python,
 };
 use tracing_log::LogTracer;
@@ -66,18 +66,29 @@ pub fn init_test_tracing() {
 /// Initialize the Python `logging` module to redirect logs to the test writer.
 pub fn init_python_logging(target: &str) {
     // Register the `RustHostHandler` logger in the Python logging module
-    logging::register(target).expect("Failed to register host logger");
+    logging::register().expect("Failed to register host logger");
 
     // Initialize the Python logging module's root logger
     Python::with_gil(|py| {
         py.run(
             c_str!(indoc::indoc! {r#"
                 import logging
+
+                # Set initial logging config
                 logging.basicConfig(level=logging.DEBUG)
                 logging.captureWarnings(True)
+
+                # Remove all existing handlers. Add a new HostLogHandler instance
+                # to the root logger
+                root_logger = logging.getLogger()
+
+                for handler in root_logger.handlers[:]:
+                    root_logger.removeHandler(handler)
+
+                root_logger.addHandler(logging.HostLogHandler(target))
                 "#}),
             None,
-            None,
+            Some(&[("target", target)].into_py_dict(py).unwrap()),
         )
         .expect("Failed to initialize Python logging module");
     });

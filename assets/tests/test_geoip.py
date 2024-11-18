@@ -2,11 +2,8 @@
 Test suite covering the geoip module.
 """
 
-import pytest
-
 from iisa.geoip import (
     GeoipResolver,
-    _IpAddressStr,
     _UrlHostStr,
     _get_ipaddr_location_info,
     _get_url_host,
@@ -69,7 +66,6 @@ class TestResolveUrlHostIpaddr:
         assert result is None
 
 
-@pytest.mark.skip("Requires a valid ipinfo.io API key")
 class TestGetIpaddrLocationInfo:
     def test_get_geolocation_info_for_ipaddr(self, ipinfo_io_auth):
         ## Given
@@ -81,7 +77,7 @@ class TestGetIpaddrLocationInfo:
         ipaddr = _resolve_host_ipaddr(host)
 
         ## When
-        result = _get_ipaddr_location_info(ipinfo_io_auth, ipaddr)
+        result = _get_ipaddr_location_info(ipaddr, auth=ipinfo_io_auth)
 
         ## Then
         assert result["ip_addr"] == ipaddr
@@ -90,23 +86,7 @@ class TestGetIpaddrLocationInfo:
         assert result["latitude"] is not None
         assert result["longitude"] is not None
 
-    def test_get_geolocation_info_for_private_address(self, ipinfo_io_auth):
-        ## Given
-        # Private IP address
-        ipaddr = _IpAddressStr("192.168.0.1")
 
-        ## When
-        result = _get_ipaddr_location_info(ipinfo_io_auth, ipaddr)
-
-        ## Then
-        assert result["ip_addr"] == ipaddr
-        assert result["org"] is None
-        assert result["country"] is None
-        assert result["latitude"] is None
-        assert result["longitude"] is None
-
-
-@pytest.mark.skip("Requires a valid ipinfo.io API key")
 class TestGeoipResolver:
     def test_resolve_url_host_info(self, ipinfo_io_auth):
         ## Given
@@ -191,4 +171,4 @@ class TestGeoipResolver:
 
         # Assert cache is not empty
         assert geoip._host_ipaddr_cache_entries() == 1
-        assert geoip._ipinfo_cache_entries() == 1
+        assert geoip._ipinfo_cache_entries() == 0

@@ -46,7 +46,6 @@ def network_provider(geoip_resolver):
     "CI" in os.environ,
     reason="Avoid running the test in CI. Requires access to Google BigQuery.",
 )
-@pytest.mark.skip("Requires a valid ipinfo.io API key")
 def test_fetch_and_update(bigquery_provider, network_provider):
     logging.basicConfig(level=logging.DEBUG, handlers=[logging.StreamHandler()])
 
