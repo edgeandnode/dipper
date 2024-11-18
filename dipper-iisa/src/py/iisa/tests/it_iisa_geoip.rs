@@ -4,6 +4,7 @@ use super::common;
 use crate::py::iisa::PyGeoipResolver;
 
 #[test]
+#[ignore = "Requires a valid ipinfo.io API key"]
 fn resolve_url_host_info() {
     common::add_assets_dir_to_sys_path();
     common::init_python_logging("it_iisa_geoip::resolve_url_host_info");

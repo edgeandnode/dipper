@@ -126,7 +126,7 @@ jobs:
       run: uv run --frozen mypy assets
 
     - name: Run Python tests
-      run: uv run --frozen pytest assets
+      run: uv run --frozen pytest -v assets
 
   format-python:
     runs-on: ubuntu-latest
