@@ -12,6 +12,14 @@ use super::{
     },
 };
 
+/// The IISA service configuration.
+pub struct Config {
+    /// The GeoIP resolver auth token.
+    ///
+    /// This token is used to authenticate the GeoIP resolver with the `ipiinfo.io` service.
+    pub geoip_auth: String,
+}
+
 /// The `Command` enum represents the commands that can be sent to the `IndexerSelectionService`.
 enum Command {
     /// Instructs the `DataManager` to fetch, process and update the indexer performance
@@ -147,7 +155,7 @@ impl CandidateSelection for ServiceHandle {
 
 /// Creates a new `IndexerSelectionService` and returns a handle to it along with a function that
 /// should be called to start the service.
-pub fn new() -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()>) {
+pub fn new(config: Config) -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()>) {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let service_task = move || {
         // Register the Python logging to Rust log handler
@@ -169,7 +177,7 @@ pub fn new() -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()>) {
 
             // Instantiate the data manager class
             let (data_manager, network_provider) = {
-                let geoip_resolver = PyGeoipResolver::new(py)?;
+                let geoip_resolver = PyGeoipResolver::new(py, &config.geoip_auth)?;
                 let network_provider = PyNetworkProvider::new(py, geoip_resolver)?;
                 let bigquery_provider = PyBigQueryProvider::new(py, "graph-mainnet", "US")?;
                 let data_manager =

@@ -6,14 +6,11 @@ import gzip
 import json
 import logging
 import socket
-from typing import TypedDict, Optional, NewType, Dict
+from typing import Dict, NewType, Optional, TypedDict
 from urllib.parse import urlparse
 
 import requests
-from requests.exceptions import (
-    HTTPError,
-    ConnectionError as ReqConnectionError,
-)
+from requests.exceptions import ConnectionError as ReqConnectionError, HTTPError
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -95,7 +92,7 @@ _ExceptionsToRetry = (ConnectionError, ReqConnectionError, HTTPError, socket.tim
     stop=stop_after_attempt(10),
     wait=wait_exponential(multiplier=1, max=60),
 )
-def _get_ipaddr_location_info(ip_addr: _IpAddressStr) -> IpInfoLocation:
+def _get_ipaddr_location_info(auth: str, ip_addr: _IpAddressStr) -> IpInfoLocation:
     """
     Fetch location and organizational details for a given IP address using an external API (ipinfo.io).
 
@@ -104,7 +101,8 @@ def _get_ipaddr_location_info(ip_addr: _IpAddressStr) -> IpInfoLocation:
     mechanism to handle potential network issues or API failures.
 
     Parameters:
-    ip (str): The IP address to query.
+    auth (str): The API token for ipinfo.io.
+    ip_addr (str): The IP address to query.
 
     Returns:
     dict: A dictionary containing the following keys:
@@ -114,7 +112,7 @@ def _get_ipaddr_location_info(ip_addr: _IpAddressStr) -> IpInfoLocation:
     """
     try:
         response = requests.get(
-            f"https://ipinfo.io/{ip_addr}/json?token=67647c2e5ccd95", timeout=10
+            f"https://ipinfo.io/{ip_addr}/json?token={auth}", timeout=5
         )
         response.raise_for_status()  # Raise a HTTPError in case of bad response.
 
@@ -173,7 +171,9 @@ class GeoipResolver:
     A simple cache-based resolver for IP addresses using the ipinfo.io API.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, auth: str) -> None:
+        self._ipinfo_io_auth = auth
+
         self._host_ipaddr_cache: Dict[_UrlHostStr, _IpAddressStr] = {}
         self._ipinfo_cache: Dict[_IpAddressStr, IpInfoLocation] = {}
 
@@ -236,6 +236,8 @@ class GeoipResolver:
         # If the IP address geolocation info is not in the cache,
         # resolve it and cache the result
         if ipaddr not in self._ipinfo_cache:
-            self._ipinfo_cache[ipaddr] = _get_ipaddr_location_info(ipaddr)
+            self._ipinfo_cache[ipaddr] = _get_ipaddr_location_info(
+                self._ipinfo_io_auth, ipaddr
+            )
 
         return self._ipinfo_cache[ipaddr]

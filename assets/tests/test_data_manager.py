@@ -137,8 +137,8 @@ def mock__bigquery_provider(faker, mock__combined_query_results):
 
 
 @pytest.fixture
-def mock__network_provider():
-    resolver = GeoipResolver()
+def mock__network_provider(ipinfo_io_auth):
+    resolver = GeoipResolver(ipinfo_io_auth)
     provider = NetworkProvider(geoip=resolver)
 
     # Initialize the network provider with test data

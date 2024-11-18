@@ -3,7 +3,7 @@
 use pyo3::{
     exceptions::PyTypeError,
     sync::GILOnceCell,
-    types::{PyAnyMethods, PyType},
+    types::{PyAnyMethods, PyString, PyType},
     Bound, FromPyObject, Py, PyAny, PyResult, Python,
 };
 
@@ -24,9 +24,10 @@ fn import_geoip_resolver_class(py: Python) -> PyResult<&Bound<PyType>> {
 }
 
 /// Create a new `iisa.geoip.GeoipResolver` instance.
-fn new_geoip_resolver(py: Python) -> PyResult<Bound<PyAny>> {
+fn new_geoip_resolver<'py>(py: Python<'py>, auth: &'py str) -> PyResult<Bound<'py, PyAny>> {
     let class = import_geoip_resolver_class(py)?;
-    class.call0()
+    let auth = PyString::new(py, auth);
+    class.call1((auth,))
 }
 
 /// Python GeoIP resolver provider wrapper.
@@ -37,8 +38,8 @@ pub struct PyGeoipResolver<'py> {
 
 impl<'py> PyGeoipResolver<'py> {
     /// Create a new `PyGeoipResolver` instance.
-    pub fn new(py: Python<'py>) -> PyResult<Self> {
-        let inner = new_geoip_resolver(py)?;
+    pub fn new(py: Python<'py>, auth: &'py str) -> PyResult<Self> {
+        let inner = new_geoip_resolver(py, auth)?;
         Ok(Self { inner })
     }
 
@@ -82,8 +83,8 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
             //* Given
-            let geoip_resolver_any =
-                new_geoip_resolver(py).expect("Failed to create GeoipResolver instance");
+            let geoip_resolver_any = new_geoip_resolver(py, "test_auth")
+                .expect("Failed to create GeoipResolver instance");
 
             //* When
             let result: PyResult<PyGeoipResolver> = geoip_resolver_any.extract();

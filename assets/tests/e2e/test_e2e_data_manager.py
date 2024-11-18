@@ -21,11 +21,11 @@ def bigquery_provider():
 
 
 @pytest.fixture(scope="module")
-def geoip_resolver():
+def geoip_resolver(ipinfo_io_auth):
     """
     A GeoIP resolver fixture.
     """
-    return GeoipResolver()
+    return GeoipResolver(ipinfo_io_auth)
 
 
 @pytest.fixture()

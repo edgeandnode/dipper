@@ -18,10 +18,15 @@ __all__ = [
 
 # This block serves as a functional test and an example implementation
 if __name__ == "__main__":
+    import os
     import logging
 
     # Setup basic logging
     logging.basicConfig(level=logging.INFO)
+
+    geoip_auth = os.getenv("IT_TEST_IPINFO_IO_AUTH")
+    if not geoip_auth:
+        raise ValueError("Missing IT_TEST_IPINFO_IO_AUTH environment variable")
 
     def process_subgraph(
         data,
@@ -56,7 +61,7 @@ if __name__ == "__main__":
     try:
         # Initialize DataManager (done once at project creation)
         # This also performs the initial data fetch
-        geoip = GeoipResolver()
+        geoip = GeoipResolver(geoip_auth)
         network_provider = NetworkProvider(geoip=geoip)
         bigquery_provider = BigQueryProvider("graph-mainnet", "US")
         data_manager = DataManager(bigquery=bigquery_provider, network=network_provider)

@@ -71,7 +71,7 @@ class TestResolveUrlHostIpaddr:
 
 @pytest.mark.skip("Requires a valid ipinfo.io API key")
 class TestGetIpaddrLocationInfo:
-    def test_get_geolocation_info_for_ipaddr(self):
+    def test_get_geolocation_info_for_ipaddr(self, ipinfo_io_auth):
         ## Given
         # Use one of the Google APIs US-east URLs to ensure it's a US-based IP address
         url = HttpUrlStr("https://storage.us-east1.rep.googleapis.com")
@@ -81,7 +81,7 @@ class TestGetIpaddrLocationInfo:
         ipaddr = _resolve_host_ipaddr(host)
 
         ## When
-        result = _get_ipaddr_location_info(ipaddr)
+        result = _get_ipaddr_location_info(ipinfo_io_auth, ipaddr)
 
         ## Then
         assert result["ip_addr"] == ipaddr
@@ -90,13 +90,13 @@ class TestGetIpaddrLocationInfo:
         assert result["latitude"] is not None
         assert result["longitude"] is not None
 
-    def test_get_geolocation_info_for_private_address(self):
+    def test_get_geolocation_info_for_private_address(self, ipinfo_io_auth):
         ## Given
         # Private IP address
         ipaddr = _IpAddressStr("192.168.0.1")
 
         ## When
-        result = _get_ipaddr_location_info(ipaddr)
+        result = _get_ipaddr_location_info(ipinfo_io_auth, ipaddr)
 
         ## Then
         assert result["ip_addr"] == ipaddr
@@ -108,11 +108,11 @@ class TestGetIpaddrLocationInfo:
 
 @pytest.mark.skip("Requires a valid ipinfo.io API key")
 class TestGeoipResolver:
-    def test_resolve_url_host_info(self):
+    def test_resolve_url_host_info(self, ipinfo_io_auth):
         ## Given
         url = HttpUrlStr("https://dns.google")
 
-        geoip = GeoipResolver()
+        geoip = GeoipResolver(ipinfo_io_auth)
 
         ## When
         result = geoip.resolve_url_host_info(url)
@@ -129,11 +129,11 @@ class TestGeoipResolver:
         assert geoip._host_ipaddr_cache_entries() == 1
         assert geoip._ipinfo_cache_entries() == 1
 
-    def test_resolve_url_host_info_with_no_host_url(self):
+    def test_resolve_url_host_info_with_no_host_url(self, ipinfo_io_auth):
         ## Given
         url = HttpUrlStr("https://")
 
-        geoip = GeoipResolver()
+        geoip = GeoipResolver(ipinfo_io_auth)
 
         ## When
         result = geoip.resolve_url_host_info(url)
@@ -150,11 +150,11 @@ class TestGeoipResolver:
         assert geoip._host_ipaddr_cache_entries() == 0
         assert geoip._ipinfo_cache_entries() == 0
 
-    def test_resolve_url_host_info_with_non_resolvable_host(self):
+    def test_resolve_url_host_info_with_non_resolvable_host(self, ipinfo_io_auth):
         ## Given
         url = HttpUrlStr("https://invalid-hostname.local")
 
-        geoip = GeoipResolver()
+        geoip = GeoipResolver(ipinfo_io_auth)
 
         ## When
         result = geoip.resolve_url_host_info(url)
@@ -171,12 +171,12 @@ class TestGeoipResolver:
         assert geoip._host_ipaddr_cache_entries() == 0
         assert geoip._ipinfo_cache_entries() == 0
 
-    def test_resolve_url_host_info_with_private_ipaddr(self):
+    def test_resolve_url_host_info_with_private_ipaddr(self, ipinfo_io_auth):
         ## Given
         # Resolve the hostname to the localhost IP address
         url = HttpUrlStr("https://localtest.me")
 
-        geoip = GeoipResolver()
+        geoip = GeoipResolver(ipinfo_io_auth)
 
         ## When
         result = geoip.resolve_url_host_info(url)
