@@ -23,14 +23,16 @@ from .processing import (
 )
 from ..bq import BigQueryProvider
 from ..network import NetworkProvider
+from ..perf import PerfHistoryDataFrame
 from ..time import TimestampStr, derive_timestamps
-from ..typing import DeploymentIdField, HttpUrlField, IndexerIdField, QueryIdField
+from ..typing import IndexerIdField
 
 __all__ = [
     "DataManager",
-    "RequestHistoryDataFrame",
     "IndexerRankingsDataFrame",
+    "IndexerRankingsSchema",
     "LinearRegressionResultsDataFrame",
+    "LinearRegressionResultsSchema",
     "DEFAULT_NUM_DAYS",
     "DEFAULT_TARGET_ROWS",
 ]
@@ -47,22 +49,6 @@ ITERATIVE_FILTER_MIN_QUERIES_PER_DEPLOYMENT = 250
 
 # Module-level logger
 logger = logging.getLogger(__name__)
-
-
-class RequestHistorySchema(pa.DataFrameModel):
-    """
-    Schema for the `DataManager` "data" data frame.
-
-    This is a partial schema. Not all columns are included.
-    """
-
-    query_id: Series[str] = QueryIdField()
-    deployment_hash: Series[str] = DeploymentIdField()
-    indexer: Series[str] = IndexerIdField()
-    url: Series[str] = HttpUrlField()
-
-
-RequestHistoryDataFrame = DataFrame[RequestHistorySchema]
 
 
 class IndexerRankingsSchema(pa.DataFrameModel):
@@ -101,22 +87,21 @@ def _fetch_and_process_data(
     num_days: int,
     target_rows: int = DEFAULT_TARGET_ROWS,
 ) -> Tuple[
-    RequestHistoryDataFrame,
+    PerfHistoryDataFrame,
     IndexerRankingsDataFrame,
     LinearRegressionResultsDataFrame,
 ]:
     """
     Fetch data from BigQuery and Network providers, process it, and return the results.
 
-    Parameters:
-        bigquery: BigQueryProvider instance.
-        network: NetworkProvider instance.
-        start_date: Start date for the data fetch.
-        start_ts: Start timestamp for the data fetch.
-        num_days: Number of days to look back for data.
-        target_rows: Target number of rows to fetch from the combined query.
+    :param bigquery: BigQueryProvider instance.
+    :param network: NetworkProvider instance.
+    :param start_date: Start date for the data fetch.
+    :param start_ts: Start timestamp for the data fetch.
+    :param num_days: Number of days to look back for data.
+    :param target_rows: Target number of rows to fetch from the combined query.
 
-    Returns:
+    :returns:
         - A dataframe containing the combined queries processed data.
         - Indexer rankings based on linear regression.
     """
@@ -236,7 +221,7 @@ def _fetch_and_process_data(
 
     return cast(
         Tuple[
-            RequestHistoryDataFrame,
+            PerfHistoryDataFrame,
             IndexerRankingsDataFrame,
             LinearRegressionResultsDataFrame,
         ],
@@ -250,15 +235,15 @@ def _fetch_and_process_data(
 
 class DataManager:
     """
-    DataManager is responsible for fetching, processing, and analyzing BigQuery data on a daily basis.
+    The DataManager is responsible for fetching, processing, and analyzing indexer performance data.
+
     This class is instantiated once and reused as needed to ensure efficient data management throughout its lifecycle.
 
-    Responsibilities:
-    - Fetches data from BigQuery using specified queries and parameters.
-    - Processes the retrieved data by applying various transformations and calculations.
-    - Performs statistical analysis and machine learning tasks such as linear regression.
-    - Aggregates and merges additional information from multiple data sources.
-    - Prepares the data for further use by other components or services.
+    - Fetch data from BigQuery using specified queries and parameters.
+    - Process the retrieved data by applying various transformations and calculations.
+    - Perform statistical analysis and machine learning tasks such as linear regression.
+    - Aggregate and merge additional information from multiple data sources.
+    - Prepare the data for further use by other components or services.
     """
 
     def __init__(
@@ -278,7 +263,7 @@ class DataManager:
         self.end_date: Optional[date] = end_date
 
         # Initialize the data and indexer rankings
-        self._data: Optional[RequestHistoryDataFrame] = None
+        self._data: Optional[PerfHistoryDataFrame] = None
         self._latency_linear_regression_indexer_rankings: Optional[
             IndexerRankingsDataFrame
         ] = None
@@ -296,10 +281,9 @@ class DataManager:
         """
         Fetch the latest data from BigQuery and update the data and indexer rankings information.
 
-        Parameters:
-            num_days (optional): Number of days to look back for data. Defaults to the instance attribute.
-            end_date (optional): End date for the data fetch. Defaults to the instance attribute.
-            target_rows (optional): Target number of rows to fetch from the combined query. Defaults to 20,000,000.
+        :param num_days: Number of days to look back for data. Defaults to the instance attribute.
+        :param end_date: End date for the data fetch. Defaults to the instance attribute.
+        :param target_rows: Target number of rows to fetch from the combined query. Defaults to 20,000,000.
         """
         # If no num_days/end_date is provided, use the default value from the instance attribute
         num_days = num_days or self.num_days
@@ -322,9 +306,9 @@ class DataManager:
             target_rows=target_rows,
         )
 
-    def get_data(self) -> Optional[RequestHistoryDataFrame]:
+    def get_data(self) -> Optional[PerfHistoryDataFrame]:
         """
-        Return the cached data.
+        Return the curated perf data.
         """
         return self._data
 

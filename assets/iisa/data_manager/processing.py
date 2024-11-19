@@ -38,7 +38,7 @@ REQUEST_STATUS_OK = "200 OK"
 REQUEST_STATUS_UNAVAILABLE_MISSING_BLOCK = "Unavailable(MissingBlock)"
 
 
-def adjust_rows(initial_query_results_pandas, target_rows):
+def adjust_rows(initial_query_results_pandas: pd.DataFrame, target_rows: int) -> int:
     """
     Dynamically adjust the number of rows per group to approximate a target total number of rows.
 
@@ -48,12 +48,9 @@ def adjust_rows(initial_query_results_pandas, target_rows):
     current sum and the target, and stops when the sum is within a specified tolerance or a maximum number
     of iterations is reached.
 
-    Parameters:
-    initial_query_results_pandas (DataFrame): DataFrame containing the initial query results with a 'num_rows' column.
-    target_rows (int): The target total number of rows for the DataFrame.
-
-    Returns:
-    int: The adjusted upper limit for the number of rows per group.
+    :param initial_query_results_pandas: DataFrame containing the initial query results with a 'num_rows' column.
+    :param target_rows: The target total number of rows for the DataFrame.
+    :returns: The adjusted upper limit for the number of rows per group.
     """
     if target_rows < 0:
         raise ValueError("Target rows must be a non-negative integer")
@@ -145,12 +142,10 @@ def merge_in_indexers_info(
     with the unique URL and indexer information. The merge is based on the 'indexer', 'day_partition',
     and 'url' columns.
 
-    Parameters:
-    combined_queries: DataFrame containing the combined query results.
-    indexers: DataFrame containing unique URLs and indexers information.
+    :param combined_queries: DataFrame containing the combined query results.
+    :param indexers: DataFrame containing unique URLs and indexers information.
 
-    Returns:
-    A new DataFrame resulting from the left merge of the input DataFrames.
+    :returns: A new DataFrame resulting from the left merge of the input DataFrames.
     """
     # Rename destination (indexer) location columns
     right_df = indexers.rename(
@@ -224,14 +219,12 @@ def merge_in_query_geolocation_info(
     DataFrame and merges in the corresponding geolocation information from the IATA DataFrame.
     The merge is performed on the 'IATA_code' column.
 
-    Parameters:
-    combined_queries: DataFrame containing combined queries data.
-    iata_info (optional): DataFrame containing IATA code information.
+    :param combined_queries: DataFrame containing combined queries data.
+    :param iata_info: DataFrame containing IATA code information (optional).
 
-    Returns:
-    pandas.DataFrame: A new DataFrame resulting from the right merge of the input DataFrames.
+    :returns: A new DataFrame resulting from the right merge of the input DataFrames.
     """
-    # Extract the IATA code from the 'query_id' column of a DataFrame.
+    # Extract the IATA code from the 'query_id' column of a DataFrame
     combined_queries["IATA_code"] = combined_queries["query_id"].str[-3:]
 
     # Merge in the IATA information
@@ -270,14 +263,12 @@ def haversine_vectorized(
     This function computes distances between multiple pairs of points on Earth's surface,
     treating the Earth as a sphere. It uses a vectorized implementation for efficiency.
 
-    Parameters:
-    lon1: Longitudes of the first set of points
-    lat1: Latitudes of the first set of points
-    lon2: Longitudes of the second set of points
-    lat2: Latitudes of the second set of points
+    :param lon1: Longitudes of the first set of points
+    :param lat1: Latitudes of the first set of points
+    :param lon2: Longitudes of the second set of points
+    :param lat2: Latitudes of the second set of points
 
-    Returns:
-    An array of distances in miles between each pair of points
+    :returns: An array of distances in miles between each pair of points
     """
     lon1, lat1, lon2, lat2 = np.radians([lon1, lat1, lon2, lat2])
     dlon = lon2 - lon1
@@ -338,16 +329,14 @@ def calculate_distances(data):
     of origin and destination coordinates in the input DataFrame and rounds the distances
     to the nearest multiple of 250 miles to simplify distance measurements.
 
-    Parameters:
-    data: Input DataFrame containing columns:
+    :param data: Input DataFrame containing columns:
         - 'src_lon': Longitude of the origin location
         - 'src_lat': Latitude of the origin location
         - 'dst_lon': Longitude of the destination location
         - 'dst_lat': Latitude of the destination location
 
-    Returns:
-    The input DataFrame minus the original coordinate columns, but with an additional 'distance_miles' column
-    containing the calculated distances in miles.
+    :returns: The input DataFrame minus the original coordinate columns, but with an additional 'distance_miles' column
+              containing the calculated distances in miles.
     """
     data["distance_miles"] = haversine_vectorized(
         data["src_lon"],
@@ -405,11 +394,8 @@ def filter_successful_queries(data):
     This function creates a new DataFrame containing only the rows from the input
     DataFrame where the 'status' column has the value '200 OK'.
 
-    Parameters:
-    data: Input DataFrame containing a 'status' column.
-
-    Returns:
-    A new DataFrame with only the rows where status is '200 OK'.
+    :param data: Input DataFrame containing a 'status' column.
+    :returns: A new DataFrame with only the rows where status is '200 OK'.
     """
     dataframe = data[data["status"] == REQUEST_STATUS_OK].copy()
 
@@ -417,31 +403,28 @@ def filter_successful_queries(data):
 
 
 def iterative_filter(
-    df,
-    min_deployment_indexers,
-    min_deployments_per_indexer,
-    min_queries_per_indexer,
-    min_queries_per_deployment,
-):
+    df: pd.DataFrame,
+    min_deployment_indexers: int,
+    min_deployments_per_indexer: int,
+    min_queries_per_indexer: int,
+    min_queries_per_deployment: int,
+) -> pd.DataFrame:
     """
     Iteratively filter a DataFrame based on multiple criteria related to deployments, indexers, and queries.
 
     This function applies a series of filters to the input DataFrame, removing rows that don't meet
     the specified criteria. It continues to apply these filters iteratively until no further changes occur.
 
-    Parameters:
-    df (pandas.DataFrame): Input DataFrame containing columns: 'deployment_hash', 'indexer', 'query_id'.
-    min_deployment_indexers (int): Minimum number of indexers required for each deployment.
-    min_deployments_per_indexer (int): Minimum number of deployments required for each indexer.
-    min_queries_per_indexer (int): Minimum number of queries required for each indexer.
-    min_queries_per_deployment (int): Minimum number of queries required for each deployment.
-
-    Returns:
-    pandas.DataFrame: Filtered DataFrame meeting all specified criteria.
-
     Note:
     - The filtering process is iterative and continues until the DataFrame size stabilizes.
     - If the filtering results in an empty DataFrame, an empty DataFrame is returned.
+
+    :param df: Input DataFrame containing columns: 'deployment_hash', 'indexer', 'query_id'.
+    :param min_deployment_indexers: Minimum number of indexers required for each deployment.
+    :param min_deployments_per_indexer: Minimum number of deployments required for each indexer.
+    :param min_queries_per_indexer: Minimum number of queries required for each indexer.
+    :param min_queries_per_deployment: Minimum number of queries required for each deployment.
+    :returns: Filtered DataFrame meeting all specified criteria.
     """
     while True:
         initial_len = len(df)
@@ -465,41 +448,41 @@ def iterative_filter(
         # Ensure deployments have at least `min_queries_per_deployment` queries
         query_counts_per_deployment = df.groupby("deployment_hash").size()
         df = df[
-            df["deployment_hash"].map(query_counts_per_deployment)
+            df["deployment_hash"].map(query_counts_per_deployment)  # type: ignore
             >= min_queries_per_deployment
         ]
 
-        # Check if no change in DataFrame size, else run the loop again.
+        # Check if no change in DataFrame size, else run the loop again
         if len(df) == initial_len:
             break
 
-    return df
+    return pd.DataFrame(df)
 
 
-def strategic_sample(df, target_rows_per_subgraph):
+def strategic_sample(
+    df: pd.DataFrame, target_rows_per_subgraph: int
+) -> Tuple[pd.DataFrame, int]:
     """
     Sample query_id's in a way that creates balanced representation across indexers on each subgraph.
     The function adds a new column ('sampled_query_id') with some values set to None.
 
-    Parameters:
-    df (DataFrame): The DataFrame to sample.
-    target_rows_per_subgraph (int): The number of rows (queries) to target for each deployment_hash.
-
-    Returns:
-    tuple: A tuple containing two elements:
-        - pandas.DataFrame: The input DataFrame with an additional 'sampled_query_id' column.
-          This column contains the sampled query IDs where applicable, and None for non-sampled rows.
-        - int: The square root of the number of sampled query_ids, intended to inform the number of buckets for
-               subsequent hashing operations.
-
     Note:
     - The function does not reduce the size of the input DataFrame. It only marks sampled rows.
     - The actual number of sampled rows in the whole DataFrame will be greater than target_rows_per_subgraph,
-      the number of sampled rows should approximate to 'target_rows' (not passed here as a peramater but defined
+      the number of sampled rows should approximate to 'target_rows' (not passed here as a parameter but defined
       inside the iisa.py) as sampling rows is done separately for each (deployment_hash, indexer) combination.
-    - Each deployment_hash is sampled for (target_rows_per_subgraph // number_of_indexers) rows.
+    - Each deployment_hash is sampled for (target_rows_per_subgraph / number_of_indexers) rows.
     - The function aims for balance: it tries to sample an equal number of rows uniformly for each
       indexer within a deployment_hash, subject to the calculated or provided cap for each deployment_hash.
+
+    :param df: The DataFrame to sample.
+    :param target_rows_per_subgraph: The number of rows (queries) to target for each deployment_hash.
+
+    :returns: A tuple containing two elements:
+        - The input DataFrame with an additional 'sampled_query_id' column.
+          This column contains the sampled query IDs where applicable, and None for non-sampled rows.
+        - The square root of the number of sampled query_ids, intended to inform the number of buckets for
+          subsequent hashing operations.
     """
     if df.empty:
         df["sampled_query_id"] = pd.Series(dtype="float64")
@@ -548,7 +531,7 @@ def strategic_sample(df, target_rows_per_subgraph):
     return df, integer_root
 
 
-def hash_sampled_queries(df, integer_root):
+def hash_sampled_queries(df: pd.DataFrame, integer_root: int) -> pd.DataFrame:
     """
     Hash the sampled query IDs to create a new column with hashed values.
 
@@ -556,13 +539,10 @@ def hash_sampled_queries(df, integer_root):
     'sampled_query_id_hashed_mod_integer_root' containing the hash of each sampled query ID
     modulo the provided integer root.
 
-    Parameters:
-    df (pandas.DataFrame): Input DataFrame containing a 'sampled_query_id' column.
-    integer_root (int): The modulus to apply to the hash values.
-
-    Returns:
-    pandas.DataFrame: A copy of the input DataFrame with an additional column
-                      'sampled_query_id_hashed_mod_integer_root' containing the hashed values.
+    :param df: Input DataFrame containing a 'sampled_query_id' column.
+    :param integer_root: The modulus to apply to the hash values.
+    :returns: A copy of the input DataFrame with an additional column
+              'sampled_query_id_hashed_mod_integer_root' containing the hashed values.
     """
     # Create a copy of the input DataFrame
     result_df = df.copy()
@@ -576,7 +556,7 @@ def hash_sampled_queries(df, integer_root):
 
 
 def perform_latency_linear_regression(
-    df, predictor, categorical, numeric
+    df: pd.DataFrame, predictor: list[str], categorical: list[str], numeric: list[str]
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Perform latency linear regression analysis on the given data.
@@ -585,20 +565,18 @@ def perform_latency_linear_regression(
     model fitting, prediction, and result analysis. It also calculates robust normalized coefficients
     for indexer rankings.
 
-    Parameters:
-    df (pandas.DataFrame): The data to perform latency linear regression on.
-    predictor (list): List of column names to be used as the dependent variable(s).
-    categorical (list): List of column names containing categorical features.
-    numeric (list): List of column names containing numeric features.
+    :param df: The data to perform latency linear regression on.
+    :param predictor: List of column names to be used as the dependent variable(s).
+    :param categorical: List of column names containing categorical features.
+    :param numeric: List of column names containing numeric features.
 
-    Returns:
-    tuple: A tuple containing three elements:
-        - pandas.DataFrame: The original DataFrame with additional columns from latency linear regression results.
-        - pandas.DataFrame: DataFrame containing indexer rankings - based on robust normalized coefficients.
-        - pandas.DataFrame: DataFrame containing results [Variable, Latency Coefficient, Standard Error, p-value]
-                            from the latency linear regression.
+    :returns: A tuple containing three elements:
+        - The original DataFrame with additional columns from latency linear regression results.
+        - DataFrame containing indexer rankings - based on robust normalized coefficients.
+        - DataFrame containing results [Variable, Latency Coefficient, Standard Error, p-value]
+          from the latency linear regression.
     """
-    # Preprocess the data
+    # Preprocess the data    # Preprocess the data
     x, y, preprocessor = _latency_linear_regression_preprocess_data(
         df, predictor, categorical, numeric
     )
@@ -629,24 +607,24 @@ def perform_latency_linear_regression(
     )
 
 
-def _latency_linear_regression_preprocess_data(df, predictor, categorical, numeric):
+def _latency_linear_regression_preprocess_data(
+    df: pd.DataFrame, predictor: list[str], categorical: list[str], numeric: list[str]
+) -> Tuple[pd.DataFrame, pd.DataFrame, ColumnTransformer]:
     """
     Preprocess data for latency linear regression by encoding categorical variables and scaling numeric variables.
 
     This function prepares the input data for latency linear regression by separating features and target variables,
     and applying appropriate preprocessing techniques to categorical and numeric features.
 
-    Parameters:
-    df (pandas.DataFrame): The input DataFrame containing all variables.
-    predictor (list): List of column names to be used as the dependent variable(s).
-    categorical (list): List of column names containing categorical features.
-    numeric (list): List of column names containing numeric features.
+    :param df: The input DataFrame containing all variables.
+    :param predictor: List of column names to be used as the dependent variable(s).
+    :param categorical: List of column names containing categorical features.
+    :param numeric: List of column names containing numeric features.
 
-    Returns:
-    tuple: A tuple containing three elements:
-        - pandas.DataFrame: Preprocessed feature DataFrame (X).
-        - pandas.DataFrame: Target variable DataFrame (y).
-        - ColumnTransformer: The preprocessor object used for transforming the data.
+    :returns: A tuple containing three elements:
+        - Preprocessed feature DataFrame (X).
+        - Target variable DataFrame (y).
+        - The preprocessor object used for transforming the data.
     """
     model_columns = categorical + numeric
 
@@ -670,23 +648,22 @@ def _latency_linear_regression_preprocess_data(df, predictor, categorical, numer
     return x, y, preprocessor
 
 
-def _latency_linear_regression_create_pipeline(x, y, preprocessor):
+def _latency_linear_regression_create_pipeline(
+    x: pd.DataFrame, y: pd.DataFrame, preprocessor: ColumnTransformer
+) -> Tuple[Pipeline, np.ndarray]:
     """
     Perform latency linear regression using preprocessed data.
 
     This function creates a regression pipeline that includes the preprocessor and a linear regression model,
     fits the pipeline to the data, and generates predictions.
 
-    Parameters:
-    X (pandas.DataFrame): The feature DataFrame.
-    y (pandas.DataFrame): The target variable DataFrame.
-    preprocessor (ColumnTransformer): The preprocessor object for transforming the features.
+    :param x: The feature DataFrame.
+    :param y: The target variable DataFrame.
+    :param preprocessor: The preprocessor object for transforming the features.
 
-    Returns:
-    tuple: A tuple containing two elements:
-        - sklearn.pipeline.Pipeline: The fitted regression pipeline.
-        - numpy.ndarray: The predicted values (y_pred).
-    """
+    :returns: A tuple containing two elements:
+        - The fitted regression pipeline.
+        - The predicted values (y_pred)."""
     # Create regression pipeline
     pipeline = Pipeline(
         [("preprocessor", preprocessor), ("regressor", LinearRegression())],
@@ -700,21 +677,21 @@ def _latency_linear_regression_create_pipeline(x, y, preprocessor):
     return pipeline, y_pred
 
 
-def _latency_linear_regression_analyze_results(pipeline, x, y, y_pred):
+def _latency_linear_regression_analyze_results(
+    pipeline: Pipeline, x: pd.DataFrame, y: pd.DataFrame, y_pred: np.ndarray
+) -> pd.DataFrame:
     """
     Analyze the results of the latency linear regression.
 
     This function computes various statistical measures to evaluate the performance of the regression model,
     including coefficients, standard errors, and p-values for each feature.
 
-    Parameters:
-    pipeline (sklearn.pipeline.Pipeline): The fitted regression pipeline.
-    X (pandas.DataFrame): The feature DataFrame.
-    y (pandas.DataFrame): The actual target variable DataFrame.
-    y_pred (numpy.ndarray): The predicted values from the model.
+    :param pipeline: The fitted regression pipeline.
+    :param x: The feature DataFrame.
+    :param y: The actual target variable DataFrame.
+    :param y_pred: The predicted values from the model.
 
-    Returns:
-    pandas.DataFrame: A DataFrame containing the following columns for each feature:
+    :returns: A DataFrame containing the following columns for each feature:
         - 'Variable': Name of the feature
         - 'Latency Coefficient': Estimated coefficient
         - 'Standard Error': Standard error of the coefficient
@@ -757,19 +734,18 @@ def _latency_linear_regression_analyze_results(pipeline, x, y, y_pred):
     return latency_linear_regression_results_df
 
 
-def _latency_linear_regression_calculate_robust_normalized_coefficients(results_df):
+def _latency_linear_regression_calculate_robust_normalized_coefficients(
+    results_df: pd.DataFrame,
+) -> pd.DataFrame:
     """
     Calculate robust normalized coefficients for indexer rankings based on latency linear regression results.
 
     This function processes the latency linear regression results to create a ranking of indexers based on
     their coefficients, adjusting for statistical uncertainty and normalizing the results.
 
-    Parameters:
-    results_df (pandas.DataFrame): DataFrame containing latency linear regression results, including coefficients
-                                   and standard errors for each variable.
-
-    Returns:
-    pandas.DataFrame: A DataFrame with columns:
+    :param results_df: DataFrame containing latency linear regression results, including coefficients
+                       and standard errors for each variable.
+    :returns: A DataFrame with columns:
         - 'indexer': Identifier for each indexer
         - 'Latency Coefficient': Original latency linear regression coefficient
         - 'Standard Error': Standard error of the coefficient
@@ -787,7 +763,7 @@ def _latency_linear_regression_calculate_robust_normalized_coefficients(results_
     indexer_rankings.reset_index(inplace=True)
     indexer_rankings.drop(columns=["index"], inplace=True)
 
-    # Drop one_hot__indexer_ from coefficent names
+    # Drop one_hot__indexer_ from coefficient names
     indexer_rankings["Variable"] = indexer_rankings["Variable"].str.replace(
         "one_hot__indexer_", ""
     )
@@ -829,18 +805,15 @@ def _latency_linear_regression_calculate_robust_normalized_coefficients(results_
     return indexer_rankings
 
 
-def calculate_indexer_success_rate(df):
+def calculate_indexer_success_rate(df: pd.DataFrame) -> pd.DataFrame:
     """
     Calculate the success rate for each indexer based on query status.
 
     This function computes the proportion of successful queries (status '200 OK' or 'Unavailable(MissingBlock)')
     for each indexer in the dataset.
 
-    Parameters:
-    df (pandas.DataFrame): Input DataFrame containing 'indexer' and 'status' columns.
-
-    Returns:
-    pandas.DataFrame: A DataFrame with columns:
+    :param df: Input DataFrame containing 'indexer' and 'status' columns.
+    :returns: A DataFrame with columns:
         - 'indexer': Unique identifier for each indexer
         - 'average_status': The proportion of successful queries for each indexer (range 0 to 1)
     """
@@ -862,7 +835,9 @@ def calculate_indexer_success_rate(df):
     )
 
 
-def calculate_indexer_uptime(df, threshold_seconds=120):
+def calculate_indexer_uptime(
+    df: pd.DataFrame, threshold_seconds: Optional[int] = 120
+) -> pd.DataFrame:
     """
     Calculate the indexer uptime based on query response statuses and timestamps.
 
@@ -884,13 +859,9 @@ def calculate_indexer_uptime(df, threshold_seconds=120):
     - The restricted uptime percentage may differ significantly from the full uptime
       percentage, especially when there are large gaps between queries.
 
-    Parameters:
-    df (pandas.DataFrame): Input DataFrame containing 'indexer', 'timestamp', and 'status' columns.
-    threshold_seconds (int, optional): Maximum time gap to consider for restricted uptime calculation.
-                                       Defaults to 120 seconds.
-
-    Returns:
-    pandas.DataFrame: A DataFrame with columns:
+    :param df: Input DataFrame containing 'indexer', 'timestamp', and 'status' columns.
+    :param threshold_seconds: Maximum time gap to consider for restricted uptime calculation. Defaults to 120 seconds.
+    :returns: A DataFrame with columns:
         - 'indexer': Unique identifier for each indexer
         - 'observed_duration_restricted': Total observed time within the threshold
         - 'uptime_duration_restricted': Calculated uptime within the threshold
@@ -946,7 +917,7 @@ def calculate_indexer_uptime(df, threshold_seconds=120):
         (df_copy["next_midpoint"] - df_copy["previous_midpoint"])
         .dt.total_seconds()
         .where(df_copy["is_up"], 0),
-        threshold_seconds,
+        threshold_seconds,  # type: ignore
     )
 
     # Calculate observed durations using next/prior midpoints
@@ -955,10 +926,10 @@ def calculate_indexer_uptime(df, threshold_seconds=120):
     ).dt.total_seconds()
     df_copy["observed_duration_restricted"] = np.minimum(
         (df_copy["next_midpoint"] - df_copy["previous_midpoint"]).dt.total_seconds(),
-        threshold_seconds,
+        threshold_seconds,  # type: ignore
     )
 
-    # Save each indexers uptime.
+    # Save each indexer's uptime
     uptime_duration_full = df_copy.groupby("indexer")["uptime_duration_full"].sum()
     uptime_duration_restricted = df_copy.groupby("indexer")[
         "uptime_duration_restricted"
@@ -1008,23 +979,21 @@ def calculate_indexer_uptime(df, threshold_seconds=120):
     return merged_uptime_both
 
 
-def calculate_indexer_stake_to_fees(stake_query_pandas: StakeToFeesDataFrame):
+def calculate_indexer_stake_to_fees(
+    stake_query_pandas: StakeToFeesDataFrame,
+) -> pd.DataFrame:
     """
     Calculate the stake-to-fees ratio and its deviation from the median for each indexer.
 
     This function processes the results of the stake-to-fees query, computing the
-    interquartile range (IQR) normalized deviation of each indexer's stake-to-fees ratio
+    inter-quartile range (IQR) normalized deviation of each indexer's stake-to-fees ratio
     from the median.
 
-    Parameters:
-    stake_query_pandas (pandas.DataFrame): DataFrame containing 'indexer' and 'stake_to_fees' columns.
-
-    Returns:
-    pandas.DataFrame: A DataFrame with columns:
+    :param stake_query_pandas: DataFrame containing 'indexer' and 'stake_to_fees' columns.
+    :returns: A DataFrame with columns:
         - 'indexer': Indexer identifier
         - 'stake_to_fees': Original stake-to-fees ratio
-        - 'stake_to_fees_iqr_deviation': IQR-normalized deviation from the median ratio
-    """
+        - 'stake_to_fees_iqr_deviation': IQR-normalized deviation from the median ratio"""
 
     stake_to_fees = stake_query_pandas[["stake_to_fees"]].copy()
 
@@ -1053,7 +1022,7 @@ def calculate_indexer_stake_to_fees(stake_query_pandas: StakeToFeesDataFrame):
     return stake_to_fees
 
 
-def aggregate_indexer_info(df):
+def aggregate_indexer_info(df: DataFrame) -> pd.DataFrame:
     """
     Aggregate organizational and location information for each indexer.
 
@@ -1061,11 +1030,9 @@ def aggregate_indexer_info(df):
     information, selecting the most frequent value for each. It also rounds the location coordinates
     to the nearest 20 degrees for privacy and generalization purposes.
 
-    Parameters:
-    df (pandas.DataFrame): Input DataFrame containing 'indexer', 'org', and 'destination_loc' columns.
+    :param df: Input DataFrame containing 'indexer', 'org', and 'destination_loc' columns.
 
-    Returns:
-    pandas.DataFrame: An aggregated DataFrame with columns:
+    :returns: An aggregated DataFrame with columns:
         - 'indexer': Unique identifier for each indexer
         - 'org': Most frequent organization associated with the indexer
         - 'dst_lat': Most frequent latitude of the destination location rounded to the nearest 20 degrees
@@ -1097,8 +1064,12 @@ def aggregate_indexer_info(df):
 
 
 def merge_and_prepare_dataframes(
-    indexer_uptime, indexer_rankings, agg_df, indexer_success_rate, stake_to_fees
-):
+    indexer_uptime: pd.DataFrame,
+    indexer_rankings: pd.DataFrame,
+    agg_df: pd.DataFrame,
+    indexer_success_rate: pd.DataFrame,
+    stake_to_fees: pd.DataFrame,
+) -> pd.DataFrame:
     """
     Merge multiple DataFrames related to indexer performance and prepare a consolidated DataFrame.
 
@@ -1106,15 +1077,13 @@ def merge_and_prepare_dataframes(
     organizational data, success rates, and stake-to-fees ratios. It also adds placeholder
     columns for additional metrics.
 
-    Parameters:
-    indexer_uptime (pandas.DataFrame): DataFrame with indexer uptime information.
-    indexer_rankings (pandas.DataFrame): DataFrame with indexer rankings.
-    agg_df (pandas.DataFrame): DataFrame with aggregated indexer organizational information.
-    indexer_success_rate (pandas.DataFrame): DataFrame with indexer success rates.
-    stake_to_fees (pandas.DataFrame): DataFrame with stake to fees ratios.
+    :param indexer_uptime: DataFrame with indexer uptime information.
+    :param indexer_rankings: DataFrame with indexer rankings.
+    :param agg_df: DataFrame with aggregated indexer organizational information.
+    :param indexer_success_rate: DataFrame with indexer success rates.
+    :param stake_to_fees: DataFrame with stake to fees ratios.
 
-    Returns:
-    pandas.DataFrame: A merged DataFrame containing all relevant indexer information.
+    :returns: A merged DataFrame containing all relevant indexer information.
     """
     # Merge df's together
     merged = pd.merge(indexer_uptime, indexer_rankings, on="indexer", how="left")

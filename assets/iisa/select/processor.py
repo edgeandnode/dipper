@@ -88,16 +88,9 @@ class DataProcessor:
         # or get_indexer_selections later after this constructor has finished running.
         self._process_data()
 
-    def update_blocklist_cancel_indexing_agreements(self, new_blacklist):
+    def update_blocklist_cancel_indexing_agreements(self, blocklist):
         """
         Cancels all outstanding indexing agreements for indexers on the blacklist.
-
-        Parameters:
-        blocked_indexers (list): A list of indexers that have been blocked.
-
-        Returns:
-        dict: A dictionary where keys are blocked indexers and values are lists of subgraphs
-              from which they were removed.
 
         Note:
         - This method does not currently attempt to reassign indexers to the subgraph after
@@ -110,15 +103,19 @@ class DataProcessor:
           blocked simultaneously, there could be a longer than necessary latency while we reassign new indexers.
         - Although it would likely take some time for new indexers to accept the agreements and finish syncing, so this
           additional latency while we wait for the for loop to get to the subgraph, might not be a huge issue.
+
+        :param blocklist: A list of indexers that have been blocked.
+        :return: A dictionary where keys are blocked indexers and values are lists of subgraphs
+                 from which they were removed.
         """
         #
-        self.blocklist = new_blacklist
+        self.blocklist = blocklist
 
         cancelled_agreements = {}
 
         for subgraph, indexers in self.existing_agreements.items():
             for indexer in indexers:
-                if indexer in new_blacklist:
+                if indexer in blocklist:
                     # If indexer not already in cancelled_agreements, create new key-value
                     if indexer not in cancelled_agreements:
                         cancelled_agreements[indexer] = []
@@ -133,14 +130,12 @@ class DataProcessor:
 
         This method compares the initial and current groups of indexers to determine
         which indexers have been added or removed.
-
-        Returns:
-            tuple: Two dictionaries:
-                - added_dict: A dictionary where the key is the subgraph_id and the value is a list of newly added indexers
-                - cancelled_dict: A dictionary where the key is the subgraph_id and the value is a list of removed indexers
-
         Note:
             If no indexers were added or removed, the respective dictionary will be empty.
+
+        :return: A tuple of two dictionaries:
+                - added_dict: A dictionary where the key is the subgraph_id and the value is a list of newly added indexers
+                - cancelled_dict: A dictionary where the key is the subgraph_id and the value is a list of removed indexers
         """
         # Compare initial and current groups to determine changes
         added = set(self.current_group) - set(self.initial_group)
@@ -197,8 +192,7 @@ class DataProcessor:
         """
         Get the current group of indexers assigned to a subgraph (data from self.existing_agreements).
 
-        Returns:
-            list: A list containing the indexer assigned to 'self.subgraph_id', or an empty list if no indexer is assigned.
+        :return: A list containing the indexer assigned to 'self.subgraph_id', or an empty list if no indexer is assigned.
         """
         # Check if the subgraph_id exists in the agreements and return the corresponding indexers
         return self.existing_agreements.get(self.deployment_id, [])
@@ -209,8 +203,7 @@ class DataProcessor:
 
         This method attempts to normalize the data and calculate weighted scores.
 
-        Returns:
-            pd.DataFrame: The processed DataFrame.
+        :return: The processed DataFrame.
         """
         try:
             normalized_data = _normalize_metrics(self.data)
@@ -450,8 +443,7 @@ class DataProcessor:
             - indexer1 for either subgraph1 or subgraph2.
             - indexer2 for subgraph1
 
-        Returns:
-        str or None: The best indexer, or None if no suitable candidate is found.
+        :return: The best indexer, or None if no suitable candidate is found.
         """
 
         def flatten_list_of_lists(list_of_lists):
@@ -544,26 +536,13 @@ class DataProcessor:
         )
 
 
-def _normalize_metrics(merged):
+def _normalize_metrics(merged: pd.DataFrame) -> pd.DataFrame:
     """
     Normalize various metrics in the merged DataFrame to create comparable scores across different dimensions.
 
     This function takes the merged DataFrame containing various indexer metrics and normalizes them,
     to create standardized scores. It handles different types of metrics, applying appropriate
     normalization techniques for each.
-
-    Parameters:
-    merged (pandas.DataFrame): The input DataFrame containing various indexer metrics.
-
-    Returns:
-    pandas.DataFrame: The input DataFrame with additional columns for normalized metrics:
-        - 'norm_lat_lin_reg_coefficient': Normalized latency linear regression coefficient
-        - 'norm_uptime_score': Normalized uptime score
-        - 'norm_existing_dips_agreements': Normalized score for existing DIP agreements
-        - 'norm_stake_to_fees_iqr_deviation': Normalized stake-to-fees ratio deviation
-        - 'norm_success_rate': Normalized success rate
-        - 'norm_avg_sync_duration': Normalized average sync duration
-        - 'norm_indexing_agreement_acceptance_latency': Normalized acceptance latency
 
     Note:
     - Each metric is normalized to a scale of 0 to 1, where 1 represents better performance.
@@ -573,6 +552,16 @@ def _normalize_metrics(merged):
         - Generic min-max normalization for most metrics
         - Special normalization for uptime and success rate to emphasize high performance
         - Logistic function for acceptance latency
+
+    :param merged: The input DataFrame containing various indexer metrics.
+    :return: The input DataFrame with additional columns for normalized metrics:
+        - 'norm_lat_lin_reg_coefficient': Normalized latency linear regression coefficient
+        - 'norm_uptime_score': Normalized uptime score
+        - 'norm_existing_dips_agreements': Normalized score for existing DIP agreements
+        - 'norm_stake_to_fees_iqr_deviation': Normalized stake-to-fees ratio deviation
+        - 'norm_success_rate': Normalized success rate
+        - 'norm_avg_sync_duration': Normalized average sync duration
+        - 'norm_indexing_agreement_acceptance_latency': Normalized acceptance latency
     """
     if merged.empty:
         new_columns = [
@@ -658,21 +647,18 @@ def _normalize_metrics(merged):
     return merged
 
 
-def _normalize_generic(series):
+def _normalize_generic(series: pd.Series) -> pd.Series:
     """
     Perform a generic min-max normalization on a pandas Series.
 
     This function normalizes the input series to a range between 0 and 1 using min-max scaling.
     It handles edge cases such as constant series or series with NaN values.
 
-    Parameters:
-    series (pandas.Series): The input series to be normalized.
-
-    Returns:
-    pandas.Series: A new series with normalized values between 0 and 1.
-
     Note:
     - If the input series is empty or contains only one unique value, it returns a series of 0.5.
+
+    :param series: The input series to be normalized.
+    :return: A new series with normalized values between 0 and 1.
     """
     min_val = series.min()
     max_val = series.max()
@@ -686,7 +672,7 @@ def _normalize_generic(series):
     return normalized
 
 
-def _normalize_uptime_and_success_rate(series):
+def _normalize_uptime_and_success_rate(series: pd.Series) -> pd.Series:
     """
     Normalize either uptime or success rate data using a piecewise linear scaling method.
 
@@ -696,13 +682,10 @@ def _normalize_uptime_and_success_rate(series):
     linear score scaling from 0 to 1. So for example 98.5% of the best indexers uptime would
     result in a normalized score of 0.5. The same calculation applies to success rate.
 
-    Parameters:
-    series (pandas.Series): The input series containing uptime or success rate data.
-
-    Returns:
-    pandas.Series: A new series with normalized values between 0 and 1.
+    :param series: The input series containing uptime or success rate data.
+    :returns: A new series with normalized values between 0 and 1.
     """
-    # Find the best uptime/success rate score in the series first.
+    # Find the best uptime/success rate score in the series first
     best = series.max()
 
     # Threshold whereby indexers that have less uptime/success rate than this get no score.
@@ -723,29 +706,26 @@ def _normalize_uptime_and_success_rate(series):
 
 
 def _normalize_indexing_agreement_acceptance_latency(
-    latency_series,
-    l=1.002,  # noqa: E741
-    k=1,
-    x0=6,
-):
+    latency_series: pd.Series,
+    l: float = 1.002,  # noqa: E741
+    k: float = 1,
+    x0: float = 6,
+) -> pd.Series:
     """
     Normalize indexing agreement acceptance latency using a piecewise function:
     logistic for x ≤ x0, linear for x > x0.
-
-    Parameters:
-    latency_series (pandas.Series): The input series containing latency data in hours.
-    L (float, optional): The logistic function's maximum value. Defaults to 1.002.
-    k (float, optional): The steepness of the curve. Defaults to 1.
-    x0 (float, optional): The x-value of the sigmoid's midpoint. Defaults to 6 hours.
-
-    Returns:
-    pandas.Series: A new series with normalized values between 0 and 1.
 
     Note:
     - Indexing agreement acceptance latency should be measured in hours to 2 d.p, not minutes or seconds.
     - Lower latency results in higher normalized values.
     - Negative latency values are clipped to 0 before normalization.
     - Large latency values are clipped to a maximum of 8 hours, after this the score is 0 anyway.
+
+    :param latency_series: The input series containing latency data in hours.
+    :param l: The logistic function's maximum value. Defaults to 1.002.
+    :param k: The steepness of the curve. Defaults to 1.
+    :param x0: The x-value of the sigmoid's midpoint. Defaults to 6 hours.
+    :return: A new series with normalized values between 0 and 1.
     """
 
     def logistic(x):
@@ -789,7 +769,7 @@ def _normalize_indexing_agreement_acceptance_latency(
     return normalized
 
 
-def _calculate_weighted_score(row, weights):
+def _calculate_weighted_score(row: pd.Series, weights: dict) -> float:
     """
     Calculate a weighted score for an indexer based on multiple normalized metrics.
 
@@ -797,17 +777,12 @@ def _calculate_weighted_score(row, weights):
     each weighted according to predefined weights. NaN values and missing metrics
     are treated as 0, but all weights contribute to the total score.
 
-    Parameters:
-    row (pandas.Series): A series containing normalized metric values for an indexer.
-                         Expected to have columns prefixed with 'norm_'.
-    weights (dict): A dictionary mapping metric names to their respective weights.
+    :param row: A series containing normalized metric values for an indexer.
+                Expected to have columns prefixed with 'norm_'.
+    :param weights: A dictionary mapping metric names to their respective weights.
                     Keys should match the suffix of the 'norm_' columns in the row.
-
-    Returns:
-    float: The calculated weighted score.
-
-    Raises:
-    ValueError: If the total weight is 0.
+    :return: The calculated weighted score.
+    :raises ValueError: If the total weight is 0.
     """
     weighted_sum = 0
     weight_total = 0
