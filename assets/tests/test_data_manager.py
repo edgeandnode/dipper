@@ -17,8 +17,6 @@ from iisa.data_manager.manager import (
     IndexerRankingsDataFrame,
     IndexerRankingsSchema,
     LinearRegressionResultsSchema,
-    RequestHistoryDataFrame,
-    RequestHistorySchema,
 )
 from iisa.data_manager.processing import (
     _CalculateDistancesInputDataFrame,
@@ -54,6 +52,10 @@ from iisa.data_manager.processing import (
 )
 from iisa.geoip import GeoipResolver
 from iisa.network import IndexersDataFrame, IndexersSchema, NetworkProvider
+from iisa.perf import (
+    PerfHistoryDataFrame,
+    PerfHistorySchema,
+)
 from iisa.typing import empty_dataframe
 from tests.__fixtures__ import network as network_fixture
 
@@ -191,7 +193,7 @@ class TestDataManagerClass:
             1. query_data: A DataFrame with various indexer and query metrics.
             3. indexer_rankings: A DataFrame with indexer rankings and scores.
             """
-            request_data = RequestHistoryDataFrame(
+            request_data = PerfHistoryDataFrame(
                 {
                     "query_id": [faker.query_id() for _ in range(3)],
                     "deployment_hash": [faker.deployment_id() for _ in range(3)],
@@ -239,7 +241,7 @@ class TestDataManagerClass:
         # Verify data is present and non-empty, and that it conforms to the Pandera schema
         assert data is not None
         assert not data.empty
-        RequestHistorySchema.validate(data)
+        PerfHistorySchema.validate(data)
 
         assert indexer_rankings is not None
         assert not indexer_rankings.empty

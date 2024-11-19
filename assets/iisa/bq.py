@@ -106,11 +106,8 @@ class BigQueryProvider:
             GOOGLE_APPLICATION_CREDENTIALS environment variable if set. This variable should point to
             the JSON file containing the service account key.
 
-        Parameters:
-        query (QueryStr): SQL query string to be executed on Google BigQuery.
-
-        Returns:
-        DataFrame[Any]: A DataFrame containing the query results.
+        :param query: SQL query string to be executed on Google BigQuery.
+        :return: DataFrame containing the query results.
         """
         return cast(DataFrame, bpd.read_gbq(query).to_pandas())
 
@@ -121,12 +118,9 @@ class BigQueryProvider:
         """
         Fetch the initial query results.
 
-        Parameters:
-        start_date (date): The start date for the query range.
-        num_days (int): The number of days to include in the query range.
-
-        Returns:
-        InitialQueryDataFrame: A DataFrame containing the initial query results.
+        :param start_date: The start date for the query range.
+        :param num_days: The number of days to include in the query range.
+        :return: A DataFrame containing the initial query results.
         """
         # Format the start date as a %Y-%m-%d string
         start = DateStr(start_date.strftime("%Y-%m-%d"))
@@ -146,13 +140,10 @@ class BigQueryProvider:
         """
         Fetch the combined query results.
 
-        Parameters:
-        start_date (date): The start date for the query range.
-        num_days (int): The number of days to include in the query range.
-        rows_to_use (int): The maximum number of rows to retrieve per deployment_hash and indexer combination.
-
-        Returns:
-        CombinedQueryDataFrame: A DataFrame containing the combined query results.
+        :param start_date: The start date for the query range.
+        :param num_days: The number of days to include in the query range.
+        :param rows_to_use: The maximum number of rows to retrieve per deployment_hash and indexer combination.
+        :return: A DataFrame containing the combined query results.
         """
         # Format the start date as a %Y-%m-%d string
         start = DateStr(start_date.strftime("%Y-%m-%d"))
@@ -178,11 +169,8 @@ class BigQueryProvider:
         """
         Get the initial stake to fees query.
 
-        Parameters:
-        start_ts (TimestampStr): The starting timestamp for the query.
-
-        Returns:
-        StakeToFeesDataFrame: A DataFrame containing the stake-to-fees query results.
+        :param start_ts: The starting timestamp for the query.
+        :return: A DataFrame containing the stake-to-fees query results.
         """
         query = _get_initial_stake_to_fees_query(start_ts)
         dataframe = self._read_gbq_dataframe(query)
@@ -203,14 +191,11 @@ def _get_combined_query(
     indexer_dimensions, and metrics_indexer_attempts tables. It includes subquery logic
     to handle deployment networks, indexer networks, and data sampling.
 
-    Parameters:
-    start_date (datetime): The start date for the query range.
-    num_days (int): The number of days to include in the query range.
-    rows_to_use (int): The maximum number of rows to retrieve per deployment_hash and indexer combination.
-
-    Returns:
-    str: A SQL query string that selects and combines data from multiple tables,
-         applying various filters and transformations.
+    :param start_date: The start date for the query range.
+    :param num_days: The number of days to include in the query range.
+    :param rows_to_use: The maximum number of rows to retrieve per deployment_hash and indexer combination.
+    :return: A SQL query string that selects and combines data from multiple tables,
+             applying various filters and transformations.
     """
     return QueryStr(
         dedent(f"""\
@@ -371,13 +356,10 @@ def _get_initial_query(start_date: DateStr, num_days: int) -> QueryStr:
     This function generates a SQL query that counts the number of rows for each combination of
     deployment hash and indexer within a specified date range.
 
-    Parameters:
-    start_date (datetime): The start date for the query range.
-    num_days (int): The number of days to include in the query range.
-
-    Returns:
-    str: A SQL query string that selects deployment_hash, indexer, and num_rows,
-         filtered by the specified date range.
+    :param start_date: The start date for the query range.
+    :param num_days: The number of days to include in the query range.
+    :return: A SQL query string that selects deployment_hash, indexer, and num_rows,
+             filtered by the specified date range.
     """
     return QueryStr(
         dedent(f"""\
@@ -417,16 +399,13 @@ def _get_initial_stake_to_fees_query(start_ts: TimestampStr) -> QueryStr:
     query fees earned outside the looked upon window does not affect an indexers'
     current stake-to-fees ratio.
 
-    Parameters:
-    start_ts (str): The starting timestamp for the query, formatted as a string.
-
-    Returns:
-    QueryStr: A SQL query string that calculates stake-to-fees ratios.
-
     Note:
     - The query joins data from 'internal_metrics.indexer_dimensions_arbitrum' and
       'internal_metrics.metrics_indexer_attempts' tables.
     - The query filters data starting from the provided timestamp.
+
+    :param start_ts: The starting timestamp for the query, formatted as a string.
+    :return: A SQL query string that calculates stake-to-fees ratios.
     """
     return QueryStr(
         dedent(f"""\

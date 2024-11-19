@@ -3,7 +3,7 @@ A module for time-related functions.
 """
 
 from datetime import date, datetime, timedelta
-from typing import Optional, Tuple, NewType
+from typing import NewType, Optional, Tuple
 
 DateStr = NewType("DateStr", str)
 TimestampStr = NewType("TimestampStr", str)
@@ -18,19 +18,14 @@ def derive_timestamps(
     This function calculates a date range ending at the current date and starting 'num_days' ago.
     It returns both datetime objects and formatted string timestamps.
 
-    Parameters:
-    num_days (int): Number of days to look back from the current date. Must be a non-negative integer.
-    end_date (date, optional): The end date of the range. If not provided, the current date is used.
-
-    Returns:
-    tuple: A tuple containing four elements:
+    :param num_days: Number of days to look back from the current date. Must be a non-negative integer.
+    :param end_date: The end date of the range. If not provided, the current date is used.
+    :return: A tuple containing four elements:
         - start_date: The start date of the range.
         - end_date: The end date of the range.
         - start_ts: Formatted string of the start date (YYYY-MM-DDTHH:MM:SSZ).
         - end_ts: Formatted string of the end date (YYYY-MM-DDTHH:MM:SSZ).
-
-    Raises:
-    ValueError: If num_days is negative or not an integer.
+    :raises ValueError: If num_days is negative or not an integer.
     """
     if not isinstance(num_days, int) or num_days < 0:
         raise ValueError("num_days must be a non-negative integer")

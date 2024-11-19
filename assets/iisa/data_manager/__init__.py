@@ -16,12 +16,10 @@ from .manager import (
     DataManager,
     IndexerRankingsDataFrame,
     LinearRegressionResultsDataFrame,
-    RequestHistoryDataFrame,
 )
 
 __all__ = [
     "DataManager",
-    "RequestHistoryDataFrame",
     "IndexerRankingsDataFrame",
     "LinearRegressionResultsDataFrame",
     "DEFAULT_NUM_DAYS",

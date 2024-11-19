@@ -39,8 +39,7 @@ def _load_airportsdata_iata_pandas() -> IataInfoDataFrame:
 
     Additionally, at load time, check the data frame content matches the IataInfoSchema.
 
-    Returns:
-        DataFrame[IataInfoSchema]: DataFrame containing IATA airport data.
+    :returns: DataFrame containing IATA airport data.
     """
     airportsdata_csv = Path(airportsdata.__file__).parent / "airports.csv"
 
@@ -69,7 +68,6 @@ def get_iata_geolocation_info() -> IataInfoDataFrame:
     """
     Get the IATA airport geolocation data.
 
-    Returns:
-        IataInfoDataFrame: DataFrame containing IATA airport geolocation data.
+    :returns: DataFrame containing IATA airport geolocation data.
     """
     return _airportsdata_iata

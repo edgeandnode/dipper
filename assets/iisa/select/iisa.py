@@ -1,22 +1,7 @@
 from typing import Optional
 
-import pandera as pa
-from pandera.typing import DataFrame
-
+from ..perf import PerfHistoryDataFrame
 from ..typing import DeploymentId, IndexerId
-
-
-class PerfHistorySchema(pa.DataFrameModel):
-    """
-    Schema for the performance history dataset.
-
-    The curated performance history dataset returned by the data manager class.
-    """
-
-    pass  # TODO: Add column definitions to the schema
-
-
-PerfHistoryDataFrame = DataFrame[PerfHistorySchema]
 
 
 def select_one(
