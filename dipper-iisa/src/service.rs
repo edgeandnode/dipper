@@ -18,6 +18,12 @@ pub struct Config {
     ///
     /// This token is used to authenticate the GeoIP resolver with the `ipiinfo.io` service.
     pub geoip_auth: String,
+
+    /// The BigQuery project ID.
+    pub bigquery_project_id: String,
+
+    /// The BigQuery region.
+    pub bigquery_region: String,
 }
 
 /// The `Command` enum represents the commands that can be sent to the `IndexerSelectionService`.
@@ -159,7 +165,7 @@ pub fn new(config: Config) -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()
     let (tx, mut rx) = mpsc::unbounded_channel();
     let service_task = move || {
         // Register the Python logging to Rust log handler
-        logging::register("dipper::indexer_selection").expect("Failed to register host logger");
+        logging::register().expect("Failed to register host logger");
 
         Python::with_gil(|py| {
             // Set up Python logging
@@ -167,7 +173,12 @@ pub fn new(config: Config) -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()
                 c_str!(indoc::indoc! {r#"
                 import logging
 
-                logging.basicConfig(level=logging.INFO)
+                logging.basicConfig(
+                    level=logging.INFO, 
+                    handlers=[
+                        logging.HostLogHandler("dipper_iisa::service")
+                    ]
+                )
                 logging.captureWarnings(True)
                 "#}),
                 None,
@@ -179,7 +190,11 @@ pub fn new(config: Config) -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()
             let (data_manager, network_provider) = {
                 let geoip_resolver = PyGeoipResolver::new(py, &config.geoip_auth)?;
                 let network_provider = PyNetworkProvider::new(py, geoip_resolver)?;
-                let bigquery_provider = PyBigQueryProvider::new(py, "graph-mainnet", "US")?;
+                let bigquery_provider = PyBigQueryProvider::new(
+                    py,
+                    &config.bigquery_project_id,
+                    &config.bigquery_region,
+                )?;
                 let data_manager =
                     PyDataManager::new(py, bigquery_provider, network_provider.clone())?;
 

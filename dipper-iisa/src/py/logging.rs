@@ -1,5 +1,3 @@
-use std::ffi::CString;
-
 use log::{logger, Level, MetadataBuilder, Record};
 use pyo3::{
     ffi::c_str,
@@ -13,16 +11,16 @@ use pyo3::{
 fn import_logging(py: Python) -> PyResult<&Bound<PyModule>> {
     static MODULE: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
     MODULE
-        .get_or_try_init(py, || py.import("logging")?.extract())
+        .get_or_try_init(py, || py.import("logging").map(Bound::unbind))
         .map(|module| module.bind(py))
 }
 
 /// Convenience function to register the rust logger with the Python logging instance.
-pub fn register(target: &str) -> PyResult<()> {
+pub fn register() -> PyResult<()> {
     pyo3::prepare_freethreaded_python();
     Python::with_gil(|py| {
         // Extend the `logging` module to interact with log
-        setup_logging(py, target)
+        setup_logging(py)
     })
 }
 
@@ -32,10 +30,6 @@ fn host_log(target: &str, record: Bound<'_, PyAny>) -> PyResult<()> {
     let py = record.py();
 
     let level = record.getattr(intern!(py, "levelno"))?;
-    let message = record
-        .getattr(intern!(py, "getMessage"))?
-        .call0()?
-        .to_string();
     let pathname = record.getattr(intern!(py, "pathname"))?.to_string();
     let lineno = record.getattr(intern!(py, "lineno"))?.extract()?;
 
@@ -50,6 +44,11 @@ fn host_log(target: &str, record: Bound<'_, PyAny>) -> PyResult<()> {
             None
         }
     };
+
+    let message = record
+        .getattr(intern!(py, "getMessage"))?
+        .call0()?
+        .to_string();
 
     let mut metadata_builder = MetadataBuilder::new();
     metadata_builder.target(full_target.as_deref().unwrap_or(target));
@@ -84,18 +83,20 @@ fn host_log(target: &str, record: Bound<'_, PyAny>) -> PyResult<()> {
 /// logging messages arrive to the rust consumer.
 ///
 /// If the `_host_log` function is already registered, this function does nothing.
-fn setup_logging(py: Python, target: &str) -> PyResult<()> {
+fn setup_logging(py: Python) -> PyResult<()> {
     let logging = import_logging(py)?;
-    if logging.hasattr("_host_log")? {
-        return Ok(());
+
+    if !logging.hasattr("_host_log")? {
+        // Register the `_host_log` function in the Python `logging` module
+        logging.setattr("_host_log", wrap_pyfunction!(host_log, logging)?)?;
     }
 
-    // Register the `_host_log` function in the Python `logging` module
-    logging.setattr("_host_log", wrap_pyfunction!(host_log, logging)?)?;
+    if !logging.hasattr("HostLogHandler")? {
+        tracing::trace!("Registering HostLogHandler in Python logging module");
 
-    // Define the `HostLogHandler` class in the Python `logging` module
-    py.run(
-        c_str!(indoc::indoc! {r#"
+        // Define the `HostLogHandler` class in the Python `logging` module
+        py.run(
+            c_str!(indoc::indoc! {r#"
             class HostLogHandler(Handler):
                 def __init__(self, target, level=NOTSET):
                     super().__init__(level)
@@ -104,33 +105,15 @@ fn setup_logging(py: Python, target: &str) -> PyResult<()> {
                 def emit(self, record):
                     _host_log(self._target, record)
             "#,
-        }),
-        Some(&logging.dict()),
-        None,
-    )?;
+            }),
+            Some(&logging.dict()),
+            None,
+        )?;
 
-    // Add the `HostLogHandler` class name to the module's `__all__` list
-    let all = logging.index()?;
-    all.append("HostLogHandler")?;
-
-    // Replace the default `logging.basicConfig` function with a custom implementation
-    py.run(
-        CString::new(indoc::formatdoc! {r#"
-            _basicConfig = basicConfig
-
-            def basicConfig(*args, **kwargs):
-                if "handlers" not in kwargs:
-                    kwargs["handlers"] = [HostLogHandler("{target}")]
-
-                return _basicConfig(*args, **kwargs)
-            "#,
-            target=target
-        })
-        .expect("Failed to format basicConfig replacement")
-        .as_ref(),
-        Some(&logging.dict()),
-        None,
-    )?;
+        // Add the `HostLogHandler` class name to the module's `__all__` list
+        let all = logging.index()?;
+        all.append("HostLogHandler")?;
+    }
 
     Ok(())
 }
