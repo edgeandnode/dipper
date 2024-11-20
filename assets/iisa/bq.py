@@ -2,6 +2,7 @@
 The "Google BigQuery" provider.
 """
 
+import logging
 import socket
 from datetime import date
 from textwrap import dedent
@@ -28,6 +29,10 @@ from .typing import (
 )
 
 QueryStr = NewType("QueryStr", str)
+
+
+# Module-level logger
+logger = logging.getLogger(__name__)
 
 
 class InitialQuerySchema(pa.DataFrameModel):
@@ -125,11 +130,21 @@ class BigQueryProvider:
         # Format the start date as a %Y-%m-%d string
         start = DateStr(start_date.strftime("%Y-%m-%d"))
 
+        logger.debug(
+            "Fetching initial query results",
+            extra={"start_date": start, "num_days": num_days},
+        )
+
         query = _get_initial_query(start, num_days)
         dataframe = self._read_gbq_dataframe(query)
 
         if not dataframe.empty:
             dataframe.sort_values(by="num_rows", ascending=False, inplace=True)
+
+        logger.debug(
+            f"Fetched initial query results ({dataframe.shape[0]})",
+            extra={"rows": dataframe.shape[0]},
+        )
 
         return cast(InitialQueryDataFrame, dataframe)
 
@@ -148,6 +163,15 @@ class BigQueryProvider:
         # Format the start date as a %Y-%m-%d string
         start = DateStr(start_date.strftime("%Y-%m-%d"))
 
+        logger.debug(
+            "Fetching combined query results",
+            extra={
+                "start_date": start,
+                "num_days": num_days,
+                "rows_to_use": rows_to_use,
+            },
+        )
+
         query = _get_combined_query(start, num_days, rows_to_use)
         dataframe = self._read_gbq_dataframe(query)
 
@@ -159,6 +183,11 @@ class BigQueryProvider:
             dataframe["url"] = dataframe["url"].apply(
                 lambda url: url if url.endswith("/") else url + "/"
             )
+
+        logger.debug(
+            f"Fetched combined query results ({dataframe.shape[0]})",
+            extra={"rows": dataframe.shape[0]},
+        )
 
         return cast(CombinedQueryDataFrame, dataframe)
 
@@ -172,11 +201,20 @@ class BigQueryProvider:
         :param start_ts: The starting timestamp for the query.
         :return: A DataFrame containing the stake-to-fees query results.
         """
+        logger.debug(
+            "Fetching initial stake-to-fees query", extra={"start_ts": start_ts}
+        )
+
         query = _get_initial_stake_to_fees_query(start_ts)
         dataframe = self._read_gbq_dataframe(query)
 
         # Set the indexer column as the index
         dataframe.set_index("indexer", inplace=True)
+
+        logger.debug(
+            f"Fetched initial stake-to-fees query ({dataframe.shape[0]})",
+            extra={"rows": dataframe.shape[0]},
+        )
 
         return cast(StakeToFeesDataFrame, dataframe)
 
