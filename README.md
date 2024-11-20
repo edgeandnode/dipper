@@ -2,4 +2,9 @@ Dipper
 ------
 [![ci](https://github.com/edgeandnode/dipper/actions/workflows/ci.yml/badge.svg)](https://github.com/edgeandnode/dipper/actions/workflows/ci.yml)
 
-This repository contains the code for the DIPs gateway service, a.k.a. _Dipper_. 
+This repository contains the code for the DIPs Gateway service, a.k.a. _Dipper_. 
+
+### Contributing
+
+Please refer to our [CONTRIBUTING.md docs](CONTRIBUTING.md) for more information on 
+how contribute to this project.
