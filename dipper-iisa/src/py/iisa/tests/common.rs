@@ -19,10 +19,10 @@ fn project_root_path() -> PathBuf {
         .to_path_buf()
 }
 
-/// Get the path to the assets directory for testing.
+/// Get the path to the python sources directory for testin
 fn assets_path() -> PathBuf {
     let mut path = project_root_path();
-    path.push("assets");
+    path.push("dipper-iisa-python/src");
     path
 }
 

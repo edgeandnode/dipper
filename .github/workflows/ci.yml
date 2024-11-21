@@ -121,10 +121,10 @@ jobs:
 
     ## Check
     - name: Check Python code (ruff)
-      run: uv run --frozen ruff check assets
+      run: uv run --frozen ruff check
 
     - name: Run mypy static type checker
-      run: uv run --frozen mypy assets
+      run: uv run --frozen mypy
 
     ## Test
     # Install sops (needed for decrypting tests .env file)
@@ -141,7 +141,7 @@ jobs:
         SOPS_AGE_KEY: ${{ secrets.IT_TESTS_AGE_KEY }}
       with:
         env_file: .env
-        run: uv run --frozen pytest -v assets
+        run: uv run --frozen pytest -v
 
   format-python:
     runs-on: ubuntu-latest
@@ -154,4 +154,4 @@ jobs:
         github-token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Check Python code formatting (ruff)
-      run: uv run --frozen ruff format --check assets
+      run: uv run --frozen ruff format --check

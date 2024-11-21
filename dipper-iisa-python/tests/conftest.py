@@ -7,7 +7,8 @@ import os
 
 import pytest
 from faker import Faker
-from tests.__fixtures__.faker import init_faker_instance
+
+from __fixtures__.faker import init_faker_instance
 
 
 @pytest.fixture(scope="session", autouse=True)

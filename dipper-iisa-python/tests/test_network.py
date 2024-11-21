@@ -4,7 +4,7 @@ Test suite for the network module.
 
 from iisa.geoip import GeoipResolver
 from iisa.network import IndexersSchema, NetworkProvider
-from tests.__fixtures__ import network as network_fixture
+from __fixtures__ import network as network_fixture
 
 
 class TestNetworkIndexersDataframe:

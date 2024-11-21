@@ -76,6 +76,8 @@ pub async fn main() -> anyhow::Result<()> {
         indexers::DummyDipsIndexerClient
     };
 
+    //TODO: - Perform an initial network snapshot fetch
+
     //- The network service
     let (network_handle, network_service) = {
         let network_subgraph_url = conf
@@ -94,8 +96,6 @@ pub async fn main() -> anyhow::Result<()> {
         );
         network::service::new(network_subgraph_client, conf.network.update_interval)
     };
-
-    // network_handle.wait_ready().await; TODO: Wait for the network service to be ready (with timeout)
 
     //- The network provider component
     let network_provider = network::provider::NetworkProviderService::new(network_handle.clone());

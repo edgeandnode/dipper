@@ -12,6 +12,7 @@ import pytest
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 
+from __fixtures__ import network as network_fixture
 from iisa.data_manager.manager import (
     DataManager,
     IndexerRankingsDataFrame,
@@ -57,7 +58,6 @@ from iisa.perf import (
     PerfHistorySchema,
 )
 from iisa.typing import empty_dataframe
-from tests.__fixtures__ import network as network_fixture
 
 
 @pytest.fixture

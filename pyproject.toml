@@ -1,7 +1,7 @@
 [project]
-name = "dipper"
+name = "iisa"
 version = "0.1.0"
-readme = "README.md"
+readme = "dipper-iisa-python/README.md"
 requires-python = ">=3.11"
 dependencies = [
     "airportsdata>=20240806",
@@ -34,7 +34,7 @@ dev-dependencies = [
 ## mypy configuration
 [tool.mypy]
 files = [
-    "assets/iisa/**/*.py",
+    "dipper-iisa-python/src/**/*.py",
 ]
 exclude = [
     "tests/",
@@ -60,7 +60,7 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 minversion = "6.0"
 testpaths = [
-    "assets/tests"
+    "dipper-iisa-python/tests"
 ]
 
 
@@ -71,12 +71,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "assets/iisa",
+    "dipper-iisa-python/src/iisa",
 ]
 exclude = [
-    "tests/",
+    "dipper-iisa-python/tests/",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["assets/iisa"]
+packages = ["dipper-iisa-python/src/iisa"]
 
