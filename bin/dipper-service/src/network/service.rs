@@ -5,7 +5,7 @@ use tokio::{
     time::MissedTickBehavior,
 };
 
-use super::subgraph::{client::Client as SubgraphClient, snapshot::Snapshot};
+use super::subgraph::{snapshot::Snapshot, Client as SubgraphClient};
 
 #[derive(Clone)]
 pub struct ServiceHandle {
@@ -17,16 +17,6 @@ pub struct ServiceHandle {
 }
 
 impl ServiceHandle {
-    /// Wait for the service data to be ready
-    ///
-    /// This function will block until the service data is ready (not empty).
-    ///
-    /// If the underlying channel has been closed, this function will return an error.
-    pub async fn wait_ready(&mut self) -> anyhow::Result<()> {
-        let _ = self.rx.wait_for(|data| !data.is_empty()).await?;
-        Ok(())
-    }
-
     /// Wait for the service data to have changed
     ///
     /// If the underlying channel has been closed, this function will return an error.
@@ -58,9 +48,10 @@ impl ServiceHandle {
 pub fn new(
     client: SubgraphClient,
     update_interval: Duration,
+    init: Snapshot,
 ) -> (ServiceHandle, impl Future<Output = anyhow::Result<()>>) {
     let (tx_stop, mut rx_stop) = mpsc::channel(1);
-    let (tx, rx) = watch::channel(Default::default());
+    let (tx, rx) = watch::channel(init);
 
     let service = async move {
         let mut timer = tokio::time::interval(update_interval);

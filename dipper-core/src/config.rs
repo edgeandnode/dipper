@@ -16,6 +16,13 @@ use thegraph_core::alloy::{
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Hidden<T>(pub T);
 
+impl<T> Hidden<T> {
+    /// Unwrap the hidden value
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
 impl<T> std::fmt::Display for Hidden<T>
 where
     T: std::fmt::Display,

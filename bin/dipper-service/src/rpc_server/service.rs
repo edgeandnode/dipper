@@ -28,8 +28,12 @@ pub struct Handle {
 
 impl Handle {
     /// Stop the RPC server
-    pub fn stop(self) {
-        let _ = self.stop_tx.try_send(());
+    pub async fn stop(self) {
+        if self.stop_tx.is_closed() {
+            return;
+        }
+
+        let _ = self.stop_tx.send(()).await;
     }
 }
 

@@ -58,6 +58,7 @@ pub async fn main() -> anyhow::Result<()> {
             .username(&conf.db.username)
             .password(&conf.db.password);
 
+        // Try to connect to the DB
         PgPoolOptions::new()
             .max_connections(conf.db.max_connections.unwrap_or(10))
             .connect_with(conn_options)
@@ -68,7 +69,7 @@ pub async fn main() -> anyhow::Result<()> {
     let queue = PgQueue::with_max_attempts(db.clone(), 3);
 
     // The registry component
-    let registry = PgRegistry::new(db);
+    let registry = PgRegistry::new(db.clone());
 
     //- The indexer client component
     let indexer_client = {
@@ -76,25 +77,38 @@ pub async fn main() -> anyhow::Result<()> {
         indexers::DummyDipsIndexerClient
     };
 
-    //TODO: - Perform an initial network snapshot fetch
-
     //- The network service
     let (network_handle, network_service) = {
         let network_subgraph_url = conf
             .network
             .gateway_url
             .join(&format!(
-                "/api/deployments/id/{}/",
+                "/api/deployments/id/{}",
                 conf.network.deployment_id
             ))
             .expect("invalid network subgraph URL");
 
-        let network_subgraph_client = network::subgraph::client::Client::new(
+        let network_subgraph_client = network::subgraph::Client::new(
             reqwest::Client::new(),
             network_subgraph_url,
-            conf.network.api_key.to_string(),
+            conf.network.api_key.into_inner(),
         );
-        network::service::new(network_subgraph_client, conf.network.update_interval)
+
+        // Fetch the initial network snapshot
+        let init_snapshot = {
+            let data = network_subgraph_client.fetch().await?;
+            if data.is_empty() {
+                return Err(anyhow::anyhow!("empty network subgraph update"));
+            }
+
+            data.into()
+        };
+
+        network::service::new(
+            network_subgraph_client,
+            conf.network.update_interval,
+            init_snapshot,
+        )
     };
 
     //- The network provider component
@@ -167,12 +181,32 @@ pub async fn main() -> anyhow::Result<()> {
         }
 
         // Stop all services
-        admin_rpc_handle.stop();
+        // The shutdown sequence is not arbitrary.
+        // Services are stopped in the reverse order of their dependencies. This is to ensure that
+        // the services that depend on other services are stopped first
+        tracing::trace!("stopping admin RPC service");
+        admin_rpc_handle.stop().await;
+        tracing::trace!("stopped admin RPC service");
+
         // indexers_rpc_handle.stop(); (todo !?)
+
+        tracing::trace!("stopping worker service");
         worker_handle.stop().await;
+        tracing::trace!("stopped worker service");
+
+        tracing::trace!("stopping IISA service");
         iisa_handle.stop().await;
+        tracing::trace!("stopped IISA service");
+
+        tracing::trace!("stopping network service");
         network_handle.stop().await;
+        tracing::trace!("stopped network service");
+
         // network_provider_handle.stop().await; (todo !?)
+
+        tracing::trace!("shutting down DB connection pool");
+        db.close().await;
+        tracing::trace!("shut down DB connection pool");
 
         Ok(())
     });
@@ -216,7 +250,7 @@ async fn signal_task() -> Result<AppSignal, SignalHandlerError> {
     while let Some(signal) = signals.next().await {
         match signal {
             Ok(signal) => {
-                tracing::info!("received signal {:?}", signal);
+                tracing::debug!("received signal '{:?}'", signal);
                 return Ok(AppSignal::Shutdown);
             }
             Err(err) => {
