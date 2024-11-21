@@ -9,8 +9,8 @@ RUN --mount=type=cache,target=/var/cache/apt \
       build-essential \
       clang \
       cmake \
-      lld \
       git \
+      lld \
   && rm -rf /var/lib/apt/lists/*
 
 # Install uv

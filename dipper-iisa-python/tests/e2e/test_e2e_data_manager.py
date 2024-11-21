@@ -7,9 +7,9 @@ import os
 
 import pytest
 
+from __fixtures__.network import load_fixture_data
 from iisa import BigQueryProvider, DataManager, GeoipResolver, NetworkProvider
 from iisa.data_manager import DEFAULT_NUM_DAYS, DEFAULT_TARGET_ROWS
-from tests.__fixtures__.network import load_fixture_data
 
 
 @pytest.fixture(scope="module")
@@ -44,7 +44,7 @@ def network_provider(geoip_resolver):
 
 @pytest.mark.skipif(
     "CI" in os.environ,
-    reason="Avoid running the test in CI. Requires access to Google BigQuery.",
+    reason="Skip test in CI: Requires access to Google BigQuery",
 )
 def test_fetch_and_update(bigquery_provider, network_provider):
     logging.basicConfig(level=logging.DEBUG, handlers=[logging.StreamHandler()])

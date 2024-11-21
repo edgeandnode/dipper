@@ -90,7 +90,7 @@ uv run --frozen cargo test --test '*'
 To format the Python code using `ruff format`, you can use the following command:
 
 ```shell
-uv run --frozen ruff format assets
+uv run --frozen ruff format dipper-iisa-python
 ```
 
 #### Linting
@@ -98,19 +98,19 @@ uv run --frozen ruff format assets
 To lint the Python code using `ruff`, you can use the following command:
 
 ```shell
-uv run --frozen ruff check assets
+uv run --frozen ruff check dipper-iisa-python
 ```
 
 To run static type checking using `mypy`, you can use the following command:
 
 ```shell
-uv run --frozen mypy assets
+uv run --frozen mypy dipper-iisa-python
 ```
 
 To check formatting using `ruff format`, you can use the following command:
 
 ```shell
-uv run --frozen ruff format --check assets
+uv run --frozen ruff format --check dipper-iisa-python
 ```
 
 #### Testing
@@ -122,7 +122,7 @@ uv run --frozen ruff format --check assets
 To run the Python tests, you can use the following command:
 
 ```shell
-uv run --frozen pytest -v assets
+uv run --frozen pytest -v dipper-iisa-python
 ```
 
 ### CI Secrets
