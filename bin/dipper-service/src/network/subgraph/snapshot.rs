@@ -147,10 +147,24 @@ impl Default for Snapshot {
     }
 }
 
+impl<T> From<T> for Snapshot
+where
+    T: IntoIterator<Item = client::types::Subgraph>,
+{
+    /// Create a network snapshot from a subgraph
+    fn from(sub: T) -> Self {
+        let mut snapshot = Self::new();
+        snapshot.extend(sub);
+        snapshot
+    }
+}
+
 impl Extend<client::types::Subgraph> for Snapshot {
     /// Extend the network snapshot with a list of subgraphs
-    #[doc(hidden)]
-    fn extend<T: IntoIterator<Item = client::types::Subgraph>>(&mut self, iter: T) {
+    fn extend<T>(&mut self, iter: T)
+    where
+        T: IntoIterator<Item = client::types::Subgraph>,
+    {
         for sub in iter {
             let subgraph_id = sub.id;
 
