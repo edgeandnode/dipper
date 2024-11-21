@@ -2,7 +2,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use pyo3::{ffi::c_str, Python};
 use thegraph_core::DeploymentId;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot};
 
 use super::{
     api::{CandidateSelection, Indexer},
@@ -16,7 +16,7 @@ use super::{
 pub struct Config {
     /// The GeoIP resolver auth token.
     ///
-    /// This token is used to authenticate the GeoIP resolver with the `ipiinfo.io` service.
+    /// This token is used to authenticate the GeoIP resolver with the `ipinfo.io` service.
     pub geoip_auth: String,
 
     /// The BigQuery project ID.
@@ -76,7 +76,11 @@ enum Command {
 /// the service.
 #[derive(Clone)]
 pub struct ServiceHandle {
+    /// A channel to communicate with the service.
     tx: mpsc::UnboundedSender<Command>,
+
+    /// A channel to stop the service.
+    tx_stop: mpsc::Sender<()>,
 }
 
 impl ServiceHandle {
@@ -94,6 +98,15 @@ impl ServiceHandle {
         self.tx
             .send(Command::UpdateNetworkIndexersList { indexers, tx })?;
         rx.await?
+    }
+
+    /// Stop the service.
+    pub async fn stop(&self) {
+        if self.tx_stop.is_closed() {
+            return;
+        }
+
+        let _ = self.tx_stop.send(()).await;
     }
 }
 
@@ -162,6 +175,7 @@ impl CandidateSelection for ServiceHandle {
 /// Creates a new `IndexerSelectionService` and returns a handle to it along with a function that
 /// should be called to start the service.
 pub fn new(config: Config) -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()>) {
+    let (tx_stop, mut rx_stop) = mpsc::channel(1);
     let (tx, mut rx) = mpsc::unbounded_channel();
     let service_task = move || {
         // Register the Python logging to Rust log handler
@@ -174,7 +188,7 @@ pub fn new(config: Config) -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()
                 import logging
 
                 logging.basicConfig(
-                    level=logging.INFO, 
+                    level=logging.INFO,
                     handlers=[
                         logging.HostLogHandler("dipper_iisa::service")
                     ]
@@ -203,6 +217,14 @@ pub fn new(config: Config) -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()
 
             // Start listening for commands
             loop {
+                // Stop the service if the stop signal has been received,
+                // or the service handle has been dropped
+                if matches!(rx_stop.try_recv(), Ok(_) | Err(TryRecvError::Disconnected)) {
+                    tracing::info!("Service stop signal received, aborting service");
+                    break;
+                }
+
+                // Wait for the next command
                 let cmd = match rx.blocking_recv() {
                     Some(cmd) => cmd,
                     None => {
@@ -274,5 +296,5 @@ pub fn new(config: Config) -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()
         })
     };
 
-    (ServiceHandle { tx }, service_task)
+    (ServiceHandle { tx, tx_stop }, service_task)
 }
