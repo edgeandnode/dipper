@@ -37,13 +37,17 @@ pub struct CtxBuilder<S, R, W> {
     max_candidates: usize,
 }
 
-struct NotSet;
+#[doc(hidden)]
+pub struct NotSet;
 
-struct SignerSet(PrivateKeyEip712Signer);
+#[doc(hidden)]
+pub struct SignerSet(PrivateKeyEip712Signer);
 
-struct RegistrySet<R>(R);
+#[doc(hidden)]
+pub struct RegistrySet<R>(R);
 
-struct WorkerSet<W>(W);
+#[doc(hidden)]
+pub struct WorkerSet<W>(W);
 
 impl CtxBuilder<NotSet, NotSet, NotSet> {
     /// Creates a new [`CtxBuilder`].

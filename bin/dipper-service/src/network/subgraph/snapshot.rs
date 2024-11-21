@@ -227,9 +227,9 @@ impl Extend<client::types::Subgraph> for Snapshot {
     }
 }
 
-#[cfg(test)]
 impl Snapshot {
     /// Add an indexer to the network snapshot.
+    #[cfg(test)]
     pub fn add_indexer(&mut self, indexer: Indexer) {
         self.indexers.insert(indexer.id, indexer);
     }

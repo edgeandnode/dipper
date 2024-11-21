@@ -1,7 +1,7 @@
 use std::{future::Future, time::Duration};
 
 use tokio::{
-    sync::{watch, watch::Ref},
+    sync::{mpsc, watch, watch::Ref},
     time::MissedTickBehavior,
 };
 
@@ -9,7 +9,11 @@ use super::subgraph::{client::Client as SubgraphClient, snapshot::Snapshot};
 
 #[derive(Clone)]
 pub struct ServiceHandle {
+    /// The receiver for the service data
     rx: watch::Receiver<Snapshot>,
+
+    /// The stop signal for the service
+    tx_stop: mpsc::Sender<()>,
 }
 
 impl ServiceHandle {
@@ -34,6 +38,15 @@ impl ServiceHandle {
     pub fn snapshot(&self) -> Ref<'_, Snapshot> {
         self.rx.borrow()
     }
+
+    /// Stop the service
+    pub async fn stop(&self) {
+        if self.tx_stop.is_closed() {
+            return;
+        }
+
+        let _ = self.tx_stop.send(()).await;
+    }
 }
 
 /// Create a new service that fetches data from the subgraph
@@ -45,16 +58,19 @@ impl ServiceHandle {
 pub fn new(
     client: SubgraphClient,
     update_interval: Duration,
-) -> (ServiceHandle, impl Future<Output = ()>) {
+) -> (ServiceHandle, impl Future<Output = anyhow::Result<()>>) {
+    let (tx_stop, mut rx_stop) = mpsc::channel(1);
     let (tx, rx) = watch::channel(Default::default());
 
-    let handle = ServiceHandle { rx };
     let service = async move {
         let mut timer = tokio::time::interval(update_interval);
         timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
-            timer.tick().await;
+            tokio::select! {
+                _ = rx_stop.recv() => break,
+                _ = timer.tick() => {},
+            }
 
             let snapshot = match client.fetch().await {
                 Ok(data) if !data.is_empty() => {
@@ -80,7 +96,9 @@ pub fn new(
         }
 
         tracing::debug!("network subgraph service stopped");
+
+        Ok(())
     };
 
-    (handle, service)
+    (ServiceHandle { rx, tx_stop }, service)
 }

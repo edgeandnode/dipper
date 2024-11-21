@@ -52,3 +52,30 @@ pub trait DipsClient {
         indexing_request_id: IndexingRequestId,
     ) -> Result<(), DipsError>;
 }
+
+// TODO: Remove once the actual client is implemented
+#[derive(Debug, Clone, Default)]
+pub struct DummyDipsIndexerClient;
+
+#[async_trait]
+impl DipsClient for DummyDipsIndexerClient {
+    async fn send_indexing_agreement_proposal(
+        &self,
+        _indexer: Url,
+        _indexing_agreement_id: IndexingAgreementId,
+        _indexing_request_id: IndexingRequestId,
+        _deployment_id: DeploymentId,
+        _duration: Duration,
+    ) -> Result<AgreementProposalResponse, DipsError> {
+        todo!()
+    }
+
+    async fn send_indexing_agreement_cancellation_notification(
+        &self,
+        _indexer: Url,
+        _indexing_agreement_id: IndexingAgreementId,
+        _indexing_request_id: IndexingRequestId,
+    ) -> Result<(), DipsError> {
+        todo!()
+    }
+}
