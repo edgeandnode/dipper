@@ -3,6 +3,7 @@ use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId};
 use super::{api::NetworkProvider, service::ServiceHandle};
 use crate::network::api::Indexer;
 
+#[derive(Clone)]
 pub struct NetworkProviderService {
     /// The network provider service handler.
     inner: ServiceHandle,
