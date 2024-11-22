@@ -153,7 +153,10 @@ class BigQueryProvider:
         self, start_date: date, num_days: int, rows_to_use: int
     ) -> CombinedQueryDataFrame:
         """
-        Fetch the combined query results.
+        Fetch the combined query results, handling large datasets by writing results to a BigQuery table.
+
+        This function constructs a query using `_get_combined_query`, executes it, writes the
+        results to a destination table, and retrieves the data into a Pandas DataFrame.
 
         :param start_date: The start date for the query range.
         :param num_days: The number of days to include in the query range.
@@ -172,24 +175,43 @@ class BigQueryProvider:
             },
         )
 
+        # Generate the SQL query
         query = _get_combined_query(start, num_days, rows_to_use)
-        dataframe = self._read_gbq_dataframe(query)
 
-        if not dataframe.empty:
-            # Drop rows with missing values in the "url" column
-            dataframe.dropna(subset=["url"], inplace=True)
+        # Table to store the intermediate data
+        destination_table = "graph-mainnet.iisa_data_for_dips.get_combined_query_data"
 
-            # Add trailing slash if not present
-            dataframe["url"] = dataframe["url"].apply(
-                lambda url: url if url.endswith("/") else url + "/"
+        try:
+            # Run the SQL query in BigQuery, store the result in the destination table
+            intermediate_dataframe = bpd.read_gbq(query)  # Keep as bigframes DataFrame
+            intermediate_dataframe.to_gbq(destination_table, if_exists="replace")
+
+            logger.debug("Data written to intermediate table, beginning table read.")
+
+            # Read back the data from the intermediate table
+            dataframe = self._read_gbq_dataframe(
+                QueryStr(f"SELECT * FROM `{destination_table}`")
+            )  # TODO
+
+            if not dataframe.empty:
+                # Drop rows with missing values in the "url" column
+                dataframe.dropna(subset=["url"], inplace=True)
+
+                # Add trailing slash if not present
+                dataframe["url"] = dataframe["url"].apply(
+                    lambda url: url if url.endswith("/") else url + "/"
+                )
+
+            logger.debug(
+                f"Fetched combined query results ({dataframe.shape[0]})",
+                extra={"rows": dataframe.shape[0]},
             )
 
-        logger.debug(
-            f"Fetched combined query results ({dataframe.shape[0]})",
-            extra={"rows": dataframe.shape[0]},
-        )
+            return cast(CombinedQueryDataFrame, dataframe)
 
-        return cast(CombinedQueryDataFrame, dataframe)
+        except Exception as e:
+            logger.error("Failed to fetch combined query results.", exc_info=True)
+            raise e
 
     @pa.check_types
     def fetch_initial_stake_to_fees(
