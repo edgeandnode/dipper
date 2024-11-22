@@ -2,7 +2,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use pyo3::{ffi::c_str, Python};
 use thegraph_core::DeploymentId;
-use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot};
+use tokio::sync::{mpsc, oneshot};
 
 use super::{
     api::{CandidateSelection, Indexer},
@@ -28,6 +28,9 @@ pub struct Config {
 
 /// The `Command` enum represents the commands that can be sent to the `IndexerSelectionService`.
 enum Command {
+    /// Instruct the IISA service to stop.
+    Stop,
+
     /// Instructs the `DataManager` to fetch, process and update the indexer performance
     /// history data.
     FetchAndUpdateHistoricalData {
@@ -72,18 +75,15 @@ enum Command {
     },
 }
 
-/// The `ServiceHandle` is a handle to the `IndexerSelectionService` that allows sending commands to
+/// The `Handle` is a handle to the `IndexerSelectionService` that allows sending commands to
 /// the service.
 #[derive(Clone)]
-pub struct ServiceHandle {
+pub struct Handle {
     /// A channel to communicate with the service.
     tx: mpsc::UnboundedSender<Command>,
-
-    /// A channel to stop the service.
-    tx_stop: mpsc::Sender<()>,
 }
 
-impl ServiceHandle {
+impl Handle {
     /// Instructs the `DataManager` to fetch, process and update the indexer performance
     /// history data.
     pub async fn fetch_and_update_historical_data(&self) -> anyhow::Result<()> {
@@ -102,11 +102,14 @@ impl ServiceHandle {
 
     /// Stop the service.
     pub async fn stop(&self) {
-        if self.tx_stop.is_closed() {
+        if self.tx.is_closed() {
             return;
         }
 
-        let _ = self.tx_stop.send(()).await;
+        let _ = self.tx.send(Command::Stop);
+
+        // Wait for the channel to close
+        self.tx.closed().await;
     }
 }
 
@@ -126,7 +129,7 @@ pub enum SelectionError {
 }
 
 #[async_trait]
-impl CandidateSelection for ServiceHandle {
+impl CandidateSelection for Handle {
     type Error = SelectionError;
 
     async fn select_one(
@@ -174,8 +177,7 @@ impl CandidateSelection for ServiceHandle {
 
 /// Creates a new `IndexerSelectionService` and returns a handle to it along with a function that
 /// should be called to start the service.
-pub fn new(config: Config) -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()>) {
-    let (tx_stop, mut rx_stop) = mpsc::channel(1);
+pub fn new(config: Config) -> (Handle, impl FnOnce() -> anyhow::Result<()>) {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let service_task = move || {
         // Register the Python logging to Rust log handler
@@ -217,23 +219,21 @@ pub fn new(config: Config) -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()
 
             // Start listening for commands
             loop {
-                // Stop the service if the stop signal has been received,
-                // or the service handle has been dropped
-                if matches!(rx_stop.try_recv(), Ok(_) | Err(TryRecvError::Disconnected)) {
-                    tracing::info!("Service stop signal received, aborting service");
-                    break;
-                }
-
                 // Wait for the next command
                 let cmd = match rx.blocking_recv() {
                     Some(cmd) => cmd,
                     None => {
-                        tracing::info!("Service handle dropped, aborting service");
+                        tracing::debug!("Service handle dropped, aborting service");
                         break;
                     }
                 };
 
                 match cmd {
+                    Command::Stop => {
+                        tracing::debug!("Stopping IISA service");
+                        break;
+                    }
+
                     Command::FetchAndUpdateHistoricalData { tx } => {
                         match data_manager.fetch_data_and_update() {
                             Ok(_) => {
@@ -296,5 +296,5 @@ pub fn new(config: Config) -> (ServiceHandle, impl FnOnce() -> anyhow::Result<()
         })
     };
 
-    (ServiceHandle { tx, tx_stop }, service_task)
+    (Handle { tx }, service_task)
 }
