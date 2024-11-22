@@ -196,7 +196,7 @@ mod tests {
 
         async fn get_all_indexing_requests_by_deployment_id(
             &self,
-            deployment_id: &DeploymentId,
+            _deployment_id: &DeploymentId,
         ) -> Result<Vec<IndexingRequest>, Error> {
             unimplemented!()
         }
@@ -240,6 +240,27 @@ mod tests {
             &self,
             _agreement_id: IndexingAgreementId,
         ) -> Result<Option<IndexingAgreement>, Error> {
+            unimplemented!()
+        }
+
+        async fn get_all_indexing_agreements_by_deployment_id(
+            &self,
+            _deployment_id: &DeploymentId,
+        ) -> Result<Vec<IndexingAgreement>, Error> {
+            unimplemented!()
+        }
+
+        async fn get_all_indexing_agreements_by_indexer_id(
+            &self,
+            _indexer_id: &IndexerId,
+        ) -> Result<Vec<IndexingAgreement>, Error> {
+            unimplemented!()
+        }
+
+        async fn get_all_indexing_agreements_by_indexing_request_id(
+            &self,
+            _request_id: &IndexingRequestId,
+        ) -> Result<Vec<IndexingAgreement>, Error> {
             unimplemented!()
         }
 
