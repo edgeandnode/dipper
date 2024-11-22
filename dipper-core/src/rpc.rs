@@ -5,6 +5,7 @@ use thegraph_core::alloy::{
     sol_types::{eip712_domain, Eip712Domain},
 };
 
+pub mod indexing_agreements;
 pub mod indexing_requests;
 
 /// DIPs EIP-712 domain salt

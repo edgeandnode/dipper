@@ -75,7 +75,7 @@ thegraph_core::alloy::sol! {
 /// The cancel indexing request message
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct CancelIndexingRequestById {
-    /// The deployment ID of the subgraph that should be indexed
+    /// The ID of the indexing request to cancel
     pub id: IndexingRequestId,
 }
 
@@ -95,6 +95,7 @@ thegraph_core::alloy::sol! {
         bytes16 id;
     }
 }
+
 /// The _indexing request_ response entity
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct IndexingRequest {
