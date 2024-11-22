@@ -1,17 +1,17 @@
 use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId};
 
-use super::{api::NetworkProvider, service::ServiceHandle};
+use super::{api::NetworkProvider, service::Handle};
 use crate::network::api::Indexer;
 
 #[derive(Clone)]
 pub struct NetworkProviderService {
     /// The network provider service handler.
-    inner: ServiceHandle,
+    inner: Handle,
 }
 
 impl NetworkProviderService {
     /// Creates a new network provider service instance.
-    pub fn new(inner: ServiceHandle) -> Self {
+    pub fn new(inner: Handle) -> Self {
         Self { inner }
     }
 }

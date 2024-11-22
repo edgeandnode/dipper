@@ -102,7 +102,7 @@ where
             )
             .await?;
 
-        queue
+        if let Err(err) = queue
             .push(Message::SendIndexingAgreementProposal(
                 SendIndexingAgreementProposal {
                     indexer_url: candidate.url,
@@ -112,7 +112,11 @@ where
                     duration: DEFAULT_AGREEMENT_DURATION,
                 },
             ))
-            .await?;
+            .await
+        {
+            tracing::error!(error=?err, "Failed to queue task: 'send_indexing_agreement_proposal'");
+            return Err(err);
+        }
     }
 
     Ok(JobResult::Ok(()))
@@ -162,7 +166,7 @@ where
 
     // Send the indexing agreement cancellation notification to the indexers
     for agreement in agreements {
-        queue
+        if let Err(err) = queue
             .push(Message::SendIndexingAgreementCancellation(
                 SendIndexingAgreementCancellation {
                     indexer_url: agreement.indexer_url,
@@ -170,7 +174,11 @@ where
                     indexing_request_id,
                 },
             ))
-            .await?;
+            .await
+        {
+            tracing::error!(error=?err, "Failed to queue task: 'send_indexing_agreement_cancellation'");
+            return Err(err);
+        }
     }
 
     Ok(JobResult::Ok(()))
@@ -272,7 +280,7 @@ where
         .await?;
 
     // Send indexing agreement proposal to the selected indexer
-    queue
+    if let Err(err) = queue
         .push(Message::SendIndexingAgreementProposal(
             SendIndexingAgreementProposal {
                 indexer_url: candidate.url.clone(),
@@ -282,7 +290,11 @@ where
                 duration: DEFAULT_AGREEMENT_DURATION,
             },
         ))
-        .await?;
+        .await
+    {
+        tracing::error!(error=%err, "Failed to queue task: 'send_indexing_agreement_proposal'");
+        return Err(err);
+    }
 
     Ok(JobResult::Ok(()))
 }
@@ -384,14 +396,18 @@ where
                     .await?;
 
                 // Request a new indexer to fulfill the indexing request
-                queue
+                if let Err(err) = queue
                     .push(Message::FindIndexerForIndexingRequest(
                         FindIndexerForIndexingRequest {
                             indexing_request_id,
                             deployment_id,
                         },
                     ))
-                    .await?;
+                    .await
+                {
+                    tracing::error!(error=%err, "Failed to queue task: 'find_indexer_for_indexing_request'");
+                    return Err(err);
+                };
             }
         },
         Err(err) => {
@@ -505,7 +521,7 @@ where
 }
 
 /// Process indexing agreement cancellation.
-pub(super) async fn process_indexing_agreement_cancellation<Q, R>(
+pub(super) async fn process_indexing_agreement_indexer_cancellation<Q, R>(
     ProcessIndexingAgreementCancellationState { queue, registry }: ProcessIndexingAgreementCancellationState<Q, R>,
     ProcessIndexingAgreementCancellation { agreement_id }: ProcessIndexingAgreementCancellation,
 ) -> anyhow::Result<JobResult<()>>
@@ -524,6 +540,21 @@ where
         .mark_indexing_agreement_as_canceled_by_indexer(&agreement.id)
         .await?;
 
+    // Send an agreement cancellation notification to the indexer
+    if let Err(err) = queue
+        .push(Message::SendIndexingAgreementCancellation(
+            SendIndexingAgreementCancellation {
+                indexer_url: agreement.indexer_url.clone(),
+                agreement_id: agreement.id,
+                indexing_request_id: agreement.indexing_request_id,
+            },
+        ))
+        .await
+    {
+        tracing::error!(error=?err, "Failed to queue task: 'send_indexing_agreement_cancellation'");
+        return Err(err);
+    }
+
     // Get the indexing request associated with the agreement
     let Some(indexing_request) = registry
         .get_indexing_request_by_id(&agreement.indexing_request_id)
@@ -534,14 +565,63 @@ where
     };
 
     // Request a new indexer to fulfill the indexing request
-    queue
+    if let Err(err) = queue
         .push(Message::FindIndexerForIndexingRequest(
             FindIndexerForIndexingRequest {
                 indexing_request_id: indexing_request.id,
                 deployment_id: indexing_request.deployment_id,
             },
         ))
+        .await
+    {
+        tracing::error!(error=?err, "Failed to queue task: 'find_indexer_for_indexing_request'");
+        return Err(err);
+    }
+
+    Ok(JobResult::Ok(()))
+}
+
+pub(super) async fn process_indexing_agreement_requester_cancellation<Q, R>(
+    ProcessIndexingAgreementCancellationState { queue, registry }: ProcessIndexingAgreementCancellationState<Q, R>,
+    ProcessIndexingAgreementCancellation { agreement_id }: ProcessIndexingAgreementCancellation,
+) -> anyhow::Result<JobResult<()>>
+where
+    Q: Queue<Message>,
+    R: Registry,
+{
+    // Check the status of the agreement before processing the cancellation
+    let Some(agreement) = registry.get_indexing_agreement(agreement_id).await? else {
+        tracing::error!(agreement_id=%agreement_id, "Indexing agreement not found");
+        return Ok(JobResult::Ok(()));
+    };
+
+    // Mark the agreement as canceled by the requester
+    registry
+        .mark_indexing_agreement_as_canceled_by_requester(&agreement.id)
         .await?;
+
+    // Get the indexing request associated with the agreement
+    let Some(indexing_request) = registry
+        .get_indexing_request_by_id(&agreement.indexing_request_id)
+        .await?
+    else {
+        tracing::error!(agreement_id=%agreement_id, "Indexing request not found");
+        return Ok(JobResult::Ok(()));
+    };
+
+    // Request a new indexer to fulfill the indexing request
+    if let Err(err) = queue
+        .push(Message::FindIndexerForIndexingRequest(
+            FindIndexerForIndexingRequest {
+                indexing_request_id: indexing_request.id,
+                deployment_id: indexing_request.deployment_id,
+            },
+        ))
+        .await
+    {
+        tracing::error!(error=?err, "Failed to queue task: 'find_indexer_for_indexing_request'");
+        return Err(err);
+    }
 
     Ok(JobResult::Ok(()))
 }

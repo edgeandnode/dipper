@@ -17,7 +17,9 @@ use url::Url;
 #[derive(custom_debug::CustomDebug, serde::Deserialize)]
 pub struct Config {
     /// The Admin RPC server configuration
-    pub admin: AdminConfig,
+    pub admin_rpc: AdminRpcConfig,
+    /// The Indexer RPC server configuration
+    pub indexer_rpc: IndexerRpcConfig,
     /// The database configuration
     pub db: DbConfig,
     /// The Indexing Indexer Selection Algorithm (IISA) configuration
@@ -31,12 +33,25 @@ pub struct Config {
 /// The Admin RPC server configuration
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
-pub struct AdminConfig {
-    /// The Admin RPC server listen address
+pub struct AdminRpcConfig {
+    /// The RPC server listen address
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub listen_addr: std::net::SocketAddr,
 
-    /// The set of addresses that are allowed to access the Admin RPC server
+    /// The set of addresses that are allowed to access the RPC server
+    #[serde_as(as = "serde_with::SetLastValueWins<_>")]
+    pub allowlist: BTreeSet<Address>,
+}
+
+/// The Indexer RPC server configuration
+#[serde_as]
+#[derive(Debug, serde::Deserialize)]
+pub struct IndexerRpcConfig {
+    /// The RPC server listen address
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub listen_addr: std::net::SocketAddr,
+
+    /// The set of addresses that are allowed to access the RPC server
     #[serde_as(as = "serde_with::SetLastValueWins<_>")]
     pub allowlist: BTreeSet<Address>,
 }

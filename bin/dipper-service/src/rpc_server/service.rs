@@ -1,7 +1,4 @@
-use std::{
-    future::Future,
-    net::{IpAddr, SocketAddr},
-};
+use std::{future::Future, net::SocketAddr};
 
 use dipper_pgmq::queue::Queue;
 use dipper_registry::Registry;
@@ -9,12 +6,15 @@ use jsonrpsee::server::Server;
 use tokio::sync::mpsc;
 
 use super::context::Ctx;
-use crate::{rpc_server::handlers::admin_rpc_handlers, worker::messages::Message};
+use crate::{
+    rpc_server::handlers::{admin_rpc_handlers, indexers_rpc_handlers},
+    worker::messages::Message,
+};
 
-/// RPC server HTTP configuration.
+/// RPC server configuration.
 #[derive(Debug)]
-pub struct HttpConfig {
-    pub http_port: u16,
+pub struct Config {
+    pub listen_addr: SocketAddr,
 }
 
 /// The RPC server service handle.
@@ -23,61 +23,111 @@ pub struct HttpConfig {
 #[derive(Clone)]
 pub struct Handle {
     /// A channel to stop the RPC server
-    stop_tx: mpsc::Sender<()>,
+    tx_stop: mpsc::Sender<()>,
 }
 
 impl Handle {
     /// Stop the RPC server
     pub async fn stop(self) {
-        if self.stop_tx.is_closed() {
+        if self.tx_stop.is_closed() {
             return;
         }
 
-        let _ = self.stop_tx.send(()).await;
+        let _ = self.tx_stop.send(()).await;
+
+        // Wait for the channel to close
+        self.tx_stop.closed().await;
     }
 }
 
-/// Create a new Admin RPC server service.
+/// Create a new Admin RPC server service
 pub fn new_admin_rpc_service<R, W>(
-    config: HttpConfig,
-    state: Ctx<R, W>,
+    conf: Config,
+    ctx: Ctx<R, W>,
 ) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
     R: Registry + Clone + Send + Sync + 'static,
     W: Queue<Message> + Clone + Send + Sync + 'static,
 {
-    let (stop_tx, mut stop_rx) = mpsc::channel(1);
-
-    let handle = Handle { stop_tx };
+    let (tx_stop, mut rx_stop) = mpsc::channel(1);
 
     let fut = async move {
-        tracing::info!("Starting RPC server at '0.0.0.0:{}'", config.http_port);
+        tracing::info!(listen_addr=%conf.listen_addr, "Starting admin RPC server");
 
         // Start the RPC server
         let server = Server::builder()
             .http_only()
             .max_request_body_size(1024 * 1024) // 1 MB
             .set_tcp_no_delay(true)
-            .build(SocketAddr::new(
-                IpAddr::from([0, 0, 0, 0]),
-                config.http_port,
-            ))
+            .build(conf.listen_addr)
             .await?;
 
-        let handle = server.start(admin_rpc_handlers(state));
+        let handle = server.start(admin_rpc_handlers(ctx));
         let svc_handle = handle.clone();
 
-        // Wait for either the server to stop or a stop signal
+        // Wait for either the server to stop, or a stop signal
         tokio::select! {biased;
             _ = svc_handle.stopped() => {}
-            _ = stop_rx.recv() => {
-                tracing::info!("Stopping RPC server");
-                let _ = handle.stop();
+            _ = rx_stop.recv() => {
+                tracing::debug!("Stopping admin RPC server");
+
+                // Notify the server and wait for it to stop
+                if let Ok(()) = handle.stop() {
+                    handle.stopped().await;
+                } else {
+                    tracing::warn!("The admin RPC server is already stopped")
+                }
             }
         }
 
         Ok(())
     };
 
-    (handle, fut)
+    (Handle { tx_stop }, fut)
+}
+
+/// Create a new Indexer RPC server service
+pub fn new_indexer_rpc_service<R, W>(
+    conf: Config,
+    ctx: Ctx<R, W>,
+) -> (Handle, impl Future<Output = anyhow::Result<()>>)
+where
+    R: Registry + Clone + Send + Sync + 'static,
+    W: Queue<Message> + Clone + Send + Sync + 'static,
+{
+    let (tx_stop, mut rx_stop) = mpsc::channel(1);
+
+    let fut = async move {
+        tracing::info!(listen_addr=%conf.listen_addr, "Starting indexer RPC server");
+
+        // Start the RPC server
+        let server = Server::builder()
+            .http_only()
+            .max_request_body_size(1024 * 1024) // 1 MB
+            .set_tcp_no_delay(true)
+            .build(conf.listen_addr)
+            .await?;
+
+        let handle = server.start(indexers_rpc_handlers(ctx));
+        let svc_handle = handle.clone();
+
+        // Wait for either the server to stop, or a stop signal
+        tokio::select! {biased;
+            _ = svc_handle.stopped() => {}
+            _ = rx_stop.recv() => {
+                tracing::debug!("Stopping indexer RPC server");
+
+                // Notify the server and wait for it to stop
+                if let Ok(()) = handle.stop() {
+                    handle.stopped().await;
+                } else {
+                    tracing::warn!("The indexer RPC server is already stopped")
+                }
+            }
+        }
+
+        Ok(())
+    };
+
+    (Handle { tx_stop }, fut)
 }

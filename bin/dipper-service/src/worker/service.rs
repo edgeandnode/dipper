@@ -29,19 +29,22 @@ const DEFAULT_TASK_BATCH_SIZE: usize = 5;
 
 /// The worker service handle.
 #[derive(Clone)]
-pub struct ServiceHandle {
+pub struct Handle {
     /// A channel to stop the worker
-    tx: mpsc::Sender<()>,
+    tx_stop: mpsc::Sender<()>,
 }
 
-impl ServiceHandle {
+impl Handle {
     /// Stop the worker.
     pub async fn stop(self) {
-        if self.tx.is_closed() {
+        if self.tx_stop.is_closed() {
             return;
         }
 
-        let _ = self.tx.send(()).await;
+        let _ = self.tx_stop.send(()).await;
+
+        // Wait for the channel to close
+        self.tx_stop.closed().await;
     }
 }
 
@@ -50,10 +53,7 @@ impl ServiceHandle {
 /// The worker pulls tasks from the queue and processes them concurrently every 10 seconds.
 pub fn new<Q, N, R, C, I>(
     state: Context<Q, N, R, C, I>,
-) -> (
-    ServiceHandle,
-    impl Future<Output = anyhow::Result<()>> + Send,
-)
+) -> (Handle, impl Future<Output = anyhow::Result<()>> + Send)
 where
     Q: Queue<Message> + Clone + Send + Sync,
     N: NetworkProvider + Clone + Send + Sync,
@@ -61,15 +61,15 @@ where
     C: DipsClient + Clone + Send + Sync,
     I: CandidateSelection + Clone + Send + Sync,
 {
-    let (tx, rx) = mpsc::channel(1);
+    let (tx_stop, rx_stop) = mpsc::channel(1);
 
-    let handle = ServiceHandle { tx };
+    let handle = Handle { tx_stop };
 
     let fut = async move {
         let state = state;
         let queue = state.queue.clone();
 
-        let mut stop_rx = rx;
+        let mut stop_rx = rx_stop;
         loop {
             tokio::select! { biased;
                 _ = stop_rx.recv() => {
@@ -132,28 +132,25 @@ where
     SendIndexingAgreementCancellationState<R, C>: FromState<S>,
     ProcessIndexingAgreementCancellationState<Q, R>: FromState<S>,
 {
-    let res = match message {
-        Message::ProcessNewIndexingRequest(msg) => {
-            handlers::process_new_indexing_request(FromState::from_state(state), msg).await?
-        }
-        Message::ProcessIndexingRequestCancellation(msg) => {
-            handlers::process_indexing_request_cancellation(FromState::from_state(state), msg)
-                .await?
-        }
-        Message::FindIndexerForIndexingRequest(msg) => {
-            handlers::find_indexer_for_indexing_request(FromState::from_state(state), msg).await?
-        }
-        Message::SendIndexingAgreementProposal(msg) => {
-            handlers::send_indexing_agreement_proposal(FromState::from_state(state), msg).await?
-        }
-        Message::SendIndexingAgreementCancellation(msg) => {
-            handlers::send_indexing_agreement_cancellation(FromState::from_state(state), msg)
-                .await?
-        }
-        Message::ProcessIndexingAgreementCancellation(msg) => {
-            handlers::process_indexing_agreement_cancellation(FromState::from_state(state), msg)
-                .await?
-        }
-    };
-    Ok(res)
+    /// Dispatch a message to the appropriate message handler, based on the message type, with
+    /// the given state.
+    macro_rules! _dispatch {
+        ($state:expr, $message:expr, {$($msg_pat:path => $handler_fn:path),* $(,)?}) => {
+            match $message {
+                $(
+                    $msg_pat(msg) => $handler_fn(FromState::from_state($state), msg).await.map_err(Into::into),
+                )*
+            }
+        };
+    }
+
+    _dispatch!(state, message, {
+        Message::ProcessNewIndexingRequest => handlers::process_new_indexing_request,
+        Message::ProcessIndexingRequestCancellation => handlers::process_indexing_request_cancellation,
+        Message::FindIndexerForIndexingRequest => handlers::find_indexer_for_indexing_request,
+        Message::SendIndexingAgreementProposal => handlers::send_indexing_agreement_proposal,
+        Message::SendIndexingAgreementCancellation => handlers::send_indexing_agreement_cancellation,
+        Message::ProcessIndexingAgreementIndexerCancellation => handlers::process_indexing_agreement_indexer_cancellation,
+        Message::ProcessIndexingAgreementRequesterCancellation => handlers::process_indexing_agreement_requester_cancellation,
+    })
 }

@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf};
+use std::{env, path::PathBuf, sync::Arc};
 
 use async_signal::{Signal, Signals};
 use dipper_core::rpc::eip712_domain;
@@ -47,8 +47,14 @@ pub async fn main() -> anyhow::Result<()> {
             PrivateKeySigner::from_signing_key(conf.signer.secret_key.as_ref().into());
         let private_key_signer_address = private_key_signer.address();
         let domain = eip712_domain(conf.signer.chain_id);
-        Eip712Signer::new(private_key_signer, private_key_signer_address, domain)
+
+        Arc::new(Eip712Signer::new(
+            private_key_signer,
+            private_key_signer_address,
+            domain,
+        ))
     };
+    tracing::info!(address=%signer.address(), "Signer wallet imported");
 
     //- The DB connection pool component
     let db = {
@@ -64,6 +70,7 @@ pub async fn main() -> anyhow::Result<()> {
             .connect_with(conn_options)
             .await
     }?;
+    tracing::info!(db_url=%conf.db.url, "initialized DB connection pool");
 
     //- The queue component
     let queue = PgQueue::with_max_attempts(db.clone(), 3);
@@ -101,6 +108,8 @@ pub async fn main() -> anyhow::Result<()> {
                 return Err(anyhow::anyhow!("empty network subgraph update"));
             }
 
+            tracing::debug!(snapshot_size=%data.len(), "fetched initial network snapshot");
+
             data.into()
         };
 
@@ -110,6 +119,7 @@ pub async fn main() -> anyhow::Result<()> {
             init_snapshot,
         )
     };
+    tracing::info!("initialized Graph network service");
 
     //- The network provider component
     let network_provider = network::provider::NetworkProviderService::new(network_handle.clone());
@@ -123,6 +133,7 @@ pub async fn main() -> anyhow::Result<()> {
         };
         iisa::service::new(config)
     };
+    tracing::info!("initialized IISA service");
 
     //- The worker service
     let (worker_handle, worker_service) = {
@@ -136,38 +147,61 @@ pub async fn main() -> anyhow::Result<()> {
 
         worker::service::new(context)
     };
+    tracing::info!("initialized Worker service");
 
     //- The admin RPC service
     let (admin_rpc_handle, admin_rpc_service) = {
         let context = rpc_server::CtxBuilder::new()
             .with_worker(queue.clone())
             .with_registry(registry.clone())
-            .with_allowlist(conf.admin.allowlist)
-            .with_signer(signer)
+            .with_allowlist(conf.admin_rpc.allowlist)
+            .with_signer(signer.clone())
             .with_max_candidates(3)
             .build();
 
-        let config = rpc_server::service::HttpConfig {
-            http_port: conf.admin.listen_addr.port(),
+        let config = rpc_server::service::Config {
+            listen_addr: conf.admin_rpc.listen_addr,
         };
 
         rpc_server::service::new_admin_rpc_service(config, context)
     };
+    tracing::info!("initialized Admin RPC service");
+
+    //- The indexer RPC service
+    let (indexer_rpc_handle, indexer_rpc_service) = {
+        let context = rpc_server::CtxBuilder::new()
+            .with_worker(queue.clone())
+            .with_registry(registry.clone())
+            .with_allowlist(conf.indexer_rpc.allowlist)
+            .with_signer(signer)
+            .with_max_candidates(3)
+            .build();
+
+        let config = rpc_server::service::Config {
+            listen_addr: conf.indexer_rpc.listen_addr,
+        };
+
+        rpc_server::service::new_indexer_rpc_service(config, context)
+    };
+    tracing::info!("initialized Indexer RPC service");
 
     // Construct the task tree
     let mut task_tree: JoinSet<anyhow::Result<()>> = JoinSet::new();
 
     let network_task_handle = task_tree.spawn(network_service);
-    tracing::debug!(task_id=%network_task_handle.id(), "network service started");
+    tracing::debug!(task_id=%network_task_handle.id(), "Graph network service started");
 
     let iisa_task_handle = task_tree.spawn_blocking(iisa_service);
     tracing::debug!(task_id=%iisa_task_handle.id(), "IISA service started");
 
     let worker_task_handle = task_tree.spawn(worker_service);
-    tracing::debug!(task_id=%worker_task_handle.id(), "worker service started");
+    tracing::debug!(task_id=%worker_task_handle.id(), "Worker service started");
 
     let admin_rpc_task_handle = task_tree.spawn(admin_rpc_service);
-    tracing::debug!(task_id=%admin_rpc_task_handle.id(), "admin RPC service started");
+    tracing::debug!(task_id=%admin_rpc_task_handle.id(), "Admin RPC service started");
+
+    let indexer_rpc_task_handle = task_tree.spawn(indexer_rpc_service);
+    tracing::debug!(task_id=%indexer_rpc_task_handle.id(), "Indexer RPC service started");
 
     let signal_handler_task_handle = task_tree.spawn(async move {
         let signal = signal_task().await;
@@ -180,27 +214,29 @@ pub async fn main() -> anyhow::Result<()> {
             }
         }
 
-        // Stop all services
-        // The shutdown sequence is not arbitrary.
+        // Stop all services.
+        //
         // Services are stopped in the reverse order of their dependencies. This is to ensure that
         // the services that depend on other services are stopped first
-        tracing::trace!("stopping admin RPC service");
+        tracing::trace!("stopping Indexer RPC service");
+        indexer_rpc_handle.stop().await;
+        tracing::trace!("stopped Indexer RPC service");
+
+        tracing::trace!("stopping Admin RPC service");
         admin_rpc_handle.stop().await;
-        tracing::trace!("stopped admin RPC service");
+        tracing::trace!("stopped Admin RPC service");
 
-        // indexers_rpc_handle.stop(); (todo !?)
-
-        tracing::trace!("stopping worker service");
+        tracing::trace!("stopping Worker service");
         worker_handle.stop().await;
-        tracing::trace!("stopped worker service");
+        tracing::trace!("stopped Worker service");
 
         tracing::trace!("stopping IISA service");
         iisa_handle.stop().await;
         tracing::trace!("stopped IISA service");
 
-        tracing::trace!("stopping network service");
+        tracing::trace!("stopping Graph network service");
         network_handle.stop().await;
-        tracing::trace!("stopped network service");
+        tracing::trace!("stopped Graph network service");
 
         // network_provider_handle.stop().await; (todo !?)
 
