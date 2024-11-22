@@ -100,6 +100,13 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
+    async fn get_all_indexing_requests_by_deployment_id(
+        &self,
+        _deployment_id: &DeploymentId,
+    ) -> Result<Vec<IndexingRequest>, Error> {
+        todo!("Return all indexing requests associated with a deployment id");
+    }
+
     async fn get_indexing_request_active_indexing_agreements(
         &self,
         request_id: &IndexingRequestId,
@@ -220,6 +227,10 @@ impl Registry for PgRegistry {
         .await
         .map(|(id,)| id)
         .map_err(Into::into)
+    }
+
+    async fn get_all_indexing_agreements(&self) -> Result<Vec<IndexingAgreement>, Error> {
+        todo!("Return all indexing agreements")
     }
 
     async fn get_indexing_agreement(
