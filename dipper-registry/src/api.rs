@@ -46,6 +46,12 @@ pub trait Registry {
         request_id: &IndexingRequestId,
     ) -> Result<Option<IndexingRequest>, Error>;
 
+    /// Get all indexing requests by Deployment ID
+    async fn get_all_indexing_requests_by_deployment_id(
+        &self,
+        deployment_id: &DeploymentId,
+    ) -> Result<Vec<IndexingRequest>, Error>;
+
     /// Get the active agreements for an indexing request.
     ///
     /// Agreements are considered active if they are in `CREATED` or `ACCEPTED` status.
@@ -79,6 +85,9 @@ pub trait Registry {
         indexer_url: Url,
         duration: Duration,
     ) -> Result<IndexingAgreementId, Error>;
+
+    /// Get all indexing agreements.
+    async fn get_all_indexing_agreements(&self) -> Result<Vec<IndexingAgreement>, Error>;
 
     /// Get agreement by ID.
     async fn get_indexing_agreement(
