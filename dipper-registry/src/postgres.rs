@@ -258,6 +258,27 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
+    async fn get_all_indexing_agreements_by_deployment_id(
+        &self,
+        _deployment_id: &DeploymentId,
+    ) -> Result<Vec<IndexingAgreement>, Error> {
+        todo!("Return all indexing agreements by deployment ID")
+    }
+
+    async fn get_all_indexing_agreements_by_indexer_id(
+        &self,
+        _indexer_id: &IndexerId,
+    ) -> Result<Vec<IndexingAgreement>, Error> {
+        todo!("Return all indexing agreements by Indexer ID")
+    }
+
+    async fn get_all_indexing_agreements_by_indexing_request_id(
+        &self,
+        _request_id: &IndexingRequestId,
+    ) -> Result<Vec<IndexingAgreement>, Error> {
+        todo!("Return all indexing agreements by Indexing Request ID");
+    }
+
     async fn mark_indexing_agreement_as_delivery_failed(
         &self,
         agreement_id: &IndexingAgreementId,

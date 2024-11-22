@@ -90,23 +90,62 @@ where
 
     async fn get_agreements_by_deployment_id(
         &self,
-        _deployment_id: DeploymentId,
+        deployment_id: DeploymentId,
     ) -> RpcResult<Vec<IndexingAgreement>> {
-        todo!("Add get agreements by deployment ID to the dipper-registry");
+        let indexing_agreements = match self
+            .registry
+            .get_all_indexing_agreements_by_deployment_id(&deployment_id)
+            .await
+        {
+            Ok(res) => res.into_iter().map(into_indexing_agreement).collect(),
+            Err(err) => {
+                tracing::error!(error=?err, "Failed to get indexing agreements by deployment id");
+                // return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                todo!("Return error");
+            }
+        };
+
+        Ok(indexing_agreements)
     }
 
     async fn get_agreements_by_indexer_id(
         &self,
-        _indexer_id: IndexerId,
+        indexer_id: IndexerId,
     ) -> RpcResult<Vec<IndexingAgreement>> {
-        todo!("Add get agreements by indexer ID to the dipper-registry");
+        let indexing_agreements = match self
+            .registry
+            .get_all_indexing_agreements_by_indexer_id(&indexer_id)
+            .await
+        {
+            Ok(res) => res.into_iter().map(into_indexing_agreement).collect(),
+            Err(err) => {
+                tracing::error!(error=?err, "Failed to get indexing agreements by indexer id");
+                // return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                todo!("Return error");
+            }
+        };
+
+        Ok(indexing_agreements)
     }
 
     async fn get_agreements_by_indexing_request_id(
         &self,
-        _request_id: IndexingRequestId,
+        request_id: IndexingRequestId,
     ) -> RpcResult<Vec<IndexingAgreement>> {
-        todo!("Add get agreements by indexing request ID to the dipper-registry");
+        let indexing_agreements = match self
+            .registry
+            .get_all_indexing_agreements_by_indexing_request_id(&request_id)
+            .await
+        {
+            Ok(res) => res.into_iter().map(into_indexing_agreement).collect(),
+            Err(err) => {
+                tracing::error!(error=?err, "Failed to get indexing agreements by indexer id");
+                // return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                todo!("Return error");
+            }
+        };
+
+        Ok(indexing_agreements)
     }
 }
 
