@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use dipper_core::{
     ids::IndexingRequestId,
     rpc::indexing_requests::{
-        AdminIndexingRequestsRpcServer, CancelIndexingRequestById, IndexingRequest,
+        AdminIndexingRequestsRpcServer, CancelIndexingRequest, IndexingRequest,
         IndexingRequestStatus, IndexingRequestsRpcServer, NewIndexingRequest,
     },
     signed_message::serde::SignedMessage,
@@ -12,8 +12,8 @@ use dipper_core::{
 };
 use dipper_pgmq::queue::Queue;
 use dipper_registry::{
-    IndexingRequest as IndexingRequestRecord, IndexingRequestStatus as IndexingRequestRecordStatus,
-    Registry,
+    Error as RegistryError, IndexingRequest as IndexingRequestRecord,
+    IndexingRequestStatus as IndexingRequestRecordStatus, Registry,
 };
 use jsonrpsee::core::RpcResult;
 use thegraph_core::{alloy::primitives::Address, DeploymentId};
@@ -94,9 +94,22 @@ where
 
     async fn get_indexing_requests_by_deployment_id(
         &self,
-        _deployment_id: DeploymentId,
+        deployment_id: DeploymentId,
     ) -> RpcResult<Vec<IndexingRequest>> {
-        todo!("Add get indexing requests by deployment ID to the dipper-registry")
+        let indexing_request = match self
+            .registry
+            .get_all_indexing_requests_by_deployment_id(&deployment_id)
+            .await
+        {
+            Ok(res) => res.into_iter().map(into_indexing_request).collect(),
+            Err(err) => {
+                tracing::error!(error=?err, "Failed to get indexing request by id");
+                // return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                todo!("Return error");
+            }
+        };
+
+        Ok(indexing_request)
     }
 }
 
@@ -209,7 +222,7 @@ where
 
     async fn cancel_indexing_request(
         &self,
-        req: SignedMessage<CancelIndexingRequestById>,
+        req: SignedMessage<CancelIndexingRequest>,
     ) -> RpcResult<()> {
         // Check if the signer is authorized to make this request
         let requested_by = match self.signer.recover_signer(&req) {
@@ -225,17 +238,37 @@ where
             todo!("Return error");
         }
 
-        let CancelIndexingRequestById {
+        let CancelIndexingRequest {
             id: indexing_request_id,
         } = req.into_message();
 
+        // Check if the indexing request exists
+        match self
+            .registry
+            .get_indexing_request_by_id(&indexing_request_id)
+            .await
+        {
+            Ok(None) => {
+                // return Err(StatusCode::NOT_FOUND);
+                todo!("Return error");
+            }
+            Err(err) => {
+                tracing::error!(error=?err, "Failed to get indexing request");
+                // return Err(StatusCode::INTERNAL_ERROR);
+                todo!("Return error");
+            }
+            _ => {
+                // The indexing request exists, proceed with cancellation
+            }
+        }
+
         // Mark the indexing request as `CANCELED`
-        if let Err(dipper_registry::Error::DbError(err)) = self
+        if let Err(RegistryError::DbError(err)) = self
             .registry
             .mark_indexing_request_as_canceled(&indexing_request_id)
             .await
         {
-            tracing::error!(error=?err, "Failed to cancel indexing request");
+            tracing::error!(%indexing_request_id, error=?err, "Failed to mark indexing request as canceled");
             // return Err(StatusCode::INTERNAL_SERVER_ERROR);
             todo!("Return error");
         };

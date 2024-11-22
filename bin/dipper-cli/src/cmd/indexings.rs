@@ -3,7 +3,7 @@ use std::str::FromStr;
 use anyhow::anyhow;
 use clap::{arg, command, value_parser, Command};
 use dipper_core::{
-    ids::IndexingRequestId, rpc::indexing_requests::CancelIndexingRequestById,
+    ids::IndexingRequestId, rpc::indexing_requests::CancelIndexingRequest,
     signed_message::signing::sign,
 };
 use thegraph_core::{DeploymentId, SubgraphId};
@@ -55,7 +55,7 @@ pub async fn cancel(conf: Config, matches: &clap::ArgMatches) -> anyhow::Result<
             let req = sign(
                 &signer,
                 &signer_eip712_domain,
-                CancelIndexingRequestById { id: *id },
+                CancelIndexingRequest { id: *id },
             )
             .map_err(|err| anyhow!("Failed to sign RPC request: {}", err))?;
 

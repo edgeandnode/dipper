@@ -232,11 +232,7 @@ mod tests {
             unimplemented!()
         }
 
-        async fn get_all_indexing_agreements(&self) -> Result<Vec<IndexingAgreement>, Error> {
-            unimplemented!()
-        }
-
-        async fn get_indexing_agreement(
+        async fn get_indexing_agreement_by_id(
             &self,
             _agreement_id: IndexingAgreementId,
         ) -> Result<Option<IndexingAgreement>, Error> {

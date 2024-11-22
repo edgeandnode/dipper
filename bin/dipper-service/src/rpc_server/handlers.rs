@@ -1,9 +1,6 @@
 use dipper_core::{
     rpc::{
-        indexing_agreements::{
-            AdminIndexingAgreementsRpcServer, IndexerIndexingAgreementsRpcServer,
-            IndexingAgreementsRpcServer,
-        },
+        indexing_agreements::{AdminIndexingAgreementsRpcServer, IndexingAgreementsRpcServer},
         indexing_requests::{AdminIndexingRequestsRpcServer, IndexingRequestsRpcServer},
     },
     state::FromState,
@@ -19,8 +16,8 @@ use self::indexing_requests::{
 use crate::{
     rpc_server::handlers::indexing_agreements::{
         AdminIndexingAgreementsCtx, AdminIndexingAgreementsRpcServerImpl,
-        IndexerIndexingAgreementsCtx, IndexerIndexingAgreementsRpcServerImpl,
-        IndexingAgreementsCtx, IndexingAgreementsRpcServerImpl,
+        IndexerIndexingAgreementsRpcServerImpl, IndexingAgreementsCtx,
+        IndexingAgreementsRpcServerImpl,
     },
     worker::messages::Message,
 };
@@ -66,18 +63,24 @@ where
 }
 
 /// Create a new RPC module with all the indexer handlers.
-pub(super) fn indexers_rpc_handlers<C, W>(ctx: C) -> RpcModule<C>
+pub(super) fn indexers_rpc_handlers<C, R, W>(ctx: C) -> RpcModule<C>
 where
+    R: Registry + Clone + Send + Sync + 'static,
     W: Queue<Message> + Clone + Send + Sync + 'static,
-    IndexerIndexingAgreementsCtx<W>: FromState<C>,
+    IndexingAgreementsCtx<R>: FromState<C>,
+    AdminIndexingAgreementsCtx<R, W>: FromState<C>,
 {
     // Indexing agreements
+    let indexing_agreements = IndexingAgreementsRpcServerImpl::with_context(&ctx);
     let indexer_indexing_agreements = IndexerIndexingAgreementsRpcServerImpl::with_context(&ctx);
 
     // Indexing receipts
     // TODO: Register the indexing receipts RPC handlers
 
     let mut module = RpcModule::new(ctx);
+    module
+        .merge(indexing_agreements.into_rpc())
+        .expect("registration of 'indexing agreements' RPC handlers failed");
     module
         .merge(indexer_indexing_agreements.into_rpc())
         .expect("registration of 'indexing agreements (indexer)' RPC handlers failed");
