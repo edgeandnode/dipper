@@ -34,8 +34,37 @@ pub async fn list(conf: Config) -> anyhow::Result<()> {
 }
 
 /// The `indexings status` command
-pub async fn status(_conf: Config, _matches: &clap::ArgMatches) -> anyhow::Result<()> {
-    Err(anyhow!("command not implemented"))
+pub async fn status(conf: Config, matches: &clap::ArgMatches) -> anyhow::Result<()> {
+    let rpc_client = client::new(&conf.server_url);
+
+    match matches.get_one::<IndexingRequestSelector>("INDEXING_ID") {
+        // ID is an UUIDv7
+        Some(IndexingRequestSelector::IndexingRequestId(id)) => {
+            let res = rpc_client.get_indexing_request_by_id(*id).await?;
+
+            // Print the result as pretty JSON so one can use `jq` to explore the output
+            println!("{}", serde_json::to_string_pretty(&res)?);
+
+            Ok(())
+        }
+        // ID is a Deployment ID
+        Some(IndexingRequestSelector::DeploymentId(id)) => {
+            let res = rpc_client
+                .get_indexing_requests_by_deployment_id(*id)
+                .await?;
+
+            // Print the result as pretty JSON so one can use `jq` to explore the output
+            println!("{}", serde_json::to_string_pretty(&res)?);
+
+            Ok(())
+        }
+        // ID is a Subgraph ID
+        Some(_) => {
+            // TODO: Add support for querying by Subgraph ID
+            Err(anyhow!("Invalid indexing request ID"))
+        }
+        None => unreachable!("No ID provided"),
+    }
 }
 
 /// The `indexings register` command
@@ -69,7 +98,7 @@ pub async fn cancel(conf: Config, matches: &clap::ArgMatches) -> anyhow::Result<
             // TODO: Add support for querying by Subgraph ID or Deployment ID
             Err(anyhow!("Invalid indexing request ID"))
         }
-        None => Err(anyhow!("No indexing request ID provided")),
+        None => unreachable!("No ID provided"),
     }
 }
 
@@ -88,17 +117,19 @@ pub(super) fn indexings_cmd() -> Command {
             ],
         )
         .subcommands(&[
-            command!("list").about("List all indexing requests"),
+            command!("list")
+                .alias("ls")
+                .about("List all indexing requests"),
             command!("status")
                 .about("Get an indexing request status")
                 .arg(
-                    arg!(<ID> "The indexing request's ID (UUID, subgraph ID or deployment ID)")
+                    arg!(<INDEXING_ID> "The indexing request's ID (UUID, Subgraph ID or Deployment ID)")
                         .value_parser(value_parser!(IndexingRequestSelector)),
                 ),
             command!("register")
                 .about("Register a new indexing request")
                 .arg(
-                    arg!(<SUBGRAPH> "The indexing request's subgraph (or deployment) ID")
+                    arg!(<SUBGRAPH> "The indexing request's Subgraph (or Deployment) ID")
                         .value_parser(value_parser!(SubgraphIdOrDeploymentId)),
                 ),
             command!("cancel")
