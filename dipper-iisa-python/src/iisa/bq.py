@@ -188,10 +188,33 @@ class BigQueryProvider:
 
             logger.debug("Data written to intermediate table, beginning table read.")
 
-            # Read back the data from the intermediate table
-            dataframe = self._read_gbq_dataframe(
-                QueryStr(f"SELECT * FROM `{destination_table}`")
-            )  # TODO
+            # Read the data from intermediate table using batches to reduce each batch below 10 MB
+            batch_size = 1_000  # Rows per batch
+            offset = 0
+            dataframe = pd.DataFrame()
+
+            while True:
+                # Read data in chunks using LIMIT and OFFSET
+                paginated_query = QueryStr(
+                    f"""
+                    SELECT *
+                    FROM `{destination_table}`
+                    LIMIT {batch_size}
+                    OFFSET {offset}
+                    """
+                )
+                batch_dataframe = self._read_gbq_dataframe(paginated_query)
+
+                if batch_dataframe.empty:
+                    logger.debug("No more data to fetch, exiting pagination loop.")
+                    break
+
+                logger.debug(
+                    f"Fetched {batch_dataframe.shape[0]} rows from offset {offset}."
+                )
+
+                dataframe = pd.concat([dataframe, batch_dataframe], ignore_index=True)
+                offset += batch_size
 
             if not dataframe.empty:
                 # Drop rows with missing values in the "url" column
