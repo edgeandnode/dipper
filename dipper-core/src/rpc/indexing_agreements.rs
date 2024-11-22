@@ -46,23 +46,6 @@ pub trait IndexingAgreementsRpc {
 /// The _indexing agreement_ admin RPC methods
 #[rpc(server, client)]
 pub trait AdminIndexingAgreementsRpc {
-    /// Get all _indexing agreements_
-    #[method(name = "get_all_indexing_agreements")]
-    async fn get_all_indexing_agreements(&self) -> RpcResult<Vec<IndexingAgreement>>;
-
-    /// Cancel an _indexing agreement_
-    #[method(name = "cancel_indexing_agreement")]
-    async fn cancel_indexing_agreement(
-        &self,
-        req: SignedMessage<CancelIndexingAgreement>,
-    ) -> RpcResult<()>;
-}
-
-/// The _indexing agreement_ user RPC methods
-///
-/// This trait is used by the indexer to interact with the DIPs gateway.
-#[rpc(server, client)]
-pub trait IndexerIndexingAgreementsRpc {
     /// Cancel an _indexing agreement_
     #[method(name = "cancel_indexing_agreement")]
     async fn cancel_indexing_agreement(

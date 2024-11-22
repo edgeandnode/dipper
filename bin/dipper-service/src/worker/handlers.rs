@@ -348,7 +348,7 @@ where
     C: DipsClient,
 {
     // Check the status of the agreement before sending the proposal
-    let agreement = registry.get_indexing_agreement(agreement_id).await?;
+    let agreement = registry.get_indexing_agreement_by_id(agreement_id).await?;
     match agreement {
         None => {
             tracing::error!(agreement_id=%agreement_id, "Indexing agreement not found");
@@ -460,7 +460,7 @@ where
     C: DipsClient,
 {
     // Check the status of the agreement before sending the cancellation
-    let agreement = registry.get_indexing_agreement(agreement_id).await?;
+    let agreement = registry.get_indexing_agreement_by_id(agreement_id).await?;
     match agreement {
         None => {
             tracing::error!(agreement_id=%agreement_id, "Indexing agreement not found");
@@ -530,7 +530,7 @@ where
     R: Registry,
 {
     // Check the status of the agreement before processing the cancellation
-    let Some(agreement) = registry.get_indexing_agreement(agreement_id).await? else {
+    let Some(agreement) = registry.get_indexing_agreement_by_id(agreement_id).await? else {
         tracing::error!(agreement_id=%agreement_id, "Indexing agreement not found");
         return Ok(JobResult::Ok(()));
     };
@@ -590,7 +590,7 @@ where
     R: Registry,
 {
     // Check the status of the agreement before processing the cancellation
-    let Some(agreement) = registry.get_indexing_agreement(agreement_id).await? else {
+    let Some(agreement) = registry.get_indexing_agreement_by_id(agreement_id).await? else {
         tracing::error!(agreement_id=%agreement_id, "Indexing agreement not found");
         return Ok(JobResult::Ok(()));
     };

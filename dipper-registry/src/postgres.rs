@@ -229,11 +229,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_all_indexing_agreements(&self) -> Result<Vec<IndexingAgreement>, Error> {
-        todo!("Return all indexing agreements")
-    }
-
-    async fn get_indexing_agreement(
+    async fn get_indexing_agreement_by_id(
         &self,
         agreement_id: IndexingAgreementId,
     ) -> Result<Option<IndexingAgreement>, Error> {
