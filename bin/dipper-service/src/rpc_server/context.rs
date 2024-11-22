@@ -41,7 +41,7 @@ pub struct CtxBuilder<S, R, W> {
 pub struct NotSet;
 
 #[doc(hidden)]
-pub struct SignerSet(PrivateKeyEip712Signer);
+pub struct SignerSet(Arc<PrivateKeyEip712Signer>);
 
 #[doc(hidden)]
 pub struct RegistrySet<R>(R);
@@ -88,7 +88,7 @@ impl<S, R, W> CtxBuilder<S, R, W> {
 
 impl<R, W> CtxBuilder<NotSet, R, W> {
     /// Sets the EIP-712 signer.
-    pub fn with_signer(self, signer: PrivateKeyEip712Signer) -> CtxBuilder<SignerSet, R, W> {
+    pub fn with_signer(self, signer: Arc<PrivateKeyEip712Signer>) -> CtxBuilder<SignerSet, R, W> {
         CtxBuilder {
             signer: SignerSet(signer),
             allowlist: self.allowlist,
@@ -139,7 +139,7 @@ where
     /// Builds the [`Ctx`] instance.
     pub fn build(self) -> Ctx<R, W> {
         Ctx {
-            signer: Arc::new(self.signer.0),
+            signer: self.signer.0,
             allowlist: Arc::new(self.allowlist),
             registry: self.registry.0,
             worker: self.worker.0,
@@ -150,7 +150,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeSet, time::Duration};
+    use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
     use async_trait::async_trait;
     use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
@@ -371,7 +371,7 @@ mod tests {
                 salt: b256!("66eb090e6dbb9668c7d32c0ee7ba5e8f08d84385804485d316dd5f5692273593")
             };
 
-            PrivateKeyEip712Signer::new(signer, signer_address, domain)
+            Arc::new(PrivateKeyEip712Signer::new(signer, signer_address, domain))
         };
         let allowlist = BTreeSet::from([address!("A3A933720D7BAE63a102e70869D1Ca96E2329428")]);
         let registry = DummyRegistry;

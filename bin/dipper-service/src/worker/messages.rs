@@ -45,13 +45,22 @@ pub enum Message {
     /// See [`SendIndexingAgreementCancellation`] for more details.
     SendIndexingAgreementCancellation(SendIndexingAgreementCancellation),
 
-    /// Process indexing agreement cancellation.
+    /// Process indexing agreement cancellation triggered by the indexer.
     ///
     /// When an indexer cancels an indexing agreement, a new indexer must be selected
     /// to fulfill the indexing request.
     ///
     /// See [`ProcessIndexingAgreementCancellation`] for more details.
-    ProcessIndexingAgreementCancellation(ProcessIndexingAgreementCancellation),
+    ProcessIndexingAgreementIndexerCancellation(ProcessIndexingAgreementCancellation),
+
+    /// Process an indexing agreement cancellation triggered by the customer.
+    ///
+    /// When a customer cancels an indexing agreement, the queue worker must notify
+    /// the indexer that the agreement has been cancelled. Additionally, a new indexer
+    /// must be selected to fulfill the indexing request.
+    ///
+    /// See [`ProcessIndexingAgreementCancellation`] for more details.
+    ProcessIndexingAgreementRequesterCancellation(ProcessIndexingAgreementCancellation),
 }
 
 /// Given a new indexing request, run the IISA and get a list of indexers that
@@ -119,7 +128,7 @@ pub struct SendIndexingAgreementCancellation {
 
 /// Process indexing agreement cancellation.
 ///
-/// When an indexer cancels an indexing agreement, a new indexer must be selected
+/// When a requester (or indexer) cancels an indexing agreement, a new indexer must be selected
 /// to fulfill the indexing request.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProcessIndexingAgreementCancellation {

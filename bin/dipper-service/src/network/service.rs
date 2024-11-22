@@ -8,7 +8,7 @@ use tokio::{
 use super::subgraph::{snapshot::Snapshot, Client as SubgraphClient};
 
 #[derive(Clone)]
-pub struct ServiceHandle {
+pub struct Handle {
     /// The receiver for the service data
     rx: watch::Receiver<Snapshot>,
 
@@ -16,7 +16,7 @@ pub struct ServiceHandle {
     tx_stop: mpsc::Sender<()>,
 }
 
-impl ServiceHandle {
+impl Handle {
     /// Wait for the service data to have changed
     ///
     /// If the underlying channel has been closed, this function will return an error.
@@ -36,6 +36,9 @@ impl ServiceHandle {
         }
 
         let _ = self.tx_stop.send(()).await;
+
+        // Wait for the channel to close
+        self.tx_stop.closed().await;
     }
 }
 
@@ -49,7 +52,7 @@ pub fn new(
     client: SubgraphClient,
     update_interval: Duration,
     init: Snapshot,
-) -> (ServiceHandle, impl Future<Output = anyhow::Result<()>>) {
+) -> (Handle, impl Future<Output = anyhow::Result<()>>) {
     let (tx_stop, mut rx_stop) = mpsc::channel(1);
     let (tx, rx) = watch::channel(init);
 
@@ -91,5 +94,5 @@ pub fn new(
         Ok(())
     };
 
-    (ServiceHandle { rx, tx_stop }, service)
+    (Handle { rx, tx_stop }, service)
 }

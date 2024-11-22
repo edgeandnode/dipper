@@ -199,7 +199,9 @@ where
             ))
             .await
         {
-            tracing::error!(error=?err, "Failed to post 'ProcessNewIndexingRequest' message to worker");
+            tracing::error!(error=?err, "Failed queue task: 'process_new_indexing_request'");
+            // return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            todo!("Return error");
         };
 
         Ok(indexing_request_id)
@@ -227,7 +229,7 @@ where
             id: indexing_request_id,
         } = req.into_message();
 
-        // Register the new indexing request
+        // Mark the indexing request as `CANCELED`
         if let Err(dipper_registry::Error::DbError(err)) = self
             .registry
             .mark_indexing_request_as_canceled(&indexing_request_id)
@@ -248,7 +250,9 @@ where
             ))
             .await
         {
-            tracing::error!(error=?err, "Failed to post 'ProcessIndexingRequestCancellation' message");
+            tracing::error!(error=?err, "Failed to queue task: 'ProcessIndexingRequestCancellation'");
+            // return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            todo!("Return error")
         };
 
         Ok(())
