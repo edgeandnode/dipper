@@ -4,69 +4,9 @@ use std::{
 };
 
 use reqwest::Url;
-use thegraph_core::{DeploymentId, IndexerId, SubgraphId};
+use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId, SubgraphId};
 
-use super::client;
-
-/// An indexer in the network
-#[derive(Debug, Clone)]
-pub struct Indexer {
-    /// The indexer ID
-    ///
-    /// The indexer ID is a unique identifier for the indexer and coincides with
-    /// the Ethereum address of the indexer.
-    pub id: IndexerId,
-    /// The indexer URL
-    pub url: Url,
-    /// The staked tokens of the indexer
-    pub staked_tokens: u128,
-    /// The deployments that the indexer has allocations for and is indexing
-    pub indexings: BTreeSet<DeploymentId>,
-}
-
-/// A subgraph in the network
-#[derive(Debug, Clone)]
-pub struct Subgraph {
-    /// The subgraph ID
-    pub id: SubgraphId,
-    /// The versions of the subgraph
-    ///
-    /// See [SubgraphVersion] for more information
-    pub versions: Vec<SubgraphVersion>,
-}
-
-/// A version of a [Subgraph]
-#[derive(Debug, Clone)]
-pub struct SubgraphVersion {
-    /// The version number
-    pub num: u32,
-    /// The deployment ID
-    pub deployment: DeploymentId,
-}
-
-/// A deployment of a [Subgraph] to the network
-#[derive(Debug, Clone)]
-pub struct Deployment {
-    /// The deployment ID
-    ///
-    /// The deployment ID is a unique identifier for the deployment and coincides
-    /// with the IPFS CID of the deployment manifest.
-    pub id: DeploymentId,
-    /// The subgraph ID
-    ///
-    /// The subgraph ID is the identifier of the subgraph that the deployment
-    /// belongs to.
-    pub subgraph: SubgraphId,
-    /// The deployment version number
-    ///
-    /// The deployment version number represents the version of the subgraph the
-    /// deployment belongs to.
-    pub version: u32,
-    /// The indexers that are indexing the deployment
-    ///
-    /// The indexers are stored in a BTreeSet to ensure that they are unique.
-    pub indexings: BTreeSet<IndexerId>,
-}
+use super::{indexer_operators, indexer_subgraphs};
 
 /// A snapshot of the network state at a given point in time
 #[derive(Debug, Clone)]
@@ -124,6 +64,11 @@ impl Snapshot {
         self.indexers.get(id)
     }
 
+    /// Get [Indexer] operator addresses set by [IndexerId]
+    pub fn get_indexer_operators(&self, id: &IndexerId) -> Option<&BTreeSet<Address>> {
+        self.indexers.get(id).map(|indexer| &indexer.operators)
+    }
+
     /// Get [Subgraph] by [SubgraphId]
     pub fn get_subgraph(&self, id: &SubgraphId) -> Option<&Subgraph> {
         self.subgraphs.get(id)
@@ -147,23 +92,11 @@ impl Default for Snapshot {
     }
 }
 
-impl<T> From<T> for Snapshot
-where
-    T: IntoIterator<Item = client::types::Subgraph>,
-{
-    /// Create a network snapshot from a subgraph
-    fn from(sub: T) -> Self {
-        let mut snapshot = Self::new();
-        snapshot.extend(sub);
-        snapshot
-    }
-}
-
-impl Extend<client::types::Subgraph> for Snapshot {
+impl Extend<indexer_subgraphs::types::Subgraph> for Snapshot {
     /// Extend the network snapshot with a list of subgraphs
     fn extend<T>(&mut self, iter: T)
     where
-        T: IntoIterator<Item = client::types::Subgraph>,
+        T: IntoIterator<Item = indexer_subgraphs::types::Subgraph>,
     {
         for sub in iter {
             let subgraph_id = sub.id;
@@ -227,6 +160,7 @@ impl Extend<client::types::Subgraph> for Snapshot {
                             url: indexer_url,
                             staked_tokens: indexer_staked_tokens,
                             indexings: BTreeSet::from([deployment_id]),
+                            operators: Default::default(),
                         });
 
                     // Add the indexer to the deployment indexings
@@ -241,10 +175,96 @@ impl Extend<client::types::Subgraph> for Snapshot {
     }
 }
 
+impl Extend<indexer_operators::types::Indexer> for Snapshot {
+    /// Extend the network snapshot with a indexer-operator set
+    fn extend<T>(&mut self, iter: T)
+    where
+        T: IntoIterator<Item = indexer_operators::types::Indexer>,
+    {
+        let iter = iter.into_iter().flat_map(|indexer| {
+            let indexer_id = indexer.id;
+            indexer
+                .account
+                .operators
+                .into_iter()
+                .map(move |operator| (indexer_id, operator.id))
+        });
+
+        for (indexer_id, operator_address) in iter {
+            // Insert the address into the indexer's operators addresses set
+            self.indexers.entry(indexer_id).and_modify(|indexer| {
+                indexer.operators.insert(operator_address);
+            });
+        }
+    }
+}
+
 impl Snapshot {
     /// Add an indexer to the network snapshot.
     #[cfg(test)]
     pub fn add_indexer(&mut self, indexer: Indexer) {
         self.indexers.insert(indexer.id, indexer);
     }
+}
+
+/// An indexer in the network
+#[derive(Debug, Clone)]
+pub struct Indexer {
+    /// The indexer ID
+    ///
+    /// The indexer ID is a unique identifier for the indexer and coincides with
+    /// the Ethereum address of the indexer.
+    pub id: IndexerId,
+    /// The indexer URL
+    pub url: Url,
+    /// The staked tokens of the indexer
+    pub staked_tokens: u128,
+    /// The deployments that the indexer has allocations for and is indexing
+    pub indexings: BTreeSet<DeploymentId>,
+    /// Associated indexer operator account addresses
+    pub operators: BTreeSet<Address>,
+}
+
+/// A subgraph in the network
+#[derive(Debug, Clone)]
+pub struct Subgraph {
+    /// The subgraph ID
+    pub id: SubgraphId,
+    /// The versions of the subgraph
+    ///
+    /// See [SubgraphVersion] for more information
+    pub versions: Vec<SubgraphVersion>,
+}
+
+/// A version of a [Subgraph]
+#[derive(Debug, Clone)]
+pub struct SubgraphVersion {
+    /// The version number
+    pub num: u32,
+    /// The deployment ID
+    pub deployment: DeploymentId,
+}
+
+/// A deployment of a [Subgraph] to the network
+#[derive(Debug, Clone)]
+pub struct Deployment {
+    /// The deployment ID
+    ///
+    /// The deployment ID is a unique identifier for the deployment and coincides
+    /// with the IPFS CID of the deployment manifest.
+    pub id: DeploymentId,
+    /// The subgraph ID
+    ///
+    /// The subgraph ID is the identifier of the subgraph that the deployment
+    /// belongs to.
+    pub subgraph: SubgraphId,
+    /// The deployment version number
+    ///
+    /// The deployment version number represents the version of the subgraph the
+    /// deployment belongs to.
+    pub version: u32,
+    /// The indexers that are indexing the deployment
+    ///
+    /// The indexers are stored in a BTreeSet to ensure that they are unique.
+    pub indexings: BTreeSet<IndexerId>,
 }

@@ -11,7 +11,7 @@ use thegraph_core::alloy::signers::local::PrivateKeySigner;
 use tokio::task::JoinSet;
 use tracing_subscriber::EnvFilter;
 
-use self::signer::Eip712Signer;
+use self::{network::Snapshot, signer::Eip712Signer};
 
 mod config;
 mod indexers;
@@ -95,7 +95,7 @@ pub async fn main() -> anyhow::Result<()> {
             ))
             .expect("invalid network subgraph URL");
 
-        let network_subgraph_client = network::subgraph::Client::new(
+        let network_subgraph_client = network::fetch::Client::new(
             reqwest::Client::new(),
             network_subgraph_url,
             conf.network.api_key.into_inner(),
@@ -103,14 +103,24 @@ pub async fn main() -> anyhow::Result<()> {
 
         // Fetch the initial network snapshot
         let init_snapshot = {
-            let data = network_subgraph_client.fetch().await?;
-            if data.is_empty() {
+            let subgraphs_data = network_subgraph_client.fetch_subgraphs().await?;
+            if subgraphs_data.is_empty() {
                 return Err(anyhow::anyhow!("empty network subgraph update"));
             }
 
-            tracing::debug!(snapshot_size=%data.len(), "fetched initial network snapshot");
+            tracing::debug!(snapshot_size=%subgraphs_data.len(), "fetched initial network snapshot");
 
-            data.into()
+            let mut snapshot = Snapshot::new();
+            snapshot.extend(subgraphs_data);
+
+            let operators_data = network_subgraph_client.fetch_indexer_operators().await?;
+            if !operators_data.is_empty() {
+                snapshot.extend(operators_data);
+            } else {
+                tracing::warn!("empty network indexer operators update");
+            }
+
+            snapshot
         };
 
         network::service::new(

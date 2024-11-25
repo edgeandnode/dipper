@@ -5,12 +5,12 @@ use tokio::{
     time::MissedTickBehavior,
 };
 
-use super::subgraph::{snapshot::Snapshot, Client as SubgraphClient};
+use super::fetch::{snapshot::Snapshot, Client as SubgraphClient};
 
 #[derive(Clone)]
 pub struct Handle {
     /// The receiver for the service data
-    rx: watch::Receiver<Snapshot>,
+    rx_snapshot: watch::Receiver<Snapshot>,
 
     /// The stop signal for the service
     tx_stop: mpsc::Sender<()>,
@@ -21,12 +21,12 @@ impl Handle {
     ///
     /// If the underlying channel has been closed, this function will return an error.
     pub async fn wait_changed(&mut self) -> anyhow::Result<()> {
-        self.rx.changed().await.map_err(Into::into)
+        self.rx_snapshot.changed().await.map_err(Into::into)
     }
 
     /// Get the current snapshot
     pub fn snapshot(&self) -> Ref<'_, Snapshot> {
-        self.rx.borrow()
+        self.rx_snapshot.borrow()
     }
 
     /// Stop the service
@@ -54,7 +54,7 @@ pub fn new(
     init: Snapshot,
 ) -> (Handle, impl Future<Output = anyhow::Result<()>>) {
     let (tx_stop, mut rx_stop) = mpsc::channel(1);
-    let (tx, rx) = watch::channel(init);
+    let (tx_snapshot, rx_snapshot) = watch::channel(init);
 
     let service = async move {
         let mut timer = tokio::time::interval(update_interval);
@@ -66,7 +66,7 @@ pub fn new(
                 _ = timer.tick() => {},
             }
 
-            let snapshot = match client.fetch().await {
+            let mut snapshot = match client.fetch_subgraphs().await {
                 Ok(data) if !data.is_empty() => {
                     let mut snapshot = Snapshot::new();
                     snapshot.extend(data);
@@ -77,13 +77,25 @@ pub fn new(
                     continue;
                 }
                 Err(err) => {
-                    tracing::warn!(error = %err, "failed to fetch network subgraph update");
+                    tracing::warn!(error=%err, "failed to fetch network subgraph update");
                     continue;
                 }
             };
 
+            match client.fetch_indexer_operators().await {
+                Ok(data) if !data.is_empty() => {
+                    snapshot.extend(data);
+                }
+                Ok(_) => {
+                    tracing::warn!("empty network indexer operator update");
+                }
+                Err(err) => {
+                    tracing::warn!(error=%err, "failed to fetch network indexer operator update");
+                }
+            }
+
             // Send the snapshot to the receiver, if no listener is available, finish the service
-            if let Err(err) = tx.send(snapshot) {
+            if let Err(err) = tx_snapshot.send(snapshot) {
                 tracing::debug!(error = %err, "failed to send network subgraph update");
                 break;
             }
@@ -94,5 +106,11 @@ pub fn new(
         Ok(())
     };
 
-    (Handle { rx, tx_stop }, service)
+    (
+        Handle {
+            rx_snapshot,
+            tx_stop,
+        },
+        service,
+    )
 }

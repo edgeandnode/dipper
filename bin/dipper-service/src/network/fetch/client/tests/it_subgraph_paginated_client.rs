@@ -7,7 +7,7 @@ use serde::Deserialize;
 use thegraph_core::{BlockPointer, SubgraphId};
 use tracing_subscriber::{fmt::TestWriter, EnvFilter};
 
-use crate::network::subgraph::client::{
+use crate::network::fetch::client::{
     paginated_client::Client,
     queries::{
         meta::send_bootstrap_meta_query,
