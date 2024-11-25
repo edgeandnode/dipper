@@ -777,11 +777,14 @@ class TestDataProcessor:
             deployment_id=DeploymentId("test_subgraph"),
         )
 
-        with patch(
-            "iisa.select.processor.DataProcessor._find_best_replacement_or_select_best_indexer"
-        ) as mock_find, patch(
-            "iisa.select.processor.DataProcessor._calculate_group_score"
-        ) as mock_score:
+        with (
+            patch(
+                "iisa.select.processor.DataProcessor._find_best_replacement_or_select_best_indexer"
+            ) as mock_find,
+            patch(
+                "iisa.select.processor.DataProcessor._calculate_group_score"
+            ) as mock_score,
+        ):
             mock_find.side_effect = ["D", None, None]
             mock_score.side_effect = [0.7, 0.8, 0.7, 0.7]
 

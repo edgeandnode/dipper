@@ -30,10 +30,17 @@ dev-dependencies = [
     "types-requests>=2.32.0.20240905,<3.0",
 ]
 
+## ruff configuration
+[tool.ruff]
+include = [
+    "pyproject.toml",
+    "dipper-iisa-python/**/*.py",
+]
 
 ## mypy configuration
 [tool.mypy]
 files = [
+    # Check only the source code
     "dipper-iisa-python/src/**/*.py",
 ]
 exclude = [
