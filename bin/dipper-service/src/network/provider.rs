@@ -1,7 +1,9 @@
 use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId};
 
-use super::{api::NetworkProvider, service::Handle};
-use crate::network::api::Indexer;
+use super::{
+    api::{Indexer, NetworkProvider},
+    service::Handle,
+};
 
 #[derive(Clone)]
 pub struct NetworkProviderService {
@@ -42,10 +44,11 @@ impl NetworkProvider for NetworkProviderService {
             .collect()
     }
 
-    fn get_indexer_id_for_operator_address(
-        &self,
-        _operator_address: &Address,
-    ) -> Option<IndexerId> {
-        todo!()
+    fn get_indexer_id_for_operator_address(&self, operator_address: &Address) -> Option<IndexerId> {
+        self.inner
+            .snapshot()
+            .indexers_iter()
+            .find(|indexer| indexer.operators.contains(operator_address))
+            .map(|indexer| indexer.id)
     }
 }
