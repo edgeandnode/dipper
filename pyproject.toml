@@ -26,14 +26,21 @@ dev-dependencies = [
     "pandera[mypy]>=0.21,<0.22",
     "pytest>=8.3.2,<9.0",
     "pytest-mock>=3.14.0,<4.0",
-    "ruff>=0.7,<0.8",
+    "ruff>=0.8,<0.9",
     "types-requests>=2.32.0.20240905,<3.0",
 ]
 
+## ruff configuration
+[tool.ruff]
+include = [
+    "pyproject.toml",
+    "dipper-iisa-python/**/*.py",
+]
 
 ## mypy configuration
 [tool.mypy]
 files = [
+    # Check only the source code
     "dipper-iisa-python/src/**/*.py",
 ]
 exclude = [
