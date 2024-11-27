@@ -59,28 +59,6 @@ pub(super) fn signing_key_arg() -> Arg {
         .value_parser(dipper_core::config::secret_key_from_str)
 }
 
-/// Create the `--chain-id` CLI argument.
-///
-/// This argument is used to specify the DIPs payment wallet chain ID.
-///
-/// Parse the value as a `ChainId`.
-pub(super) fn chain_id_arg() -> Arg {
-    arg!(--"chain-id" <ID> "The chain ID of the DIPs payment wallet")
-        .env(name_prefixed!("CHAIN_ID"))
-        .value_parser(value_parser!(ChainId))
-}
-
-/// Create the `--payer` CLI argument.
-///
-/// This argument is used to specify the address of the DIPs payment wallet.
-///
-/// Parse the value as an `Address`.
-pub(super) fn payer_arg() -> Arg {
-    arg!(-p --payer <ADDRESS> "The address of the payer (hex)")
-        .env(name_prefixed!("PAYER"))
-        .value_parser(value_parser!(Address))
-}
-
 /// Load the configuration
 pub fn load_conf(args: &ArgMatches) -> anyhow::Result<Config> {
     // Load the environment variables from the specified env file

@@ -76,7 +76,7 @@ pub async fn register(_conf: Config, _matches: &clap::ArgMatches) -> anyhow::Res
 pub async fn cancel(conf: Config, matches: &clap::ArgMatches) -> anyhow::Result<()> {
     let rpc_client = client::new(&conf.server_url);
     let signer = signer::new_private_key_eip712_signer(&conf.signing_key);
-    let signer_eip712_domain = signer::eip712_domain(conf.chain_id);
+    let signer_eip712_domain = signer::eip712_domain();
 
     match matches.get_one::<IndexingRequestSelector>("INDEXING_ID") {
         // ID is an UUIDv7
@@ -112,8 +112,6 @@ pub(super) fn indexings_cmd() -> Command {
                 common::env_file_arg().global(true),
                 common::server_url_arg().global(true),
                 common::signing_key_arg().global(true),
-                common::chain_id_arg().global(true),
-                common::payer_arg().global(true),
             ],
         )
         .subcommands(&[
