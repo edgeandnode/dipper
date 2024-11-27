@@ -46,7 +46,7 @@ pub async fn main() -> anyhow::Result<()> {
         let private_key_signer =
             PrivateKeySigner::from_signing_key(conf.signer.secret_key.as_ref().into());
         let private_key_signer_address = private_key_signer.address();
-        let domain = eip712_domain(conf.signer.chain_id);
+        let domain = eip712_domain();
 
         Arc::new(Eip712Signer::new(
             private_key_signer,
