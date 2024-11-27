@@ -17,13 +17,23 @@ pub struct SignedMessage<M> {
 }
 
 impl<M> SignedMessage<M> {
-    /// Get the EIP-712 signature bytes
+    /// Get the EIP-712 signature bytes.
+    ///
+    /// The ECDSA signature bytes can be used as a key in a [`BTreeMap`] (or [`HashMap`]) to
+    /// deduplicate signed messages based on their signature.
+    ///
+    /// [`BTreeMap`]: std::collections::BTreeMap
+    /// [`HashMap`]: std::collections::HashMap
     pub fn signature_bytes(&self) -> SignatureBytes {
         SignatureBytes(self.signature.as_bytes())
     }
 
-    /// Get the message hash according to the EIP-712 standard
-    pub fn unique_hash<MSol>(&self) -> MessageHash
+    /// Hash the message struct according to [EIP-712 `hashStruct`](https://eips.ethereum.org/EIPS/eip-712#definition-of-hashstruct).
+    ///
+    /// The resulting hash can be used to deduplicate messages. As the hash does not include the
+    /// signature, it is unique for a given message payload. This means that two [`SignedMessage`]s,
+    /// signed by two different signers, will have the same hash.
+    pub fn message_hash<MSol>(&self) -> MessageHash
     where
         M: ToSolStruct<MSol>,
         MSol: SolStruct,
@@ -32,10 +42,9 @@ impl<M> SignedMessage<M> {
     }
 }
 
-/// EIP-712 signature bytes
+/// The EIP-712 ECDSA signature bytes.
 ///
-/// This is a _new-type_ wrapper around the ECDSA signature bytes that can be used as
-/// a key in a btree or hashmap.
+/// See: [`SignedMessage::signature_bytes`]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SignatureBytes([u8; 65]);
 
@@ -54,13 +63,9 @@ impl std::ops::Deref for SignatureBytes {
     }
 }
 
-/// Message hash according to the EIP-712 standard
+/// Message hash according to [EIP-712 `hashStruct`](https://eips.ethereum.org/EIPS/eip-712#definition-of-hashstruct).
 ///
-/// This is a _new-type_ wrapper around the hash bytes of the `SignedMessage`'s message payload.
-///
-/// It can be used to deduplicate messages. As the hash does not include the signature,
-/// it is unique for a given message payload. This means that two `SignedMessage`s, signed
-/// by two different signers, will have the same hash.
+/// See: [`SignedMessage::message_hash`]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MessageHash([u8; 32]);
 
@@ -81,9 +86,9 @@ impl std::ops::Deref for MessageHash {
 
 /// A conversion trait for converting a type into a solidity struct representation
 ///
-/// This trait is used to convert a Rust type into a struct implementing the `SolStruct` trait
+/// This trait is used to convert a Rust type into a struct implementing the `SolStruct` trait.
 pub trait ToSolStruct<T: SolStruct> {
-    /// Convert this type into the solidity struct representation
+    /// Convert into the solidity struct representation
     fn to_sol_struct(&self) -> T;
 }
 
@@ -91,6 +96,10 @@ impl<T> ToSolStruct<T> for T
 where
     T: SolStruct + Clone,
 {
+    /// Convert into the solidity struct representation.
+    ///
+    /// If the type already implements the `SolStruct` trait, this method will return a clone of
+    /// the type without performing any conversion.
     fn to_sol_struct(&self) -> T {
         self.clone()
     }
