@@ -120,6 +120,15 @@ macro_rules! uuid_new_type_impls {
                 ::uuid::Uuid::decode(value).map(Self)
             }
         }
+
+        #[cfg(feature = "fake")]
+        impl ::fake::Dummy<fake::Faker> for $name {
+            fn dummy_with_rng<R: ::fake::Rng + ?Sized>(_: &fake::Faker, rng: &mut R) -> Self {
+                use crate::fake::uuid::UUIDv7;
+
+                Self(::fake::Dummy::<UUIDv7>::dummy_with_rng(&UUIDv7, rng))
+            }
+        }
     };
 }
 
