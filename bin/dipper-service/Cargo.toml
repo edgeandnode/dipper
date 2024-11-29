@@ -5,14 +5,14 @@ edition = "2021"
 
 [dependencies]
 anyhow.workspace = true
-async-select = "0.2.0"
 async-signal = "0.2.10"
 async-trait.workspace = true
 custom_debug = "0.6.1"
-dipper-core = { version = "0.1.0", path = "../../dipper-core", features = ["rpc"] }
+dipper-core = { version = "0.1.0", path = "../../dipper-core" }
 dipper-iisa = { path = "../../dipper-iisa" }
 dipper-pgmq = { path = "../../dipper-pgmq" }
 dipper-registry = { path = "../../dipper-registry" }
+dipper-rpc = { version = "0.1.0", path = "../../dipper-rpc" }
 futures-lite = { version = "2.4.0", default-features = false }
 indoc = "2.0.5"
 jsonrpsee = { workspace = true, features = ["server"] }
@@ -20,7 +20,6 @@ reqwest = { workspace = true, features = ["json"] }
 serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
-serde_yaml = { version = "0.10.0", package = "serde_yaml_ng" }
 snmalloc-rs = "0.3.6"
 sqlx.workspace = true
 thegraph-core = { workspace = true, features = ["alloy-signer-local", "serde"] }

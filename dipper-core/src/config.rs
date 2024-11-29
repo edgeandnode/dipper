@@ -1,6 +1,6 @@
 //! Configuration types and utilities.
 
-use std::str::FromStr;
+use std::str::FromStr as _;
 
 use thegraph_core::alloy::{
     hex::FromHexError,
@@ -89,8 +89,10 @@ pub fn secret_key_from_str(s: &str) -> Result<Hidden<SecretKey>, HiddenSecretKey
 }
 
 /// Serialize (and deserialize) a `SecretKey` as a hex string.
+#[cfg(feature = "serde")]
 pub struct HiddenSecretKeyAsHexStr;
 
+#[cfg(feature = "serde")]
 impl serde_with::SerializeAs<Hidden<SecretKey>> for HiddenSecretKeyAsHexStr {
     fn serialize_as<S>(source: &Hidden<SecretKey>, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -101,6 +103,7 @@ impl serde_with::SerializeAs<Hidden<SecretKey>> for HiddenSecretKeyAsHexStr {
     }
 }
 
+#[cfg(feature = "serde")]
 impl<'de> serde_with::DeserializeAs<'de, Hidden<SecretKey>> for HiddenSecretKeyAsHexStr {
     fn deserialize_as<D>(deserializer: D) -> Result<Hidden<SecretKey>, D::Error>
     where

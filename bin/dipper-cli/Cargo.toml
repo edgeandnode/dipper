@@ -7,11 +7,11 @@ edition = "2021"
 anyhow.workspace = true
 clap = { workspace = true, features = ["cargo", "env"] }
 custom_debug = "0.6.1"
-dipper-core = { version = "0.1.0", path = "../../dipper-core", features = ["rpc"] }
+dipper-core = { version = "0.1.0", path = "../../dipper-core" }
+dipper-rpc = { version = "0.1.0", path = "../../dipper-rpc" }
 dotenvy = "0.15.7"
 figment = { version = "0.10.19", features = ["env"] }
 jsonrpsee = { workspace = true, features = ["http-client"] }
-reqwest = { workspace = true, features = ["json"] }
 serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
@@ -21,4 +21,4 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 url.workspace = true
-uuid = { version = "1.11.0", features = ["v4"] }
+uuid.workspace = true

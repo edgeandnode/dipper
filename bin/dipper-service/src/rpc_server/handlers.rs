@@ -1,12 +1,10 @@
-use dipper_core::{
-    rpc::{
-        indexing_agreements::{AdminIndexingAgreementsRpcServer, IndexingAgreementsRpcServer},
-        indexing_requests::{AdminIndexingRequestsRpcServer, IndexingRequestsRpcServer},
-    },
-    state::FromState,
-};
+use dipper_core::state::FromState;
 use dipper_pgmq::queue::Queue;
 use dipper_registry::Registry;
+use dipper_rpc::admin::{
+    indexing_agreements::{AdminIndexingAgreementsRpcServer, IndexingAgreementsRpcServer},
+    indexing_requests::{AdminIndexingRequestsRpcServer, IndexingRequestsRpcServer},
+};
 use jsonrpsee::RpcModule;
 
 use self::indexing_requests::{

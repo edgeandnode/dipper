@@ -860,12 +860,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-select"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bac3430a0dec743094f26f0277c2cb2f78976b4269c1648c1f0cd18d70f34432"
-
-[[package]]
 name = "async-signal"
 version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1799,10 +1793,10 @@ dependencies = [
  "clap",
  "custom_debug",
  "dipper-core",
+ "dipper-rpc",
  "dotenvy",
  "figment",
  "jsonrpsee",
- "reqwest",
  "serde",
  "serde_json",
  "serde_with",
@@ -1820,13 +1814,11 @@ name = "dipper-core"
 version = "0.1.0"
 dependencies = [
  "fake",
- "jsonrpsee",
  "serde",
  "serde_with",
  "sqlx",
  "thegraph-core",
  "thiserror 2.0.3",
- "time",
  "uuid",
 ]
 
@@ -1899,11 +1891,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "dipper-rpc"
+version = "0.1.0"
+dependencies = [
+ "dipper-core",
+ "jsonrpsee",
+ "serde",
+ "serde_with",
+ "thegraph-core",
+ "time",
+]
+
+[[package]]
 name = "dipper-service"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-select",
  "async-signal",
  "async-trait",
  "custom_debug",
@@ -1911,6 +1914,7 @@ dependencies = [
  "dipper-iisa",
  "dipper-pgmq",
  "dipper-registry",
+ "dipper-rpc",
  "futures-lite",
  "indoc",
  "jsonrpsee",
@@ -1918,7 +1922,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "serde_yaml_ng",
  "snmalloc-rs",
  "sqlx",
  "test-with",
@@ -4777,19 +4780,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_yaml_ng"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f"
-dependencies = [
- "indexmap 2.6.0",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
-]
-
-[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5852,12 +5842,6 @@ name = "unindent"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7de7d73e1754487cb58364ee906a499937a0dfabd86bcb980fa99ec8c8fa2ce"
-
-[[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

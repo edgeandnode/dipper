@@ -5,19 +5,16 @@ edition = "2021"
 
 [features]
 fake = ["dep:fake", "thegraph-core/fake"]
-rpc = ["dep:jsonrpsee", "serde", "dep:time"]
 serde = ["dep:serde", "dep:serde_with", "thegraph-core/serde", "uuid/serde"]
 sqlx = ["dep:sqlx"]
 
 [dependencies]
 fake = { version = "3.0.1", optional = true, features = ["uuid"] }
-jsonrpsee = { workspace = true, optional = true, features = ["server", "client", "macros"] }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true, features = ["base64"] }
 sqlx = { workspace = true, optional = true }
 thegraph-core = { workspace = true, features = ["alloy-eip712", "alloy-signers", "alloy-sol-types"] }
 thiserror.workspace = true
-time = { workspace = true, optional = true, features = ["formatting", "parsing", "serde"] }
 uuid.workspace = true
 
 [dev-dependencies]

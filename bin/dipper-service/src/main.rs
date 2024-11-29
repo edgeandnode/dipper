@@ -1,10 +1,10 @@
 use std::{env, path::PathBuf, sync::Arc};
 
 use async_signal::{Signal, Signals};
-use dipper_core::rpc::eip712_domain;
 use dipper_iisa as iisa;
 use dipper_pgmq::postgres::PgQueue;
 use dipper_registry::postgres::PgRegistry;
+use dipper_rpc::eip712_domain;
 use futures_lite::StreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use thegraph_core::alloy::signers::local::PrivateKeySigner;

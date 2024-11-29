@@ -7,7 +7,7 @@ members = [
     "dipper-iisa",
     "dipper-indexer-client",
     "dipper-pgmq",
-    "dipper-registry",
+    "dipper-registry", "dipper-rpc",
     "integration-tests",
     "xtask"
 ]

@@ -5,8 +5,7 @@ use thegraph_core::alloy::{
     sol_types::{eip712_domain, Eip712Domain},
 };
 
-pub mod indexing_agreements;
-pub mod indexing_requests;
+pub mod admin;
 
 /// The Arbitrum One (mainnet) chain ID (eip155).
 const CHAIN_ID_ARBITRUM_ONE: ChainId = 0xa4b1; // 42161

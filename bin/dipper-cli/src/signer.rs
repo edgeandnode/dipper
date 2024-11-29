@@ -1,4 +1,4 @@
-pub use dipper_core::rpc::eip712_domain;
+pub use dipper_rpc::eip712_domain;
 use thegraph_core::alloy::signers::{k256::SecretKey, local::PrivateKeySigner, SignerSync};
 
 /// Create a new private key signer from a secret key.
