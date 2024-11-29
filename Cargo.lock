@@ -3935,7 +3935,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e9552f850d5f0964a4e4d0bf306459ac29323ddfbae05e35a7c0d35cb0803cc5"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn 2.0.89",
@@ -5295,9 +5295,9 @@ dependencies = [
 
 [[package]]
 name = "thegraph-core"
-version = "0.8.2"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "839f2290aba026d9bca7112de19506fd953f9b51af4ffe20ac287a9f0ed112b0"
+checksum = "a26ee7fc2978f7687f6a2a273364cb130441eb5f10a2924e38e490558cdd9b2a"
 dependencies = [
  "alloy",
  "bs58",
@@ -6054,7 +6054,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
