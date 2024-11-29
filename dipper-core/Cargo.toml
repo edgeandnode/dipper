@@ -13,7 +13,7 @@ jsonrpsee = { workspace = true, optional = true, features = ["server", "client",
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true, features = ["base64"] }
 sqlx = { workspace = true, optional = true }
-thegraph-core.workspace = true
+thegraph-core = { workspace = true, features = ["alloy-eip712", "alloy-signers", "alloy-sol-types"] }
 thiserror.workspace = true
 time = { workspace = true, optional = true, features = ["formatting", "parsing", "serde"] }
 uuid.workspace = true
