@@ -1766,6 +1766,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "deunicode"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "339544cc9e2c4dc3fc7149fd630c5f22263a4fdf18a98afd0075784968b5cf00"
+
+[[package]]
 name = "digest"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1814,6 +1820,7 @@ dependencies = [
 name = "dipper-core"
 version = "0.1.0"
 dependencies = [
+ "fake",
  "jsonrpsee",
  "serde",
  "serde_with",
@@ -2060,6 +2067,17 @@ checksum = "0f214dc438f977e6d4e3500aaa277f5ad94ca83fbbd9b1a15713ce2344ccc5a1"
 dependencies = [
  "event-listener",
  "pin-project-lite",
+]
+
+[[package]]
+name = "fake"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "661cb0601b5f4050d1e65452c5b0ea555c0b3e88fb5ed7855906adc6c42523ef"
+dependencies = [
+ "deunicode",
+ "rand",
+ "uuid",
 ]
 
 [[package]]
@@ -4793,6 +4811,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
+
+[[package]]
 name = "sha2"
 version = "0.10.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5356,6 +5380,7 @@ checksum = "61c6158717c1e4a3f8f684598c046a906166b943ff70d41401339e59ca3b1066"
 dependencies = [
  "alloy",
  "bs58",
+ "fake",
  "serde",
  "serde_with",
  "thiserror 1.0.69",
@@ -5885,8 +5910,11 @@ version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8c5f0a0af699448548ad1a2fbf920fb4bee257eae39953ba95cb84891a0446a"
 dependencies = [
+ "atomic",
  "getrandom",
+ "md-5",
  "serde",
+ "sha1_smol",
 ]
 
 [[package]]
