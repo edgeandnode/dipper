@@ -1,0 +1,12 @@
+[package]
+name = "dipper-rpc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dipper-core = { version = "0.1.0", path = "../dipper-core", features = ["serde"] }
+jsonrpsee = { workspace = true, features = ["client", "macros", "server"] }
+serde.workspace = true
+serde_with.workspace = true
+thegraph-core = { workspace = true, features = ["alloy-eip712", "alloy-signers", "alloy-sol-types", "serde"] }
+time = { workspace = true, features = ["formatting", "parsing", "serde"] }

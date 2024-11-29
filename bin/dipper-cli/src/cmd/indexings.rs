@@ -2,10 +2,8 @@ use std::str::FromStr;
 
 use anyhow::anyhow;
 use clap::{arg, command, value_parser, Command};
-use dipper_core::{
-    ids::IndexingRequestId, rpc::indexing_requests::CancelIndexingRequest,
-    signed_message::signing::sign,
-};
+use dipper_core::{ids::IndexingRequestId, signed_message::signing::sign};
+use dipper_rpc::admin::indexing_requests::CancelIndexingRequest;
 use thegraph_core::{DeploymentId, SubgraphId};
 use uuid::Uuid;
 

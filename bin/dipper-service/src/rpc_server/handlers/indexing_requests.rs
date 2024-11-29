@@ -1,19 +1,15 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
-use dipper_core::{
-    ids::IndexingRequestId,
-    rpc::indexing_requests::{
-        AdminIndexingRequestsRpcServer, CancelIndexingRequest, IndexingRequest,
-        IndexingRequestStatus, IndexingRequestsRpcServer, NewIndexingRequest,
-    },
-    signed_message::serde::SignedMessage,
-    state::FromState,
-};
+use dipper_core::{ids::IndexingRequestId, signed_message::serde::SignedMessage, state::FromState};
 use dipper_pgmq::queue::Queue;
 use dipper_registry::{
     Error as RegistryError, IndexingRequest as IndexingRequestRecord,
     IndexingRequestStatus as IndexingRequestRecordStatus, Registry,
+};
+use dipper_rpc::admin::indexing_requests::{
+    AdminIndexingRequestsRpcServer, CancelIndexingRequest, IndexingRequest, IndexingRequestStatus,
+    IndexingRequestsRpcServer, NewIndexingRequest,
 };
 use jsonrpsee::core::RpcResult;
 use thegraph_core::{alloy::primitives::Address, DeploymentId};

@@ -1,15 +1,14 @@
 use std::time::Duration;
 
+use dipper_core::{
+    ids::{IndexingAgreementId, IndexingRequestId},
+    signed_message::{serde::SignedMessage, ToSolStruct},
+};
 use jsonrpsee::{client_transport::ws::Url, core::RpcResult, proc_macros::rpc};
 use serde::Serializer;
 use serde_with::serde_as;
 use thegraph_core::{DeploymentId, IndexerId};
 use time::OffsetDateTime;
-
-use crate::{
-    ids::{IndexingAgreementId, IndexingRequestId},
-    signed_message::{serde::SignedMessage, ToSolStruct},
-};
 
 /// The _indexing agreement_ RPC methods
 #[rpc(server, client)]

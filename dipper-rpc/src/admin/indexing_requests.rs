@@ -1,11 +1,10 @@
-use jsonrpsee::{core::RpcResult, proc_macros::rpc};
-use thegraph_core::{alloy::primitives::Address, DeploymentId};
-use time::OffsetDateTime;
-
-use crate::{
+use dipper_core::{
     ids::IndexingRequestId,
     signed_message::{serde::SignedMessage, ToSolStruct},
 };
+use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+use thegraph_core::{alloy::primitives::Address, DeploymentId};
+use time::OffsetDateTime;
 
 /// The _indexing requests_ RPC methods
 #[rpc(server, client)]
