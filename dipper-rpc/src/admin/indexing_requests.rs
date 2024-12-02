@@ -27,11 +27,7 @@ pub trait IndexingRequestsRpc {
         &self,
         deployment_id: DeploymentId,
     ) -> RpcResult<Vec<IndexingRequest>>;
-}
 
-/// The _indexing requests_ admin RPC methods
-#[rpc(server, client)]
-pub trait AdminIndexingRequestsRpc {
     /// Register a new _indexing request_
     #[method(name = "register_new_indexing_request")]
     async fn register_new_indexing_request(
