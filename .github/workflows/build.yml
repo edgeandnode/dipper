@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Prepare build env
-        run: sudo apt-get install -y lld
+        run: sudo apt-get install -y lld protobuf-compiler
 
       - name: Set up Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@11df97af8e8102fd60b60a77dfbf58d40cd843b8 # v1
