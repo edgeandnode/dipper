@@ -8,8 +8,8 @@ use dipper_registry::{
     IndexingRequestStatus as IndexingRequestRecordStatus, Registry,
 };
 use dipper_rpc::admin::indexing_requests::{
-    AdminIndexingRequestsRpcServer, CancelIndexingRequest, IndexingRequest, IndexingRequestStatus,
-    IndexingRequestsRpcServer, NewIndexingRequest,
+    CancelIndexingRequest, IndexingRequest, IndexingRequestStatus, IndexingRequestsRpcServer,
+    NewIndexingRequest,
 };
 use jsonrpsee::core::RpcResult;
 use thegraph_core::{alloy::primitives::Address, DeploymentId};
@@ -23,37 +23,47 @@ use crate::{
 /// The substate for the [`IndexingRequestsRpc`] handler
 ///
 /// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
-pub struct IndexingRequestsCtx<R> {
+pub struct IndexingRequestsCtx<R, W> {
+    signer: Arc<PrivateKeyEip712Signer>,
+    allowlist: Arc<BTreeSet<Address>>,
     registry: R,
+    worker: W,
+    max_candidates: usize,
 }
 
-impl<R, W> FromState<Ctx<R, W>> for IndexingRequestsCtx<R>
+impl<R, W> FromState<Ctx<R, W>> for IndexingRequestsCtx<R, W>
 where
     R: Clone,
+    W: Clone,
 {
     fn from_state(ctx: &Ctx<R, W>) -> Self {
         Self {
+            signer: ctx.signer.clone(),
+            allowlist: ctx.allowlist.clone(),
             registry: ctx.registry.clone(),
+            worker: ctx.worker.clone(),
+            max_candidates: ctx.max_candidates,
         }
     }
 }
 
-pub struct IndexingRequestsRpcServerImpl<R>(IndexingRequestsCtx<R>);
+pub struct IndexingRequestsRpcServerImpl<R, W>(IndexingRequestsCtx<R, W>);
 
-impl<R> IndexingRequestsRpcServerImpl<R> {
+impl<R, W> IndexingRequestsRpcServerImpl<R, W> {
     /// Create a new instance of the `IndexingRequestsRpcServerImpl` with the given context
     pub fn with_context<C>(ctx: &C) -> Self
     where
-        IndexingRequestsCtx<R>: FromState<C>,
+        IndexingRequestsCtx<R, W>: FromState<C>,
     {
         Self(FromState::from_state(ctx))
     }
 }
 
 #[async_trait]
-impl<R> IndexingRequestsRpcServer for IndexingRequestsRpcServerImpl<R>
+impl<R, W> IndexingRequestsRpcServer for IndexingRequestsRpcServerImpl<R, W>
 where
     R: Registry + Clone + Send + Sync + 'static,
+    W: Queue<Message> + Clone + Send + Sync + 'static,
 {
     async fn get_all_indexing_requests(&self) -> RpcResult<Vec<IndexingRequest>> {
         let indexing_requests = match self.registry.get_all_indexing_requests().await {
@@ -107,61 +117,7 @@ where
 
         Ok(indexing_request)
     }
-}
 
-impl<R> std::ops::Deref for IndexingRequestsRpcServerImpl<R> {
-    type Target = IndexingRequestsCtx<R>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// The substate for the new indexing request handler
-///
-/// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
-pub struct AdminIndexingRequestsCtx<R, W> {
-    signer: Arc<PrivateKeyEip712Signer>,
-    allowlist: Arc<BTreeSet<Address>>,
-    registry: R,
-    worker: W,
-    max_candidates: usize,
-}
-
-impl<R, W> FromState<Ctx<R, W>> for AdminIndexingRequestsCtx<R, W>
-where
-    R: Clone,
-    W: Clone,
-{
-    fn from_state(ctx: &Ctx<R, W>) -> Self {
-        Self {
-            signer: ctx.signer.clone(),
-            allowlist: ctx.allowlist.clone(),
-            registry: ctx.registry.clone(),
-            worker: ctx.worker.clone(),
-            max_candidates: ctx.max_candidates,
-        }
-    }
-}
-
-pub struct AdminIndexingRequestsRpcServerImpl<R, W>(AdminIndexingRequestsCtx<R, W>);
-
-impl<R, W> AdminIndexingRequestsRpcServerImpl<R, W> {
-    /// Create a new instance of the `AdminIndexingRequestsRpcServerImpl` with the given context
-    pub fn with_context<C>(ctx: &C) -> Self
-    where
-        AdminIndexingRequestsCtx<R, W>: FromState<C>,
-    {
-        Self(FromState::from_state(ctx))
-    }
-}
-
-#[async_trait]
-impl<R, W> AdminIndexingRequestsRpcServer for AdminIndexingRequestsRpcServerImpl<R, W>
-where
-    R: Registry + Clone + Send + Sync + 'static,
-    W: Queue<Message> + Clone + Send + Sync + 'static,
-{
     async fn register_new_indexing_request(
         &self,
         req: SignedMessage<NewIndexingRequest>,
@@ -288,8 +244,8 @@ where
     }
 }
 
-impl<R, W> std::ops::Deref for AdminIndexingRequestsRpcServerImpl<R, W> {
-    type Target = AdminIndexingRequestsCtx<R, W>;
+impl<R, W> std::ops::Deref for IndexingRequestsRpcServerImpl<R, W> {
+    type Target = IndexingRequestsCtx<R, W>;
 
     fn deref(&self) -> &Self::Target {
         &self.0

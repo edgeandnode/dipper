@@ -12,8 +12,8 @@ use dipper_registry::{
     IndexingAgreementStatus as IndexingAgreementRecordStatus, Registry,
 };
 use dipper_rpc::admin::indexing_agreements::{
-    AdminIndexingAgreementsRpcServer, CancelIndexingAgreement, IndexingAgreement,
-    IndexingAgreementsRpcServer, Status as IndexingAgreementStatus,
+    CancelIndexingAgreement, IndexingAgreement, IndexingAgreementsRpcServer,
+    Status as IndexingAgreementStatus,
 };
 use jsonrpsee::core::RpcResult;
 use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId};
@@ -27,35 +27,42 @@ use crate::{
 /// The substate for the [`IndexingAgreementsRpc`] handler
 ///
 /// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
-pub struct IndexingAgreementsCtx<R> {
+pub struct IndexingAgreementsCtx<R, W> {
+    signer: Arc<PrivateKeyEip712Signer>,
+    allowlist: Arc<BTreeSet<Address>>,
     registry: R,
+    worker: W,
 }
 
-impl<R, W> FromState<Ctx<R, W>> for IndexingAgreementsCtx<R>
+impl<R, W> FromState<Ctx<R, W>> for IndexingAgreementsCtx<R, W>
 where
     R: Clone,
+    W: Clone,
 {
     fn from_state(ctx: &Ctx<R, W>) -> Self {
         Self {
+            signer: ctx.signer.clone(),
+            allowlist: ctx.allowlist.clone(),
             registry: ctx.registry.clone(),
+            worker: ctx.worker.clone(),
         }
     }
 }
 
-pub struct IndexingAgreementsRpcServerImpl<R>(IndexingAgreementsCtx<R>);
+pub struct IndexingAgreementsRpcServerImpl<R, W>(IndexingAgreementsCtx<R, W>);
 
-impl<R> IndexingAgreementsRpcServerImpl<R> {
+impl<R, W> IndexingAgreementsRpcServerImpl<R, W> {
     /// Create a new instance of the `IndexingAgreementsRpcServerImpl` with the given context
     pub fn with_context<C>(ctx: &C) -> Self
     where
-        IndexingAgreementsCtx<R>: FromState<C>,
+        IndexingAgreementsCtx<R, W>: FromState<C>,
     {
         Self(FromState::from_state(ctx))
     }
 }
 
-impl<R> std::ops::Deref for IndexingAgreementsRpcServerImpl<R> {
-    type Target = IndexingAgreementsCtx<R>;
+impl<R, W> std::ops::Deref for IndexingAgreementsRpcServerImpl<R, W> {
+    type Target = IndexingAgreementsCtx<R, W>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -63,9 +70,10 @@ impl<R> std::ops::Deref for IndexingAgreementsRpcServerImpl<R> {
 }
 
 #[async_trait]
-impl<R> IndexingAgreementsRpcServer for IndexingAgreementsRpcServerImpl<R>
+impl<R, W> IndexingAgreementsRpcServer for IndexingAgreementsRpcServerImpl<R, W>
 where
     R: Registry + Clone + Send + Sync + 'static,
+    W: Queue<Message> + Clone + Send + Sync + 'static,
 {
     async fn get_agreement_by_id(
         &self,
@@ -150,59 +158,7 @@ where
 
         Ok(indexing_agreements)
     }
-}
 
-/// The substate for the [`AdminIndexingAgreementsRpc`] handler
-///
-/// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
-pub struct AdminIndexingAgreementsCtx<R, W> {
-    signer: Arc<PrivateKeyEip712Signer>,
-    allowlist: Arc<BTreeSet<Address>>,
-    registry: R,
-    worker: W,
-}
-
-impl<R, W> FromState<Ctx<R, W>> for AdminIndexingAgreementsCtx<R, W>
-where
-    R: Clone,
-    W: Clone,
-{
-    fn from_state(ctx: &Ctx<R, W>) -> Self {
-        Self {
-            signer: ctx.signer.clone(),
-            allowlist: ctx.allowlist.clone(),
-            registry: ctx.registry.clone(),
-            worker: ctx.worker.clone(),
-        }
-    }
-}
-
-pub struct AdminIndexingAgreementsRpcServerImpl<R, W>(AdminIndexingAgreementsCtx<R, W>);
-
-impl<R, W> AdminIndexingAgreementsRpcServerImpl<R, W> {
-    /// Create a new instance of the `AdminIndexingAgreementsRpcServerImpl` with the given context
-    pub fn with_context<C>(ctx: &C) -> Self
-    where
-        AdminIndexingAgreementsCtx<R, W>: FromState<C>,
-    {
-        Self(FromState::from_state(ctx))
-    }
-}
-
-impl<R, W> std::ops::Deref for AdminIndexingAgreementsRpcServerImpl<R, W> {
-    type Target = AdminIndexingAgreementsCtx<R, W>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-#[async_trait]
-impl<R, W> AdminIndexingAgreementsRpcServer for AdminIndexingAgreementsRpcServerImpl<R, W>
-where
-    R: Registry + Clone + Send + Sync + 'static,
-    W: Queue<Message> + Clone + Send + Sync + 'static,
-{
     async fn cancel_indexing_agreement(
         &self,
         req: SignedMessage<CancelIndexingAgreement>,
@@ -252,89 +208,6 @@ where
             .await
         {
             tracing::error!(error=?err, "Failed to queue task: 'process_indexing_agreement_requester_cancellation'");
-            // return Err(StatusCode::INTERNAL_ERROR);
-            todo!("Return error")
-        };
-
-        Ok(())
-    }
-}
-
-pub struct IndexerIndexingAgreementsRpcServerImpl<R, W>(AdminIndexingAgreementsCtx<R, W>);
-
-impl<R, W> IndexerIndexingAgreementsRpcServerImpl<R, W> {
-    /// Create a new instance of the `IndexerIndexingAgreementsRpcServerImpl` with the given context
-    pub fn with_context<C>(ctx: &C) -> Self
-    where
-        AdminIndexingAgreementsCtx<R, W>: FromState<C>,
-    {
-        Self(FromState::from_state(ctx))
-    }
-}
-
-impl<R, W> std::ops::Deref for IndexerIndexingAgreementsRpcServerImpl<R, W> {
-    type Target = AdminIndexingAgreementsCtx<R, W>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-#[async_trait]
-impl<R, W> AdminIndexingAgreementsRpcServer for IndexerIndexingAgreementsRpcServerImpl<R, W>
-where
-    R: Registry + Clone + Send + Sync + 'static,
-    W: Queue<Message> + Clone + Send + Sync + 'static,
-{
-    async fn cancel_indexing_agreement(
-        &self,
-        req: SignedMessage<CancelIndexingAgreement>,
-    ) -> RpcResult<()> {
-        // Check if the signer is authorized to make this request
-        let requested_by = match self.signer.recover_signer(&req) {
-            Ok(requested_by) => requested_by,
-            Err(err) => {
-                tracing::debug!(error=?err, "Failed to recover signer");
-                // return Err(StatusCode::UNAUTHORIZED);
-                todo!("Return error");
-            }
-        };
-        if !self.allowlist.contains(&requested_by) {
-            // return Err(StatusCode::FORBIDDEN);
-            todo!("Return error");
-        }
-
-        let CancelIndexingAgreement { id: agreement_id } = req.into_message();
-
-        // Check if the agreement exists
-        match self
-            .registry
-            .get_indexing_agreement_by_id(agreement_id)
-            .await
-        {
-            Ok(None) => {
-                // return Err(StatusCode::NOT_FOUND);
-                todo!("Return error");
-            }
-            Err(err) => {
-                tracing::error!(error=?err, "Failed to get indexing agreement");
-                // return Err(StatusCode::INTERNAL_ERROR);
-                todo!("Return error");
-            }
-            _ => {
-                // The agreement exists, proceed with cancellation
-            }
-        }
-
-        // Process the indexing request cancellation
-        if let Err(err) = self
-            .worker
-            .push(Message::ProcessIndexingAgreementIndexerCancellation(
-                ProcessIndexingAgreementCancellation { agreement_id },
-            ))
-            .await
-        {
-            tracing::error!(error=?err, "Failed to queue task: 'process_indexing_agreement_indexer_cancellation'");
             // return Err(StatusCode::INTERNAL_ERROR);
             todo!("Return error")
         };

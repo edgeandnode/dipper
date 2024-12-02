@@ -8,12 +8,7 @@ use thegraph_core::{DeploymentId, SubgraphId};
 use uuid::Uuid;
 
 use super::common;
-use crate::{
-    client,
-    client::{AdminIndexingRequestsRpcClient, IndexingRequestsRpcClient},
-    config::Config,
-    signer,
-};
+use crate::{client, client::IndexingRequestsRpcClient, config::Config, signer};
 
 /// The `indexings list` command
 ///

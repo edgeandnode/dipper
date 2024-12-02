@@ -40,11 +40,7 @@ pub trait IndexingAgreementsRpc {
         &self,
         request_id: IndexingRequestId,
     ) -> RpcResult<Vec<IndexingAgreement>>;
-}
 
-/// The _indexing agreement_ admin RPC methods
-#[rpc(server, client)]
-pub trait AdminIndexingAgreementsRpc {
     /// Cancel an _indexing agreement_
     #[method(name = "cancel_indexing_agreement")]
     async fn cancel_indexing_agreement(
