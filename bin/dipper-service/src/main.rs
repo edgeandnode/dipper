@@ -15,6 +15,7 @@ use self::{network::Snapshot, signer::Eip712Signer};
 
 mod admin_rpc_server;
 mod config;
+mod indexer_rpc_server;
 mod indexers;
 mod network;
 mod signer;
@@ -179,7 +180,23 @@ pub async fn main() -> anyhow::Result<()> {
     };
     tracing::info!("initialized Admin RPC service");
 
-    //- TODO: The indexer RPC service
+    //- The indexer RPC service
+    let (indexer_rpc_handle, indexer_rpc_service) = {
+        let context = indexer_rpc_server::CtxBuilder::new()
+            .with_worker(queue.clone())
+            .with_registry(registry.clone())
+            .with_network(network_provider.clone())
+            .with_allowlist(conf.indexer_rpc.allowlist)
+            .with_signer(signer.clone())
+            .build();
+
+        let config = indexer_rpc_server::service::Config {
+            listen_addr: conf.indexer_rpc.listen_addr,
+        };
+
+        indexer_rpc_server::service::new(config, context)
+    };
+    tracing::info!("initialized Admin RPC service");
 
     // Construct the task tree
     let mut task_tree: JoinSet<anyhow::Result<()>> = JoinSet::new();
@@ -196,6 +213,9 @@ pub async fn main() -> anyhow::Result<()> {
     let admin_rpc_task_handle = task_tree.spawn(admin_rpc_service);
     tracing::debug!(task_id=%admin_rpc_task_handle.id(), "Admin RPC service started");
 
+    let indexer_rpc_task_handle = task_tree.spawn(indexer_rpc_service);
+    tracing::debug!(task_id=%indexer_rpc_task_handle.id(), "Indexer RPC service started");
+
     let signal_handler_task_handle = task_tree.spawn(async move {
         let signal = signal_task().await;
         match signal {
@@ -211,6 +231,10 @@ pub async fn main() -> anyhow::Result<()> {
         //
         // Services are stopped in the reverse order of their dependencies. This is to ensure that
         // the services that depend on other services are stopped first
+        tracing::trace!("stopping Indexer RPC service");
+        indexer_rpc_handle.stop().await;
+        tracing::trace!("stopped Indexer RPC service");
+
         tracing::trace!("stopping Admin RPC service");
         admin_rpc_handle.stop().await;
         tracing::trace!("stopped Admin RPC service");

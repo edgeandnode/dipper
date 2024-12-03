@@ -60,6 +60,14 @@ macro_rules! uuid_new_type_impls {
             }
         }
 
+        impl TryFrom<&[u8]> for $name {
+            type Error = ::uuid::Error;
+
+            fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+                Ok(Self(::uuid::Uuid::from_slice(bytes)?))
+            }
+        }
+
         impl std::ops::Deref for $name {
             type Target = ::uuid::Uuid;
 

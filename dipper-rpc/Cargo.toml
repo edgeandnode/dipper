@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow.workspace = true
 dipper-core = { version = "0.1.0", path = "../dipper-core", features = ["serde"] }
 jsonrpsee = { workspace = true, features = ["client", "macros", "server"] }
 prost = "0.13.4"

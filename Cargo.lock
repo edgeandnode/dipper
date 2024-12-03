@@ -1878,6 +1878,7 @@ dependencies = [
 name = "dipper-rpc"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "dipper-core",
  "jsonrpsee",
  "prost",
@@ -1917,6 +1918,7 @@ dependencies = [
  "thiserror 2.0.3",
  "time",
  "tokio",
+ "tonic",
  "tracing",
  "tracing-subscriber",
  "url",

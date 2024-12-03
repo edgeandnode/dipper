@@ -1,4 +1,4 @@
-//! The Admin CLI RPC server.
+//! The indexer-facing RPC server.
 mod context;
 mod handlers;
 pub mod service;
