@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use dipper_core::{
     ids::{IndexingAgreementId, IndexingRequestId},
     signed_message::{serde::SignedMessage, ToSolStruct},
@@ -102,7 +100,7 @@ pub struct IndexingAgreement {
     pub indexer_url: Url,
 
     /// The agreement duration.
-    pub duration: Duration,
+    pub duration_epochs: u32,
 }
 
 /// The status of the [`IndexingAgreement`].

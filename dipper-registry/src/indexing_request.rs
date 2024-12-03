@@ -7,8 +7,10 @@
 use std::convert::Infallible;
 
 use dipper_core::ids::IndexingRequestId;
-use sqlx::{postgres::PgRow, Error, Row as _};
-use thegraph_core::{alloy::primitives::Address, DeploymentId};
+use thegraph_core::{
+    alloy::primitives::{Address, ChainId},
+    DeploymentId,
+};
 use time::OffsetDateTime;
 
 /// An Indexing Request represents the request for indexing services initiated by the customer.
@@ -38,6 +40,9 @@ pub struct IndexingRequest {
 
     /// The Subgraph deployment ID.
     pub deployment_id: DeploymentId,
+
+    /// The Subgraph deployment chain ID.
+    pub deployment_chain_id: ChainId,
 }
 
 impl IndexingRequest {
@@ -45,14 +50,19 @@ impl IndexingRequest {
     ///
     /// The request is created with the status [`Status::Open`],
     /// the creation and update times are set to the current time.
-    pub fn new(requested_by: Address, deployment_id: DeploymentId) -> Self {
+    pub fn new(
+        requested_by: Address,
+        deployment_id: DeploymentId,
+        deployment_chain_id: ChainId,
+    ) -> Self {
         Self {
             id: IndexingRequestId::new(),
             created_at: OffsetDateTime::now_utc(),
             updated_at: OffsetDateTime::now_utc(),
+            status: Default::default(),
             requested_by,
             deployment_id,
-            status: Default::default(),
+            deployment_chain_id,
         }
     }
 
@@ -60,41 +70,6 @@ impl IndexingRequest {
     pub fn mark_as_canceled(&mut self) {
         self.status = Status::Canceled;
         self.updated_at = OffsetDateTime::now_utc();
-    }
-}
-
-impl sqlx::FromRow<'_, PgRow> for IndexingRequest {
-    fn from_row(row: &'_ PgRow) -> Result<Self, Error> {
-        // Parse the status column
-        let status = {
-            let status: i32 = row.try_get("status")?;
-            status.into()
-        };
-
-        // Parse the requested by column
-        let requested_by = {
-            let requested_by: String = row.try_get("requested_by")?;
-            requested_by
-                .parse()
-                .map_err(|err| Error::Decode(Box::new(err)))
-        }?;
-
-        // Parse the deployment ID column
-        let deployment_id = {
-            let deployment_id: String = row.try_get("deployment_id")?;
-            deployment_id
-                .parse()
-                .map_err(|err| Error::Decode(Box::new(err)))
-        }?;
-
-        Ok(Self {
-            id: row.try_get("id")?,
-            created_at: row.try_get("created_at")?,
-            updated_at: row.try_get("updated_at")?,
-            status,
-            requested_by,
-            deployment_id,
-        })
     }
 }
 
@@ -109,8 +84,8 @@ impl sqlx::FromRow<'_, PgRow> for IndexingRequest {
     PartialOrd,
     Hash,
     Default,
-    sqlx::Type,
     num_derive::FromPrimitive,
+    num_derive::ToPrimitive,
 )]
 #[repr(i32)]
 pub enum Status {
@@ -133,12 +108,6 @@ pub enum Status {
 
     /// The indexing request is in an unknown state.
     Unknown = i32::MAX,
-}
-
-impl From<i32> for Status {
-    fn from(value: i32) -> Self {
-        num_traits::FromPrimitive::from_i32(value).unwrap_or(Status::Unknown)
-    }
 }
 
 impl std::fmt::Display for Status {

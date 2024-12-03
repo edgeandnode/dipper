@@ -150,19 +150,22 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeSet, sync::Arc, time::Duration};
+    use std::{collections::BTreeSet, sync::Arc};
 
     use async_trait::async_trait;
     use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
     use dipper_pgmq::queue::{Job, Queue};
-    use dipper_registry::{Error, IndexingAgreement, IndexingReceipt, IndexingRequest, Registry};
+    use dipper_registry::{
+        Error, IndexingAgreement, IndexingAgreementVoucher, IndexingReceipt,
+        IndexingReceiptReportedWork, IndexingRequest, Registry,
+    };
     use thegraph_core::{
         alloy::{
-            primitives::{address, b256},
+            primitives::{address, b256, ChainId, U256},
             signers::local::PrivateKeySigner,
             sol_types::{eip712_domain, private::Address},
         },
-        AllocationId, DeploymentId, IndexerId, ProofOfIndexing,
+        DeploymentId, IndexerId,
     };
     use time::OffsetDateTime;
     use url::Url;
@@ -179,6 +182,7 @@ mod tests {
             &self,
             _requested_by: Address,
             _deployment_id: DeploymentId,
+            _deployment_chain_id: ChainId,
         ) -> Result<IndexingRequestId, Error> {
             unimplemented!()
         }
@@ -225,9 +229,10 @@ mod tests {
         async fn register_new_indexing_agreement(
             &self,
             _request_id: IndexingRequestId,
+            _deployment_id: DeploymentId,
             _indexer_id: IndexerId,
             _indexer_url: Url,
-            _duration: Duration,
+            _voucher: IndexingAgreementVoucher,
         ) -> Result<IndexingAgreementId, Error> {
             unimplemented!()
         }
@@ -305,8 +310,10 @@ mod tests {
         async fn register_new_indexing_receipt(
             &self,
             _agreement_id: IndexingAgreementId,
-            _allocation_id: AllocationId,
-            _fee: i64,
+            _indexer_id: IndexerId,
+            _indexer_operator_id: Address,
+            _reported_work: IndexingReceiptReportedWork,
+            _amount: U256,
         ) -> Result<IndexingReceiptId, Error> {
             unimplemented!()
         }
@@ -318,18 +325,10 @@ mod tests {
             unimplemented!()
         }
 
-        async fn get_indexing_receipt_by_allocation_id(
+        async fn get_indexing_receipt_by_indexer_id(
             &self,
-            _allocation_id: &AllocationId,
+            _indexer_id: &IndexerId,
         ) -> Result<Option<IndexingReceipt>, Error> {
-            unimplemented!()
-        }
-
-        async fn redeem_indexing_receipt(
-            &self,
-            _allocation_id: AllocationId,
-            _poi: ProofOfIndexing,
-        ) -> Result<(), Error> {
             unimplemented!()
         }
     }

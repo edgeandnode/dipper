@@ -1,14 +1,14 @@
-use std::time::Duration;
-
 use async_trait::async_trait;
 use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
 use thegraph_core::{
-    alloy::primitives::Address, AllocationId, DeploymentId, IndexerId, ProofOfIndexing,
+    alloy::primitives::{Address, ChainId, U256},
+    DeploymentId, IndexerId,
 };
 use url::Url;
 
 use super::{
-    indexing_agreement::IndexingAgreement, indexing_receipt::IndexingReceipt,
+    indexing_agreement::{IndexingAgreement, Voucher},
+    indexing_receipt::{IndexingReceipt, ReportedWork},
     indexing_request::IndexingRequest,
 };
 
@@ -30,11 +30,11 @@ pub trait Registry {
     /// Register a new indexing request.
     ///
     /// If successful, the method returns the ID of the newly created indexing request.
-    // TODO: Add price limit parameter
     async fn register_new_indexing_request(
         &self,
         requested_by: Address,
         deployment_id: DeploymentId,
+        deployment_chain_id: ChainId,
     ) -> Result<IndexingRequestId, Error>;
 
     /// Get all indexing requests.
@@ -81,9 +81,10 @@ pub trait Registry {
     async fn register_new_indexing_agreement(
         &self,
         request_id: IndexingRequestId,
+        deployment_id: DeploymentId,
         indexer_id: IndexerId,
         indexer_url: Url,
-        duration: Duration,
+        voucher: Voucher,
     ) -> Result<IndexingAgreementId, Error>;
 
     /// Get agreement by ID.
@@ -169,8 +170,10 @@ pub trait Registry {
     async fn register_new_indexing_receipt(
         &self,
         agreement_id: IndexingAgreementId,
-        allocation_id: AllocationId,
-        fee: i64, // TODO: Review fee field
+        indexer_id: IndexerId,
+        indexer_operator_id: Address,
+        reported_work: ReportedWork,
+        amount: U256,
     ) -> Result<IndexingReceiptId, Error>;
 
     /// Get all indexing receipts by indexing agreement ID.
@@ -179,19 +182,9 @@ pub trait Registry {
         agreement_id: &IndexingAgreementId,
     ) -> Result<Vec<IndexingReceipt>, Error>;
 
-    /// Get the indexing receipt by the given allocation ID.
-    async fn get_indexing_receipt_by_allocation_id(
+    /// Get the indexing receipt by the given indexer ID.
+    async fn get_indexing_receipt_by_indexer_id(
         &self,
-        allocation_id: &AllocationId,
+        indexer_id: &IndexerId,
     ) -> Result<Option<IndexingReceipt>, Error>;
-
-    /// Redeem an indexing receipt by providing the Proof-of-Indexing (POI).
-    ///
-    /// If the receipt is not found, or if the receipt is already redeemed, this method returns a
-    /// [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
-    async fn redeem_indexing_receipt(
-        &self,
-        allocation_id: AllocationId,
-        poi: ProofOfIndexing,
-    ) -> Result<(), Error>;
 }

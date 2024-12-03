@@ -3,7 +3,10 @@ use dipper_core::{
     signed_message::{serde::SignedMessage, ToSolStruct},
 };
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
-use thegraph_core::{alloy::primitives::Address, DeploymentId};
+use thegraph_core::{
+    alloy::primitives::{Address, ChainId},
+    DeploymentId,
+};
 use time::OffsetDateTime;
 
 /// The _indexing requests_ RPC methods
@@ -48,6 +51,8 @@ pub trait IndexingRequestsRpc {
 pub struct NewIndexingRequest {
     /// The deployment ID of the subgraph that should be indexed
     pub deployment_id: DeploymentId,
+    /// The chain ID of the subgraph that should be indexed
+    pub deployment_chain_id: ChainId,
 }
 
 impl ToSolStruct<NewIndexingRequestSol> for NewIndexingRequest {

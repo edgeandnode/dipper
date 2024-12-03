@@ -1,9 +1,17 @@
-use std::time::Duration;
+#![cfg(feature = "fake")]
 
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
-use dipper_registry::{postgres::PgRegistry, Error, IndexingRequestStatus, Registry};
+use dipper_registry::{
+    postgres::PgRegistry, Error, IndexingAgreementVoucher, IndexingReceiptReportedWork,
+    IndexingRequestStatus, Registry,
+};
+use fake::{Fake, Faker};
 use sqlx::{Pool, Postgres};
-use thegraph_core::{allocation_id, alloy::primitives::address, deployment_id, indexer_id};
+use thegraph_core::{
+    alloy::primitives::{address, Address, ChainId, U256},
+    deployment_id, indexer_id, DeploymentId, IndexerId,
+};
+use url::Url;
 use uuid::uuid;
 
 #[test_with::env(DATABASE_URL)]
@@ -11,14 +19,15 @@ use uuid::uuid;
 async fn register_new_indexing_request(db: Pool<Postgres>) -> sqlx::Result<()> {
     //* Given
     // Indexing request
-    let requested_by = address!("8f8c426f956876325b1e037c6eae9b189952994c");
+    let requested_by = Address::from(Faker.fake::<[u8; 20]>());
     let deployment_id = deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv");
+    let deployment_chain_id = Faker.fake::<ChainId>();
 
     let registry = PgRegistry::new(db);
 
     //* When
     let res = registry
-        .register_new_indexing_request(requested_by, deployment_id)
+        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id)
         .await;
 
     //* Then
@@ -232,15 +241,23 @@ async fn register_new_indexing_agreement_no_indexing_request(
     //* Given
     // Indexing agreement
     let indexing_request_id = IndexingRequestId::new(); // Random ID
-    let indexer_id = indexer_id!("3c584ee1d89f43c6ccee17e886a001de2bb4d8a9");
-    let indexer_url = "http://localhost:8020".parse().expect("Invalid URL");
-    let duration = Duration::from_secs(60 * 24 * 60 * 60); // 60 days
+    let deployment_id = Faker.fake::<DeploymentId>();
+    let indexer_id = Faker.fake::<IndexerId>();
+    let indexer_url = Faker.fake::<Url>();
+
+    let agreement_voucher = Faker.fake::<IndexingAgreementVoucher>();
 
     let registry = PgRegistry::new(db);
 
     //* When
     let res = registry
-        .register_new_indexing_agreement(indexing_request_id, indexer_id, indexer_url, duration)
+        .register_new_indexing_agreement(
+            indexing_request_id,
+            deployment_id,
+            indexer_id,
+            indexer_url,
+            agreement_voucher,
+        )
         .await;
 
     //* Then
@@ -256,23 +273,32 @@ async fn register_new_indexing_agreement(db: Pool<Postgres>) -> sqlx::Result<()>
     // Indexing request
     let requested_by = address!("8f8c426f956876325b1e037c6eae9b189952994c");
     let deployment_id = deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv");
+    let deployment_chain_id = 42161; // arbitrum-one (0xa4b1)
 
     // Indexing agreement
     let indexer_id = indexer_id!("3c584ee1d89f43c6ccee17e886a001de2bb4d8a9");
     let indexer_url = "http://localhost:8020".parse().expect("Invalid URL");
-    let duration = Duration::from_secs(60 * 24 * 60 * 60); // 60 days
+
+    // Indexing agreement voucher
+    let agreement_voucher = Faker.fake::<IndexingAgreementVoucher>();
 
     let registry = PgRegistry::new(db);
 
     // Register a new indexing request
     let indexing_request_id = registry
-        .register_new_indexing_request(requested_by, deployment_id)
+        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id)
         .await
         .expect("Failed to register new indexing request");
 
     //* When
     let res = registry
-        .register_new_indexing_agreement(indexing_request_id, indexer_id, indexer_url, duration)
+        .register_new_indexing_agreement(
+            indexing_request_id,
+            deployment_id,
+            indexer_id,
+            indexer_url,
+            agreement_voucher,
+        )
         .await;
 
     //* Then
@@ -290,15 +316,23 @@ async fn register_new_indexing_receipt_no_indexing_agreement(
 ) -> sqlx::Result<()> {
     //* Given
     // Indexing agreement
-    let indexing_agreement_id = IndexingAgreementId::new(); // Random ID
-    let allocation_id = allocation_id!("f349a67a71e5ab13e46216cf11494722440e4bd3");
-    let fee = 100_i64;
+    let indexing_agreement_id = Faker.fake::<IndexingAgreementId>();
+    let indexer_id = Faker.fake::<IndexerId>();
+    let indexer_operator_id = Address::from(Faker.fake::<[u8; 20]>());
+    let reported_work = Faker.fake::<IndexingReceiptReportedWork>();
+    let amount = U256::from_be_bytes(Faker.fake::<[u8; 32]>());
 
     let registry = PgRegistry::new(db);
 
     //* When
     let res = registry
-        .register_new_indexing_receipt(indexing_agreement_id, allocation_id, fee)
+        .register_new_indexing_receipt(
+            indexing_agreement_id,
+            indexer_id,
+            indexer_operator_id,
+            reported_work,
+            amount,
+        )
         .await;
 
     //* Then
@@ -314,33 +348,47 @@ async fn register_new_indexing_receipt(db: Pool<Postgres>) -> sqlx::Result<()> {
     // Indexing request
     let requested_by = address!("8f8c426f956876325b1e037c6eae9b189952994c");
     let deployment_id = deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv");
+    let deployment_chain_id = 42161; // arbitrum-one (0xa4b1)
 
     // Indexing agreement
     let indexer_id = indexer_id!("3c584ee1d89f43c6ccee17e886a001de2bb4d8a9");
     let indexer_url = "http://localhost:8020".parse().expect("Invalid URL");
-    let duration = Duration::from_secs(60 * 24 * 60 * 60); // 60 days
+    let agreement_voucher = Faker.fake::<IndexingAgreementVoucher>();
 
     // Indexing receipt
-    let allocation_id = allocation_id!("f349a67a71e5ab13e46216cf11494722440e4bd3");
-    let fee = 100_i64;
+    let indexer_operator_id = address!("f027cfe07afa186afec8144eb20e53715d7f33b2");
+    let reported_work = Faker.fake::<IndexingReceiptReportedWork>();
+    let amount = U256::from_be_bytes(Faker.fake::<[u8; 32]>());
 
     let registry = PgRegistry::new(db);
 
     // Register a new indexing request
     let indexing_request_id = registry
-        .register_new_indexing_request(requested_by, deployment_id)
+        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id)
         .await
         .expect("Failed to register new indexing request");
 
     // Register a new indexing agreement
     let indexing_agreement_id = registry
-        .register_new_indexing_agreement(indexing_request_id, indexer_id, indexer_url, duration)
+        .register_new_indexing_agreement(
+            indexing_request_id,
+            deployment_id,
+            indexer_id,
+            indexer_url,
+            agreement_voucher,
+        )
         .await
         .expect("Failed to register new indexing agreement");
 
     //* When
     let res = registry
-        .register_new_indexing_receipt(indexing_agreement_id, allocation_id, fee)
+        .register_new_indexing_receipt(
+            indexing_agreement_id,
+            indexer_id,
+            indexer_operator_id,
+            reported_work,
+            amount,
+        )
         .await;
 
     //* Then

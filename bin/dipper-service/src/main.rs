@@ -148,6 +148,8 @@ pub async fn main() -> anyhow::Result<()> {
     //- The worker service
     let (worker_handle, worker_service) = {
         let context = worker::Context {
+            signer: signer.clone(),
+            agreement_conf: Arc::new(conf.dips.into()),
             queue: queue.clone(),
             network: network_provider.clone(),
             registry: registry.clone(),

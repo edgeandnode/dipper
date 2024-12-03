@@ -5,10 +5,9 @@
 //! An indexer must provide the Proof-of-Indexing signed by the one of the allocations.
 
 use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId};
-use sqlx::{postgres::PgRow, Error, Row as _};
 use thegraph_core::{
-    alloy::primitives::{Address, B256},
-    AllocationId, ProofOfIndexing,
+    alloy::primitives::{Address, U256},
+    IndexerId, ProofOfIndexing,
 };
 use time::OffsetDateTime;
 
@@ -18,61 +17,67 @@ use time::OffsetDateTime;
 /// The [`IndexingReceipt`] is as a Data Transfer Object (DTO).
 #[derive(Debug, Clone)]
 pub struct IndexingReceipt {
-    /// The indexing receipt ID
+    /// The _indexing receipt_ ID
     pub id: IndexingReceiptId,
-
-    /// The indexing receipt creation time
+    /// The _indexing receipt_ creation time
     pub created_at: OffsetDateTime,
-
-    /// The indexing receipt update time
+    /// The _indexing receipt_ update time
     pub updated_at: OffsetDateTime,
 
-    /// The indexing agreement associated with the receipt
+    /// The _indexing agreement_ associated with the _indexing receipt_
     pub indexing_agreement_id: IndexingAgreementId,
+    /// The indexer ID that collected the _indexing receipt_
+    pub indexer_id: IndexerId,
+    /// The indexer operator address that collected the _indexing receipt_
+    pub indexer_operator_id: Address,
 
-    /// The allocation address associated with the receipt
-    pub allocation_id: AllocationId,
-
-    /// The indexing receipt fee
-    pub fee: i64, // TODO: Review this 'fee' field
-
-    /// The Proof-Of-Indexing, POI, provided by the indexer when redeeming the receipt
-    ///
-    /// If the POI is present, the receipt is considered redeemed.
-    pub poi: Option<ProofOfIndexing>,
+    /// The work reported by the indexer
+    pub reported_work: ReportedWork,
+    /// The _indexing receipt_ amount in _wei GRT_
+    pub amount: U256,
 }
 
-impl sqlx::FromRow<'_, PgRow> for IndexingReceipt {
-    fn from_row(row: &'_ PgRow) -> Result<Self, Error> {
-        // Parse the allocation ID column
-        let allocation_id = {
-            let allocation_id: String = row.try_get("allocation_id")?;
-            let allocation_id: Address = allocation_id
-                .parse()
-                .map_err(|err| Error::Decode(Box::new(err)))?;
-            AllocationId::new(allocation_id)
-        };
+/// The _indexing receipt_ information reported by the indexer.
+///
+/// It is used to calculate the amount of GRT tokens that the indexer can redeem.
+#[derive(Debug, Clone)]
+pub struct ReportedWork {
+    /// The collection epoch.
+    ///
+    /// This is the epoch timestamp for this collection.
+    pub epoch: u32,
 
-        // Parse the Proof-Of-Indexing column
-        let poi = {
-            let poi: Option<String> = row.try_get("poi")?;
-            match poi {
-                None => None,
-                Some(poi) => {
-                    let poi: B256 = poi.parse().map_err(|err| Error::Decode(Box::new(err)))?;
-                    Some(ProofOfIndexing::new(poi))
-                }
+    /// The number of blocks indexed since the last collection.
+    ///
+    /// This is the number of blocks indexed since the last collection, not the total number of
+    /// blocks indexed.
+    pub blocks: u64,
+
+    /// The number of entities stored.
+    ///
+    /// This is the absolute number of subgraph entities stored, not the number of entities stored
+    /// since the last collection.
+    pub entities: u64,
+
+    /// The Proof-Of-Indexing (POI) provided by the indexer when collecting the _indexing receipt_.
+    pub poi: ProofOfIndexing,
+}
+
+/// The _indexing receipt_ [`fake`] implementation for test data generation.
+#[cfg(feature = "fake")]
+pub mod fake_impl {
+    use fake::{Dummy, Faker, Rng};
+
+    use super::*;
+
+    impl Dummy<Faker> for ReportedWork {
+        fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
+            ReportedWork {
+                epoch: u32::dummy_with_rng(config, rng),
+                blocks: u64::dummy_with_rng(config, rng),
+                entities: u64::dummy_with_rng(config, rng),
+                poi: ProofOfIndexing::dummy_with_rng(config, rng),
             }
-        };
-
-        Ok(Self {
-            id: row.try_get("id")?,
-            created_at: row.try_get("created_at")?,
-            updated_at: row.try_get("updated_at")?,
-            indexing_agreement_id: row.try_get("indexing_agreement_id")?,
-            allocation_id,
-            fee: row.try_get("fee")?,
-            poi,
-        })
+        }
     }
 }
