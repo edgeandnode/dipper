@@ -5,8 +5,8 @@ use dipper_registry::Registry;
 use jsonrpsee::server::Server;
 use tokio::sync::mpsc;
 
-use super::context::Ctx;
-use crate::{rpc_server::handlers::admin_rpc_handlers, worker::messages::Message};
+use super::{context::Ctx, handlers::rpc_handlers};
+use crate::worker::messages::Message;
 
 /// RPC server configuration.
 #[derive(Debug)]
@@ -38,10 +38,7 @@ impl Handle {
 }
 
 /// Create a new Admin RPC server service
-pub fn new_admin_rpc_service<R, W>(
-    conf: Config,
-    ctx: Ctx<R, W>,
-) -> (Handle, impl Future<Output = anyhow::Result<()>>)
+pub fn new<R, W>(conf: Config, ctx: Ctx<R, W>) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
     R: Registry + Clone + Send + Sync + 'static,
     W: Queue<Message> + Clone + Send + Sync + 'static,
@@ -59,7 +56,7 @@ where
             .build(conf.listen_addr)
             .await?;
 
-        let handle = server.start(admin_rpc_handlers(ctx));
+        let handle = server.start(rpc_handlers(ctx));
         let svc_handle = handle.clone();
 
         // Wait for either the server to stop, or a stop signal
