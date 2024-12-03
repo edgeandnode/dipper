@@ -1,19 +1,27 @@
-use std::time::Duration;
-
 use async_trait::async_trait;
 use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
 use sqlx::{Pool, Postgres};
 use thegraph_core::{
-    alloy::primitives::Address, AllocationId, DeploymentId, IndexerId, ProofOfIndexing,
+    alloy::primitives::{Address, ChainId, U256},
+    DeploymentId, IndexerId,
 };
 use url::Url;
 
 use super::{
     api::{Error, Registry},
-    indexing_agreement::{IndexingAgreement, Status as IndexingAgreementStatus},
+    indexing_agreement::{IndexingAgreement, Status as IndexingAgreementStatus, Voucher},
     indexing_receipt::IndexingReceipt,
     indexing_request::{IndexingRequest, Status as IndexingRequestStatus},
+    IndexingReceiptReportedWork,
 };
+use crate::postgres::common::{
+    PgAddress, PgDeploymentId, PgIndexerId, PgProofOfIndexing, PgU256, PgU32, PgU64, PgUrl,
+};
+
+mod common;
+mod indexing_agreement;
+mod indexing_receipt;
+mod indexing_request;
 
 /// A registry that stores indexing requests, agreements, and receipts in a PostgreSQL database.
 #[derive(Clone)]
@@ -34,6 +42,7 @@ impl Registry for PgRegistry {
         &self,
         requested_by: Address,
         deployment_id: DeploymentId,
+        deployment_chain_id: ChainId,
     ) -> Result<IndexingRequestId, Error> {
         sqlx::query_as(
             r#"
@@ -43,16 +52,18 @@ impl Registry for PgRegistry {
                 updated_at,
                 status,
                 requested_by,
-                deployment_id
+                deployment_id,
+                deployment_chain_id
             )
-            VALUES ($1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4)
+            VALUES ($1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, $5)
             RETURNING id
             "#,
         )
         .bind(IndexingRequestId::new())
         .bind(IndexingRequestStatus::default())
-        .bind(format!("{:#x}", requested_by))
-        .bind(format!("{}", deployment_id))
+        .bind(PgAddress(requested_by))
+        .bind(PgDeploymentId(deployment_id))
+        .bind(PgU64(deployment_chain_id))
         .fetch_one(&self.pool)
         .await
         .map(|(id,)| id)
@@ -68,7 +79,8 @@ impl Registry for PgRegistry {
                 updated_at,
                 status,
                 requested_by,
-                deployment_id
+                deployment_id,
+                deployment_chain_id
             FROM dipper_reg_indexing_requests
             "#,
         )
@@ -89,7 +101,8 @@ impl Registry for PgRegistry {
                 updated_at,
                 status,
                 requested_by,
-                deployment_id
+                deployment_id,
+                deployment_chain_id
             FROM dipper_reg_indexing_requests
             WHERE id = $1
             "#,
@@ -197,9 +210,10 @@ impl Registry for PgRegistry {
     async fn register_new_indexing_agreement(
         &self,
         request_id: IndexingRequestId,
+        deployment_id: DeploymentId,
         indexer_id: IndexerId,
         indexer_url: Url,
-        duration: Duration,
+        voucher: Voucher,
     ) -> Result<IndexingAgreementId, Error> {
         sqlx::query_as(
             r#"
@@ -209,20 +223,46 @@ impl Registry for PgRegistry {
                 updated_at,
                 status,
                 indexing_request_id,
+                deployment_id,
                 indexer_id,
                 indexer_url,
-                duration
+
+                voucher_payer,
+                voucher_recipient,
+                voucher_service,
+                voucher_duration_epochs,
+                voucher_max_initial_amount,
+                voucher_max_ongoing_amount_per_epoch,
+                voucher_max_epochs_per_collection,
+                voucher_min_epochs_per_collection,
+                voucher_metadata_deployment_id,
+                voucher_metadata_price_per_block,
+                voucher_metadata_price_per_entity_per_epoch
             )
-            VALUES ($1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, $5, $6)
+            VALUES (
+                $1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, $5, $6,
+                $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+            )
             RETURNING id
             "#,
         )
         .bind(IndexingAgreementId::new())
         .bind(IndexingAgreementStatus::default())
         .bind(request_id)
-        .bind(format!("{:#x}", indexer_id))
-        .bind(indexer_url.as_str())
-        .bind::<i64>(duration.as_secs().try_into().expect("Duration overflow"))
+        .bind(PgDeploymentId(deployment_id))
+        .bind(PgIndexerId(indexer_id))
+        .bind(PgUrl(indexer_url))
+        .bind(PgAddress(voucher.payer))
+        .bind(PgAddress(voucher.recipient))
+        .bind(PgAddress(voucher.service))
+        .bind(PgU32(voucher.duration_epochs))
+        .bind(PgU256(voucher.max_initial_amount))
+        .bind(PgU256(voucher.max_ongoing_amount_per_epoch))
+        .bind(PgU32(voucher.max_epochs_per_collection))
+        .bind(PgU32(voucher.min_epochs_per_collection))
+        .bind(PgDeploymentId(voucher.metadata.deployment_id))
+        .bind(PgU256(voucher.metadata.price_per_block))
+        .bind(PgU256(voucher.metadata.price_per_entity_per_epoch))
         .fetch_one(&self.pool)
         .await
         .map(|(id,)| id)
@@ -441,8 +481,10 @@ impl Registry for PgRegistry {
     async fn register_new_indexing_receipt(
         &self,
         agreement_id: IndexingAgreementId,
-        allocation_id: AllocationId,
-        fee: i64,
+        indexer_id: IndexerId,
+        indexer_operator_id: Address,
+        reported_work: IndexingReceiptReportedWork,
+        amount: U256,
     ) -> Result<IndexingReceiptId, Error> {
         sqlx::query_as(
             r#"
@@ -451,18 +493,30 @@ impl Registry for PgRegistry {
                 created_at,
                 updated_at,
                 indexing_agreement_id,
-                allocation_id,
-                fee,
-                poi
+                indexer_id,
+                indexer_operator_id,
+                reported_work_epoch,
+                reported_work_blocks,
+                reported_work_entities,
+                reported_work_poi,
+                amount
             )
-            VALUES ($1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, NULL)
+            VALUES (
+                $1, timezone('UTC', now()), timezone('UTC', now()),
+                $2, $3, $4, $5, $6, $7, $8, $9
+            )
             RETURNING id
             "#,
         )
         .bind(IndexingReceiptId::new())
         .bind(agreement_id)
-        .bind(format!("{:#x}", allocation_id))
-        .bind(fee)
+        .bind(PgIndexerId(indexer_id))
+        .bind(PgAddress(indexer_operator_id))
+        .bind(PgU32(reported_work.epoch))
+        .bind(PgU64(reported_work.blocks))
+        .bind(PgU64(reported_work.entities))
+        .bind(PgProofOfIndexing(reported_work.poi))
+        .bind(PgU256(amount))
         .fetch_one(&self.pool)
         .await
         .map(|(id,)| id)
@@ -480,9 +534,13 @@ impl Registry for PgRegistry {
                 created_at,
                 updated_at,
                 indexing_agreement_id,
-                allocation_id,
-                fee,
-                poi
+                indexer_id,
+                indexer_operator_id,
+                reported_work_epoch,
+                reported_work_blocks,
+                reported_work_entities,
+                reported_work_poi,
+                amount
             FROM dipper_reg_indexing_receipts
             WHERE indexing_agreement_id = $1
             "#,
@@ -493,9 +551,9 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_indexing_receipt_by_allocation_id(
+    async fn get_indexing_receipt_by_indexer_id(
         &self,
-        allocation_id: &AllocationId,
+        indexer_id: &IndexerId,
     ) -> Result<Option<IndexingReceipt>, Error> {
         sqlx::query_as(
             r#"
@@ -504,44 +562,21 @@ impl Registry for PgRegistry {
                 created_at,
                 updated_at,
                 indexing_agreement_id,
-                allocation_id,
-                fee,
-                poi
+                indexer_id,
+                indexer_operator_id,
+                reported_work_epoch,
+                reported_work_blocks,
+                reported_work_entities,
+                reported_work_poi,
+                amount
             FROM dipper_reg_indexing_receipts
-            WHERE allocation_id = $1
+            WHERE indexer_id = $1
             RETURNING *
             "#,
         )
-        .bind(format!("{:#x}", allocation_id))
+        .bind(PgIndexerId(*indexer_id))
         .fetch_optional(&self.pool)
         .await
         .map_err(Into::into)
-    }
-
-    async fn redeem_indexing_receipt(
-        &self,
-        allocation_id: AllocationId,
-        poi: ProofOfIndexing,
-    ) -> Result<(), Error> {
-        let record: Option<(IndexingReceiptId,)> = sqlx::query_as(
-            r#"
-            UPDATE dipper_reg_indexing_receipts
-            SET
-                poi = $1,
-                updated_at = timezone('UTC', now())
-            WHERE allocation_id = $3 AND poi IS NULL
-            RETURNING id
-            "#,
-        )
-        .bind(format!("{}", poi))
-        .bind(format!("{:#x}", allocation_id))
-        .fetch_optional(&self.pool)
-        .await?;
-
-        if record.is_none() {
-            return Err(Error::NoRecordsUpdated);
-        }
-
-        Ok(())
     }
 }

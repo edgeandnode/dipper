@@ -1,9 +1,11 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use dipper_core::state::FromState;
 use dipper_iisa::{CandidateSelection, Indexer as IndexerCandidate};
 use dipper_pgmq::{queue::Queue, result::JobResult};
-use dipper_registry::{IndexingAgreementStatus, Registry};
+use dipper_registry::{
+    IndexingAgreementStatus, IndexingAgreementVoucher, IndexingAgreementVoucherMetadata, Registry,
+};
 
 use super::{
     context::Context,
@@ -16,12 +18,16 @@ use super::{
 use crate::{
     indexers::{AgreementProposalResponse, DipsClient},
     network::NetworkProvider,
+    signer::PrivateKeyEip712Signer,
+    worker::context::IndexingAgreementConfig,
 };
 
 /// Default agreement duration (60 days).
 const DEFAULT_AGREEMENT_DURATION: Duration = Duration::from_secs(60 * 24 * 60 * 60);
 
 pub(super) struct ProcessNewIndexingRequestState<Q, N, R, I> {
+    signer: Arc<PrivateKeyEip712Signer>,
+    agreement_conf: Arc<IndexingAgreementConfig>,
     queue: Q,
     network: N,
     registry: R,
@@ -37,6 +43,8 @@ where
 {
     fn from_state(state: &Context<Q, N, R, C, I>) -> Self {
         Self {
+            signer: state.signer.clone(),
+            agreement_conf: state.agreement_conf.clone(),
             queue: state.queue.clone(),
             network: state.network.clone(),
             registry: state.registry.clone(),
@@ -47,6 +55,8 @@ where
 
 pub(super) async fn process_new_indexing_request<Q, N, R, I>(
     ProcessNewIndexingRequestState {
+        signer,
+        agreement_conf,
         queue,
         network,
         registry,
@@ -55,6 +65,7 @@ pub(super) async fn process_new_indexing_request<Q, N, R, I>(
     ProcessNewIndexingRequest {
         indexing_request_id,
         deployment_id,
+        deployment_chain_id,
         num_candidates,
     }: ProcessNewIndexingRequest,
 ) -> anyhow::Result<JobResult<()>>
@@ -93,12 +104,34 @@ where
 
     // Create indexing agreements for the selected indexers and register them in the registry
     for candidate in candidates {
+        let voucher_metadata = {
+            let prices = agreement_conf.chain_price(&deployment_chain_id)?;
+            IndexingAgreementVoucherMetadata {
+                deployment_id,
+                price_per_block: prices.price_per_block,
+                price_per_entity_per_epoch: prices.price_per_entity_per_epoch,
+            }
+        };
+
+        let voucher = IndexingAgreementVoucher {
+            payer: signer.address(),
+            recipient: candidate.id.into_inner(),
+            service: agreement_conf.service(),
+            duration_epochs: agreement_conf.duration_epochs(),
+            max_initial_amount: agreement_conf.max_initial_amount(),
+            max_ongoing_amount_per_epoch: agreement_conf.max_ongoing_amount_per_epoch(),
+            max_epochs_per_collection: agreement_conf.max_epochs_per_collection(),
+            min_epochs_per_collection: agreement_conf.min_epochs_per_collection(),
+            metadata: voucher_metadata,
+        };
+
         let agreement_id = registry
             .register_new_indexing_agreement(
                 indexing_request_id,
+                deployment_id,
                 candidate.id,
                 candidate.url.clone(),
-                DEFAULT_AGREEMENT_DURATION,
+                voucher,
             )
             .await?;
 
@@ -109,6 +142,7 @@ where
                     agreement_id,
                     indexing_request_id,
                     deployment_id,
+                    deployment_chain_id,
                     duration: DEFAULT_AGREEMENT_DURATION,
                 },
             ))
@@ -169,7 +203,7 @@ where
         if let Err(err) = queue
             .push(Message::SendIndexingAgreementCancellation(
                 SendIndexingAgreementCancellation {
-                    indexer_url: agreement.indexer_url,
+                    indexer_url: agreement.indexer.url,
                     agreement_id: agreement.id,
                     indexing_request_id,
                 },
@@ -185,6 +219,8 @@ where
 }
 
 pub(super) struct FindIndexerForIndexingRequestState<Q, N, R, I> {
+    signer: Arc<PrivateKeyEip712Signer>,
+    agreement_conf: Arc<IndexingAgreementConfig>,
     queue: Q,
     network: N,
     registry: R,
@@ -201,6 +237,8 @@ where
 {
     fn from_state(state: &Context<Q, N, R, C, I>) -> Self {
         Self {
+            signer: state.signer.clone(),
+            agreement_conf: state.agreement_conf.clone(),
             queue: state.queue.clone(),
             network: state.network.clone(),
             registry: state.registry.clone(),
@@ -211,6 +249,8 @@ where
 
 pub(super) async fn find_indexer_for_indexing_request<Q, N, R, I>(
     FindIndexerForIndexingRequestState {
+        signer,
+        agreement_conf,
         queue,
         network,
         registry,
@@ -219,6 +259,7 @@ pub(super) async fn find_indexer_for_indexing_request<Q, N, R, I>(
     FindIndexerForIndexingRequest {
         indexing_request_id,
         deployment_id,
+        deployment_chain_id,
     }: FindIndexerForIndexingRequest,
 ) -> anyhow::Result<JobResult<()>>
 where
@@ -233,13 +274,13 @@ where
         .get_indexing_request_active_indexing_agreements(&indexing_request_id)
         .await?
         .into_iter()
-        .map(|agreement| agreement.indexer_id)
+        .map(|agreement| agreement.indexer.id)
         .collect::<Vec<_>>();
     let rejected_or_canceled = registry
         .get_indexing_request_rejected_indexing_agreements(&indexing_request_id)
         .await?
         .into_iter()
-        .map(|agreement| agreement.indexer_id)
+        .map(|agreement| agreement.indexer.id)
         .collect::<Vec<_>>();
 
     let indexers = network
@@ -269,13 +310,35 @@ where
         return Ok(JobResult::Ok(()));
     };
 
+    let voucher_metadata = {
+        let prices = agreement_conf.chain_price(&deployment_chain_id)?;
+        IndexingAgreementVoucherMetadata {
+            deployment_id,
+            price_per_block: prices.price_per_block,
+            price_per_entity_per_epoch: prices.price_per_entity_per_epoch,
+        }
+    };
+
+    let voucher = IndexingAgreementVoucher {
+        payer: signer.address(),
+        recipient: candidate.id.into_inner(),
+        service: agreement_conf.service(),
+        duration_epochs: agreement_conf.duration_epochs(),
+        max_initial_amount: agreement_conf.max_initial_amount(),
+        max_ongoing_amount_per_epoch: agreement_conf.max_ongoing_amount_per_epoch(),
+        max_epochs_per_collection: agreement_conf.max_epochs_per_collection(),
+        min_epochs_per_collection: agreement_conf.min_epochs_per_collection(),
+        metadata: voucher_metadata,
+    };
+
     // Create indexing agreements for the selected indexers and register them in the registry
     let agreement_id = registry
         .register_new_indexing_agreement(
             indexing_request_id,
+            deployment_id,
             candidate.id,
             candidate.url.clone(),
-            DEFAULT_AGREEMENT_DURATION,
+            voucher,
         )
         .await?;
 
@@ -287,6 +350,7 @@ where
                 agreement_id,
                 indexing_request_id,
                 deployment_id,
+                deployment_chain_id,
                 duration: DEFAULT_AGREEMENT_DURATION,
             },
         ))
@@ -339,6 +403,7 @@ pub(super) async fn send_indexing_agreement_proposal<Q, R, C>(
         agreement_id,
         indexing_request_id,
         deployment_id,
+        deployment_chain_id,
         duration,
     }: SendIndexingAgreementProposal,
 ) -> anyhow::Result<JobResult<()>>
@@ -401,6 +466,7 @@ where
                         FindIndexerForIndexingRequest {
                             indexing_request_id,
                             deployment_id,
+                            deployment_chain_id,
                         },
                     ))
                     .await
@@ -544,7 +610,7 @@ where
     if let Err(err) = queue
         .push(Message::SendIndexingAgreementCancellation(
             SendIndexingAgreementCancellation {
-                indexer_url: agreement.indexer_url.clone(),
+                indexer_url: agreement.indexer.url.clone(),
                 agreement_id: agreement.id,
                 indexing_request_id: agreement.indexing_request_id,
             },
@@ -570,6 +636,7 @@ where
             FindIndexerForIndexingRequest {
                 indexing_request_id: indexing_request.id,
                 deployment_id: indexing_request.deployment_id,
+                deployment_chain_id: indexing_request.deployment_chain_id,
             },
         ))
         .await
@@ -615,6 +682,7 @@ where
             FindIndexerForIndexingRequest {
                 indexing_request_id: indexing_request.id,
                 deployment_id: indexing_request.deployment_id,
+                deployment_chain_id: indexing_request.deployment_chain_id,
             },
         ))
         .await

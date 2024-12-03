@@ -13,11 +13,11 @@
 //! An Indexer Agreement is created every time the Dipper runs the *Indexing Indexer Selection
 //! Algorithm (IISA)* and finds an indexer to fulfill the *indexing request*.
 
-use std::{str::FromStr, time::Duration};
-
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
-use sqlx::{postgres::PgRow, Error, Row as _};
-use thegraph_core::{alloy::primitives::Address, IndexerId};
+use thegraph_core::{
+    alloy::primitives::{Address, U256},
+    DeploymentId, IndexerId,
+};
 use time::OffsetDateTime;
 use url::Url;
 
@@ -42,53 +42,63 @@ pub struct IndexingAgreement {
     /// The indexing agreement associated indexing request
     pub indexing_request_id: IndexingRequestId,
 
-    /// The indexer's address.
-    pub indexer_id: IndexerId,
+    /// The indexer.
+    pub indexer: Indexer,
 
-    /// The indexer's URL.
-    pub indexer_url: Url,
-
-    /// The agreement duration.
-    pub duration: Duration,
+    /// The agreement voucher.
+    ///
+    /// It contains the agreement terms and conditions.
+    pub voucher: Voucher,
 }
 
-impl sqlx::FromRow<'_, PgRow> for IndexingAgreement {
-    fn from_row(row: &'_ PgRow) -> Result<Self, Error> {
-        // Parse the indexer ID column
-        let indexer_id = {
-            let indexer_id: String = row.try_get("indexer_id")?;
-            let indexer_id: Address = indexer_id
-                .parse()
-                .map_err(|err| Error::Decode(Box::new(err)))?;
-            IndexerId::new(indexer_id)
-        };
+/// The _indexing agreement_ indexer information.
+#[derive(Debug, Clone)]
+pub struct Indexer {
+    /// The indexer's ID (ETH address).
+    pub id: IndexerId,
+    /// The indexer's URL.
+    pub url: Url,
+}
 
-        // Parse the indexer URL column
-        let indexer_url = {
-            let indexer_url: String = row.try_get("indexer_url")?;
-            Url::from_str(&indexer_url).map_err(|err| Error::Decode(Box::new(err)))?
-        };
+/// The _indexing agreement_ proposal voucher.
+#[derive(Debug, Clone)]
+pub struct Voucher {
+    /// The agreement payer.
+    ///
+    /// It should coincide with the voucher signer address.
+    pub payer: Address,
+    /// The voucher recipient address. The indexer ID.
+    pub recipient: Address,
+    /// Data service that will initiate the payment collection.
+    pub service: Address,
 
-        // Parse the duration column
-        let duration = {
-            let duration: i64 = row.try_get("duration")?;
-            let duration: u64 = duration
-                .try_into()
-                .map_err(|err| Error::Decode(Box::new(err)))?;
-            Duration::from_secs(duration)
-        };
+    /// The duration of the agreement in epochs.
+    pub duration_epochs: u32,
 
-        Ok(Self {
-            id: row.try_get("id")?,
-            created_at: row.try_get("created_at")?,
-            updated_at: row.try_get("updated_at")?,
-            status: row.try_get("status")?,
-            indexing_request_id: row.try_get("indexing_request_id")?,
-            indexer_id,
-            indexer_url,
-            duration,
-        })
-    }
+    /// The maximum amount, in _wei GRT_, that can be collected for the initial subgraph sync.
+    pub max_initial_amount: U256,
+    /// The maximum amount, in _wei GRT_, that can be collected per epoch (after the initial sync).
+    pub max_ongoing_amount_per_epoch: U256,
+
+    /// The maximum number of epochs that can be collected at once.
+    pub max_epochs_per_collection: u32,
+    /// The minimum number of epochs that can be collected at once.
+    pub min_epochs_per_collection: u32,
+
+    /// The voucher metadata
+    pub metadata: VoucherMetadata,
+}
+
+/// The _indexing agreement_ proposal voucher metadata
+#[derive(Debug, Clone)]
+pub struct VoucherMetadata {
+    /// The Subgraph deployment ID to index.
+    pub deployment_id: DeploymentId,
+
+    /// The amount to pay per indexed block in _wei GRT per block_.
+    pub price_per_block: U256,
+    /// The amount to pay per indexed and stored entity in _wei GRT per entity per epoch_.
+    pub price_per_entity_per_epoch: U256,
 }
 
 /// The status of the [`IndexingAgreement`].
@@ -169,8 +179,65 @@ impl std::fmt::Display for Status {
     }
 }
 
-impl From<i32> for Status {
-    fn from(value: i32) -> Self {
-        num_traits::FromPrimitive::from_i32(value).unwrap_or(Status::Unknown)
+/// The _indexing agreement_ [`fake`] implementation for test data generation.
+#[cfg(feature = "fake")]
+pub mod fake_impl {
+    use fake::{Dummy, Faker, Rng};
+
+    use super::*;
+
+    impl Dummy<Faker> for Indexer {
+        fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
+            Self {
+                id: IndexerId::dummy_with_rng(config, rng),
+                url: Url::dummy_with_rng(config, rng),
+            }
+        }
+    }
+
+    impl Dummy<Faker> for Voucher {
+        fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
+            let payer = Address::new(<[u8; 20]>::dummy_with_rng(config, rng));
+            let recipient = Address::new(<[u8; 20]>::dummy_with_rng(config, rng));
+            let service = Address::new(<[u8; 20]>::dummy_with_rng(config, rng));
+
+            let duration_epochs = u32::dummy_with_rng(config, rng);
+
+            let max_initial_amount = U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
+            let max_ongoing_amount_per_epoch =
+                U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
+
+            let max_epochs_per_collection = u32::dummy_with_rng(config, rng);
+            let min_epochs_per_collection = u32::dummy_with_rng(config, rng);
+
+            let metadata = VoucherMetadata::dummy_with_rng(config, rng);
+
+            Self {
+                payer,
+                recipient,
+                service,
+                duration_epochs,
+                max_initial_amount,
+                max_ongoing_amount_per_epoch,
+                max_epochs_per_collection,
+                min_epochs_per_collection,
+                metadata,
+            }
+        }
+    }
+
+    impl Dummy<Faker> for VoucherMetadata {
+        fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
+            let deployment_id = DeploymentId::dummy_with_rng(config, rng);
+            let price_per_block = U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
+            let price_per_entity_per_epoch =
+                U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
+
+            Self {
+                deployment_id,
+                price_per_block,
+                price_per_entity_per_epoch,
+            }
+        }
     }
 }

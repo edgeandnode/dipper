@@ -4,7 +4,7 @@ use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
-use thegraph_core::DeploymentId;
+use thegraph_core::{alloy::primitives::ChainId, DeploymentId};
 
 /// The queue worker message enum.
 #[derive(Debug, Serialize, Deserialize)]
@@ -71,7 +71,8 @@ pub struct ProcessNewIndexingRequest {
     pub indexing_request_id: IndexingRequestId,
     /// The ID of the subgraph deployment
     pub deployment_id: DeploymentId,
-
+    /// The chain ID of the subgraph deployment
+    pub deployment_chain_id: ChainId,
     /// The maximum number of indexers to select
     pub num_candidates: usize,
 }
@@ -97,6 +98,8 @@ pub struct FindIndexerForIndexingRequest {
     pub indexing_request_id: IndexingRequestId,
     /// The ID of the subgraph deployment
     pub deployment_id: DeploymentId,
+    /// The chain ID of the subgraph deployment
+    pub deployment_chain_id: ChainId,
 }
 
 /// Send an indexing agreement proposal to the indexer.
@@ -109,6 +112,7 @@ pub struct SendIndexingAgreementProposal {
     pub agreement_id: IndexingAgreementId,
     pub indexing_request_id: IndexingRequestId,
     pub deployment_id: DeploymentId,
+    pub deployment_chain_id: ChainId,
     pub duration: Duration,
 }
 

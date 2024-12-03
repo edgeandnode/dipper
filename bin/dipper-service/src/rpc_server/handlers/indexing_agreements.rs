@@ -223,9 +223,9 @@ fn into_indexing_agreement(agreement: IndexingAgreementRecord) -> IndexingAgreem
         updated_at: agreement.updated_at,
         status: into_indexing_agreement_status(agreement.status),
         indexing_request_id: agreement.indexing_request_id,
-        indexer_id: agreement.indexer_id,
-        indexer_url: agreement.indexer_url,
-        duration: agreement.duration,
+        indexer_id: agreement.indexer.id,
+        indexer_url: agreement.indexer.url,
+        duration_epochs: agreement.voucher.duration_epochs,
     }
 }
 

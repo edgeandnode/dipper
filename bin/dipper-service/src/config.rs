@@ -1,12 +1,16 @@
 //! Dipper service configuration
 
-use std::{collections::BTreeSet, path::Path, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    time::Duration,
+};
 
 use dipper_core::config::{Hidden, HiddenSecretKeyAsHexStr};
 use serde_with::serde_as;
 use thegraph_core::{
     alloy::{
-        primitives::{Address, ChainId},
+        primitives::{Address, ChainId, U256},
         signers::k256::SecretKey,
     },
     DeploymentId,
@@ -16,6 +20,8 @@ use url::Url;
 /// The configuration for the DIPs service
 #[derive(custom_debug::CustomDebug, serde::Deserialize)]
 pub struct Config {
+    /// The DIPs agreement configuration
+    pub dips: DipsAgreementConfig,
     /// The Admin RPC server configuration
     pub admin_rpc: AdminRpcConfig,
     /// The Indexer RPC server configuration
@@ -28,6 +34,37 @@ pub struct Config {
     pub network: NetworkConfig,
     /// The signer configuration
     pub signer: SignerConfig,
+}
+
+#[serde_as]
+#[derive(Debug, serde::Deserialize)]
+pub struct DipsAgreementConfig {
+    /// The _indexing agreement_'s service address.
+    pub service: Address,
+    /// The _indexing agreement_'s maximum amount that can be collected for the subgraph initial
+    /// sync.
+    pub max_initial_amount: U256,
+    /// The _indexing agreement_'s maximum amount collectable per epoch.
+    pub max_ongoing_amount_per_epoch: U256,
+    /// The _indexing agreement_'s maximum epochs per collection.
+    pub max_epochs_per_collection: u32,
+    /// The _indexing agreement_'s minimum epochs per collection.
+    pub min_epochs_per_collection: u32,
+    /// The _indexing agreement_'s duration in epochs.
+    pub duration_epochs: Option<u32>,
+
+    /// The _indexing agreement_'s per chain pricing table.
+    #[serde_as(as = "serde_with::MapSkipError<_ ,_>")]
+    pub pricing_table: BTreeMap<ChainId, ChainPrices>,
+}
+
+/// Per-chain prices for the DIPs _indexing agreement_.
+#[derive(Debug, serde::Deserialize)]
+pub struct ChainPrices {
+    /// The price per block in wei GRT.
+    pub price_per_block: U256,
+    /// The price per entity in wei GRT per epoch.
+    pub price_per_entity_per_epoch: U256,
 }
 
 /// The Admin RPC server configuration

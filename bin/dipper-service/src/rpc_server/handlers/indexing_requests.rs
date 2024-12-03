@@ -136,12 +136,17 @@ where
             todo!("Return error");
         }
 
-        let NewIndexingRequest { deployment_id } = req.into_message();
+        let NewIndexingRequest {
+            deployment_id,
+            deployment_chain_id,
+        } = req.into_message();
+
+        // TODO: Validate the deployment_id exists (in the network) and chain_id is valid
 
         // Register the new indexing request
         let indexing_request_id = match self
             .registry
-            .register_new_indexing_request(requested_by, deployment_id)
+            .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id)
             .await
         {
             Ok(indexing_request_id) => indexing_request_id,
@@ -159,6 +164,7 @@ where
                 ProcessNewIndexingRequest {
                     indexing_request_id,
                     deployment_id,
+                    deployment_chain_id,
                     num_candidates: self.max_candidates,
                 },
             ))
