@@ -5,9 +5,9 @@ members = [
     "bin/dipper-service",
     "dipper-core",
     "dipper-iisa",
-    "dipper-indexer-client",
     "dipper-pgmq",
-    "dipper-registry", "dipper-rpc",
+    "dipper-registry",
+    "dipper-rpc",
     "integration-tests",
     "xtask"
 ]

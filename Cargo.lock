@@ -1843,23 +1843,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dipper-indexer-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "indoc",
- "reqwest",
- "semver 1.0.23",
- "serde",
- "serde_json",
- "serde_with",
- "thegraph-core",
- "thegraph-graphql-http",
- "thiserror 2.0.3",
- "url",
-]
-
-[[package]]
 name = "dipper-pgmq"
 version = "0.1.0"
 dependencies = [
@@ -4688,9 +4671,6 @@ name = "semver"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61697e0a1c7e512e84a621326239844a24d8207b4669b41bc18b32ea5cbf988b"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "semver-parser"
