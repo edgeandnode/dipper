@@ -6,19 +6,17 @@ use dipper_rpc::admin::{
 };
 use jsonrpsee::RpcModule;
 
-use self::indexing_requests::{IndexingRequestsCtx, IndexingRequestsRpcServerImpl};
-use crate::{
-    rpc_server::handlers::indexing_agreements::{
-        IndexingAgreementsCtx, IndexingAgreementsRpcServerImpl,
-    },
-    worker::messages::Message,
+use self::{
+    indexing_agreements::{IndexingAgreementsCtx, IndexingAgreementsRpcServerImpl},
+    indexing_requests::{IndexingRequestsCtx, IndexingRequestsRpcServerImpl},
 };
+use crate::worker::messages::Message;
 
 mod indexing_agreements;
 mod indexing_requests;
 
 /// Create a new RPC module with all the admin handlers.
-pub(super) fn admin_rpc_handlers<C, R, W>(ctx: C) -> RpcModule<C>
+pub(super) fn rpc_handlers<C, R, W>(ctx: C) -> RpcModule<C>
 where
     R: Registry + Clone + Send + Sync + 'static,
     W: Queue<Message> + Clone + Send + Sync + 'static,

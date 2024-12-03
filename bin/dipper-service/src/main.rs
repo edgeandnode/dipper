@@ -13,10 +13,10 @@ use tracing_subscriber::EnvFilter;
 
 use self::{network::Snapshot, signer::Eip712Signer};
 
+mod admin_rpc_server;
 mod config;
 mod indexers;
 mod network;
-mod rpc_server;
 mod signer;
 mod worker;
 
@@ -163,7 +163,7 @@ pub async fn main() -> anyhow::Result<()> {
 
     //- The admin RPC service
     let (admin_rpc_handle, admin_rpc_service) = {
-        let context = rpc_server::CtxBuilder::new()
+        let context = admin_rpc_server::CtxBuilder::new()
             .with_worker(queue.clone())
             .with_registry(registry.clone())
             .with_allowlist(conf.admin_rpc.allowlist)
@@ -171,11 +171,11 @@ pub async fn main() -> anyhow::Result<()> {
             .with_max_candidates(3)
             .build();
 
-        let config = rpc_server::service::Config {
+        let config = admin_rpc_server::service::Config {
             listen_addr: conf.admin_rpc.listen_addr,
         };
 
-        rpc_server::service::new_admin_rpc_service(config, context)
+        admin_rpc_server::service::new(config, context)
     };
     tracing::info!("initialized Admin RPC service");
 

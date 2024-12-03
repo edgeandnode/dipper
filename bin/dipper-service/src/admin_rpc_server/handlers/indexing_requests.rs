@@ -15,7 +15,7 @@ use jsonrpsee::core::RpcResult;
 use thegraph_core::{alloy::primitives::Address, DeploymentId};
 
 use crate::{
-    rpc_server::context::Ctx,
+    admin_rpc_server::context::Ctx,
     signer::PrivateKeyEip712Signer,
     worker::messages::{Message, ProcessIndexingRequestCancellation, ProcessNewIndexingRequest},
 };
