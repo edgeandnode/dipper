@@ -11,6 +11,7 @@ RUN --mount=type=cache,target=/var/cache/apt \
       cmake \
       git \
       lld \
+      protobuf-compiler \
   && rm -rf /var/lib/apt/lists/*
 
 # Install uv
