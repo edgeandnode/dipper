@@ -6,10 +6,7 @@ use thegraph_core::alloy::{
 };
 
 pub mod admin;
-mod proto;
-pub mod dips {
-    pub use super::proto::*;
-}
+pub mod indexer;
 
 /// The Arbitrum One (mainnet) chain ID (eip155).
 const CHAIN_ID_ARBITRUM_ONE: ChainId = 0xa4b1; // 42161

@@ -4,7 +4,7 @@ package graphprotocol.indexer.dips;
 
 service AgreementService {
   rpc CreateAgreement(CreateAgreementRequest) returns (CreateAgreementResponse);
-  rpc CancelAgreement(CancelAgreementRequest) returns (AgreementCanellationResponse);
+  rpc CancelAgreement(CancelAgreementRequest) returns (AgreementCancellationResponse);
   rpc GetAgreementById(GetAgreementByIdRequest) returns (GetAgreementByIdResponse);
   rpc GetPrice(PriceRequest) returns (PriceResponse);
 }
@@ -31,14 +31,14 @@ message CreateAgreementResponse {
   string uuid = 1;
 }
 
-message AgreementCanellationResponse {
+message AgreementCancellationResponse {
   string uuid = 1;
 }
 
 message PriceRequest {
  ProtocolNetwork protocol = 1;
  string chain_id = 2;
-} 
+}
 
 message PriceResponse {
   optional Price price = 1;
