@@ -17,7 +17,6 @@ indent_size = 4
 trim_trailing_whitespace = false
 
 [*.sh]
-end_of_line = lf
 indent_style = tab
 
 [Makefile]
@@ -28,4 +27,8 @@ indent_size = 2
 
 [*.{yml,yaml}]
 indent_size = 2
+
+[*.proto]
+indent_size = 2
+tab_width = 2
 
