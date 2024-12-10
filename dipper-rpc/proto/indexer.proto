@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package graphprotocol.indexer.dips;
+
+service DipsService {
+  /**
+   * Propose a new _indexing agreement_ to an _indexer_.
+   *
+   * The _indexer_ can `ACCEPT` or `REJECT` the agreement.
+   */
+  rpc RegisterAgreement(RegisterAgreementRequest) returns (RegisterAgreementResponse);
+
+  /**
+   * Request to cancel an existing _indexing agreement_.
+   */
+  rpc CancelAgreement(CancelAgreementRequest) returns (CancelAgreementResponse);
+}
+
+/**
+ * A request to propose a new _indexing agreement_ to an _indexer_.
+ *
+ * See the `DipsService.RegisterAgreement` method.
+ */
+message RegisterAgreementRequest {
+  // TODO(LNSD): Add fields to the message
+
+  bytes signature = 99; /// The signature of the message.
+}
+
+/**
+ * A response to a request to propose a new _indexing agreement_ to an _indexer_.
+ *
+ * See the `DipsService.RegisterAgreement` method.
+ */
+message RegisterAgreementResponse {
+  // TODO(LNSD): Add fields to the message
+
+  bytes signature = 99; /// The signature of the message.
+}
+
+/**
+ * A request to cancel an existing _indexing agreement_.
+ *
+ * See the `DipsService.CancelAgreement` method.
+ */
+message CancelAgreementRequest {
+  // TODO(LNSD): Add fields to the message
+
+  bytes signature = 99; /// The signature of the message.
+}
+
+/**
+ * A response to a request to cancel an existing _indexing agreement_.
+ *
+ * See the `DipsService.CancelAgreement` method.
+ */
+message CancelAgreementResponse {
+  // TODO(LNSD): Add fields to the message
+
+  bytes signature = 99; /// The signature of the message.
+}

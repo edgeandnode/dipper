@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package graphprotocol.gateway.dips;
+
+service DipsService {
+  /**
+   * Request to cancel an _indexing agreement_.
+   */
+  rpc CancelAgreement(CancelAgreementRequest) returns (CancelAgreementResponse);
+
+  /**
+   * Check in the progress of an _indexing agreement_.
+   */
+  rpc CheckInAgreementProgress(CheckInAgreementProgressRequest) returns (CheckInAgreementProgressResponse);
+}
+
+/**
+ * A request to cancel an _indexing agreement_.
+ *
+ * See the `DipsService.CancelAgreement` method.
+ */
+message CancelAgreementRequest {
+  // TODO(LNSD): Add fields to the message
+
+  bytes signature = 99; /// The signature of the message.
+}
+
+/**
+ * A response to a request to cancel an _indexing agreement_.
+ *
+ * See the `DipsService.CancelAgreement` method.
+ */
+message CancelAgreementResponse {
+  // TODO(LNSD): Add fields to the message
+
+  bytes signature = 99; /// The signature of the message.
+}
+
+
+
+/**
+ * A request to check in the progress of an _indexing agreement_.
+ *
+ * See the `DipsService.CheckInAgreementProgress` method.
+ */
+message CheckInAgreementProgressRequest {
+  // TODO(LNSD): Add fields to the message
+
+  bytes signature = 99; /// The signature of the message.
+}
+
+/**
+ * A response to a request to check in the progress of an _indexing agreement_.
+ *
+ * See the `DipsService.CheckInAgreementProgress` method.
+ */
+message CheckInAgreementProgressResponse {
+  // TODO(LNSD): Add fields to the message
+
+  bytes signature = 99; /// The signature of the message.
+}
