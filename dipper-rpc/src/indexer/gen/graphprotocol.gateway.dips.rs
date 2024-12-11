@@ -3,10 +3,11 @@
 /// A request to cancel an _indexing agreement_.
 ///
 /// See the `DipsService.CancelAgreement` method.
-///
-/// TODO(LNSD): Add fields to the message
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CancelAgreementRequest {
+    /// / The ID of the agreement to cancel.
+    #[prost(bytes = "vec", tag = "1")]
+    pub agreement_id: ::prost::alloc::vec::Vec<u8>,
     /// / The signature of the message.
     #[prost(bytes = "vec", tag = "99")]
     pub signature: ::prost::alloc::vec::Vec<u8>,
@@ -16,37 +17,30 @@ pub struct CancelAgreementRequest {
 ///
 /// See the `DipsService.CancelAgreement` method.
 ///
-/// TODO(LNSD): Add fields to the message
+/// Empty message
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct CancelAgreementResponse {}
+/// *
+/// A request to report the progress of an _indexing agreement_.
+///
+/// See the `DipsService.ReportProgress` method.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CancelAgreementResponse {
+pub struct ReportProgressRequest {
+    /// / The ID of the agreement to report progress for.
+    #[prost(bytes = "vec", tag = "1")]
+    pub agreement_id: ::prost::alloc::vec::Vec<u8>,
     /// / The signature of the message.
     #[prost(bytes = "vec", tag = "99")]
     pub signature: ::prost::alloc::vec::Vec<u8>,
 }
 /// *
-/// A request to check in the progress of an _indexing agreement_.
+/// A response to a request to report the progress of an _indexing agreement_.
 ///
-/// See the `DipsService.CheckInAgreementProgress` method.
-///
-/// TODO(LNSD): Add fields to the message
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CheckInAgreementProgressRequest {
-    /// / The signature of the message.
-    #[prost(bytes = "vec", tag = "99")]
-    pub signature: ::prost::alloc::vec::Vec<u8>,
-}
-/// *
-/// A response to a request to check in the progress of an _indexing agreement_.
-///
-/// See the `DipsService.CheckInAgreementProgress` method.
+/// See the `DipsService.ReportProgress` method.
 ///
 /// TODO(LNSD): Add fields to the message
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CheckInAgreementProgressResponse {
-    /// / The signature of the message.
-    #[prost(bytes = "vec", tag = "99")]
-    pub signature: ::prost::alloc::vec::Vec<u8>,
-}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct ReportProgressResponse {}
 /// Generated server implementations.
 pub mod dips_service_server {
     #![allow(
@@ -61,7 +55,10 @@ pub mod dips_service_server {
     #[async_trait]
     pub trait DipsService: std::marker::Send + std::marker::Sync + 'static {
         /// *
-        /// Request to cancel an _indexing agreement_.
+        /// Cancel an _indexing agreement_.
+        ///
+        /// This method allows the indexer to notify the DIPs gateway that the agreement
+        /// should be canceled.
         async fn cancel_agreement(
             &self,
             request: tonic::Request<super::CancelAgreementRequest>,
@@ -70,12 +67,15 @@ pub mod dips_service_server {
             tonic::Status,
         >;
         /// *
-        /// Check in the progress of an _indexing agreement_.
-        async fn check_in_agreement_progress(
+        /// Report the progress of an _indexing agreement_.
+        ///
+        /// This method allows the indexer to report the work completed to the DIPs gateway
+        /// and receive payment for the indexing work done.
+        async fn report_progress(
             &self,
-            request: tonic::Request<super::CheckInAgreementProgressRequest>,
+            request: tonic::Request<super::ReportProgressRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::CheckInAgreementProgressResponse>,
+            tonic::Response<super::ReportProgressResponse>,
             tonic::Status,
         >;
     }
@@ -200,31 +200,25 @@ pub mod dips_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/graphprotocol.gateway.dips.DipsService/CheckInAgreementProgress" => {
+                "/graphprotocol.gateway.dips.DipsService/ReportProgress" => {
                     #[allow(non_camel_case_types)]
-                    struct CheckInAgreementProgressSvc<T: DipsService>(pub Arc<T>);
+                    struct ReportProgressSvc<T: DipsService>(pub Arc<T>);
                     impl<
                         T: DipsService,
-                    > tonic::server::UnaryService<super::CheckInAgreementProgressRequest>
-                    for CheckInAgreementProgressSvc<T> {
-                        type Response = super::CheckInAgreementProgressResponse;
+                    > tonic::server::UnaryService<super::ReportProgressRequest>
+                    for ReportProgressSvc<T> {
+                        type Response = super::ReportProgressResponse;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<
-                                super::CheckInAgreementProgressRequest,
-                            >,
+                            request: tonic::Request<super::ReportProgressRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as DipsService>::check_in_agreement_progress(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
+                                <T as DipsService>::report_progress(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -235,7 +229,7 @@ pub mod dips_service_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = CheckInAgreementProgressSvc(inner);
+                        let method = ReportProgressSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

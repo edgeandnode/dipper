@@ -4,15 +4,22 @@ package graphprotocol.gateway.dips;
 
 service DipsService {
   /**
-   * Request to cancel an _indexing agreement_.
+   * Cancel an _indexing agreement_.
+   *
+   * This method allows the indexer to notify the DIPs gateway that the agreement
+   * should be canceled.
    */
   rpc CancelAgreement(CancelAgreementRequest) returns (CancelAgreementResponse);
 
   /**
-   * Check in the progress of an _indexing agreement_.
+   * Report the progress of an _indexing agreement_.
+   *
+   * This method allows the indexer to report the work completed to the DIPs gateway
+   * and receive payment for the indexing work done.
    */
-  rpc CheckInAgreementProgress(CheckInAgreementProgressRequest) returns (CheckInAgreementProgressResponse);
+  rpc ReportProgress(ReportProgressRequest) returns (ReportProgressResponse);
 }
+
 
 /**
  * A request to cancel an _indexing agreement_.
@@ -20,7 +27,8 @@ service DipsService {
  * See the `DipsService.CancelAgreement` method.
  */
 message CancelAgreementRequest {
-  // TODO(LNSD): Add fields to the message
+  bytes agreement_id = 1;  /// The ID of the agreement to cancel.
+  reserved 2 to 20;        /// Reserved for future use.
 
   bytes signature = 99; /// The signature of the message.
 }
@@ -31,31 +39,28 @@ message CancelAgreementRequest {
  * See the `DipsService.CancelAgreement` method.
  */
 message CancelAgreementResponse {
-  // TODO(LNSD): Add fields to the message
-
-  bytes signature = 99; /// The signature of the message.
+  // Empty message
 }
 
 
-
 /**
- * A request to check in the progress of an _indexing agreement_.
- *
- * See the `DipsService.CheckInAgreementProgress` method.
+ * A request to report the progress of an _indexing agreement_.
+  *
+  * See the `DipsService.ReportProgress` method.
  */
-message CheckInAgreementProgressRequest {
+message ReportProgressRequest {
+  bytes agreement_id = 1;  /// The ID of the agreement to report progress for.
   // TODO(LNSD): Add fields to the message
 
   bytes signature = 99; /// The signature of the message.
 }
 
 /**
- * A response to a request to check in the progress of an _indexing agreement_.
+ * A response to a request to report the progress of an _indexing agreement_.
  *
- * See the `DipsService.CheckInAgreementProgress` method.
+ * See the `DipsService.ReportProgress` method.
  */
-message CheckInAgreementProgressResponse {
+message ReportProgressResponse {
   // TODO(LNSD): Add fields to the message
-
-  bytes signature = 99; /// The signature of the message.
 }
+

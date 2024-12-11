@@ -13,7 +13,7 @@ use thegraph_core::{
         primitives::{Address, ChainId, U256},
         signers::k256::SecretKey,
     },
-    DeploymentId,
+    DeploymentId, IndexerId,
 };
 use url::Url;
 
@@ -90,7 +90,7 @@ pub struct IndexerRpcConfig {
 
     /// The set of addresses that are allowed to access the RPC server
     #[serde_as(as = "serde_with::SetLastValueWins<_>")]
-    pub allowlist: BTreeSet<Address>,
+    pub allowlist: BTreeSet<IndexerId>,
 }
 
 /// The database configuration
