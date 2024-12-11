@@ -19,6 +19,7 @@ use thegraph_core::{alloy::primitives::Address, DeploymentId};
 
 use crate::{
     admin_rpc_server::context::Ctx,
+    network::NetworkProvider,
     signer::PrivateKeyEip712Signer,
     worker::messages::{Message, ProcessIndexingRequestCancellation, ProcessNewIndexingRequest},
 };
@@ -26,46 +27,50 @@ use crate::{
 /// The substate for the [`IndexingRequestsRpc`] handler
 ///
 /// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
-pub struct IndexingRequestsCtx<R, W> {
+pub struct IndexingRequestsCtx<R, N, W> {
     signer: Arc<PrivateKeyEip712Signer>,
     allowlist: Arc<BTreeSet<Address>>,
     registry: R,
+    network: N,
     worker: W,
     max_candidates: usize,
 }
 
-impl<R, W> FromState<Ctx<R, W>> for IndexingRequestsCtx<R, W>
+impl<R, N, W> FromState<Ctx<R, N, W>> for IndexingRequestsCtx<R, N, W>
 where
     R: Clone,
+    N: Clone,
     W: Clone,
 {
-    fn from_state(ctx: &Ctx<R, W>) -> Self {
+    fn from_state(ctx: &Ctx<R, N, W>) -> Self {
         Self {
             signer: ctx.signer.clone(),
             allowlist: ctx.allowlist.clone(),
             registry: ctx.registry.clone(),
+            network: ctx.network.clone(),
             worker: ctx.worker.clone(),
             max_candidates: ctx.max_candidates,
         }
     }
 }
 
-pub struct IndexingRequestsRpcServerImpl<R, W>(IndexingRequestsCtx<R, W>);
+pub struct IndexingRequestsRpcServerImpl<R, N, W>(IndexingRequestsCtx<R, N, W>);
 
-impl<R, W> IndexingRequestsRpcServerImpl<R, W> {
+impl<R, N, W> IndexingRequestsRpcServerImpl<R, N, W> {
     /// Create a new instance of the `IndexingRequestsRpcServerImpl` with the given context
     pub fn with_context<C>(ctx: &C) -> Self
     where
-        IndexingRequestsCtx<R, W>: FromState<C>,
+        IndexingRequestsCtx<R, N, W>: FromState<C>,
     {
         Self(FromState::from_state(ctx))
     }
 }
 
 #[async_trait]
-impl<R, W> IndexingRequestsRpcServer for IndexingRequestsRpcServerImpl<R, W>
+impl<R, N, W> IndexingRequestsRpcServer for IndexingRequestsRpcServerImpl<R, N, W>
 where
     R: Registry + Clone + Send + Sync + 'static,
+    N: NetworkProvider + Clone + Send + Sync + 'static,
     W: Queue<Message> + Clone + Send + Sync + 'static,
 {
     async fn get_all_indexing_requests(&self) -> RpcResult<Vec<IndexingRequest>> {
@@ -144,7 +149,11 @@ where
             deployment_chain_id,
         } = req.into_message();
 
-        // TODO: Validate the deployment_id exists (in the network) and chain_id is valid
+        // TODO: check the deployment chain_id is correct
+        if self.network.get_deployment_by_id(&deployment_id).is_none() {
+            // return Err(StatusCode::NOT_FOUND);
+            todo!("Return error");
+        }
 
         // Register the new indexing request
         let indexing_request_id = match self
@@ -253,8 +262,8 @@ where
     }
 }
 
-impl<R, W> std::ops::Deref for IndexingRequestsRpcServerImpl<R, W> {
-    type Target = IndexingRequestsCtx<R, W>;
+impl<R, N, W> std::ops::Deref for IndexingRequestsRpcServerImpl<R, N, W> {
+    type Target = IndexingRequestsCtx<R, N, W>;
 
     fn deref(&self) -> &Self::Target {
         &self.0

@@ -109,7 +109,7 @@ impl<S, N, W> CtxBuilder<S, NotSet, N, W> {
 
 impl<S, R, W> CtxBuilder<S, R, NotSet, W> {
     /// Sets the network provider.
-    pub fn with_network<N>(self, network: N) -> CtxBuilder<S, R, NetworkSet<N>, W>
+    pub fn with_network_provider<N>(self, network: N) -> CtxBuilder<S, R, NetworkSet<N>, W>
     where
         N: NetworkProvider + 'static,
     {
@@ -182,7 +182,10 @@ mod tests {
 
     use super::CtxBuilder;
     use crate::{
-        network::{api::Indexer, NetworkProvider},
+        network::{
+            api::{Deployment, Indexer},
+            NetworkProvider,
+        },
         signer::PrivateKeyEip712Signer,
     };
 
@@ -349,6 +352,10 @@ mod tests {
 
     #[async_trait]
     impl NetworkProvider for DummyNetworkProvider {
+        fn get_deployment_by_id(&self, _deployment_id: &DeploymentId) -> Option<Deployment> {
+            unimplemented!()
+        }
+
         fn get_indexer_by_id(&self, _indexer_id: &IndexerId) -> Option<Indexer> {
             unimplemented!()
         }
@@ -434,7 +441,7 @@ mod tests {
             .with_signer(signer)
             .with_worker(worker)
             .with_registry(registry)
-            .with_network(network)
+            .with_network_provider(network)
             .with_allowlist(allowlist)
             .build();
 

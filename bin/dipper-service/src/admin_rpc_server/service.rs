@@ -6,7 +6,7 @@ use jsonrpsee::server::Server;
 use tokio::sync::mpsc;
 
 use super::{context::Ctx, handlers::rpc_handlers};
-use crate::worker::messages::Message;
+use crate::{network::NetworkProvider, worker::messages::Message};
 
 /// RPC server configuration.
 #[derive(Debug)]
@@ -38,9 +38,13 @@ impl Handle {
 }
 
 /// Create a new Admin RPC server service
-pub fn new<R, W>(conf: Config, ctx: Ctx<R, W>) -> (Handle, impl Future<Output = anyhow::Result<()>>)
+pub fn new<R, N, W>(
+    conf: Config,
+    ctx: Ctx<R, N, W>,
+) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
     R: Registry + Clone + Send + Sync + 'static,
+    N: NetworkProvider + Clone + Send + Sync + 'static,
     W: Queue<Message> + Clone + Send + Sync + 'static,
 {
     let (tx_stop, mut rx_stop) = mpsc::channel(1);
