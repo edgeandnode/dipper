@@ -1,6 +1,7 @@
-use thegraph_core::alloy::primitives::{normalize_v, PrimitiveSignature as Signature};
-
-use super::message::SignedMessage as InnerSignedMessage;
+use thegraph_core::{
+    alloy::primitives::{normalize_v, PrimitiveSignature as Signature},
+    signed_message::SignedMessage as InnerSignedMessage,
+};
 
 /// New-type wrapper around [`SignedMessage`] implementing `serde::Serialize` and
 /// `serde::Deserialize` where the signature is serialized as a base64-encoded string.

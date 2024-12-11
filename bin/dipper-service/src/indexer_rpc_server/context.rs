@@ -6,9 +6,6 @@ use thegraph_core::IndexerId;
 
 use crate::{network::NetworkProvider, signer::PrivateKeyEip712Signer, worker::messages::Message};
 
-/// The maximum number of candidates to select.
-const DEFAULT_MAX_CANDIDATES: usize = 3;
-
 /// The context shared across all requests.
 #[derive(Clone)]
 pub struct Ctx<R, N, W> {

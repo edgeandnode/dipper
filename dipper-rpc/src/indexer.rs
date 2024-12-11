@@ -9,11 +9,11 @@ pub mod rpc {
     ///
     /// This module contains the generated code to implement the gateway's DIPs gRPC server.
     pub mod gateway_server {
-        use dipper_core::{
-            ids::IndexingAgreementId,
+        use dipper_core::ids::IndexingAgreementId;
+        use thegraph_core::{
+            alloy::sol,
             signed_message::{SignedMessage, ToSolStruct},
         };
-        use thegraph_core::alloy::sol;
 
         use self::graphprotocol::gateway::dips::{CancelAgreementRequest, ReportProgressRequest};
 

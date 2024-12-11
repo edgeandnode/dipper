@@ -1,12 +1,11 @@
-use dipper_core::{
-    ids::{IndexingAgreementId, IndexingRequestId},
-    signed_message::{serde::SignedMessage, ToSolStruct},
-};
+use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use jsonrpsee::{client_transport::ws::Url, core::RpcResult, proc_macros::rpc};
 use serde::Serializer;
 use serde_with::serde_as;
-use thegraph_core::{DeploymentId, IndexerId};
+use thegraph_core::{signed_message::ToSolStruct, DeploymentId, IndexerId};
 use time::OffsetDateTime;
+
+use super::message::SignedMessage;
 
 /// The _indexing agreement_ RPC methods
 #[rpc(server, client)]
