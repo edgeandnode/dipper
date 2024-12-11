@@ -167,11 +167,7 @@ where
     // Send the indexing agreement cancellation notification to the indexers
     for agreement in agreements {
         if let Err(err) = queue
-            .send_indexing_agreement_cancellation(
-                agreement.indexer.url,
-                agreement.id,
-                indexing_request_id,
-            )
+            .send_indexing_agreement_cancellation(agreement.indexer.url, agreement.id)
             .await
         {
             tracing::error!(error=?err, "Failed to queue task: 'send_indexing_agreement_cancellation'");
@@ -344,13 +340,13 @@ where
     C: DipsClient,
 {
     // Check the status of the agreement before sending the proposal
-    match registry.get_indexing_agreement_by_id(agreement_id).await? {
+    let agreement = match registry.get_indexing_agreement_by_id(agreement_id).await? {
         None => {
             tracing::error!(agreement_id=%agreement_id, "Indexing agreement not found");
             return Ok(JobResult::Ok(()));
         }
         Some(agreement) => match agreement.status {
-            IndexingAgreementStatus::Created => {}
+            IndexingAgreementStatus::Created => agreement,
             IndexingAgreementStatus::Accepted | IndexingAgreementStatus::Rejected => {
                 tracing::error!(
                     agreement_id=%agreement_id,
@@ -358,24 +354,34 @@ where
                 );
                 return Ok(JobResult::Ok(()));
             }
-            _ => {
+            status => {
                 tracing::error!(
                     agreement_id=%agreement_id,
-                    "Not sending agreement proposal. Invalid agreement status: {}",
-                    agreement.status,
+                    "Not sending agreement proposal. Invalid agreement status: {status}",
                 );
                 return Ok(JobResult::Ok(()));
             }
         },
-    }
+    };
+
+    let voucher = IndexingAgreementVoucher {
+        payer: agreement.voucher.payer,
+        recipient: agreement.voucher.recipient,
+        service: agreement.voucher.service,
+        duration_epochs: agreement.voucher.duration_epochs,
+        max_initial_amount: agreement.voucher.max_initial_amount,
+        max_ongoing_amount_per_epoch: agreement.voucher.max_ongoing_amount_per_epoch,
+        max_epochs_per_collection: agreement.voucher.max_epochs_per_collection,
+        min_epochs_per_collection: agreement.voucher.min_epochs_per_collection,
+        metadata: IndexingAgreementVoucherMetadata {
+            deployment_id: agreement.voucher.metadata.deployment_id,
+            price_per_block: agreement.voucher.metadata.price_per_block,
+            price_per_entity_per_epoch: agreement.voucher.metadata.price_per_entity_per_epoch,
+        },
+    };
 
     match indexer_client
-        .send_indexing_agreement_proposal(
-            indexer_url,
-            agreement_id,
-            indexing_request_id,
-            deployment_id,
-        )
+        .send_indexing_agreement_proposal(indexer_url, agreement_id, voucher)
         .await
     {
         Ok(resp) => match resp {
@@ -431,7 +437,6 @@ pub(super) async fn send_indexing_agreement_cancellation<R, C>(
     SendIndexingAgreementCancellation {
         indexer_url,
         agreement_id,
-        indexing_request_id,
     }: SendIndexingAgreementCancellation,
 ) -> anyhow::Result<JobResult<()>>
 where
@@ -466,11 +471,7 @@ where
     }
 
     if let Err(err) = indexer_client
-        .send_indexing_agreement_cancellation_notification(
-            indexer_url,
-            agreement_id,
-            indexing_request_id,
-        )
+        .send_indexing_agreement_cancellation_notification(indexer_url, agreement_id)
         .await
     {
         tracing::error!(error=?err, "Failed to send indexing agreement cancellation");
@@ -507,11 +508,7 @@ where
 
     // Send an agreement cancellation notification to the indexer
     if let Err(err) = queue
-        .send_indexing_agreement_cancellation(
-            agreement.indexer.url.clone(),
-            agreement.id,
-            agreement.indexing_request_id,
-        )
+        .send_indexing_agreement_cancellation(agreement.indexer.url.clone(), agreement.id)
         .await
     {
         tracing::error!(error=?err, "Failed to queue task: 'send_indexing_agreement_cancellation'");

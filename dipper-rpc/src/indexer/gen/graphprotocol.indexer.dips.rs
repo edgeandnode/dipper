@@ -2,35 +2,84 @@
 /// *
 /// A request to propose a new _indexing agreement_ to an _indexer_.
 ///
-/// See the `DipsService.RegisterAgreement` method.
-///
-/// TODO(LNSD): Add fields to the message
+/// See the `DipsService.SubmitAgreementProposal` method.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RegisterAgreementRequest {
+pub struct SubmitAgreementProposalRequest {
+    /// / The ID of the agreement to register.
+    #[prost(bytes = "vec", tag = "1")]
+    pub agreement_id: ::prost::alloc::vec::Vec<u8>,
+    /// / The voucher of the agreement.
+    #[prost(message, optional, tag = "20")]
+    pub voucher: ::core::option::Option<Voucher>,
     /// / The signature of the message.
     #[prost(bytes = "vec", tag = "99")]
     pub signature: ::prost::alloc::vec::Vec<u8>,
 }
 /// *
+/// A voucher of an _indexing agreement_.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Voucher {
+    /// / The agreement payer.
+    #[prost(bytes = "vec", tag = "1")]
+    pub payer: ::prost::alloc::vec::Vec<u8>,
+    /// / The voucher recipient address.
+    #[prost(bytes = "vec", tag = "2")]
+    pub recipient: ::prost::alloc::vec::Vec<u8>,
+    /// / Service address that will initiate the payment collection.
+    #[prost(bytes = "vec", tag = "3")]
+    pub service: ::prost::alloc::vec::Vec<u8>,
+    /// / The duration of the agreement in epochs.
+    #[prost(uint32, tag = "10")]
+    pub duration_epochs: u32,
+    /// / The maximum amount, in _wei GRT_, that can be collected for the initial subgraph sync.
+    #[prost(bytes = "vec", tag = "20")]
+    pub max_initial_amount: ::prost::alloc::vec::Vec<u8>,
+    /// / The maximum amount, in _wei GRT_, that can be collected per epoch (after the initial sync).
+    #[prost(bytes = "vec", tag = "21")]
+    pub min_ongoing_amount_per_epoch: ::prost::alloc::vec::Vec<u8>,
+    /// / The maximum number of epochs that can be collected at once.
+    #[prost(uint32, tag = "30")]
+    pub max_epochs_per_collection: u32,
+    /// / The minimum number of epochs that can be collected at once.
+    #[prost(uint32, tag = "31")]
+    pub min_epochs_per_collection: u32,
+    /// / The voucher metadata.
+    #[prost(message, optional, tag = "50")]
+    pub metadata: ::core::option::Option<VoucherMetadata>,
+}
+/// *
+/// The indexing agreement voucher metadata.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct VoucherMetadata {
+    /// / The Subgraph deployment ID to index.
+    #[prost(bytes = "vec", tag = "1")]
+    pub deployment_id: ::prost::alloc::vec::Vec<u8>,
+    /// / The amount to pay per indexed block in _wei GRT per block_.
+    #[prost(bytes = "vec", tag = "20")]
+    pub price_per_block: ::prost::alloc::vec::Vec<u8>,
+    /// / The amount to pay per indexed and stored entity in _wei GRT per entity per epoch_.
+    #[prost(bytes = "vec", tag = "21")]
+    pub price_per_entity_per_epoch: ::prost::alloc::vec::Vec<u8>,
+}
+/// *
 /// A response to a request to propose a new _indexing agreement_ to an _indexer_.
 ///
-/// See the `DipsService.RegisterAgreement` method.
-///
-/// TODO(LNSD): Add fields to the message
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RegisterAgreementResponse {
-    /// / The signature of the message.
-    #[prost(bytes = "vec", tag = "99")]
-    pub signature: ::prost::alloc::vec::Vec<u8>,
+/// See the `DipsService.SubmitAgreementProposal` method.
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct SubmitAgreementProposalResponse {
+    /// / The response to the agreement proposal.
+    #[prost(enumeration = "ProposalResponse", tag = "1")]
+    pub response: i32,
 }
 /// *
 /// A request to cancel an existing _indexing agreement_.
 ///
 /// See the `DipsService.CancelAgreement` method.
-///
-/// TODO(LNSD): Add fields to the message
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CancelAgreementRequest {
+    /// / The ID of the agreement to cancel.
+    #[prost(bytes = "vec", tag = "1")]
+    pub agreement_id: ::prost::alloc::vec::Vec<u8>,
     /// / The signature of the message.
     #[prost(bytes = "vec", tag = "99")]
     pub signature: ::prost::alloc::vec::Vec<u8>,
@@ -40,12 +89,38 @@ pub struct CancelAgreementRequest {
 ///
 /// See the `DipsService.CancelAgreement` method.
 ///
-/// TODO(LNSD): Add fields to the message
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CancelAgreementResponse {
-    /// / The signature of the message.
-    #[prost(bytes = "vec", tag = "99")]
-    pub signature: ::prost::alloc::vec::Vec<u8>,
+/// Empty message
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct CancelAgreementResponse {}
+/// *
+/// The response to an _indexing agreement_ proposal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ProposalResponse {
+    /// / The agreement proposal was accepted.
+    Accept = 0,
+    /// / The agreement proposal was rejected.
+    Reject = 1,
+}
+impl ProposalResponse {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Accept => "ACCEPT",
+            Self::Reject => "REJECT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ACCEPT" => Some(Self::Accept),
+            "REJECT" => Some(Self::Reject),
+            _ => None,
+        }
+    }
 }
 /// Generated client implementations.
 pub mod dips_service_client {
@@ -142,11 +217,11 @@ pub mod dips_service_client {
         /// Propose a new _indexing agreement_ to an _indexer_.
         ///
         /// The _indexer_ can `ACCEPT` or `REJECT` the agreement.
-        pub async fn register_agreement(
+        pub async fn submit_agreement_proposal(
             &mut self,
-            request: impl tonic::IntoRequest<super::RegisterAgreementRequest>,
+            request: impl tonic::IntoRequest<super::SubmitAgreementProposalRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::RegisterAgreementResponse>,
+            tonic::Response<super::SubmitAgreementProposalResponse>,
             tonic::Status,
         > {
             self.inner
@@ -159,14 +234,14 @@ pub mod dips_service_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/graphprotocol.indexer.dips.DipsService/RegisterAgreement",
+                "/graphprotocol.indexer.dips.DipsService/SubmitAgreementProposal",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new(
                         "graphprotocol.indexer.dips.DipsService",
-                        "RegisterAgreement",
+                        "SubmitAgreementProposal",
                     ),
                 );
             self.inner.unary(req, path, codec).await
