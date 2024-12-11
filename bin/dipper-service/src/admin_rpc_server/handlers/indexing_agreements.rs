@@ -36,12 +36,12 @@ pub struct IndexingAgreementsCtx<R, W> {
     worker: W,
 }
 
-impl<R, W> FromState<Ctx<R, W>> for IndexingAgreementsCtx<R, W>
+impl<R, N, W> FromState<Ctx<R, N, W>> for IndexingAgreementsCtx<R, W>
 where
     R: Clone,
     W: Clone,
 {
-    fn from_state(ctx: &Ctx<R, W>) -> Self {
+    fn from_state(ctx: &Ctx<R, N, W>) -> Self {
         Self {
             signer: ctx.signer.clone(),
             allowlist: ctx.allowlist.clone(),

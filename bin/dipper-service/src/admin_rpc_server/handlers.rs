@@ -10,17 +10,18 @@ use self::{
     indexing_agreements::{IndexingAgreementsCtx, IndexingAgreementsRpcServerImpl},
     indexing_requests::{IndexingRequestsCtx, IndexingRequestsRpcServerImpl},
 };
-use crate::worker::messages::Message;
+use crate::{network::NetworkProvider, worker::messages::Message};
 
 mod indexing_agreements;
 mod indexing_requests;
 
 /// Create a new RPC module with all the admin handlers.
-pub(super) fn rpc_handlers<C, R, W>(ctx: C) -> RpcModule<C>
+pub(super) fn rpc_handlers<C, R, N, W>(ctx: C) -> RpcModule<C>
 where
     R: Registry + Clone + Send + Sync + 'static,
+    N: NetworkProvider + Clone + Send + Sync + 'static,
     W: Queue<Message> + Clone + Send + Sync + 'static,
-    IndexingRequestsCtx<R, W>: FromState<C>,
+    IndexingRequestsCtx<R, N, W>: FromState<C>,
     IndexingAgreementsCtx<R, W>: FromState<C>,
 {
     // Indexing requests

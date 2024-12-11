@@ -9,11 +9,20 @@ pub struct Indexer {
     pub url: Url,
 }
 
+/// A Subgraph deployment.
+pub struct Deployment {
+    /// The deployment's ID,
+    pub id: DeploymentId,
+}
+
 /// The network provider trait.
 ///
 /// Provides a set of methods to interact with the network provider abstracting the
 /// access to the Graph network snapshot.
 pub trait NetworkProvider {
+    /// Get Deployment by ID.
+    fn get_deployment_by_id(&self, deployment_id: &DeploymentId) -> Option<Deployment>;
+
     /// Get indexer by ID.
     fn get_indexer_by_id(&self, indexer_id: &IndexerId) -> Option<Indexer>;
 

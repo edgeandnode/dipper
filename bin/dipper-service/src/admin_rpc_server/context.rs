@@ -4,14 +4,14 @@ use dipper_pgmq::queue::Queue;
 use dipper_registry::Registry;
 use thegraph_core::alloy::primitives::Address;
 
-use crate::{signer::PrivateKeyEip712Signer, worker::messages::Message};
+use crate::{network::NetworkProvider, signer::PrivateKeyEip712Signer, worker::messages::Message};
 
 /// The maximum number of candidates to select.
 const DEFAULT_MAX_CANDIDATES: usize = 3;
 
 /// The context shared across all requests.
 #[derive(Clone)]
-pub struct Ctx<R, W> {
+pub struct Ctx<R, N, W> {
     /// The EIP-712 signer
     pub(super) signer: Arc<PrivateKeyEip712Signer>,
 
@@ -21,6 +21,9 @@ pub struct Ctx<R, W> {
     /// The DIPs registry
     pub(super) registry: R,
 
+    /// The Network provider
+    pub(super) network: N,
+
     /// The message queue worker
     pub(super) worker: W,
 
@@ -29,10 +32,11 @@ pub struct Ctx<R, W> {
 }
 
 /// The HTTP server context builder.
-pub struct CtxBuilder<S, R, W> {
+pub struct CtxBuilder<S, R, N, W> {
     signer: S,
     allowlist: BTreeSet<Address>,
     registry: R,
+    network: N,
     worker: W,
     max_candidates: usize,
 }
@@ -47,61 +51,71 @@ pub struct SignerSet(Arc<PrivateKeyEip712Signer>);
 pub struct RegistrySet<R>(R);
 
 #[doc(hidden)]
+pub struct NetworkSet<N>(N);
+
+#[doc(hidden)]
 pub struct WorkerSet<W>(W);
 
-impl CtxBuilder<NotSet, NotSet, NotSet> {
+impl CtxBuilder<NotSet, NotSet, NotSet, NotSet> {
     /// Creates a new [`CtxBuilder`].
     pub fn new() -> Self {
         Self {
             signer: NotSet,
             allowlist: Default::default(),
             registry: NotSet,
+            network: NotSet,
             worker: NotSet,
             max_candidates: DEFAULT_MAX_CANDIDATES,
         }
     }
 }
 
-impl<S, R, W> CtxBuilder<S, R, W> {
+impl<S, R, N, W> CtxBuilder<S, R, N, W> {
     /// Sets the list of addresses that are allowed to make requests to the DIPs gateway.
-    pub fn with_allowlist(self, allowlist: BTreeSet<Address>) -> CtxBuilder<S, R, W> {
+    pub fn with_allowlist(self, allowlist: BTreeSet<Address>) -> CtxBuilder<S, R, N, W> {
         CtxBuilder {
             signer: self.signer,
             allowlist,
             registry: self.registry,
+            network: self.network,
             worker: self.worker,
             max_candidates: self.max_candidates,
         }
     }
 
     /// Sets the maximum number of candidates to select.
-    pub fn with_max_candidates(self, max_candidates: usize) -> CtxBuilder<S, R, W> {
+    pub fn with_max_candidates(self, max_candidates: usize) -> CtxBuilder<S, R, N, W> {
         CtxBuilder {
             signer: self.signer,
             allowlist: self.allowlist,
             registry: self.registry,
+            network: self.network,
             worker: self.worker,
             max_candidates,
         }
     }
 }
 
-impl<R, W> CtxBuilder<NotSet, R, W> {
+impl<R, N, W> CtxBuilder<NotSet, R, N, W> {
     /// Sets the EIP-712 signer.
-    pub fn with_signer(self, signer: Arc<PrivateKeyEip712Signer>) -> CtxBuilder<SignerSet, R, W> {
+    pub fn with_signer(
+        self,
+        signer: Arc<PrivateKeyEip712Signer>,
+    ) -> CtxBuilder<SignerSet, R, N, W> {
         CtxBuilder {
             signer: SignerSet(signer),
             allowlist: self.allowlist,
             registry: self.registry,
+            network: self.network,
             worker: self.worker,
             max_candidates: self.max_candidates,
         }
     }
 }
 
-impl<S, W> CtxBuilder<S, NotSet, W> {
+impl<S, N, W> CtxBuilder<S, NotSet, N, W> {
     /// Sets the DIPs registry.
-    pub fn with_registry<R>(self, registry: R) -> CtxBuilder<S, RegistrySet<R>, W>
+    pub fn with_registry<R>(self, registry: R) -> CtxBuilder<S, RegistrySet<R>, N, W>
     where
         R: Registry + 'static,
     {
@@ -109,15 +123,33 @@ impl<S, W> CtxBuilder<S, NotSet, W> {
             signer: self.signer,
             allowlist: self.allowlist,
             registry: RegistrySet(registry),
+            network: self.network,
             worker: self.worker,
             max_candidates: self.max_candidates,
         }
     }
 }
 
-impl<S, R> CtxBuilder<S, R, NotSet> {
+impl<S, R, W> CtxBuilder<S, R, NotSet, W> {
+    /// Sets the network provider.
+    pub fn with_network_provider<N>(self, network: N) -> CtxBuilder<S, R, NetworkSet<N>, W>
+    where
+        N: NetworkProvider + 'static,
+    {
+        CtxBuilder {
+            signer: self.signer,
+            allowlist: self.allowlist,
+            registry: self.registry,
+            network: NetworkSet(network),
+            worker: self.worker,
+            max_candidates: self.max_candidates,
+        }
+    }
+}
+
+impl<S, R, N> CtxBuilder<S, R, N, NotSet> {
     /// Sets the message queue worker.
-    pub fn with_worker<W>(self, worker: W) -> CtxBuilder<S, R, WorkerSet<W>>
+    pub fn with_worker<W>(self, worker: W) -> CtxBuilder<S, R, N, WorkerSet<W>>
     where
         W: Queue<Message> + 'static,
     {
@@ -125,23 +157,26 @@ impl<S, R> CtxBuilder<S, R, NotSet> {
             signer: self.signer,
             allowlist: self.allowlist,
             registry: self.registry,
+            network: self.network,
             worker: WorkerSet(worker),
             max_candidates: self.max_candidates,
         }
     }
 }
 
-impl<R, W> CtxBuilder<SignerSet, RegistrySet<R>, WorkerSet<W>>
+impl<R, N, W> CtxBuilder<SignerSet, RegistrySet<R>, NetworkSet<N>, WorkerSet<W>>
 where
     R: Registry,
+    N: NetworkProvider,
     W: Queue<Message>,
 {
     /// Builds the [`Ctx`] instance.
-    pub fn build(self) -> Ctx<R, W> {
+    pub fn build(self) -> Ctx<R, N, W> {
         Ctx {
             signer: self.signer.0,
             allowlist: Arc::new(self.allowlist),
             registry: self.registry.0,
+            network: self.network.0,
             worker: self.worker.0,
             max_candidates: self.max_candidates,
         }
@@ -172,7 +207,13 @@ mod tests {
     use uuid::Uuid;
 
     use super::CtxBuilder;
-    use crate::signer::PrivateKeyEip712Signer;
+    use crate::{
+        network::{
+            api::{Deployment, Indexer},
+            NetworkProvider,
+        },
+        signer::PrivateKeyEip712Signer,
+    };
 
     pub struct DummyRegistry;
 
@@ -333,6 +374,33 @@ mod tests {
         }
     }
 
+    pub struct DummyNetworkProvider;
+
+    #[async_trait]
+    impl NetworkProvider for DummyNetworkProvider {
+        fn get_deployment_by_id(&self, _deployment_id: &DeploymentId) -> Option<Deployment> {
+            unimplemented!()
+        }
+
+        fn get_indexer_by_id(&self, _indexer_id: &IndexerId) -> Option<Indexer> {
+            unimplemented!()
+        }
+
+        fn get_indexers_not_indexing_a_deployment_id(
+            &self,
+            _deployment_id: &DeploymentId,
+        ) -> Vec<Indexer> {
+            unimplemented!()
+        }
+
+        fn get_indexer_id_for_operator_address(
+            &self,
+            _operator_address: &Address,
+        ) -> Option<IndexerId> {
+            unimplemented!()
+        }
+    }
+
     pub struct DummyQueueWorker;
 
     #[async_trait]
@@ -391,6 +459,7 @@ mod tests {
         };
         let allowlist = BTreeSet::from([address!("A3A933720D7BAE63a102e70869D1Ca96E2329428")]);
         let registry = DummyRegistry;
+        let network = DummyNetworkProvider;
         let worker = DummyQueueWorker;
 
         //* When
@@ -398,6 +467,7 @@ mod tests {
             .with_signer(signer)
             .with_worker(worker)
             .with_registry(registry)
+            .with_network_provider(network)
             .with_allowlist(allowlist)
             .with_max_candidates(10)
             .build();

@@ -166,6 +166,7 @@ pub async fn main() -> anyhow::Result<()> {
     let (admin_rpc_handle, admin_rpc_service) = {
         let context = admin_rpc_server::CtxBuilder::new()
             .with_worker(queue.clone())
+            .with_network_provider(network_provider.clone())
             .with_registry(registry.clone())
             .with_allowlist(conf.admin_rpc.allowlist)
             .with_signer(signer.clone())
@@ -185,7 +186,7 @@ pub async fn main() -> anyhow::Result<()> {
         let context = indexer_rpc_server::CtxBuilder::new()
             .with_worker(queue.clone())
             .with_registry(registry.clone())
-            .with_network(network_provider.clone())
+            .with_network_provider(network_provider.clone())
             .with_allowlist(conf.indexer_rpc.allowlist)
             .with_signer(signer.clone())
             .build();

@@ -8,7 +8,7 @@ use dipper_registry::{
 };
 
 use super::{
-    context::Context,
+    context::{Context, IndexingAgreementConfig},
     messages::{
         FindIndexerForIndexingRequest, Message, ProcessIndexingAgreementCancellation,
         ProcessIndexingRequestCancellation, ProcessNewIndexingRequest,
@@ -19,7 +19,6 @@ use crate::{
     indexers::{AgreementProposalResponse, DipsClient},
     network::NetworkProvider,
     signer::PrivateKeyEip712Signer,
-    worker::context::IndexingAgreementConfig,
 };
 
 /// Default agreement duration (60 days).
@@ -413,8 +412,7 @@ where
     C: DipsClient,
 {
     // Check the status of the agreement before sending the proposal
-    let agreement = registry.get_indexing_agreement_by_id(agreement_id).await?;
-    match agreement {
+    match registry.get_indexing_agreement_by_id(agreement_id).await? {
         None => {
             tracing::error!(agreement_id=%agreement_id, "Indexing agreement not found");
             return Ok(JobResult::Ok(()));

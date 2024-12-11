@@ -1,7 +1,7 @@
 use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId};
 
 use super::{
-    api::{Indexer, NetworkProvider},
+    api::{Deployment, Indexer, NetworkProvider},
     service::Handle,
 };
 
@@ -19,6 +19,13 @@ impl NetworkProviderService {
 }
 
 impl NetworkProvider for NetworkProviderService {
+    fn get_deployment_by_id(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
+        self.inner
+            .snapshot()
+            .get_deployment(deployment_id)
+            .map(|deployment| Deployment { id: deployment.id })
+    }
+
     fn get_indexer_by_id(&self, indexer_id: &IndexerId) -> Option<Indexer> {
         self.inner
             .snapshot()
