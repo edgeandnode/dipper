@@ -5,8 +5,6 @@
 //! This module defines different traits to interact with the indexers:
 //! - [`DipsClient`]: Send DIPs related requests to the indexers.
 
-use std::time::Duration;
-
 use async_trait::async_trait;
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use thegraph_core::DeploymentId;
@@ -41,7 +39,6 @@ pub trait DipsClient {
         indexing_agreement_id: IndexingAgreementId,
         indexing_request_id: IndexingRequestId,
         deployment_id: DeploymentId,
-        duration: Duration,
     ) -> Result<AgreementProposalResponse, DipsError>;
 
     /// Send an indexing agreement cancel request to the indexer
@@ -65,7 +62,6 @@ impl DipsClient for DummyDipsIndexerClient {
         _indexing_agreement_id: IndexingAgreementId,
         _indexing_request_id: IndexingRequestId,
         _deployment_id: DeploymentId,
-        _duration: Duration,
     ) -> Result<AgreementProposalResponse, DipsError> {
         todo!()
     }

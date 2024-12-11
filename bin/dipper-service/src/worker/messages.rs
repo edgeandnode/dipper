@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -113,7 +111,6 @@ pub struct SendIndexingAgreementProposal {
     pub indexing_request_id: IndexingRequestId,
     pub deployment_id: DeploymentId,
     pub deployment_chain_id: ChainId,
-    pub duration: Duration,
 }
 
 /// Send an indexing agreement cancellation to the indexer.
