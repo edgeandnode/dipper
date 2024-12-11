@@ -2,9 +2,9 @@ use std::str::FromStr;
 
 use anyhow::anyhow;
 use clap::{arg, command, value_parser, Command};
-use dipper_core::{ids::IndexingRequestId, signed_message::signing::sign};
+use dipper_core::ids::IndexingRequestId;
 use dipper_rpc::admin::indexing_requests::CancelIndexingRequest;
-use thegraph_core::{DeploymentId, SubgraphId};
+use thegraph_core::{signed_message, DeploymentId, SubgraphId};
 use uuid::Uuid;
 
 use super::common;
@@ -74,7 +74,7 @@ pub async fn cancel(conf: Config, matches: &clap::ArgMatches) -> anyhow::Result<
     match matches.get_one::<IndexingRequestSelector>("INDEXING_ID") {
         // ID is an UUIDv7
         Some(IndexingRequestSelector::IndexingRequestId(id)) => {
-            let req = sign(
+            let req = signed_message::sign(
                 &signer,
                 &signer_eip712_domain,
                 CancelIndexingRequest { id: *id },

@@ -3,7 +3,6 @@ use std::{collections::BTreeSet, sync::Arc};
 use async_trait::async_trait;
 use dipper_core::{
     ids::{IndexingAgreementId, IndexingRequestId},
-    signed_message::serde::SignedMessage,
     state::FromState,
 };
 use dipper_pgmq::queue::Queue;
@@ -11,9 +10,12 @@ use dipper_registry::{
     IndexingAgreement as IndexingAgreementRecord,
     IndexingAgreementStatus as IndexingAgreementRecordStatus, Registry,
 };
-use dipper_rpc::admin::indexing_agreements::{
-    CancelIndexingAgreement, IndexingAgreement, IndexingAgreementsRpcServer,
-    Status as IndexingAgreementStatus,
+use dipper_rpc::admin::{
+    indexing_agreements::{
+        CancelIndexingAgreement, IndexingAgreement, IndexingAgreementsRpcServer,
+        Status as IndexingAgreementStatus,
+    },
+    SignedMessage,
 };
 use jsonrpsee::core::RpcResult;
 use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId};

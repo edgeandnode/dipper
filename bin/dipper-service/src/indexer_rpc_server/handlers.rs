@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
-use dipper_core::{signed_message::SignedMessage, state::FromState};
+use dipper_core::state::FromState;
 use dipper_pgmq::queue::Queue;
 use dipper_registry::{IndexingAgreementStatus, Registry};
 use dipper_rpc::indexer::rpc::gateway_server::{
@@ -11,7 +11,7 @@ use dipper_rpc::indexer::rpc::gateway_server::{
     },
     CancelAgreementRequestMessage, ReportProgressRequestMessage,
 };
-use thegraph_core::IndexerId;
+use thegraph_core::{signed_message::SignedMessage, IndexerId};
 use tonic::{Request, Response, Status};
 
 use crate::{

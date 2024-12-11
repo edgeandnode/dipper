@@ -1,13 +1,13 @@
-use dipper_core::{
-    ids::IndexingRequestId,
-    signed_message::{serde::SignedMessage, ToSolStruct},
-};
+use dipper_core::ids::IndexingRequestId;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use thegraph_core::{
     alloy::primitives::{Address, ChainId},
+    signed_message::ToSolStruct,
     DeploymentId,
 };
 use time::OffsetDateTime;
+
+use super::message::SignedMessage;
 
 /// The _indexing requests_ RPC methods
 #[rpc(server, client)]

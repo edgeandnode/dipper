@@ -2,14 +2,15 @@
 //!
 //! The EIP-712 signer is a wrapper around an ECDSA signer and an EIP-712 domain separator.
 
-use dipper_core::signed_message::{
-    signing::{recover_signer_address, sign, RecoverSignerError, SigningError},
-    SignedMessage, ToSolStruct,
-};
-use thegraph_core::alloy::{
-    primitives::Address,
-    signers::{local::PrivateKeySigner, SignerSync},
-    sol_types::{Eip712Domain, SolStruct},
+use thegraph_core::{
+    alloy::{
+        primitives::Address,
+        signers::{local::PrivateKeySigner, SignerSync},
+        sol_types::{Eip712Domain, SolStruct},
+    },
+    signed_message::{
+        recover_signer_address, sign, RecoverSignerError, SignedMessage, SigningError, ToSolStruct,
+    },
 };
 
 /// An [`Eip712Signer`] using a [`PrivateKeySigner`] as the ECDSA signer
@@ -45,13 +46,6 @@ where
     /// Get the signer's address
     pub fn address(&self) -> Address {
         self.signer_address
-    }
-
-    /// Get the [EIP-712] domain separator
-    ///
-    /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
-    pub fn domain(&self) -> &Eip712Domain {
-        &self.domain
     }
 
     /// Sign a message using the [EIP-712] standard
