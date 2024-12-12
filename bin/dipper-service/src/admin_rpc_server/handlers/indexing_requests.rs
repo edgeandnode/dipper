@@ -13,7 +13,7 @@ use dipper_rpc::admin::{
     },
     SignedMessage,
 };
-use jsonrpsee::core::RpcResult;
+use jsonrpsee::{core::RpcResult, types::ErrorObject};
 use thegraph_core::{alloy::primitives::Address, DeploymentId};
 
 use crate::{network::NetworkProvider, signer::PrivateKeyEip712Signer, worker::WorkerQueue};
@@ -54,8 +54,7 @@ where
             Ok(res) => res.into_iter().map(into_indexing_request).collect(),
             Err(err) => {
                 tracing::error!(error=?err, "Failed to get all indexing requests");
-                // return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(503, "Service unavailable", None));
             }
         };
 
@@ -69,13 +68,11 @@ where
         let indexing_request = match self.registry.get_indexing_request_by_id(&id).await {
             Ok(Some(res)) => into_indexing_request(res),
             Ok(None) => {
-                // return Err(StatusCode::NOT_FOUND);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(404, "Not found", None));
             }
             Err(err) => {
                 tracing::error!(error=?err, "Failed to get indexing request by id");
-                // return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(503, "Service unavailable", None));
             }
         };
 
@@ -94,8 +91,7 @@ where
             Ok(res) => res.into_iter().map(into_indexing_request).collect(),
             Err(err) => {
                 tracing::error!(error=?err, "Failed to get indexing request by id");
-                // return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(503, "Service unavailable", None));
             }
         };
 
@@ -111,13 +107,11 @@ where
             Ok(requested_by) => requested_by,
             Err(err) => {
                 tracing::debug!(error=?err, "Failed to recover signer");
-                // return Err(StatusCode::UNAUTHORIZED);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(401, "Unauthorized", None));
             }
         };
         if !self.allowlist.contains(&requested_by) {
-            // return Err(StatusCode::FORBIDDEN);
-            todo!("Return error");
+            return Err(ErrorObject::borrowed(403, "Forbidden", None));
         }
 
         let NewIndexingRequest {
@@ -127,8 +121,7 @@ where
 
         // TODO: check the deployment chain_id is correct
         if self.network.get_deployment_by_id(&deployment_id).is_none() {
-            // return Err(StatusCode::NOT_FOUND);
-            todo!("Return error");
+            return Err(ErrorObject::borrowed(404, "Not found", None));
         }
 
         // Register the new indexing request
@@ -140,8 +133,7 @@ where
             Ok(indexing_request_id) => indexing_request_id,
             Err(err) => {
                 tracing::error!(error=?err, "Failed to register new indexing request");
-                // return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(503, "Service unavailable", None));
             }
         };
 
@@ -157,8 +149,7 @@ where
             .await
         {
             tracing::error!(error=?err, "Failed queue task: 'process_new_indexing_request'");
-            // return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            todo!("Return error");
+            return Err(ErrorObject::borrowed(500, "Internal server error", None));
         };
 
         Ok(indexing_request_id)
@@ -173,13 +164,11 @@ where
             Ok(requested_by) => requested_by,
             Err(err) => {
                 tracing::debug!(error=?err, "Failed to recover signer");
-                // return Err(StatusCode::UNAUTHORIZED);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(401, "Unauthorized", None));
             }
         };
         if !self.allowlist.contains(&requested_by) {
-            // return Err(StatusCode::FORBIDDEN);
-            todo!("Return error");
+            return Err(ErrorObject::borrowed(403, "Forbidden", None));
         }
 
         let CancelIndexingRequest {
@@ -193,13 +182,11 @@ where
             .await
         {
             Ok(None) => {
-                // return Err(StatusCode::NOT_FOUND);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(404, "Not found", None));
             }
             Err(err) => {
                 tracing::error!(error=?err, "Failed to get indexing request");
-                // return Err(StatusCode::INTERNAL_ERROR);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(503, "Service unavailable", None));
             }
             _ => {
                 // The indexing request exists, proceed with cancellation
@@ -213,8 +200,7 @@ where
             .await
         {
             tracing::error!(%indexing_request_id, error=?err, "Failed to mark indexing request as canceled");
-            // return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            todo!("Return error");
+            return Err(ErrorObject::borrowed(503, "Service unavailable", None));
         };
 
         // Process the indexing request cancellation
@@ -223,9 +209,8 @@ where
             .process_indexing_request_cancellation(indexing_request_id)
             .await
         {
-            tracing::error!(error=?err, "Failed to queue task: 'ProcessIndexingRequestCancellation'");
-            // return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            todo!("Return error")
+            tracing::error!(error=?err, "Failed to queue task: 'process_indexing_request_cancellation'");
+            return Err(ErrorObject::borrowed(500, "Internal server error", None));
         };
 
         Ok(())

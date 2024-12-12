@@ -16,7 +16,7 @@ use dipper_rpc::admin::{
     },
     SignedMessage,
 };
-use jsonrpsee::core::RpcResult;
+use jsonrpsee::{core::RpcResult, types::ErrorObject};
 use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId};
 
 use crate::{signer::PrivateKeyEip712Signer, worker::WorkerQueue};
@@ -68,13 +68,11 @@ where
         {
             Ok(Some(res)) => into_indexing_agreement(res),
             Ok(None) => {
-                // return Err(StatusCode::NOT_FOUND);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(404, "Not found", None));
             }
             Err(err) => {
                 tracing::error!(error=?err, "Failed to get indexing agreement by id");
-                // return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(503, "Internal error", None));
             }
         };
 
@@ -93,8 +91,7 @@ where
             Ok(res) => res.into_iter().map(into_indexing_agreement).collect(),
             Err(err) => {
                 tracing::error!(error=?err, "Failed to get indexing agreements by deployment id");
-                // return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(503, "Internal error", None));
             }
         };
 
@@ -113,8 +110,7 @@ where
             Ok(res) => res.into_iter().map(into_indexing_agreement).collect(),
             Err(err) => {
                 tracing::error!(error=?err, "Failed to get indexing agreements by indexer id");
-                // return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(503, "Internal error", None));
             }
         };
 
@@ -133,8 +129,7 @@ where
             Ok(res) => res.into_iter().map(into_indexing_agreement).collect(),
             Err(err) => {
                 tracing::error!(error=?err, "Failed to get indexing agreements by indexer id");
-                // return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(503, "Internal error", None));
             }
         };
 
@@ -150,13 +145,11 @@ where
             Ok(requested_by) => requested_by,
             Err(err) => {
                 tracing::debug!(error=?err, "Failed to recover signer");
-                // return Err(StatusCode::UNAUTHORIZED);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(401, "Unauthorized", None));
             }
         };
         if !self.allowlist.contains(&requested_by) {
-            // return Err(StatusCode::FORBIDDEN);
-            todo!("Return error");
+            return Err(ErrorObject::borrowed(403, "Forbidden", None));
         }
 
         let CancelIndexingAgreement { id: agreement_id } = req.into_message();
@@ -168,13 +161,11 @@ where
             .await
         {
             Ok(None) => {
-                // return Err(StatusCode::NOT_FOUND);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(404, "Not found", None));
             }
             Err(err) => {
                 tracing::error!(error=?err, "Failed to get indexing agreement");
-                // return Err(StatusCode::INTERNAL_ERROR);
-                todo!("Return error");
+                return Err(ErrorObject::borrowed(503, "Internal error", None));
             }
             _ => {
                 // The agreement exists, proceed with cancellation
@@ -188,14 +179,14 @@ where
             .await
         {
             tracing::error!(error=?err, "Failed to queue task: 'process_indexing_agreement_requester_cancellation'");
-            // return Err(StatusCode::INTERNAL_ERROR);
-            todo!("Return error")
+            return Err(ErrorObject::borrowed(500, "Internal error", None));
         };
 
         Ok(())
     }
 }
 
+#[inline]
 fn into_indexing_agreement(agreement: IndexingAgreementRecord) -> IndexingAgreement {
     IndexingAgreement {
         id: agreement.id,
@@ -209,6 +200,7 @@ fn into_indexing_agreement(agreement: IndexingAgreementRecord) -> IndexingAgreem
     }
 }
 
+#[inline]
 fn into_indexing_agreement_status(
     status: IndexingAgreementRecordStatus,
 ) -> IndexingAgreementStatus {
