@@ -1,11 +1,12 @@
 use std::{future::Future, net::SocketAddr};
 
+use dipper_core::state::FromState;
 use dipper_pgmq::queue::Queue;
 use dipper_registry::Registry;
 use jsonrpsee::server::Server;
 use tokio::sync::mpsc;
 
-use super::{context::Ctx, handlers::rpc_handlers};
+use super::handlers::{rpc_handlers, IndexingAgreementsCtx, IndexingRequestsCtx};
 use crate::{network::NetworkProvider, worker::messages::Message};
 
 /// RPC server configuration.
@@ -38,14 +39,13 @@ impl Handle {
 }
 
 /// Create a new Admin RPC server service
-pub fn new<R, N, W>(
-    conf: Config,
-    ctx: Ctx<R, N, W>,
-) -> (Handle, impl Future<Output = anyhow::Result<()>>)
+pub fn new<S, R, N, W>(conf: Config, ctx: S) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
     R: Registry + Clone + Send + Sync + 'static,
     N: NetworkProvider + Clone + Send + Sync + 'static,
     W: Queue<Message> + Clone + Send + Sync + 'static,
+    IndexingRequestsCtx<R, N, W>: FromState<S>,
+    IndexingAgreementsCtx<R, W>: FromState<S>,
 {
     let (tx_stop, mut rx_stop) = mpsc::channel(1);
 

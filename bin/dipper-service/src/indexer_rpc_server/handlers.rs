@@ -15,7 +15,6 @@ use thegraph_core::{signed_message::SignedMessage, IndexerId};
 use tonic::{Request, Response, Status};
 
 use crate::{
-    indexer_rpc_server::Ctx,
     network::NetworkProvider,
     signer::PrivateKeyEip712Signer,
     worker::messages::{Message, ProcessIndexingAgreementCancellation},
@@ -25,37 +24,20 @@ use crate::{
 ///
 /// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
 pub struct DipsGatewayServiceCtx<R, N, W> {
-    signer: Arc<PrivateKeyEip712Signer>,
-    allowlist: Arc<BTreeSet<IndexerId>>,
-    registry: R,
-    network: N,
-    worker: W,
-}
-
-impl<R, N, W> FromState<Ctx<R, N, W>> for DipsGatewayServiceCtx<R, N, W>
-where
-    R: Clone,
-    N: Clone,
-    W: Clone,
-{
-    fn from_state(ctx: &Ctx<R, N, W>) -> Self {
-        Self {
-            signer: ctx.signer.clone(),
-            allowlist: ctx.allowlist.clone(),
-            registry: ctx.registry.clone(),
-            network: ctx.network.clone(),
-            worker: ctx.worker.clone(),
-        }
-    }
+    pub signer: Arc<PrivateKeyEip712Signer>,
+    pub allowlist: Arc<BTreeSet<IndexerId>>,
+    pub registry: R,
+    pub network: N,
+    pub worker: W,
 }
 
 pub struct DipsGatewayServiceImpl<R, N, W>(DipsGatewayServiceCtx<R, N, W>);
 
 impl<R, N, W> DipsGatewayServiceImpl<R, N, W> {
     /// Create a new instance of the [`DipsGatewayServiceImpl`] with the given context.
-    pub fn with_context<C>(ctx: &C) -> Self
+    pub fn with_context<S>(ctx: &S) -> Self
     where
-        DipsGatewayServiceCtx<R, N, W>: FromState<C>,
+        DipsGatewayServiceCtx<R, N, W>: FromState<S>,
     {
         Self(FromState::from_state(ctx))
     }
