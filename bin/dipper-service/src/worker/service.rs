@@ -7,19 +7,16 @@ use dipper_registry::Registry;
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
-use super::{handlers, messages::Message};
-use crate::{
-    indexers::DipsClient,
-    network::api::NetworkProvider,
-    worker::{
-        context::Context,
-        handlers::{
-            FindIndexerForIndexingRequestState, ProcessIndexingAgreementCancellationState,
-            ProcessIndexingRequestCancellationState, ProcessNewIndexingRequestState,
-            SendIndexingAgreementCancellationState, SendIndexingAgreementProposalState,
-        },
+use super::{
+    handlers,
+    handlers::{
+        FindIndexerForIndexingRequestCtx, ProcessIndexingAgreementCancellationCtx,
+        ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
+        SendIndexingAgreementCancellationCtx, SendIndexingAgreementProposalCtx,
     },
+    messages::Message,
 };
+use crate::{indexers::DipsClient, network::NetworkProvider};
 
 /// Default period to pull tasks from the queue.
 const DEFAULT_TASK_PULL_PERIOD: Duration = Duration::from_secs(1);
@@ -51,23 +48,28 @@ impl Handle {
 /// Create a new worker and a future that processes tasks from the queue.
 ///
 /// The worker pulls tasks from the queue and processes them concurrently every 10 seconds.
-pub fn new<Q, N, R, C, I>(
-    state: Context<Q, N, R, C, I>,
-) -> (Handle, impl Future<Output = anyhow::Result<()>> + Send)
+pub fn new<S, R, N, W, C, I>(state: S) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
-    Q: Queue<Message> + Clone + Send + Sync,
-    N: NetworkProvider + Clone + Send + Sync,
     R: Registry + Clone + Send + Sync,
+    N: NetworkProvider + Clone + Send + Sync,
+    W: Queue<Message> + Clone + Send + Sync,
     C: DipsClient + Clone + Send + Sync,
     I: CandidateSelection + Clone + Send + Sync,
+    WorkerCtx<W>: FromState<S>,
+    ProcessNewIndexingRequestCtx<R, N, W, I>: FromState<S>,
+    ProcessIndexingRequestCancellationCtx<R, W>: FromState<S>,
+    FindIndexerForIndexingRequestCtx<R, N, W, I>: FromState<S>,
+    SendIndexingAgreementProposalCtx<R, W, C>: FromState<S>,
+    SendIndexingAgreementCancellationCtx<R, C>: FromState<S>,
+    ProcessIndexingAgreementCancellationCtx<R, W>: FromState<S>,
 {
     let (tx_stop, rx_stop) = mpsc::channel(1);
 
     let handle = Handle { tx_stop };
 
     let fut = async move {
+        let WorkerCtx { queue } = FromState::from_state(&state);
         let state = state;
-        let queue = state.queue.clone();
 
         let mut stop_rx = rx_stop;
         loop {
@@ -115,22 +117,26 @@ where
     (handle, fut)
 }
 
-async fn process_task<S, Q, N, R, C, I>(
+pub struct WorkerCtx<W> {
+    pub queue: W,
+}
+
+async fn process_task<S, W, N, R, C, I>(
     state: &S,
     message: Message,
 ) -> anyhow::Result<JobResult<()>>
 where
-    Q: Queue<Message>,
-    N: NetworkProvider,
     R: Registry,
+    N: NetworkProvider,
+    W: Queue<Message>,
     C: DipsClient,
     I: CandidateSelection,
-    ProcessNewIndexingRequestState<Q, N, R, I>: FromState<S>,
-    ProcessIndexingRequestCancellationState<Q, R>: FromState<S>,
-    FindIndexerForIndexingRequestState<Q, N, R, I>: FromState<S>,
-    SendIndexingAgreementProposalState<Q, R, C>: FromState<S>,
-    SendIndexingAgreementCancellationState<R, C>: FromState<S>,
-    ProcessIndexingAgreementCancellationState<Q, R>: FromState<S>,
+    ProcessNewIndexingRequestCtx<R, N, W, I>: FromState<S>,
+    ProcessIndexingRequestCancellationCtx<R, W>: FromState<S>,
+    FindIndexerForIndexingRequestCtx<R, N, W, I>: FromState<S>,
+    SendIndexingAgreementProposalCtx<R, W, C>: FromState<S>,
+    SendIndexingAgreementCancellationCtx<R, C>: FromState<S>,
+    ProcessIndexingAgreementCancellationCtx<R, W>: FromState<S>,
 {
     /// Dispatch a message to the appropriate message handler, based on the message type, with
     /// the given state.

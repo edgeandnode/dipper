@@ -5,7 +5,7 @@ use thegraph_core::DeploymentId;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    api::{CandidateSelection, Indexer},
+    api::{CandidateSelection, Indexer, SelectionError},
     py::{
         iisa::{PyBigQueryProvider, PyDataManager, PyGeoipResolver, PyNetworkProvider},
         logging,
@@ -113,30 +113,13 @@ impl Handle {
     }
 }
 
-/// The `SelectionError` enum represents the errors that can occur during the candidate selection
-/// process.
-#[derive(Debug, thiserror::Error)]
-pub enum SelectionError {
-    /// Indexer Selection service is not available.
-    ///
-    /// An error occurred while sending a request to the IISA service.
-    #[error("IISA service is not available")]
-    IisaServiceUnavailable,
-
-    /// An error occurred during the selection process.
-    #[error(transparent)]
-    Error(#[from] anyhow::Error),
-}
-
 #[async_trait]
 impl CandidateSelection for Handle {
-    type Error = SelectionError;
-
     async fn select_one(
         &self,
         deployment_id: DeploymentId,
         candidates: Vec<Indexer>,
-    ) -> Result<Option<Indexer>, Self::Error> {
+    ) -> Result<Option<Indexer>, SelectionError> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Command::SelectOneIndexer {
@@ -157,7 +140,7 @@ impl CandidateSelection for Handle {
         deployment_id: DeploymentId,
         candidates: Vec<Indexer>,
         num_candidates: usize,
-    ) -> Result<Vec<Indexer>, Self::Error> {
+    ) -> Result<Vec<Indexer>, SelectionError> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(Command::SelectIndexers {

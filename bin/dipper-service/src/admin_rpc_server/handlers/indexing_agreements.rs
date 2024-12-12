@@ -21,7 +21,6 @@ use jsonrpsee::core::RpcResult;
 use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId};
 
 use crate::{
-    admin_rpc_server::Ctx,
     signer::PrivateKeyEip712Signer,
     worker::messages::{Message, ProcessIndexingAgreementCancellation},
 };
@@ -30,25 +29,10 @@ use crate::{
 ///
 /// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
 pub struct IndexingAgreementsCtx<R, W> {
-    signer: Arc<PrivateKeyEip712Signer>,
-    allowlist: Arc<BTreeSet<Address>>,
-    registry: R,
-    worker: W,
-}
-
-impl<R, N, W> FromState<Ctx<R, N, W>> for IndexingAgreementsCtx<R, W>
-where
-    R: Clone,
-    W: Clone,
-{
-    fn from_state(ctx: &Ctx<R, N, W>) -> Self {
-        Self {
-            signer: ctx.signer.clone(),
-            allowlist: ctx.allowlist.clone(),
-            registry: ctx.registry.clone(),
-            worker: ctx.worker.clone(),
-        }
-    }
+    pub signer: Arc<PrivateKeyEip712Signer>,
+    pub allowlist: Arc<BTreeSet<Address>>,
+    pub registry: R,
+    pub worker: W,
 }
 
 pub struct IndexingAgreementsRpcServerImpl<R, W>(IndexingAgreementsCtx<R, W>);

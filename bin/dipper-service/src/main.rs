@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, env, path::PathBuf, sync::Arc};
 
 use async_signal::{Signal, Signals};
 use dipper_iisa as iisa;
@@ -7,14 +7,19 @@ use dipper_registry::postgres::PgRegistry;
 use dipper_rpc::eip712_domain;
 use futures_lite::StreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use thegraph_core::alloy::signers::local::PrivateKeySigner;
+use thegraph_core::alloy::{primitives::ChainId, signers::local::PrivateKeySigner};
 use tokio::task::JoinSet;
 use tracing_subscriber::EnvFilter;
 
-use self::{network::Snapshot, signer::Eip712Signer};
+use self::{
+    context::{CtxBuilder, DEFAULT_MAX_CANDIDATES},
+    network::Snapshot,
+    signer::Eip712Signer,
+};
 
 mod admin_rpc_server;
 mod config;
+mod context;
 mod indexer_rpc_server;
 mod indexers;
 mod network;
@@ -146,51 +151,36 @@ pub async fn main() -> anyhow::Result<()> {
     };
     tracing::info!("initialized IISA service");
 
-    //- The worker service
-    let (worker_handle, worker_service) = {
-        let context = worker::Context {
-            signer: signer.clone(),
-            agreement_conf: Arc::new(conf.dips.into()),
-            queue: queue.clone(),
-            network: network_provider.clone(),
-            registry: registry.clone(),
-            indexer_client: indexer_client.clone(),
-            iisa: iisa_handle.clone(),
-        };
+    // Application services
+    let context = CtxBuilder::new()
+        .with_signer(signer.clone())
+        .with_agreement_config(conf.dips)
+        .with_worker(queue.clone())
+        .with_network_provider(network_provider.clone())
+        .with_registry(registry.clone())
+        .with_indexer_client(indexer_client.clone())
+        .with_iisa(iisa_handle.clone())
+        .with_admin_allowlist(conf.admin_rpc.allowlist)
+        .with_network_allowlist(conf.indexer_rpc.allowlist)
+        .with_max_candidates(DEFAULT_MAX_CANDIDATES)
+        .build();
 
-        worker::service::new(context)
-    };
+    //- The worker service
+    let (worker_handle, worker_service) = worker::service::new(context.clone());
     tracing::info!("initialized Worker service");
 
     //- The admin RPC service
     let (admin_rpc_handle, admin_rpc_service) = {
-        let context = admin_rpc_server::CtxBuilder::new()
-            .with_worker(queue.clone())
-            .with_network_provider(network_provider.clone())
-            .with_registry(registry.clone())
-            .with_allowlist(conf.admin_rpc.allowlist)
-            .with_signer(signer.clone())
-            .with_max_candidates(3)
-            .build();
-
         let config = admin_rpc_server::service::Config {
             listen_addr: conf.admin_rpc.listen_addr,
         };
 
-        admin_rpc_server::service::new(config, context)
+        admin_rpc_server::service::new(config, context.clone())
     };
     tracing::info!("initialized Admin RPC service");
 
     //- The indexer RPC service
     let (indexer_rpc_handle, indexer_rpc_service) = {
-        let context = indexer_rpc_server::CtxBuilder::new()
-            .with_worker(queue.clone())
-            .with_registry(registry.clone())
-            .with_network_provider(network_provider.clone())
-            .with_allowlist(conf.indexer_rpc.allowlist)
-            .with_signer(signer.clone())
-            .build();
-
         let config = indexer_rpc_server::service::Config {
             listen_addr: conf.indexer_rpc.listen_addr,
         };
@@ -252,8 +242,6 @@ pub async fn main() -> anyhow::Result<()> {
         network_handle.stop().await;
         tracing::trace!("stopped Graph network service");
 
-        // network_provider_handle.stop().await; (todo !?)
-
         tracing::trace!("shutting down DB connection pool");
         db.close().await;
         tracing::trace!("shut down DB connection pool");
@@ -311,4 +299,36 @@ async fn signal_task() -> Result<AppSignal, SignalHandlerError> {
 
     // Fallthrough
     Ok(AppSignal::Shutdown)
+}
+
+impl From<config::DipsAgreementConfig>
+    for (
+        context::IndexingAgreementConfig,
+        BTreeMap<ChainId, context::IndexingAgreementChainPrices>,
+    )
+{
+    fn from(value: config::DipsAgreementConfig) -> Self {
+        let config = context::IndexingAgreementConfig {
+            service: value.service,
+            max_initial_amount: value.max_initial_amount,
+            max_ongoing_amount_per_epoch: value.max_ongoing_amount_per_epoch,
+            max_epochs_per_collection: value.max_epochs_per_collection,
+            min_epochs_per_collection: value.min_epochs_per_collection,
+            duration_epochs: value.duration_epochs,
+        };
+        let prices = value
+            .pricing_table
+            .into_iter()
+            .map(|(chain_id, prices)| {
+                (
+                    chain_id,
+                    context::IndexingAgreementChainPrices {
+                        price_per_block: prices.price_per_block,
+                        price_per_entity_per_epoch: prices.price_per_entity_per_epoch,
+                    },
+                )
+            })
+            .collect();
+        (config, prices)
+    }
 }

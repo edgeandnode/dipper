@@ -1,14 +1,15 @@
 use std::{future::Future, net::SocketAddr};
 
+use dipper_core::state::FromState;
 use dipper_pgmq::queue::Queue;
 use dipper_registry::Registry;
 use dipper_rpc::indexer::rpc::gateway_server::graphprotocol::gateway::dips::dips_service_server::DipsServiceServer;
 use tokio::sync::mpsc;
 use tonic::transport::Server;
 
-use super::context::Ctx;
 use crate::{
-    indexer_rpc_server::handlers::DipsGatewayServiceImpl, network::NetworkProvider,
+    indexer_rpc_server::handlers::{DipsGatewayServiceCtx, DipsGatewayServiceImpl},
+    network::NetworkProvider,
     worker::messages::Message,
 };
 
@@ -42,14 +43,12 @@ impl Handle {
 }
 
 /// Create a new Indexer RPC server service
-pub fn new<R, N, W>(
-    conf: Config,
-    ctx: Ctx<R, N, W>,
-) -> (Handle, impl Future<Output = anyhow::Result<()>>)
+pub fn new<S, R, N, W>(conf: Config, ctx: S) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
     R: Registry + Clone + Send + Sync + 'static,
     N: NetworkProvider + Clone + Send + Sync + 'static,
     W: Queue<Message> + Clone + Send + Sync + 'static,
+    DipsGatewayServiceCtx<R, N, W>: FromState<S>,
 {
     let (tx_stop, mut rx_stop) = mpsc::channel(1);
 

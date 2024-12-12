@@ -1,63 +1,44 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use dipper_core::state::FromState;
 use dipper_iisa::{CandidateSelection, Indexer as IndexerCandidate};
 use dipper_pgmq::{queue::Queue, result::JobResult};
 use dipper_registry::{
     IndexingAgreementStatus, IndexingAgreementVoucher, IndexingAgreementVoucherMetadata, Registry,
 };
+use thegraph_core::alloy::primitives::ChainId;
 
-use super::{
-    context::{Context, IndexingAgreementConfig},
-    messages::{
-        FindIndexerForIndexingRequest, Message, ProcessIndexingAgreementCancellation,
-        ProcessIndexingRequestCancellation, ProcessNewIndexingRequest,
-        SendIndexingAgreementCancellation, SendIndexingAgreementProposal,
-    },
+use super::messages::{
+    FindIndexerForIndexingRequest, Message, ProcessIndexingAgreementCancellation,
+    ProcessIndexingRequestCancellation, ProcessNewIndexingRequest,
+    SendIndexingAgreementCancellation, SendIndexingAgreementProposal,
 };
 use crate::{
+    context::{IndexingAgreementChainPrices, IndexingAgreementConfig},
     indexers::{AgreementProposalResponse, DipsClient},
     network::NetworkProvider,
     signer::PrivateKeyEip712Signer,
 };
 
-pub(super) struct ProcessNewIndexingRequestState<Q, N, R, I> {
-    signer: Arc<PrivateKeyEip712Signer>,
-    agreement_conf: Arc<IndexingAgreementConfig>,
-    queue: Q,
-    network: N,
-    registry: R,
-    iisa: I,
+pub struct ProcessNewIndexingRequestCtx<R, N, W, I> {
+    pub signer: Arc<PrivateKeyEip712Signer>,
+    pub agreement_conf: Arc<IndexingAgreementConfig>,
+    pub chain_price: Arc<BTreeMap<ChainId, IndexingAgreementChainPrices>>,
+    pub registry: R,
+    pub network: N,
+    pub queue: W,
+    pub iisa: I,
 }
 
-impl<Q, N, R, C, I> FromState<Context<Q, N, R, C, I>> for ProcessNewIndexingRequestState<Q, N, R, I>
-where
-    Q: Clone,
-    N: Clone,
-    R: Clone,
-    I: Clone,
-{
-    fn from_state(state: &Context<Q, N, R, C, I>) -> Self {
-        Self {
-            signer: state.signer.clone(),
-            agreement_conf: state.agreement_conf.clone(),
-            queue: state.queue.clone(),
-            network: state.network.clone(),
-            registry: state.registry.clone(),
-            iisa: state.iisa.clone(),
-        }
-    }
-}
-
-pub(super) async fn process_new_indexing_request<Q, N, R, I>(
-    ProcessNewIndexingRequestState {
+pub(super) async fn process_new_indexing_request<R, N, W, I>(
+    ProcessNewIndexingRequestCtx {
         signer,
         agreement_conf,
-        queue,
-        network,
+        chain_price,
         registry,
+        network,
+        queue,
         iisa,
-    }: ProcessNewIndexingRequestState<Q, N, R, I>,
+    }: ProcessNewIndexingRequestCtx<R, N, W, I>,
     ProcessNewIndexingRequest {
         indexing_request_id,
         deployment_id,
@@ -66,9 +47,9 @@ pub(super) async fn process_new_indexing_request<Q, N, R, I>(
     }: ProcessNewIndexingRequest,
 ) -> anyhow::Result<JobResult<()>>
 where
-    Q: Queue<Message>,
-    N: NetworkProvider,
     R: Registry,
+    N: NetworkProvider,
+    W: Queue<Message>,
     I: CandidateSelection,
 {
     // Get the indexers that are not indexing the deployment amd treat it as the raw candidate list
@@ -101,7 +82,12 @@ where
     // Create indexing agreements for the selected indexers and register them in the registry
     for candidate in candidates {
         let voucher_metadata = {
-            let prices = agreement_conf.chain_price(&deployment_chain_id)?;
+            let prices = chain_price
+                .get(&deployment_chain_id)
+                .ok_or(anyhow::anyhow!(
+                    "Chain prices not found for chain_id: {}",
+                    deployment_chain_id
+                ))?;
             IndexingAgreementVoucherMetadata {
                 deployment_id,
                 price_per_block: prices.price_per_block,
@@ -151,34 +137,20 @@ where
     Ok(JobResult::Ok(()))
 }
 
-pub(super) struct ProcessIndexingRequestCancellationState<Q, R> {
-    queue: Q,
-    registry: R,
+pub struct ProcessIndexingRequestCancellationCtx<R, W> {
+    pub registry: R,
+    pub queue: W,
 }
 
-impl<Q, N, R, C, I> FromState<Context<Q, N, R, C, I>>
-    for ProcessIndexingRequestCancellationState<Q, R>
-where
-    Q: Clone,
-    R: Clone,
-{
-    fn from_state(state: &Context<Q, N, R, C, I>) -> Self {
-        Self {
-            queue: state.queue.clone(),
-            registry: state.registry.clone(),
-        }
-    }
-}
-
-pub(super) async fn process_indexing_request_cancellation<Q, R>(
-    ProcessIndexingRequestCancellationState { queue, registry }: ProcessIndexingRequestCancellationState<Q, R>,
+pub(super) async fn process_indexing_request_cancellation<R, W>(
+    ProcessIndexingRequestCancellationCtx { registry, queue }: ProcessIndexingRequestCancellationCtx<R, W>,
     ProcessIndexingRequestCancellation {
         indexing_request_id,
     }: ProcessIndexingRequestCancellation,
 ) -> anyhow::Result<JobResult<()>>
 where
-    Q: Queue<Message>,
     R: Registry,
+    W: Queue<Message>,
 {
     // Get the indexing agreements associated with the indexing request
     let agreements = registry
@@ -213,44 +185,26 @@ where
     Ok(JobResult::Ok(()))
 }
 
-pub(super) struct FindIndexerForIndexingRequestState<Q, N, R, I> {
-    signer: Arc<PrivateKeyEip712Signer>,
-    agreement_conf: Arc<IndexingAgreementConfig>,
-    queue: Q,
-    network: N,
-    registry: R,
-    iisa: I,
+pub struct FindIndexerForIndexingRequestCtx<R, N, W, I> {
+    pub signer: Arc<PrivateKeyEip712Signer>,
+    pub agreement_conf: Arc<IndexingAgreementConfig>,
+    pub chain_price: Arc<BTreeMap<ChainId, IndexingAgreementChainPrices>>,
+    pub registry: R,
+    pub network: N,
+    pub queue: W,
+    pub iisa: I,
 }
 
-impl<Q, N, R, C, I> FromState<Context<Q, N, R, C, I>>
-    for FindIndexerForIndexingRequestState<Q, N, R, I>
-where
-    Q: Clone,
-    N: Clone,
-    R: Clone,
-    I: Clone,
-{
-    fn from_state(state: &Context<Q, N, R, C, I>) -> Self {
-        Self {
-            signer: state.signer.clone(),
-            agreement_conf: state.agreement_conf.clone(),
-            queue: state.queue.clone(),
-            network: state.network.clone(),
-            registry: state.registry.clone(),
-            iisa: state.iisa.clone(),
-        }
-    }
-}
-
-pub(super) async fn find_indexer_for_indexing_request<Q, N, R, I>(
-    FindIndexerForIndexingRequestState {
+pub(super) async fn find_indexer_for_indexing_request<R, N, W, I>(
+    FindIndexerForIndexingRequestCtx {
         signer,
         agreement_conf,
-        queue,
-        network,
+        chain_price,
         registry,
+        network,
+        queue,
         iisa,
-    }: FindIndexerForIndexingRequestState<Q, N, R, I>,
+    }: FindIndexerForIndexingRequestCtx<R, N, W, I>,
     FindIndexerForIndexingRequest {
         indexing_request_id,
         deployment_id,
@@ -258,9 +212,9 @@ pub(super) async fn find_indexer_for_indexing_request<Q, N, R, I>(
     }: FindIndexerForIndexingRequest,
 ) -> anyhow::Result<JobResult<()>>
 where
-    Q: Queue<Message>,
-    N: NetworkProvider,
     R: Registry,
+    N: NetworkProvider,
+    W: Queue<Message>,
     I: CandidateSelection,
 {
     // Get the indexers that are not indexing the deployment, not rejected or canceled this indexing
@@ -306,7 +260,12 @@ where
     };
 
     let voucher_metadata = {
-        let prices = agreement_conf.chain_price(&deployment_chain_id)?;
+        let prices = chain_price
+            .get(&deployment_chain_id)
+            .ok_or(anyhow::anyhow!(
+                "Chain prices not found for chain_id: {}",
+                deployment_chain_id
+            ))?;
         IndexingAgreementVoucherMetadata {
             deployment_id,
             price_per_block: prices.price_per_block,
@@ -357,26 +316,10 @@ where
     Ok(JobResult::Ok(()))
 }
 
-pub(super) struct SendIndexingAgreementProposalState<Q, R, C> {
-    queue: Q,
-    registry: R,
-    indexer_client: C,
-}
-
-impl<Q, N, R, C, I> FromState<Context<Q, N, R, C, I>>
-    for SendIndexingAgreementProposalState<Q, R, C>
-where
-    Q: Clone,
-    R: Clone,
-    C: Clone,
-{
-    fn from_state(state: &Context<Q, N, R, C, I>) -> Self {
-        Self {
-            queue: state.queue.clone(),
-            registry: state.registry.clone(),
-            indexer_client: state.indexer_client.clone(),
-        }
-    }
+pub struct SendIndexingAgreementProposalCtx<R, W, C> {
+    pub registry: R,
+    pub queue: W,
+    pub indexer_client: C,
 }
 
 /// Send an indexing agreement proposal to the indexer.
@@ -386,12 +329,12 @@ where
 /// is marked as rejected in the registry.
 ///
 /// In the case of an error, mark the agreement as delivery failed in the registry.
-pub(super) async fn send_indexing_agreement_proposal<Q, R, C>(
-    SendIndexingAgreementProposalState {
-        queue,
+pub(super) async fn send_indexing_agreement_proposal<R, W, C>(
+    SendIndexingAgreementProposalCtx {
         registry,
+        queue,
         indexer_client,
-    }: SendIndexingAgreementProposalState<Q, R, C>,
+    }: SendIndexingAgreementProposalCtx<R, W, C>,
     SendIndexingAgreementProposal {
         indexer_url,
         agreement_id,
@@ -401,8 +344,8 @@ pub(super) async fn send_indexing_agreement_proposal<Q, R, C>(
     }: SendIndexingAgreementProposal,
 ) -> anyhow::Result<JobResult<()>>
 where
-    Q: Queue<Message>,
     R: Registry,
+    W: Queue<Message>,
     C: DipsClient,
 {
     // Check the status of the agreement before sending the proposal
@@ -478,23 +421,9 @@ where
     Ok(JobResult::Ok(()))
 }
 
-pub(super) struct SendIndexingAgreementCancellationState<R, C> {
-    registry: R,
-    indexer_client: C,
-}
-
-impl<Q, N, R, C, I> FromState<Context<Q, N, R, C, I>>
-    for SendIndexingAgreementCancellationState<R, C>
-where
-    R: Clone,
-    C: Clone,
-{
-    fn from_state(state: &Context<Q, N, R, C, I>) -> Self {
-        Self {
-            registry: state.registry.clone(),
-            indexer_client: state.indexer_client.clone(),
-        }
-    }
+pub struct SendIndexingAgreementCancellationCtx<R, C> {
+    pub registry: R,
+    pub indexer_client: C,
 }
 
 /// Send an indexing agreement cancellation to the indexer.
@@ -502,10 +431,10 @@ where
 /// This function sends an indexing agreement cancellation to the indexer. If the notification
 /// fails, retry after 10 seconds.
 pub(super) async fn send_indexing_agreement_cancellation<R, C>(
-    SendIndexingAgreementCancellationState {
+    SendIndexingAgreementCancellationCtx {
         registry,
         indexer_client,
-    }: SendIndexingAgreementCancellationState<R, C>,
+    }: SendIndexingAgreementCancellationCtx<R, C>,
     SendIndexingAgreementCancellation {
         indexer_url,
         agreement_id,
@@ -558,33 +487,19 @@ where
     Ok(JobResult::Ok(()))
 }
 
-pub(super) struct ProcessIndexingAgreementCancellationState<Q, R> {
-    queue: Q,
-    registry: R,
-}
-
-impl<Q, N, R, C, I> FromState<Context<Q, N, R, C, I>>
-    for ProcessIndexingAgreementCancellationState<Q, R>
-where
-    Q: Clone,
-    R: Clone,
-{
-    fn from_state(state: &Context<Q, N, R, C, I>) -> Self {
-        Self {
-            queue: state.queue.clone(),
-            registry: state.registry.clone(),
-        }
-    }
+pub struct ProcessIndexingAgreementCancellationCtx<R, W> {
+    pub registry: R,
+    pub queue: W,
 }
 
 /// Process indexing agreement cancellation.
-pub(super) async fn process_indexing_agreement_indexer_cancellation<Q, R>(
-    ProcessIndexingAgreementCancellationState { queue, registry }: ProcessIndexingAgreementCancellationState<Q, R>,
+pub(super) async fn process_indexing_agreement_indexer_cancellation<R, W>(
+    ProcessIndexingAgreementCancellationCtx { queue, registry }: ProcessIndexingAgreementCancellationCtx<R, W>,
     ProcessIndexingAgreementCancellation { agreement_id }: ProcessIndexingAgreementCancellation,
 ) -> anyhow::Result<JobResult<()>>
 where
-    Q: Queue<Message>,
     R: Registry,
+    W: Queue<Message>,
 {
     // Check the status of the agreement before processing the cancellation
     let Some(agreement) = registry.get_indexing_agreement_by_id(agreement_id).await? else {
@@ -639,13 +554,13 @@ where
     Ok(JobResult::Ok(()))
 }
 
-pub(super) async fn process_indexing_agreement_requester_cancellation<Q, R>(
-    ProcessIndexingAgreementCancellationState { queue, registry }: ProcessIndexingAgreementCancellationState<Q, R>,
+pub(super) async fn process_indexing_agreement_requester_cancellation<R, W>(
+    ProcessIndexingAgreementCancellationCtx { queue, registry }: ProcessIndexingAgreementCancellationCtx<R, W>,
     ProcessIndexingAgreementCancellation { agreement_id }: ProcessIndexingAgreementCancellation,
 ) -> anyhow::Result<JobResult<()>>
 where
-    Q: Queue<Message>,
     R: Registry,
+    W: Queue<Message>,
 {
     // Check the status of the agreement before processing the cancellation
     let Some(agreement) = registry.get_indexing_agreement_by_id(agreement_id).await? else {
