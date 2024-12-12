@@ -96,14 +96,12 @@ impl WorkerQueue for Worker {
         &self,
         indexer_url: Url,
         agreement_id: IndexingAgreementId,
-        indexing_request_id: IndexingRequestId,
     ) -> anyhow::Result<()> {
         self.queue
             .push(Message::SendIndexingAgreementCancellation(
                 SendIndexingAgreementCancellation {
                     indexer_url,
                     agreement_id,
-                    indexing_request_id,
                 },
             ))
             .await

@@ -822,7 +822,6 @@ mod tests {
             &self,
             _indexer_url: Url,
             _agreement_id: IndexingAgreementId,
-            _indexing_request_id: IndexingRequestId,
         ) -> anyhow::Result<()> {
             unimplemented!()
         }
@@ -857,8 +856,7 @@ mod tests {
             &self,
             _indexer: Url,
             _indexing_agreement_id: IndexingAgreementId,
-            _indexing_request_id: IndexingRequestId,
-            _deployment_id: DeploymentId,
+            _voucher: IndexingAgreementVoucher,
         ) -> Result<AgreementProposalResponse, DipsError> {
             unimplemented!()
         }
@@ -867,7 +865,6 @@ mod tests {
             &self,
             _indexer: Url,
             _indexing_agreement_id: IndexingAgreementId,
-            _indexing_request_id: IndexingRequestId,
         ) -> Result<(), DipsError> {
             unimplemented!()
         }

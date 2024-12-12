@@ -1898,6 +1898,7 @@ dependencies = [
  "async-signal",
  "async-trait",
  "custom_debug",
+ "dashmap",
  "dipper-core",
  "dipper-iisa",
  "dipper-pgmq",

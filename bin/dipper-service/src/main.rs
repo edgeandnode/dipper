@@ -15,8 +15,8 @@ use self::{
     context::{CtxBuilder, DEFAULT_MAX_CANDIDATES},
     network::Snapshot,
     signer::Eip712Signer,
+    worker::Worker,
 };
-use crate::worker::Worker;
 
 mod admin_rpc_server;
 mod config;
@@ -87,10 +87,7 @@ pub async fn main() -> anyhow::Result<()> {
     let registry = PgRegistry::new(db.clone());
 
     //- The indexer client component
-    let indexer_client = {
-        // TODO: Initialize the actual indexer client
-        indexers::DummyDipsIndexerClient
-    };
+    let indexer_client = indexers::DipsIndexerClient::new(signer.clone());
 
     //- The network service
     let (network_handle, network_service) = {

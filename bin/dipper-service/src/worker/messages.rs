@@ -122,9 +122,7 @@ pub struct SendIndexingAgreementProposal {
 pub struct SendIndexingAgreementCancellation {
     #[serde_as(as = "DisplayFromStr")]
     pub indexer_url: Url,
-
     pub agreement_id: IndexingAgreementId,
-    pub indexing_request_id: IndexingRequestId,
 }
 
 /// Process indexing agreement cancellation.
