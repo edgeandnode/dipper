@@ -60,11 +60,17 @@ macro_rules! uuid_new_type_impls {
             }
         }
 
-        impl TryFrom<&[u8]> for $name {
+        impl<'a> From<&'a [u8; 16]> for $name {
+            fn from(bytes: &'a [u8; 16]) -> Self {
+                Self(::uuid::Uuid::from_bytes(*bytes))
+            }
+        }
+
+        impl<'a> TryFrom<&'a [u8]> for $name {
             type Error = ::uuid::Error;
 
-            fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-                Ok(Self(::uuid::Uuid::from_slice(bytes)?))
+            fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
+                ::uuid::Uuid::from_slice(bytes).map(Self)
             }
         }
 
@@ -98,8 +104,7 @@ macro_rules! uuid_new_type_impls {
             where
                 D: ::serde::Deserializer<'de>,
             {
-                let id = ::serde::Deserialize::deserialize(deserializer)?;
-                Ok(Self(id))
+                ::serde::Deserialize::deserialize(deserializer).map(Self)
             }
         }
 
