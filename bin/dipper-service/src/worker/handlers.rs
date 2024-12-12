@@ -21,9 +21,6 @@ use crate::{
     signer::PrivateKeyEip712Signer,
 };
 
-/// Default agreement duration (60 days).
-const DEFAULT_AGREEMENT_DURATION: Duration = Duration::from_secs(60 * 24 * 60 * 60);
-
 pub(super) struct ProcessNewIndexingRequestState<Q, N, R, I> {
     signer: Arc<PrivateKeyEip712Signer>,
     agreement_conf: Arc<IndexingAgreementConfig>,
@@ -142,7 +139,6 @@ where
                     indexing_request_id,
                     deployment_id,
                     deployment_chain_id,
-                    duration: DEFAULT_AGREEMENT_DURATION,
                 },
             ))
             .await
@@ -350,7 +346,6 @@ where
                 indexing_request_id,
                 deployment_id,
                 deployment_chain_id,
-                duration: DEFAULT_AGREEMENT_DURATION,
             },
         ))
         .await
@@ -403,7 +398,6 @@ pub(super) async fn send_indexing_agreement_proposal<Q, R, C>(
         indexing_request_id,
         deployment_id,
         deployment_chain_id,
-        duration,
     }: SendIndexingAgreementProposal,
 ) -> anyhow::Result<JobResult<()>>
 where
@@ -443,7 +437,6 @@ where
             agreement_id,
             indexing_request_id,
             deployment_id,
-            duration,
         )
         .await
     {
