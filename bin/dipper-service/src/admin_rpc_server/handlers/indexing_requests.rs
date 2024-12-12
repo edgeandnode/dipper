@@ -2,7 +2,6 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 use dipper_core::{ids::IndexingRequestId, state::FromState};
-use dipper_pgmq::queue::Queue;
 use dipper_registry::{
     Error as RegistryError, IndexingRequest as IndexingRequestRecord,
     IndexingRequestStatus as IndexingRequestRecordStatus, Registry,
@@ -17,11 +16,7 @@ use dipper_rpc::admin::{
 use jsonrpsee::core::RpcResult;
 use thegraph_core::{alloy::primitives::Address, DeploymentId};
 
-use crate::{
-    network::NetworkProvider,
-    signer::PrivateKeyEip712Signer,
-    worker::messages::{Message, ProcessIndexingRequestCancellation, ProcessNewIndexingRequest},
-};
+use crate::{network::NetworkProvider, signer::PrivateKeyEip712Signer, worker::WorkerQueue};
 
 /// The substate for the [`IndexingRequestsRpc`] handler
 ///
@@ -52,7 +47,7 @@ impl<R, N, W> IndexingRequestsRpcServer for IndexingRequestsRpcServerImpl<R, N, 
 where
     R: Registry + Clone + Send + Sync + 'static,
     N: NetworkProvider + Clone + Send + Sync + 'static,
-    W: Queue<Message> + Clone + Send + Sync + 'static,
+    W: WorkerQueue + Clone + Send + Sync + 'static,
 {
     async fn get_all_indexing_requests(&self) -> RpcResult<Vec<IndexingRequest>> {
         let indexing_requests = match self.registry.get_all_indexing_requests().await {
@@ -153,14 +148,12 @@ where
         // Process the new indexing request
         if let Err(err) = self
             .worker
-            .push(Message::ProcessNewIndexingRequest(
-                ProcessNewIndexingRequest {
-                    indexing_request_id,
-                    deployment_id,
-                    deployment_chain_id,
-                    num_candidates: self.max_candidates,
-                },
-            ))
+            .process_new_indexing_request(
+                indexing_request_id,
+                deployment_id,
+                deployment_chain_id,
+                self.max_candidates,
+            )
             .await
         {
             tracing::error!(error=?err, "Failed queue task: 'process_new_indexing_request'");
@@ -227,11 +220,7 @@ where
         // Process the indexing request cancellation
         if let Err(err) = self
             .worker
-            .push(Message::ProcessIndexingRequestCancellation(
-                ProcessIndexingRequestCancellation {
-                    indexing_request_id,
-                },
-            ))
+            .process_indexing_request_cancellation(indexing_request_id)
             .await
         {
             tracing::error!(error=?err, "Failed to queue task: 'ProcessIndexingRequestCancellation'");

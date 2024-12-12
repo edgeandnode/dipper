@@ -1,5 +1,4 @@
 use dipper_core::state::FromState;
-use dipper_pgmq::queue::Queue;
 use dipper_registry::Registry;
 use dipper_rpc::admin::{
     indexing_agreements::IndexingAgreementsRpcServer, indexing_requests::IndexingRequestsRpcServer,
@@ -10,7 +9,7 @@ use self::{
     indexing_agreements::IndexingAgreementsRpcServerImpl,
     indexing_requests::IndexingRequestsRpcServerImpl,
 };
-use crate::{network::NetworkProvider, worker::messages::Message};
+use crate::{network::NetworkProvider, worker::WorkerQueue};
 
 mod indexing_agreements;
 mod indexing_requests;
@@ -24,7 +23,7 @@ pub(super) fn rpc_handlers<S, R, N, W>(ctx: S) -> RpcModule<S>
 where
     R: Registry + Clone + Send + Sync + 'static,
     N: NetworkProvider + Clone + Send + Sync + 'static,
-    W: Queue<Message> + Clone + Send + Sync + 'static,
+    W: WorkerQueue + Clone + Send + Sync + 'static,
     IndexingRequestsCtx<R, N, W>: FromState<S>,
     IndexingAgreementsCtx<R, W>: FromState<S>,
 {

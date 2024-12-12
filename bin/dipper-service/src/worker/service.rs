@@ -15,6 +15,7 @@ use super::{
         SendIndexingAgreementCancellationCtx, SendIndexingAgreementProposalCtx,
     },
     messages::Message,
+    WorkerQueue,
 };
 use crate::{indexers::DipsClient, network::NetworkProvider};
 
@@ -48,14 +49,17 @@ impl Handle {
 /// Create a new worker and a future that processes tasks from the queue.
 ///
 /// The worker pulls tasks from the queue and processes them concurrently every 10 seconds.
-pub fn new<S, R, N, W, C, I>(state: S) -> (Handle, impl Future<Output = anyhow::Result<()>>)
+pub fn new<S, Q, R, N, W, C, I>(
+    queue: Q,
+    state: S,
+) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
+    Q: Queue<Message> + Clone + Send + Sync,
     R: Registry + Clone + Send + Sync,
     N: NetworkProvider + Clone + Send + Sync,
-    W: Queue<Message> + Clone + Send + Sync,
+    W: WorkerQueue + Clone + Send + Sync,
     C: DipsClient + Clone + Send + Sync,
     I: CandidateSelection + Clone + Send + Sync,
-    WorkerCtx<W>: FromState<S>,
     ProcessNewIndexingRequestCtx<R, N, W, I>: FromState<S>,
     ProcessIndexingRequestCancellationCtx<R, W>: FromState<S>,
     FindIndexerForIndexingRequestCtx<R, N, W, I>: FromState<S>,
@@ -68,7 +72,6 @@ where
     let handle = Handle { tx_stop };
 
     let fut = async move {
-        let WorkerCtx { queue } = FromState::from_state(&state);
         let state = state;
 
         let mut stop_rx = rx_stop;
@@ -117,10 +120,6 @@ where
     (handle, fut)
 }
 
-pub struct WorkerCtx<W> {
-    pub queue: W,
-}
-
 async fn process_task<S, W, N, R, C, I>(
     state: &S,
     message: Message,
@@ -128,7 +127,7 @@ async fn process_task<S, W, N, R, C, I>(
 where
     R: Registry,
     N: NetworkProvider,
-    W: Queue<Message>,
+    W: WorkerQueue,
     C: DipsClient,
     I: CandidateSelection,
     ProcessNewIndexingRequestCtx<R, N, W, I>: FromState<S>,

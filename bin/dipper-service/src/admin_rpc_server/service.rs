@@ -1,13 +1,12 @@
 use std::{future::Future, net::SocketAddr};
 
 use dipper_core::state::FromState;
-use dipper_pgmq::queue::Queue;
 use dipper_registry::Registry;
 use jsonrpsee::server::Server;
 use tokio::sync::mpsc;
 
 use super::handlers::{rpc_handlers, IndexingAgreementsCtx, IndexingRequestsCtx};
-use crate::{network::NetworkProvider, worker::messages::Message};
+use crate::{network::NetworkProvider, worker::WorkerQueue};
 
 /// RPC server configuration.
 #[derive(Debug)]
@@ -43,7 +42,7 @@ pub fn new<S, R, N, W>(conf: Config, ctx: S) -> (Handle, impl Future<Output = an
 where
     R: Registry + Clone + Send + Sync + 'static,
     N: NetworkProvider + Clone + Send + Sync + 'static,
-    W: Queue<Message> + Clone + Send + Sync + 'static,
+    W: WorkerQueue + Clone + Send + Sync + 'static,
     IndexingRequestsCtx<R, N, W>: FromState<S>,
     IndexingAgreementsCtx<R, W>: FromState<S>,
 {
