@@ -16,6 +16,7 @@ use self::{
     network::Snapshot,
     signer::Eip712Signer,
 };
+use crate::worker::Worker;
 
 mod admin_rpc_server;
 mod config;
@@ -78,8 +79,9 @@ pub async fn main() -> anyhow::Result<()> {
     }?;
     tracing::info!(db_url=%conf.db.url, "initialized DB connection pool");
 
-    //- The queue component
+    //- The worker queue component
     let queue = PgQueue::with_max_attempts(db.clone(), 3);
+    let worker_queue = Worker::new(queue.clone());
 
     // The registry component
     let registry = PgRegistry::new(db.clone());
@@ -155,7 +157,7 @@ pub async fn main() -> anyhow::Result<()> {
     let context = CtxBuilder::new()
         .with_signer(signer.clone())
         .with_agreement_config(conf.dips)
-        .with_worker(queue.clone())
+        .with_worker(worker_queue)
         .with_network_provider(network_provider.clone())
         .with_registry(registry.clone())
         .with_indexer_client(indexer_client.clone())
@@ -166,7 +168,7 @@ pub async fn main() -> anyhow::Result<()> {
         .build();
 
     //- The worker service
-    let (worker_handle, worker_service) = worker::service::new(context.clone());
+    let (worker_handle, worker_service) = worker::service::new(queue, context.clone());
     tracing::info!("initialized Worker service");
 
     //- The admin RPC service

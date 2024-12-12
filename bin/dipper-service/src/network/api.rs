@@ -10,10 +10,7 @@ pub struct Indexer {
 }
 
 /// A Subgraph deployment.
-pub struct Deployment {
-    /// The deployment's ID,
-    pub id: DeploymentId,
-}
+pub struct Deployment {}
 
 /// The network provider trait.
 ///

@@ -23,7 +23,7 @@ impl NetworkProvider for NetworkProviderService {
         self.inner
             .snapshot()
             .get_deployment(deployment_id)
-            .map(|deployment| Deployment { id: deployment.id })
+            .map(|_deployment| Deployment {})
     }
 
     fn get_indexer_by_id(&self, indexer_id: &IndexerId) -> Option<Indexer> {

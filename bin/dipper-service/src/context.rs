@@ -5,7 +5,6 @@ use std::{
 
 use dipper_core::state::FromState;
 use dipper_iisa::CandidateSelection;
-use dipper_pgmq::queue::Queue;
 use dipper_registry::Registry;
 use thegraph_core::{
     alloy::primitives::{Address, ChainId, U256},
@@ -14,7 +13,7 @@ use thegraph_core::{
 
 use crate::{
     admin_rpc_server, indexer_rpc_server, indexers::DipsClient, network::NetworkProvider,
-    signer::PrivateKeyEip712Signer, worker, worker::messages::Message,
+    signer::PrivateKeyEip712Signer, worker, worker::WorkerQueue,
 };
 
 /// The maximum number of candidates to select.
@@ -104,17 +103,6 @@ where
             registry: ctx.registry.clone(),
             network: ctx.network.clone(),
             worker: ctx.worker.clone(),
-        }
-    }
-}
-
-impl<R, N, W, C, I> FromState<Ctx<R, N, W, C, I>> for worker::service::WorkerCtx<W>
-where
-    W: Clone,
-{
-    fn from_state(state: &Ctx<R, N, W, C, I>) -> Self {
-        Self {
-            queue: state.worker.clone(),
         }
     }
 }
@@ -490,7 +478,7 @@ impl<S, A, R, N, C, I> CtxBuilder<S, A, R, N, NotSet, C, I> {
     /// Sets the message queue worker.
     pub fn with_worker<W>(self, worker: W) -> CtxBuilder<S, A, R, N, WorkerSet<W>, C, I>
     where
-        W: Queue<Message> + 'static,
+        W: WorkerQueue + 'static,
     {
         CtxBuilder {
             signer: self.signer,
@@ -588,7 +576,6 @@ mod tests {
     use async_trait::async_trait;
     use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
     use dipper_iisa::{CandidateSelection, SelectionError};
-    use dipper_pgmq::queue::{Job, Queue};
     use dipper_registry::{
         Error, IndexingAgreement, IndexingAgreementVoucher, IndexingReceipt,
         IndexingReceiptReportedWork, IndexingRequest, Registry,
@@ -601,15 +588,14 @@ mod tests {
         },
         indexer_id, DeploymentId, IndexerId,
     };
-    use time::OffsetDateTime;
     use url::Url;
-    use uuid::Uuid;
 
     use super::{CtxBuilder, IndexingAgreementConfig};
     use crate::{
         indexers::{AgreementProposalResponse, DipsClient, DipsError},
         network::{Deployment, Indexer, NetworkProvider},
         signer::PrivateKeyEip712Signer,
+        worker::WorkerQueue,
     };
 
     struct DummyRegistry;
@@ -798,42 +784,67 @@ mod tests {
         }
     }
 
-    struct DummyQueueWorker;
+    struct DummyWorker;
 
     #[async_trait]
-    impl<M> Queue<M> for DummyQueueWorker
-    where
-        M: Send + Sync + 'static,
-    {
-        async fn push(&self, _job: M) -> anyhow::Result<()> {
-            unimplemented!()
-        }
-
-        async fn push_scheduled(
+    impl WorkerQueue for DummyWorker {
+        async fn process_new_indexing_request(
             &self,
-            _job: M,
-            _scheduled_for: OffsetDateTime,
+            _indexing_request_id: IndexingRequestId,
+            _deployment_id: DeploymentId,
+            _deployment_chain_id: ChainId,
+            _num_candidates: usize,
         ) -> anyhow::Result<()> {
             unimplemented!()
         }
 
-        async fn pull(&self, _number_of_jobs: usize) -> anyhow::Result<Vec<Job<M>>> {
-            unimplemented!()
-        }
-
-        async fn remove(&self, _id: Uuid) -> anyhow::Result<()> {
-            unimplemented!()
-        }
-
-        async fn fail_job(
+        async fn find_indexer_for_indexing_request(
             &self,
-            _id: Uuid,
-            _scheduled_for: Option<OffsetDateTime>,
+            _indexing_request_id: IndexingRequestId,
+            _deployment_id: DeploymentId,
+            _deployment_chain_id: ChainId,
         ) -> anyhow::Result<()> {
             unimplemented!()
         }
 
-        async fn clear(&self) -> anyhow::Result<()> {
+        async fn send_indexing_agreement_proposal(
+            &self,
+            _candidate_url: Url,
+            _agreement_id: IndexingAgreementId,
+            _indexing_request_id: IndexingRequestId,
+            _deployment_id: DeploymentId,
+            _deployment_chain_id: ChainId,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+
+        async fn send_indexing_agreement_cancellation(
+            &self,
+            _indexer_url: Url,
+            _agreement_id: IndexingAgreementId,
+            _indexing_request_id: IndexingRequestId,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+
+        async fn process_indexing_request_cancellation(
+            &self,
+            _indexing_request_id: IndexingRequestId,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+
+        async fn process_indexing_agreement_requester_cancellation(
+            &self,
+            _agreement_id: IndexingAgreementId,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+
+        async fn process_indexing_agreement_indexer_cancellation(
+            &self,
+            _agreement_id: IndexingAgreementId,
+        ) -> anyhow::Result<()> {
             unimplemented!()
         }
     }
@@ -915,7 +926,7 @@ mod tests {
         let pricing_table = BTreeMap::new();
         let registry = DummyRegistry;
         let network = DummyNetworkProvider;
-        let worker = DummyQueueWorker;
+        let worker = DummyWorker;
         let client = DummyClient;
         let iisa = DummyIisa;
 

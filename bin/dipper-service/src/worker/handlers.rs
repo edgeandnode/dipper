@@ -1,14 +1,14 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use dipper_iisa::{CandidateSelection, Indexer as IndexerCandidate};
-use dipper_pgmq::{queue::Queue, result::JobResult};
+use dipper_pgmq::result::JobResult;
 use dipper_registry::{
     IndexingAgreementStatus, IndexingAgreementVoucher, IndexingAgreementVoucherMetadata, Registry,
 };
 use thegraph_core::alloy::primitives::ChainId;
 
 use super::messages::{
-    FindIndexerForIndexingRequest, Message, ProcessIndexingAgreementCancellation,
+    FindIndexerForIndexingRequest, ProcessIndexingAgreementCancellation,
     ProcessIndexingRequestCancellation, ProcessNewIndexingRequest,
     SendIndexingAgreementCancellation, SendIndexingAgreementProposal,
 };
@@ -17,6 +17,7 @@ use crate::{
     indexers::{AgreementProposalResponse, DipsClient},
     network::NetworkProvider,
     signer::PrivateKeyEip712Signer,
+    worker::WorkerQueue,
 };
 
 pub struct ProcessNewIndexingRequestCtx<R, N, W, I> {
@@ -49,7 +50,7 @@ pub(super) async fn process_new_indexing_request<R, N, W, I>(
 where
     R: Registry,
     N: NetworkProvider,
-    W: Queue<Message>,
+    W: WorkerQueue,
     I: CandidateSelection,
 {
     // Get the indexers that are not indexing the deployment amd treat it as the raw candidate list
@@ -118,15 +119,13 @@ where
             .await?;
 
         if let Err(err) = queue
-            .push(Message::SendIndexingAgreementProposal(
-                SendIndexingAgreementProposal {
-                    indexer_url: candidate.url,
-                    agreement_id,
-                    indexing_request_id,
-                    deployment_id,
-                    deployment_chain_id,
-                },
-            ))
+            .send_indexing_agreement_proposal(
+                candidate.url,
+                agreement_id,
+                indexing_request_id,
+                deployment_id,
+                deployment_chain_id,
+            )
             .await
         {
             tracing::error!(error=?err, "Failed to queue task: 'send_indexing_agreement_proposal'");
@@ -150,7 +149,7 @@ pub(super) async fn process_indexing_request_cancellation<R, W>(
 ) -> anyhow::Result<JobResult<()>>
 where
     R: Registry,
-    W: Queue<Message>,
+    W: WorkerQueue,
 {
     // Get the indexing agreements associated with the indexing request
     let agreements = registry
@@ -168,13 +167,11 @@ where
     // Send the indexing agreement cancellation notification to the indexers
     for agreement in agreements {
         if let Err(err) = queue
-            .push(Message::SendIndexingAgreementCancellation(
-                SendIndexingAgreementCancellation {
-                    indexer_url: agreement.indexer.url,
-                    agreement_id: agreement.id,
-                    indexing_request_id,
-                },
-            ))
+            .send_indexing_agreement_cancellation(
+                agreement.indexer.url,
+                agreement.id,
+                indexing_request_id,
+            )
             .await
         {
             tracing::error!(error=?err, "Failed to queue task: 'send_indexing_agreement_cancellation'");
@@ -214,7 +211,7 @@ pub(super) async fn find_indexer_for_indexing_request<R, N, W, I>(
 where
     R: Registry,
     N: NetworkProvider,
-    W: Queue<Message>,
+    W: WorkerQueue,
     I: CandidateSelection,
 {
     // Get the indexers that are not indexing the deployment, not rejected or canceled this indexing
@@ -298,15 +295,13 @@ where
 
     // Send indexing agreement proposal to the selected indexer
     if let Err(err) = queue
-        .push(Message::SendIndexingAgreementProposal(
-            SendIndexingAgreementProposal {
-                indexer_url: candidate.url.clone(),
-                agreement_id,
-                indexing_request_id,
-                deployment_id,
-                deployment_chain_id,
-            },
-        ))
+        .send_indexing_agreement_proposal(
+            candidate.url,
+            agreement_id,
+            indexing_request_id,
+            deployment_id,
+            deployment_chain_id,
+        )
         .await
     {
         tracing::error!(error=%err, "Failed to queue task: 'send_indexing_agreement_proposal'");
@@ -345,7 +340,7 @@ pub(super) async fn send_indexing_agreement_proposal<R, W, C>(
 ) -> anyhow::Result<JobResult<()>>
 where
     R: Registry,
-    W: Queue<Message>,
+    W: WorkerQueue,
     C: DipsClient,
 {
     // Check the status of the agreement before sending the proposal
@@ -396,13 +391,11 @@ where
 
                 // Request a new indexer to fulfill the indexing request
                 if let Err(err) = queue
-                    .push(Message::FindIndexerForIndexingRequest(
-                        FindIndexerForIndexingRequest {
-                            indexing_request_id,
-                            deployment_id,
-                            deployment_chain_id,
-                        },
-                    ))
+                    .find_indexer_for_indexing_request(
+                        indexing_request_id,
+                        deployment_id,
+                        deployment_chain_id,
+                    )
                     .await
                 {
                     tracing::error!(error=%err, "Failed to queue task: 'find_indexer_for_indexing_request'");
@@ -499,7 +492,7 @@ pub(super) async fn process_indexing_agreement_indexer_cancellation<R, W>(
 ) -> anyhow::Result<JobResult<()>>
 where
     R: Registry,
-    W: Queue<Message>,
+    W: WorkerQueue,
 {
     // Check the status of the agreement before processing the cancellation
     let Some(agreement) = registry.get_indexing_agreement_by_id(agreement_id).await? else {
@@ -514,13 +507,11 @@ where
 
     // Send an agreement cancellation notification to the indexer
     if let Err(err) = queue
-        .push(Message::SendIndexingAgreementCancellation(
-            SendIndexingAgreementCancellation {
-                indexer_url: agreement.indexer.url.clone(),
-                agreement_id: agreement.id,
-                indexing_request_id: agreement.indexing_request_id,
-            },
-        ))
+        .send_indexing_agreement_cancellation(
+            agreement.indexer.url.clone(),
+            agreement.id,
+            agreement.indexing_request_id,
+        )
         .await
     {
         tracing::error!(error=?err, "Failed to queue task: 'send_indexing_agreement_cancellation'");
@@ -538,13 +529,11 @@ where
 
     // Request a new indexer to fulfill the indexing request
     if let Err(err) = queue
-        .push(Message::FindIndexerForIndexingRequest(
-            FindIndexerForIndexingRequest {
-                indexing_request_id: indexing_request.id,
-                deployment_id: indexing_request.deployment_id,
-                deployment_chain_id: indexing_request.deployment_chain_id,
-            },
-        ))
+        .find_indexer_for_indexing_request(
+            indexing_request.id,
+            indexing_request.deployment_id,
+            indexing_request.deployment_chain_id,
+        )
         .await
     {
         tracing::error!(error=?err, "Failed to queue task: 'find_indexer_for_indexing_request'");
@@ -560,7 +549,7 @@ pub(super) async fn process_indexing_agreement_requester_cancellation<R, W>(
 ) -> anyhow::Result<JobResult<()>>
 where
     R: Registry,
-    W: Queue<Message>,
+    W: WorkerQueue,
 {
     // Check the status of the agreement before processing the cancellation
     let Some(agreement) = registry.get_indexing_agreement_by_id(agreement_id).await? else {
@@ -584,13 +573,11 @@ where
 
     // Request a new indexer to fulfill the indexing request
     if let Err(err) = queue
-        .push(Message::FindIndexerForIndexingRequest(
-            FindIndexerForIndexingRequest {
-                indexing_request_id: indexing_request.id,
-                deployment_id: indexing_request.deployment_id,
-                deployment_chain_id: indexing_request.deployment_chain_id,
-            },
-        ))
+        .find_indexer_for_indexing_request(
+            indexing_request.id,
+            indexing_request.deployment_id,
+            indexing_request.deployment_chain_id,
+        )
         .await
     {
         tracing::error!(error=?err, "Failed to queue task: 'find_indexer_for_indexing_request'");

@@ -2,7 +2,6 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 use dipper_core::state::FromState;
-use dipper_pgmq::queue::Queue;
 use dipper_registry::{IndexingAgreementStatus, Registry};
 use dipper_rpc::indexer::gateway_server::{
     graphprotocol::gateway::dips::{
@@ -14,11 +13,7 @@ use dipper_rpc::indexer::gateway_server::{
 use thegraph_core::{signed_message::SignedMessage, IndexerId};
 use tonic::{Request, Response, Status};
 
-use crate::{
-    network::NetworkProvider,
-    signer::PrivateKeyEip712Signer,
-    worker::messages::{Message, ProcessIndexingAgreementCancellation},
-};
+use crate::{network::NetworkProvider, signer::PrivateKeyEip712Signer, worker::WorkerQueue};
 
 /// The substate for the [`DipsGatewayServiceImpl`] handler
 ///
@@ -48,7 +43,7 @@ impl<R, N, W> DipsService for DipsGatewayServiceImpl<R, N, W>
 where
     R: Registry + Clone + Send + Sync + 'static,
     N: NetworkProvider + Clone + Send + Sync + 'static,
-    W: Queue<Message> + Clone + Send + Sync + 'static,
+    W: WorkerQueue + Clone + Send + Sync + 'static,
 {
     async fn cancel_agreement(
         &self,
@@ -104,12 +99,10 @@ where
             }
         }
 
-        // Process the indexing request cancellation
+        // Process the indexing agreement cancellation
         if let Err(err) = self
             .worker
-            .push(Message::ProcessIndexingAgreementIndexerCancellation(
-                ProcessIndexingAgreementCancellation { agreement_id },
-            ))
+            .process_indexing_agreement_indexer_cancellation(agreement_id)
             .await
         {
             tracing::error!(error=?err, "Failed to queue task: 'process_indexing_agreement_indexer_cancellation'");

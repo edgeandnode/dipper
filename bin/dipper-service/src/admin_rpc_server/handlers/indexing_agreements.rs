@@ -5,7 +5,6 @@ use dipper_core::{
     ids::{IndexingAgreementId, IndexingRequestId},
     state::FromState,
 };
-use dipper_pgmq::queue::Queue;
 use dipper_registry::{
     IndexingAgreement as IndexingAgreementRecord,
     IndexingAgreementStatus as IndexingAgreementRecordStatus, Registry,
@@ -20,10 +19,7 @@ use dipper_rpc::admin::{
 use jsonrpsee::core::RpcResult;
 use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId};
 
-use crate::{
-    signer::PrivateKeyEip712Signer,
-    worker::messages::{Message, ProcessIndexingAgreementCancellation},
-};
+use crate::{signer::PrivateKeyEip712Signer, worker::WorkerQueue};
 
 /// The substate for the [`IndexingAgreementsRpc`] handler
 ///
@@ -59,7 +55,7 @@ impl<R, W> std::ops::Deref for IndexingAgreementsRpcServerImpl<R, W> {
 impl<R, W> IndexingAgreementsRpcServer for IndexingAgreementsRpcServerImpl<R, W>
 where
     R: Registry + Clone + Send + Sync + 'static,
-    W: Queue<Message> + Clone + Send + Sync + 'static,
+    W: WorkerQueue + Clone + Send + Sync + 'static,
 {
     async fn get_agreement_by_id(
         &self,
@@ -188,9 +184,7 @@ where
         // Process the indexing request cancellation
         if let Err(err) = self
             .worker
-            .push(Message::ProcessIndexingAgreementRequesterCancellation(
-                ProcessIndexingAgreementCancellation { agreement_id },
-            ))
+            .process_indexing_agreement_requester_cancellation(agreement_id)
             .await
         {
             tracing::error!(error=?err, "Failed to queue task: 'process_indexing_agreement_requester_cancellation'");
