@@ -3,7 +3,7 @@ use std::{future::Future, net::SocketAddr};
 use dipper_core::state::FromState;
 use dipper_pgmq::queue::Queue;
 use dipper_registry::Registry;
-use dipper_rpc::indexer::rpc::gateway_server::graphprotocol::gateway::dips::dips_service_server::DipsServiceServer;
+use dipper_rpc::indexer::gateway_server::graphprotocol::gateway::dips::dips_service_server::DipsServiceServer;
 use tokio::sync::mpsc;
 use tonic::transport::Server;
 

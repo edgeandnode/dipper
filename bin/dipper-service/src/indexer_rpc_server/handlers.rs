@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use dipper_core::state::FromState;
 use dipper_pgmq::queue::Queue;
 use dipper_registry::{IndexingAgreementStatus, Registry};
-use dipper_rpc::indexer::rpc::gateway_server::{
+use dipper_rpc::indexer::gateway_server::{
     graphprotocol::gateway::dips::{
         dips_service_server::DipsService, CancelAgreementRequest, CancelAgreementResponse,
         ReportProgressRequest, ReportProgressResponse,
