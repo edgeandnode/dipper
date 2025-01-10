@@ -258,7 +258,7 @@ name = "click"
 version = "8.1.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "platform_system == 'Windows'" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/96/d3/f04c7bfcf5c1862a2a5b845c6b2b360488cf47af55dfa79c98f6a6bf98b5/click-8.1.7.tar.gz", hash = "sha256:ca9853ad459e787e2192211578cc907e7594e294c7ccc834310722b41b9ca6de", size = 336121 }
 wheels = [
@@ -1056,7 +1056,7 @@ requires-dist = [
     { name = "networkx", specifier = ">=3.3,<4.0" },
     { name = "numpy", specifier = ">=2.1.1,<3.0" },
     { name = "pandas", specifier = ">=2.2.2,<3.0" },
-    { name = "pandera", specifier = ">=0.21,<0.22" },
+    { name = "pandera", specifier = ">=0.22,<0.23" },
     { name = "requests", specifier = ">=2.32.3,<3.0" },
     { name = "scikit-learn", specifier = ">=1.5.1,<2.0" },
     { name = "scipy", specifier = ">=1.14.1,<2.0" },
@@ -1069,7 +1069,7 @@ dev = [
     { name = "faker-airtravel", specifier = ">=0.4,<0.5" },
     { name = "freezegun", specifier = ">=1.5.1,<2.0" },
     { name = "mypy", specifier = ">=1.11.2,<2.0" },
-    { name = "pandera", extras = ["mypy"], specifier = ">=0.21,<0.22" },
+    { name = "pandera", extras = ["mypy"], specifier = ">=0.22,<0.23" },
     { name = "pytest", specifier = ">=8.3.2,<9.0" },
     { name = "pytest-mock", specifier = ">=3.14.0,<4.0" },
     { name = "ruff", specifier = ">=0.8,<0.9" },
@@ -1456,15 +1456,6 @@ wheels = [
 ]
 
 [[package]]
-name = "multimethod"
-version = "1.12"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ed/f3/930a6dc1d35b2ab65faffa2a75bbcc67f12d8227857188273783df4e5134/multimethod-1.12.tar.gz", hash = "sha256:8db8ef2a8d2a247e3570cc23317680892fdf903d84c8c1053667c8e8f7671a67", size = 17423 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/af/98/cff14d53a2f2f67d7fe8a4e235a383ee71aba6a1da12aeea24b325d0c72a/multimethod-1.12-py3-none-any.whl", hash = "sha256:fd0c473c43558908d97cc06e4d68e8f69202f167db46f7b4e4058893e7dbdf60", size = 10646 },
-]
-
-[[package]]
 name = "mypy"
 version = "1.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1672,21 +1663,19 @@ wheels = [
 
 [[package]]
 name = "pandera"
-version = "0.21.0"
+version = "0.22.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "multimethod" },
     { name = "numpy" },
     { name = "packaging" },
     { name = "pandas" },
     { name = "pydantic" },
     { name = "typeguard" },
     { name = "typing-inspect" },
-    { name = "wrapt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/df/c8/79d0d6e84e9ec24b55c1b2cd82e3d116f17b9f4c47e0aca47c45b9083003/pandera-0.21.0.tar.gz", hash = "sha256:12a1e67478dc72459eff8329036e1d3502fcc4332c9c70bdbd88a78b7597aa8a", size = 202728 }
+sdist = { url = "https://files.pythonhosted.org/packages/13/f2/923e5a06f0f70e28de41eca58c89e4f87b00aa7c17a3436cc09592756c43/pandera-0.22.1.tar.gz", hash = "sha256:091ebc353383ba642e5a20ee0df763ed2059ab99cb4b2ac3e83f482de8493645", size = 203085 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bb/46/036f7ce9ea162af98b65df15fa16a22fdb9813e326ef856eb82794e70871/pandera-0.21.0-py3-none-any.whl", hash = "sha256:ee694182ff9f15c165d14a99a9b90bcdf95bce07c1935f73c69718db15c85809", size = 261011 },
+    { url = "https://files.pythonhosted.org/packages/c7/b8/ab3e1419c0f3472c23ec7323da4bc970c3620055c9475d6fe3aa1dcdcef7/pandera-0.22.1-py3-none-any.whl", hash = "sha256:2a35531b4b533ac83e606a6dcc3cd41561774ff3d872117228e931f22e72f330", size = 261370 },
 ]
 
 [package.optional-dependencies]
