@@ -297,12 +297,12 @@ class TestDataProcessor:
         }
 
         # Verify the results by comparing sorted dictionaries
-        assert (
-            added_sorted == expected_added_sorted
-        ), f"Expected added: {expected_added_sorted}, but got: {added_sorted}"
-        assert (
-            cancelled_sorted == expected_cancelled_sorted
-        ), f"Expected cancelled: {expected_cancelled_sorted}, but got: {cancelled_sorted}"
+        assert added_sorted == expected_added_sorted, (
+            f"Expected added: {expected_added_sorted}, but got: {added_sorted}"
+        )
+        assert cancelled_sorted == expected_cancelled_sorted, (
+            f"Expected cancelled: {expected_cancelled_sorted}, but got: {cancelled_sorted}"
+        )
 
     def test_get_indexer_selections_empty_groups(
         self, sample_data, mock__bigquery_provider
@@ -1104,24 +1104,24 @@ class TestNormalizeMetrics:
             if column in [
                 "norm_stake_to_fees_iqr_deviation",
             ]:
-                assert (
-                    result[column] == 0
-                ).all(), f"Column {column} is not 0 for identical input values"
+                assert (result[column] == 0).all(), (
+                    f"Column {column} is not 0 for identical input values"
+                )
 
             elif column in [
                 "norm_existing_dips_agreements",
                 "norm_avg_sync_duration",
                 "norm_lat_lin_reg_coefficient",
             ]:
-                assert (
-                    result[column] == 1
-                ).all(), f"Column {column} is not 0 for identical input values"
+                assert (result[column] == 1).all(), (
+                    f"Column {column} is not 0 for identical input values"
+                )
 
             # For the logistic normalization (indexing agreement acceptance latency)
             elif column == "norm_indexing_agreement_acceptance_latency":
-                assert (
-                    result[column] == 0
-                ).all(), "(result[column] == 0).all() not true"
+                assert (result[column] == 0).all(), (
+                    "(result[column] == 0).all() not true"
+                )
 
     def test_negative_values(self, sample_df):
         # Test with negative values
@@ -1155,13 +1155,13 @@ class TestNormalizeMetrics:
         norm_columns = [col for col in result.columns if col.startswith("norm_")]
 
         for col in norm_columns:
-            assert (
-                result[col].between(0, 1).all()
-            ), f"Column {col} contains values outside [0, 1] range"
+            assert result[col].between(0, 1).all(), (
+                f"Column {col} contains values outside [0, 1] range"
+            )
 
-        assert (
-            not result[norm_columns].isnull().any().any()
-        ), "Result contains unexpected NaN values"
+        assert not result[norm_columns].isnull().any().any(), (
+            "Result contains unexpected NaN values"
+        )
 
     def test_nan_values(self, sample_df):
         # Test with NaN values

@@ -1043,9 +1043,9 @@ class TestPerformLinearRegression:
         hashed_df = hash_sampled_queries(sample_df, integer_root)
 
         # Check that the new column is added
-        assert (
-            "sampled_query_id_hashed_mod_integer_root" in hashed_df.columns
-        ), "sampled_query_id_hashed_mod_integer_root not in hash_df.columns"
+        assert "sampled_query_id_hashed_mod_integer_root" in hashed_df.columns, (
+            "sampled_query_id_hashed_mod_integer_root not in hash_df.columns"
+        )
 
         # Setup linear regression variables
         predictor = ["response_time_ms"]
