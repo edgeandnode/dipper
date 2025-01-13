@@ -150,6 +150,7 @@ def mock__network_provider(ipinfo_io_auth):
     return provider
 
 
+@pytest.mark.skip(reason="requires a new IPinfo.io API key")
 class TestDataManagerClass:
     """
     This class contains tests to ensure that the DataManager class
