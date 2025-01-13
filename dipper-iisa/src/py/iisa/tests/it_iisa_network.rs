@@ -7,8 +7,8 @@ use crate::{
     py::iisa::{PyGeoipResolver, PyNetworkProvider},
 };
 
-#[test_with::env(IT_TEST_IPINFO_IO_AUTH)]
 #[test]
+#[ignore = "requires new ipinfo.io API key"]
 fn set_snapshot() {
     common::init_test_tracing();
 

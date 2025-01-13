@@ -2,11 +2,14 @@
 Test suite for the network module.
 """
 
+import pytest
+
+from __fixtures__ import network as network_fixture
 from iisa.geoip import GeoipResolver
 from iisa.network import IndexersSchema, NetworkProvider
-from __fixtures__ import network as network_fixture
 
 
+@pytest.mark.skip(reason="requires a new IPInfo.io API key")
 class TestNetworkIndexersDataframe:
     def test_indexers_dataframe_conversion(self, ipinfo_io_auth):
         ## Given
