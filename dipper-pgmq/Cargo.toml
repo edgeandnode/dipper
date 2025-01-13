@@ -12,4 +12,4 @@ serde_json.workspace = true
 sqlx = { workspace = true, features = ["runtime-tokio"] }
 thiserror.workspace = true
 time.workspace = true
-uuid = { workspace = true, features = ["v7", "serde"] }
+uuid = { workspace = true, features = ["serde"] }

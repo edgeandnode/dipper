@@ -18,10 +18,9 @@ thegraph-core.workspace = true
 thiserror.workspace = true
 time.workspace = true
 url.workspace = true
-uuid = { version = "1.11.0", features = ["v4"] }
 
 [dev-dependencies]
 dipper-core = { path = "../dipper-core" }
 test-with = { version = "0.14.4", default-features = false }
 thegraph-core = { workspace = true, features = ["fake"] }
-uuid = { workspace = true, features = ["v7"] }
+uuid.workspace = true
