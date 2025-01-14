@@ -1,7 +1,7 @@
 ## Rust builder
 # Compile the Rust code and link against the uv installed libpython
 # The libpython3-dev package version must match the final image's python version
-FROM rust:1.83.0-bookworm AS rust-builder
+FROM rust:1.84.0-bookworm AS rust-builder
 
 RUN --mount=type=cache,target=/var/cache/apt \
   apt-get update \
