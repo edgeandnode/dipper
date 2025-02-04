@@ -28,8 +28,6 @@ pub struct Config {
     pub indexer_rpc: IndexerRpcConfig,
     /// The database configuration
     pub db: DbConfig,
-    /// The Indexing Indexer Selection Algorithm (IISA) configuration
-    pub iisa: IisaConfig,
     /// The network service configuration
     pub network: NetworkConfig,
     /// The signer configuration
@@ -113,21 +111,6 @@ pub struct DbConfig {
     /// The maximum number of connections to the database
     #[serde(default)]
     pub max_connections: Option<u32>,
-}
-
-/// The Indexing Indexer Selection Algorithm (IISA) configuration
-#[derive(Debug, serde::Deserialize)]
-pub struct IisaConfig {
-    /// The GeoIP resolver service auth token
-    ///
-    /// This token is used to authenticate the GeoIP resolver with the `ipinfo.io` service.
-    pub geoip_auth: Hidden<String>,
-
-    /// The BigQuery project ID
-    pub bigquery_project_id: String,
-
-    /// The BigQuery region
-    pub bigquery_region: String,
 }
 
 /// The network service configuration

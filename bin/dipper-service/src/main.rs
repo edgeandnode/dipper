@@ -140,14 +140,7 @@ pub async fn main() -> anyhow::Result<()> {
     let network_provider = network::provider::NetworkProviderService::new(network_handle.clone());
 
     //- The IISA service
-    let (iisa_handle, iisa_service) = {
-        let config = iisa::service::Config {
-            geoip_auth: conf.iisa.geoip_auth.to_string(),
-            bigquery_project_id: conf.iisa.bigquery_project_id.clone(),
-            bigquery_region: conf.iisa.bigquery_region.clone(),
-        };
-        iisa::service::new(config)
-    };
+    let (iisa_handle, iisa_service) = iisa::service::new();
     tracing::info!("initialized IISA service");
 
     // Application services
