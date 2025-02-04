@@ -151,7 +151,10 @@ pub async fn main() -> anyhow::Result<()> {
     tracing::info!("initialized Graph network service");
 
     //- The network provider component
-    let network_provider = network::provider::NetworkProviderService::new(network_handle.clone());
+    let network_provider = network::provider::NetworkProviderService::new(
+        network_handle.clone(),
+        conf.indexer_rpc.allowlist.clone(),
+    );
 
     //- The IISA service
     let (iisa_handle, iisa_service) = iisa::service::new();
@@ -159,13 +162,13 @@ pub async fn main() -> anyhow::Result<()> {
 
     // Application services
     let context = CtxBuilder::new()
-        .with_signer(signer.clone())
+        .with_signer(signer)
         .with_tap_signer(tap_signer)
         .with_agreement_config(conf.dips)
         .with_worker(worker_queue)
-        .with_network_provider(network_provider.clone())
-        .with_registry(registry.clone())
-        .with_indexer_client(indexer_client.clone())
+        .with_network_provider(network_provider)
+        .with_registry(registry)
+        .with_indexer_client(indexer_client)
         .with_iisa(iisa_handle.clone())
         .with_admin_allowlist(conf.admin_rpc.allowlist)
         .with_network_allowlist(conf.indexer_rpc.allowlist)

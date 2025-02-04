@@ -95,7 +95,6 @@ pub mod page {
         #[default]
         Latest,
         Hash(BlockHash),
-        Number(BlockNumber),
         NumberGte(BlockNumber),
     }
 
@@ -105,7 +104,6 @@ pub mod page {
             match self {
                 Self::Latest => (),
                 Self::Hash(hash) => obj.serialize_entry("hash", hash)?,
-                Self::Number(number) => obj.serialize_entry("number", number)?,
                 Self::NumberGte(number) => obj.serialize_entry("number_gte", number)?,
             }
             obj.end()
