@@ -17,6 +17,7 @@ use self::{
     signer::Eip712Signer,
     worker::Worker,
 };
+use crate::tap::ReceiptSigner;
 
 mod admin_rpc_server;
 mod config;
@@ -25,6 +26,7 @@ mod indexer_rpc_server;
 mod indexers;
 mod network;
 mod signer;
+mod tap;
 mod worker;
 
 #[global_allocator]
@@ -62,6 +64,18 @@ pub async fn main() -> anyhow::Result<()> {
         ))
     };
     tracing::info!(address=%signer.address(), "Signer wallet imported");
+
+    //- The TAP signer component
+    let tap_signer = {
+        let private_key_signer =
+            PrivateKeySigner::from_signing_key(conf.tap_signer.secret_key.as_ref().into());
+
+        Arc::new(ReceiptSigner::new(
+            private_key_signer,
+            conf.tap_signer.chain_id,
+            conf.tap_signer.verifier,
+        ))
+    };
 
     //- The DB connection pool component
     let db = {
@@ -146,6 +160,7 @@ pub async fn main() -> anyhow::Result<()> {
     // Application services
     let context = CtxBuilder::new()
         .with_signer(signer.clone())
+        .with_tap_signer(tap_signer)
         .with_agreement_config(conf.dips)
         .with_worker(worker_queue)
         .with_network_provider(network_provider.clone())

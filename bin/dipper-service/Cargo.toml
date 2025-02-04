@@ -17,12 +17,14 @@ dipper-rpc = { version = "0.1.0", path = "../../dipper-rpc" }
 futures-lite = { version = "2.4.0", default-features = false }
 indoc = "2.0.5"
 jsonrpsee = { workspace = true, features = ["server"] }
+rand = "0.9.0"
 reqwest = { workspace = true, features = ["json"] }
 serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
 snmalloc-rs = "0.3.6"
 sqlx.workspace = true
+tap_core = { git = "https://github.com/semiotic-ai/timeline-aggregation-protocol", rev = "5c0b2b3" }
 thegraph-core = { workspace = true, features = ["alloy-signer-local", "serde", "signed-message"] }
 thegraph-graphql-http = { version = "0.2.4", features = ["http-client-reqwest"] }
 thiserror.workspace = true
@@ -34,5 +36,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 url.workspace = true
 
 [dev-dependencies]
+fake = "3.1.0"
 test-with = { version = "0.14.4", default-features = false }
+thegraph-core = { workspace = true, features = ["fake"] }
 uuid.workspace = true

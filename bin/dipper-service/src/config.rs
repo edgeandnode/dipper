@@ -32,6 +32,8 @@ pub struct Config {
     pub network: NetworkConfig,
     /// The signer configuration
     pub signer: SignerConfig,
+    /// The TAP signer configuration
+    pub tap_signer: TapSignerConfig,
 }
 
 #[serde_as]
@@ -144,6 +146,21 @@ pub struct SignerConfig {
 
     /// The signer chain ID
     pub chain_id: ChainId,
+}
+
+/// The configuration for the TAP signer
+#[serde_as]
+#[derive(Debug, serde::Deserialize)]
+pub struct TapSignerConfig {
+    /// The signing key to use for authentication
+    #[serde_as(as = "HiddenSecretKeyAsHexStr")]
+    pub secret_key: Hidden<SecretKey>,
+
+    /// The signer chain ID
+    pub chain_id: ChainId,
+
+    /// The verifier contract address
+    pub verifier: Address,
 }
 
 /// An error that can occur when loading the configuration.
