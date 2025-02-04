@@ -13,7 +13,7 @@ use thegraph_core::{
 
 use crate::{
     admin_rpc_server, indexer_rpc_server, indexers::DipsClient, network::NetworkProvider,
-    signer::PrivateKeyEip712Signer, worker, worker::WorkerQueue,
+    signer::PrivateKeyEip712Signer, tap::ReceiptSigner, worker, worker::WorkerQueue,
 };
 
 /// The maximum number of candidates to select.
@@ -24,6 +24,9 @@ pub const DEFAULT_MAX_CANDIDATES: usize = 3;
 pub struct Ctx<R, N, W, C, I> {
     /// The EIP-712 signer
     signer: Arc<PrivateKeyEip712Signer>,
+
+    /// The TAP receipt signer
+    tap_signer: Arc<ReceiptSigner>,
 
     /// The allowlist of addresses that are allowed to make requests to the DIPs gateway Admin API
     admin_allowlist: Arc<BTreeSet<Address>>,
@@ -272,8 +275,9 @@ impl IndexingAgreementConfig {
 }
 
 /// The HTTP server context builder.
-pub struct CtxBuilder<S, A, R, N, W, C, I> {
+pub struct CtxBuilder<S, T, A, R, N, W, C, I> {
     signer: S,
+    tap_signer: T,
     admin_allowlist: BTreeSet<Address>,
     network_allowlist: BTreeSet<IndexerId>,
     agreement_config: A,
@@ -290,6 +294,9 @@ pub struct NotSet;
 
 #[doc(hidden)]
 pub struct SignerSet(Arc<PrivateKeyEip712Signer>);
+
+#[doc(hidden)]
+pub struct TapSignerSet(Arc<ReceiptSigner>);
 
 #[doc(hidden)]
 pub struct AgreementConfigSet {
@@ -312,11 +319,12 @@ pub struct ClientSet<C>(C);
 #[doc(hidden)]
 pub struct IisaSet<I>(I);
 
-impl CtxBuilder<NotSet, NotSet, NotSet, NotSet, NotSet, NotSet, NotSet> {
+impl CtxBuilder<NotSet, NotSet, NotSet, NotSet, NotSet, NotSet, NotSet, NotSet> {
     /// Creates a new [`CtxBuilder`].
     pub fn new() -> Self {
         Self {
             signer: NotSet,
+            tap_signer: NotSet,
             admin_allowlist: Default::default(),
             network_allowlist: Default::default(),
             agreement_config: NotSet,
@@ -330,14 +338,15 @@ impl CtxBuilder<NotSet, NotSet, NotSet, NotSet, NotSet, NotSet, NotSet> {
     }
 }
 
-impl<S, A, R, N, W, C, I> CtxBuilder<S, A, R, N, W, C, I> {
+impl<S, T, A, R, N, W, C, I> CtxBuilder<S, T, A, R, N, W, C, I> {
     /// Sets the list of addresses that are allowed to make requests to the DIPs gateway Admin API.
     pub fn with_admin_allowlist(
         self,
         allowlist: BTreeSet<Address>,
-    ) -> CtxBuilder<S, A, R, N, W, C, I> {
+    ) -> CtxBuilder<S, T, A, R, N, W, C, I> {
         CtxBuilder {
             signer: self.signer,
+            tap_signer: self.tap_signer,
             admin_allowlist: allowlist,
             network_allowlist: self.network_allowlist,
             agreement_config: self.agreement_config,
@@ -354,9 +363,10 @@ impl<S, A, R, N, W, C, I> CtxBuilder<S, A, R, N, W, C, I> {
     pub fn with_network_allowlist(
         self,
         allowlist: BTreeSet<IndexerId>,
-    ) -> CtxBuilder<S, A, R, N, W, C, I> {
+    ) -> CtxBuilder<S, T, A, R, N, W, C, I> {
         CtxBuilder {
             signer: self.signer,
+            tap_signer: self.tap_signer,
             admin_allowlist: self.admin_allowlist,
             network_allowlist: allowlist,
             agreement_config: self.agreement_config,
@@ -370,9 +380,10 @@ impl<S, A, R, N, W, C, I> CtxBuilder<S, A, R, N, W, C, I> {
     }
 
     /// Sets the maximum number of candidates to select.
-    pub fn with_max_candidates(self, max_candidates: usize) -> CtxBuilder<S, A, R, N, W, C, I> {
+    pub fn with_max_candidates(self, max_candidates: usize) -> CtxBuilder<S, T, A, R, N, W, C, I> {
         CtxBuilder {
             signer: self.signer,
+            tap_signer: self.tap_signer,
             admin_allowlist: self.admin_allowlist,
             network_allowlist: self.network_allowlist,
             agreement_config: self.agreement_config,
@@ -386,14 +397,15 @@ impl<S, A, R, N, W, C, I> CtxBuilder<S, A, R, N, W, C, I> {
     }
 }
 
-impl<R, A, N, W, C, I> CtxBuilder<NotSet, A, R, N, W, C, I> {
+impl<T, R, A, N, W, C, I> CtxBuilder<NotSet, T, A, R, N, W, C, I> {
     /// Sets the EIP-712 signer.
     pub fn with_signer(
         self,
         signer: Arc<PrivateKeyEip712Signer>,
-    ) -> CtxBuilder<SignerSet, A, R, N, W, C, I> {
+    ) -> CtxBuilder<SignerSet, T, A, R, N, W, C, I> {
         CtxBuilder {
             signer: SignerSet(signer),
+            tap_signer: self.tap_signer,
             admin_allowlist: self.admin_allowlist,
             network_allowlist: self.network_allowlist,
             agreement_config: self.agreement_config,
@@ -407,7 +419,29 @@ impl<R, A, N, W, C, I> CtxBuilder<NotSet, A, R, N, W, C, I> {
     }
 }
 
-impl<S, R, N, W, C, I> CtxBuilder<S, NotSet, R, N, W, C, I> {
+impl<S, R, A, N, W, C, I> CtxBuilder<S, NotSet, A, R, N, W, C, I> {
+    /// Sets the EIP-712 signer.
+    pub fn with_tap_signer(
+        self,
+        signer: Arc<ReceiptSigner>,
+    ) -> CtxBuilder<S, TapSignerSet, A, R, N, W, C, I> {
+        CtxBuilder {
+            signer: self.signer,
+            tap_signer: TapSignerSet(signer),
+            admin_allowlist: self.admin_allowlist,
+            network_allowlist: self.network_allowlist,
+            agreement_config: self.agreement_config,
+            max_candidates: self.max_candidates,
+            registry: self.registry,
+            network: self.network,
+            worker: self.worker,
+            client: self.client,
+            iisa: self.iisa,
+        }
+    }
+}
+
+impl<S, T, R, N, W, C, I> CtxBuilder<S, T, NotSet, R, N, W, C, I> {
     /// Sets the _indexing agreement_ configuration.
     pub fn with_agreement_config(
         self,
@@ -415,10 +449,11 @@ impl<S, R, N, W, C, I> CtxBuilder<S, NotSet, R, N, W, C, I> {
             IndexingAgreementConfig,
             BTreeMap<ChainId, IndexingAgreementChainPrices>,
         )>,
-    ) -> CtxBuilder<S, AgreementConfigSet, R, N, W, C, I> {
+    ) -> CtxBuilder<S, T, AgreementConfigSet, R, N, W, C, I> {
         let (config, prices) = config.into();
         CtxBuilder {
             signer: self.signer,
+            tap_signer: self.tap_signer,
             admin_allowlist: self.admin_allowlist,
             network_allowlist: self.network_allowlist,
             agreement_config: AgreementConfigSet { config, prices },
@@ -432,14 +467,15 @@ impl<S, R, N, W, C, I> CtxBuilder<S, NotSet, R, N, W, C, I> {
     }
 }
 
-impl<S, A, N, W, C, I> CtxBuilder<S, A, NotSet, N, W, C, I> {
+impl<S, T, A, N, W, C, I> CtxBuilder<S, T, A, NotSet, N, W, C, I> {
     /// Sets the DIPs registry.
-    pub fn with_registry<R>(self, registry: R) -> CtxBuilder<S, A, RegistrySet<R>, N, W, C, I>
+    pub fn with_registry<R>(self, registry: R) -> CtxBuilder<S, T, A, RegistrySet<R>, N, W, C, I>
     where
         R: Registry + 'static,
     {
         CtxBuilder {
             signer: self.signer,
+            tap_signer: self.tap_signer,
             admin_allowlist: self.admin_allowlist,
             network_allowlist: self.network_allowlist,
             agreement_config: self.agreement_config,
@@ -453,14 +489,18 @@ impl<S, A, N, W, C, I> CtxBuilder<S, A, NotSet, N, W, C, I> {
     }
 }
 
-impl<S, A, R, W, C, I> CtxBuilder<S, A, R, NotSet, W, C, I> {
+impl<S, T, A, R, W, C, I> CtxBuilder<S, T, A, R, NotSet, W, C, I> {
     /// Sets the network provider.
-    pub fn with_network_provider<N>(self, network: N) -> CtxBuilder<S, A, R, NetworkSet<N>, W, C, I>
+    pub fn with_network_provider<N>(
+        self,
+        network: N,
+    ) -> CtxBuilder<S, T, A, R, NetworkSet<N>, W, C, I>
     where
         N: NetworkProvider + 'static,
     {
         CtxBuilder {
             signer: self.signer,
+            tap_signer: self.tap_signer,
             admin_allowlist: self.admin_allowlist,
             network_allowlist: self.network_allowlist,
             agreement_config: self.agreement_config,
@@ -474,14 +514,15 @@ impl<S, A, R, W, C, I> CtxBuilder<S, A, R, NotSet, W, C, I> {
     }
 }
 
-impl<S, A, R, N, C, I> CtxBuilder<S, A, R, N, NotSet, C, I> {
+impl<S, T, A, R, N, C, I> CtxBuilder<S, T, A, R, N, NotSet, C, I> {
     /// Sets the message queue worker.
-    pub fn with_worker<W>(self, worker: W) -> CtxBuilder<S, A, R, N, WorkerSet<W>, C, I>
+    pub fn with_worker<W>(self, worker: W) -> CtxBuilder<S, T, A, R, N, WorkerSet<W>, C, I>
     where
         W: WorkerQueue + 'static,
     {
         CtxBuilder {
             signer: self.signer,
+            tap_signer: self.tap_signer,
             admin_allowlist: self.admin_allowlist,
             network_allowlist: self.network_allowlist,
             agreement_config: self.agreement_config,
@@ -495,14 +536,16 @@ impl<S, A, R, N, C, I> CtxBuilder<S, A, R, N, NotSet, C, I> {
     }
 }
 
-impl<S, A, R, N, W, I> CtxBuilder<S, A, R, N, W, NotSet, I> {
+impl<S, T, A, R, N, W, I> CtxBuilder<S, T, A, R, N, W, NotSet, I> {
     /// Sets the indexer client.
-    pub fn with_indexer_client<C>(self, client: C) -> CtxBuilder<S, A, R, N, W, ClientSet<C>, I>
+    pub fn with_indexer_client<C>(self, client: C) -> CtxBuilder<S, T, A, R, N, W, ClientSet<C>, I>
     where
         C: DipsClient + 'static,
     {
         CtxBuilder {
             signer: self.signer,
+
+            tap_signer: self.tap_signer,
             admin_allowlist: self.admin_allowlist,
             network_allowlist: self.network_allowlist,
             agreement_config: self.agreement_config,
@@ -516,14 +559,15 @@ impl<S, A, R, N, W, I> CtxBuilder<S, A, R, N, W, NotSet, I> {
     }
 }
 
-impl<S, A, R, N, W, C> CtxBuilder<S, A, R, N, W, C, NotSet> {
+impl<S, T, A, R, N, W, C> CtxBuilder<S, T, A, R, N, W, C, NotSet> {
     /// Sets the Indexing Indexer Selection Algorithm (IISA) service.
-    pub fn with_iisa<I>(self, iisa: I) -> CtxBuilder<S, A, R, N, W, C, IisaSet<I>>
+    pub fn with_iisa<I>(self, iisa: I) -> CtxBuilder<S, T, A, R, N, W, C, IisaSet<I>>
     where
         I: CandidateSelection + 'static,
     {
         CtxBuilder {
             signer: self.signer,
+            tap_signer: self.tap_signer,
             admin_allowlist: self.admin_allowlist,
             network_allowlist: self.network_allowlist,
             agreement_config: self.agreement_config,
@@ -540,6 +584,7 @@ impl<S, A, R, N, W, C> CtxBuilder<S, A, R, N, W, C, NotSet> {
 impl<R, N, W, C, I>
     CtxBuilder<
         SignerSet,
+        TapSignerSet,
         AgreementConfigSet,
         RegistrySet<R>,
         NetworkSet<N>,
@@ -552,6 +597,7 @@ impl<R, N, W, C, I>
     pub fn build(self) -> Ctx<R, N, W, C, I> {
         Ctx {
             signer: self.signer.0,
+            tap_signer: self.tap_signer.0,
             admin_allowlist: Arc::new(self.admin_allowlist),
             network_allowlist: Arc::new(self.network_allowlist),
             agreement_conf: Arc::new(self.agreement_config.config),
@@ -580,12 +626,14 @@ mod tests {
         Error, IndexingAgreement, IndexingAgreementVoucher, IndexingReceipt,
         IndexingReceiptReportedWork, IndexingRequest, Registry,
     };
+    use fake::Fake;
     use thegraph_core::{
         alloy::{
             primitives::{address, b256, ChainId, U256},
             signers::local::PrivateKeySigner,
             sol_types::{eip712_domain, private::Address},
         },
+        fake_impl::alloy::Alloy as FakeAlloy,
         indexer_id, DeploymentId, IndexerId,
     };
     use url::Url;
@@ -595,6 +643,7 @@ mod tests {
         indexers::{AgreementProposalResponse, DipsClient, DipsError},
         network::{Deployment, Indexer, NetworkProvider},
         signer::PrivateKeyEip712Signer,
+        tap::ReceiptSigner,
         worker::WorkerQueue,
     };
 
@@ -908,6 +957,14 @@ mod tests {
 
             Arc::new(PrivateKeyEip712Signer::new(signer, signer_address, domain))
         };
+        let tap_signer = {
+            let signer = PrivateKeySigner::random();
+            let chain_id = 1;
+            let verifier = FakeAlloy.fake::<Address>();
+
+            Arc::new(ReceiptSigner::new(signer, chain_id, verifier))
+        };
+
         let admin_allowlist =
             BTreeSet::from([address!("2c46937bc028c31b7bb463796c9737793a45d464")]);
         let network_allowlist =
@@ -930,6 +987,7 @@ mod tests {
         //* When
         let ctx = CtxBuilder::new()
             .with_signer(signer)
+            .with_tap_signer(tap_signer)
             .with_worker(worker)
             .with_registry(registry)
             .with_network_provider(network)
