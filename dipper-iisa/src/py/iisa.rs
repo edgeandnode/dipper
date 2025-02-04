@@ -4,12 +4,14 @@ mod bq;
 mod data_manager;
 mod geoip;
 mod network;
+mod select;
 
 pub use bq::PyBigQueryProvider;
 pub use data_manager::PyDataManager;
 pub use geoip::PyGeoipResolver;
 pub use network::PyNetworkProvider;
 use pyo3::{sync::GILOnceCell, types::PyModule, Bound, Py, PyResult, Python};
+pub use select::{select_many, select_one};
 
 /// Import the `iisa` python module.
 ///
@@ -30,4 +32,5 @@ mod tests {
     // mod it_iisa_data_manager;
     mod it_iisa_geoip;
     mod it_iisa_network;
+    mod it_iisa_select;
 }

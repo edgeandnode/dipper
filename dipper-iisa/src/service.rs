@@ -6,10 +6,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::{
     api::{CandidateSelection, Indexer, SelectionError},
-    py::{
-        iisa::{PyBigQueryProvider, PyDataManager, PyGeoipResolver, PyNetworkProvider},
-        logging,
-    },
+    py::{iisa, logging},
 };
 
 /// The IISA service configuration.
@@ -187,15 +184,15 @@ pub fn new(config: Config) -> (Handle, impl FnOnce() -> anyhow::Result<()>) {
 
             // Instantiate the data manager class
             let (data_manager, network_provider) = {
-                let geoip_resolver = PyGeoipResolver::new(py, &config.geoip_auth)?;
-                let network_provider = PyNetworkProvider::new(py, geoip_resolver)?;
-                let bigquery_provider = PyBigQueryProvider::new(
+                let geoip_resolver = iisa::PyGeoipResolver::new(py, &config.geoip_auth)?;
+                let network_provider = iisa::PyNetworkProvider::new(py, geoip_resolver)?;
+                let bigquery_provider = iisa::PyBigQueryProvider::new(
                     py,
                     &config.bigquery_project_id,
                     &config.bigquery_region,
                 )?;
                 let data_manager =
-                    PyDataManager::new(py, bigquery_provider, network_provider.clone())?;
+                    iisa::PyDataManager::new(py, bigquery_provider, network_provider.clone())?;
 
                 Ok::<_, anyhow::Error>((data_manager, network_provider))
             }?;
@@ -266,11 +263,73 @@ pub fn new(config: Config) -> (Handle, impl FnOnce() -> anyhow::Result<()>) {
                             }
                         }
                     }
-                    Command::SelectOneIndexer { .. } => {
-                        todo!("SelectOneIndexer command")
+                    Command::SelectOneIndexer {
+                        deployment_id,
+                        candidates,
+                        tx,
+                    } => {
+                        tracing::debug!(
+                            %deployment_id,
+                            "Selecting one indexer out of {} candidates", candidates.len()
+                        );
+
+                        // Skip if there are no candidates
+                        if candidates.is_empty() {
+                            let _ = tx.send(Ok(None));
+                            continue;
+                        }
+
+                        let ids = candidates.iter().map(|indexer| &indexer.id);
+                        match iisa::select_one(py, ids) {
+                            Ok(None) => {
+                                let _ = tx.send(Ok(None));
+                            }
+                            Ok(Some(id)) => {
+                                let indexer =
+                                    candidates.iter().find(|indexer| indexer.id == id).cloned();
+                                let _ = tx.send(Ok(indexer));
+                            }
+                            Err(err) => {
+                                let _ = tx
+                                    .send(Err(anyhow::anyhow!(err)
+                                        .context("Failed to select one indexer")));
+                            }
+                        }
                     }
-                    Command::SelectIndexers { .. } => {
-                        todo!("SelectIndexers command")
+                    Command::SelectIndexers {
+                        deployment_id,
+                        candidates,
+                        num_candidates,
+                        tx,
+                    } => {
+                        tracing::debug!(
+                            %deployment_id,
+                            "Selecting {} indexers out of {}", num_candidates, candidates.len()
+                        );
+
+                        // Skip if the desired number of indexers is zero,
+                        // or the candidates list is empty
+                        if candidates.is_empty() || num_candidates == 0 {
+                            let _ = tx.send(Ok(Vec::new()));
+                            continue;
+                        }
+
+                        let ids = candidates.iter().map(|indexer| &indexer.id);
+                        match iisa::select_many(py, ids, num_candidates) {
+                            Ok(res) => {
+                                let indexers = candidates
+                                    .iter()
+                                    .filter(|indexer| res.contains(&indexer.id))
+                                    .cloned()
+                                    .collect();
+                                let _ = tx.send(Ok(indexers));
+                            }
+                            Err(err) => {
+                                let _ = tx.send(Err(
+                                    anyhow::anyhow!(err).context("Failed to select indexers")
+                                ));
+                            }
+                        }
                     }
                 }
             }
