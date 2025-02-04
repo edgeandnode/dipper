@@ -9,40 +9,10 @@ use super::{
     py::{iisa, logging},
 };
 
-/// The IISA service configuration.
-pub struct Config {
-    /// The GeoIP resolver auth token.
-    ///
-    /// This token is used to authenticate the GeoIP resolver with the `ipinfo.io` service.
-    pub geoip_auth: String,
-
-    /// The BigQuery project ID.
-    pub bigquery_project_id: String,
-
-    /// The BigQuery region.
-    pub bigquery_region: String,
-}
-
 /// The `Command` enum represents the commands that can be sent to the `IndexerSelectionService`.
 enum Command {
     /// Instruct the IISA service to stop.
     Stop,
-
-    /// Instructs the `DataManager` to fetch, process and update the indexer performance
-    /// history data.
-    FetchAndUpdateHistoricalData {
-        /// The response channel to send the result of the operation.
-        tx: oneshot::Sender<anyhow::Result<()>>,
-    },
-
-    /// Set the latest network snapshot's indexers list to the `NetworkProvider`.
-    UpdateNetworkIndexersList {
-        /// The latest network snapshot's indexers list.
-        indexers: Vec<Indexer>,
-
-        /// The response channel to send the result of the operation.
-        tx: oneshot::Sender<anyhow::Result<()>>,
-    },
 
     /// Select one indexer from the given list of candidates.
     SelectOneIndexer {
@@ -81,22 +51,6 @@ pub struct Handle {
 }
 
 impl Handle {
-    /// Instructs the `DataManager` to fetch, process and update the indexer performance
-    /// history data.
-    pub async fn fetch_and_update_historical_data(&self) -> anyhow::Result<()> {
-        let (tx, rx) = oneshot::channel();
-        self.tx.send(Command::FetchAndUpdateHistoricalData { tx })?;
-        rx.await?
-    }
-
-    /// Set the latest network snapshot's indexers list to the `NetworkProvider`.
-    pub async fn update_network_indexers_list(&self, indexers: Vec<Indexer>) -> anyhow::Result<()> {
-        let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(Command::UpdateNetworkIndexersList { indexers, tx })?;
-        rx.await?
-    }
-
     /// Stop the service.
     pub async fn stop(&self) {
         if self.tx.is_closed() {
@@ -157,7 +111,7 @@ impl CandidateSelection for Handle {
 
 /// Creates a new `IndexerSelectionService` and returns a handle to it along with a function that
 /// should be called to start the service.
-pub fn new(config: Config) -> (Handle, impl FnOnce() -> anyhow::Result<()>) {
+pub fn new() -> (Handle, impl FnOnce() -> anyhow::Result<()>) {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let service_task = move || {
         // Register the Python logging to Rust log handler
@@ -182,21 +136,6 @@ pub fn new(config: Config) -> (Handle, impl FnOnce() -> anyhow::Result<()>) {
             )
             .context("Failed to set up Python logging")?;
 
-            // Instantiate the data manager class
-            let (data_manager, network_provider) = {
-                let geoip_resolver = iisa::PyGeoipResolver::new(py, &config.geoip_auth)?;
-                let network_provider = iisa::PyNetworkProvider::new(py, geoip_resolver)?;
-                let bigquery_provider = iisa::PyBigQueryProvider::new(
-                    py,
-                    &config.bigquery_project_id,
-                    &config.bigquery_region,
-                )?;
-                let data_manager =
-                    iisa::PyDataManager::new(py, bigquery_provider, network_provider.clone())?;
-
-                Ok::<_, anyhow::Error>((data_manager, network_provider))
-            }?;
-
             // Start listening for commands
             loop {
                 // Wait for the next command
@@ -214,55 +153,6 @@ pub fn new(config: Config) -> (Handle, impl FnOnce() -> anyhow::Result<()>) {
                         break;
                     }
 
-                    Command::FetchAndUpdateHistoricalData { tx } => {
-                        match data_manager.fetch_data_and_update() {
-                            Ok(_) => {
-                                if tx.send(Ok(())).is_err() {
-                                    // Abort service if the response channel's receiver side has been dropped.
-                                    return Err(anyhow::anyhow!(
-                                        "Failed to send the result of the operation"
-                                    ));
-                                }
-                            }
-                            Err(err) => {
-                                if tx
-                                    .send(Err(anyhow::anyhow!(err)
-                                        .context("Failed to fetch and update historical data")))
-                                    .is_err()
-                                {
-                                    // Abort service if the response channel's receiver side has been dropped.
-                                    return Err(anyhow::anyhow!(
-                                        "Failed to send the result of the operation"
-                                    ));
-                                }
-                            }
-                        }
-                    }
-
-                    Command::UpdateNetworkIndexersList { tx, indexers } => {
-                        match network_provider.set_snapshot(py, &indexers) {
-                            Ok(_) => {
-                                if tx.send(Ok(())).is_err() {
-                                    // Abort service if the response channel's receiver side has been dropped.
-                                    return Err(anyhow::anyhow!(
-                                        "Failed to send the result of the operation"
-                                    ));
-                                }
-                            }
-                            Err(err) => {
-                                if tx
-                                    .send(Err(anyhow::anyhow!(err)
-                                        .context("Failed to update network indexers list")))
-                                    .is_err()
-                                {
-                                    // Abort service if the response channel's receiver side has been dropped.
-                                    return Err(anyhow::anyhow!(
-                                        "Failed to send the result of the operation"
-                                    ));
-                                }
-                            }
-                        }
-                    }
                     Command::SelectOneIndexer {
                         deployment_id,
                         candidates,
@@ -296,6 +186,7 @@ pub fn new(config: Config) -> (Handle, impl FnOnce() -> anyhow::Result<()>) {
                             }
                         }
                     }
+
                     Command::SelectIndexers {
                         deployment_id,
                         candidates,

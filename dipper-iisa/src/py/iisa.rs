@@ -1,15 +1,7 @@
 //! Rust wrapper for the `iisa` Python module.
 
-mod bq;
-mod data_manager;
-mod geoip;
-mod network;
 mod select;
 
-pub use bq::PyBigQueryProvider;
-pub use data_manager::PyDataManager;
-pub use geoip::PyGeoipResolver;
-pub use network::PyNetworkProvider;
 use pyo3::{sync::GILOnceCell, types::PyModule, Bound, Py, PyResult, Python};
 pub use select::{select_many, select_one};
 
@@ -26,11 +18,5 @@ fn import_iisa_module(py: Python) -> PyResult<&Bound<PyModule>> {
 #[cfg(test)]
 mod tests {
     mod common;
-    mod it_iisa_bq;
-
-    // TODO: Fix test dependency with network module
-    // mod it_iisa_data_manager;
-    mod it_iisa_geoip;
-    mod it_iisa_network;
     mod it_iisa_select;
 }
