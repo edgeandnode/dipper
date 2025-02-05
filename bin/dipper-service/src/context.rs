@@ -805,6 +805,13 @@ mod tests {
         ) -> Result<Option<IndexingReceipt>, Error> {
             unimplemented!()
         }
+
+        async fn get_latest_receipt_for_agreement(
+            &self,
+            _agreement_id: &IndexingAgreementId,
+        ) -> Result<Option<IndexingReceipt>, Error> {
+            unimplemented!()
+        }
     }
 
     struct DummyNetworkProvider;
