@@ -102,6 +102,7 @@ where
     fn from_state(ctx: &Ctx<R, N, W, C, I>) -> Self {
         Self {
             signer: ctx.signer.clone(),
+            tap_signer: ctx.tap_signer.clone(),
             allowlist: ctx.network_allowlist.clone(),
             registry: ctx.registry.clone(),
             network: ctx.network.clone(),

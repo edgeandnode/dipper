@@ -13,13 +13,17 @@ use dipper_rpc::indexer::gateway_server::{
 use thegraph_core::{signed_message::SignedMessage, IndexerId};
 use tonic::{Request, Response, Status};
 
-use crate::{network::NetworkProvider, signer::PrivateKeyEip712Signer, worker::WorkerQueue};
+use crate::{
+    network::NetworkProvider, signer::PrivateKeyEip712Signer, tap::ReceiptSigner,
+    worker::WorkerQueue,
+};
 
 /// The substate for the [`DipsGatewayServiceImpl`] handler
 ///
 /// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
 pub struct DipsGatewayServiceCtx<R, N, W> {
     pub signer: Arc<PrivateKeyEip712Signer>,
+    pub tap_signer: Arc<ReceiptSigner>,
     pub allowlist: Arc<BTreeSet<IndexerId>>,
     pub registry: R,
     pub network: N,
