@@ -579,4 +579,34 @@ impl Registry for PgRegistry {
         .await
         .map_err(Into::into)
     }
+
+    async fn get_latest_receipt_for_agreement(
+        &self,
+        agreement_id: &IndexingAgreementId,
+    ) -> Result<Option<IndexingReceipt>, Error> {
+        sqlx::query_as(
+            r#"
+            SELECT
+                id,
+                created_at,
+                updated_at,
+                indexing_agreement_id,
+                indexer_id,
+                indexer_operator_id,
+                reported_work_epoch,
+                reported_work_blocks,
+                reported_work_entities,
+                reported_work_poi,
+                amount
+            FROM dipper_reg_indexing_receipts
+            WHERE indexing_agreement_id = $1
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(agreement_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
 }

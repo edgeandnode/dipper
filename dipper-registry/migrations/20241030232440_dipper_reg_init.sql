@@ -60,7 +60,7 @@ CREATE TABLE dipper_reg_indexing_receipts
     indexer_id             TEXT   NOT NULL,
     indexer_operator_id    TEXT   NOT NULL,
 
-    -- Collection information
+    -- Report information
     reported_work_epoch BIGINT NOT NULL,
     reported_work_blocks   BYTEA  NOT NULL,
     reported_work_entities BYTEA  NOT NULL,
@@ -69,4 +69,6 @@ CREATE TABLE dipper_reg_indexing_receipts
     amount              BYTEA  NOT NULL
 );
 
-CREATE INDEX dipper_reg_indexing_indexing_agreement_id_idx ON dipper_reg_indexing_receipts (indexing_agreement_id);
+CREATE INDEX dipper_reg_indexing_receipts_indexing_agreement_id_idx ON dipper_reg_indexing_receipts (indexing_agreement_id);
+CREATE INDEX dipper_reg_indexing_receipts_indexer_id_idx ON dipper_reg_indexing_receipts (indexer_id);
+CREATE INDEX dipper_reg_indexing_receipts_created_at_idx ON dipper_reg_indexing_receipts (created_at);

@@ -187,4 +187,10 @@ pub trait Registry {
         &self,
         indexer_id: &IndexerId,
     ) -> Result<Option<IndexingReceipt>, Error>;
+
+    /// Get the latest receipt for the given agreement ID.
+    async fn get_latest_receipt_for_agreement(
+        &self,
+        agreement_id: &IndexingAgreementId,
+    ) -> Result<Option<IndexingReceipt>, Error>;
 }
