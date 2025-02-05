@@ -29,18 +29,40 @@ pub struct ReportProgressRequest {
     /// / The ID of the agreement to report progress for.
     #[prost(bytes = "vec", tag = "1")]
     pub agreement_id: ::prost::alloc::vec::Vec<u8>,
+    /// / The current epoch.
+    #[prost(uint32, tag = "2")]
+    pub epoch: u32,
+    /// / The proof of indexing associated with the current epoch.
+    #[prost(bytes = "vec", tag = "3")]
+    pub proof_of_indexing: ::prost::alloc::vec::Vec<u8>,
+    /// / The work report information.
+    #[prost(message, optional, tag = "10")]
+    pub report: ::core::option::Option<WorkReport>,
     /// / The signature of the message.
     #[prost(bytes = "vec", tag = "99")]
     pub signature: ::prost::alloc::vec::Vec<u8>,
 }
 /// *
+/// The work report information.
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct WorkReport {
+    /// / The number of blocks indexed since the last report.
+    #[prost(uint64, tag = "1")]
+    pub blocks: u64,
+    /// / The total number of entities stored at the moment of reporting.
+    #[prost(uint64, tag = "2")]
+    pub entities: u64,
+}
+/// *
 /// A response to a request to report the progress of an _indexing agreement_.
 ///
 /// See the `DipsService.ReportProgress` method.
-///
-/// TODO(LNSD): Add fields to the message
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct ReportProgressResponse {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ReportProgressResponse {
+    /// / The TAP payment receipt.
+    #[prost(bytes = "vec", tag = "1")]
+    pub receipt: ::prost::alloc::vec::Vec<u8>,
+}
 /// Generated server implementations.
 pub mod dips_service_server {
     #![allow(

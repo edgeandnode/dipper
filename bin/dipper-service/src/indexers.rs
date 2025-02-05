@@ -9,7 +9,7 @@ use dashmap::{DashMap, Entry};
 use dipper_core::ids::IndexingAgreementId;
 use dipper_registry::IndexingAgreementVoucher;
 use dipper_rpc::indexer::indexer_client::{
-    graphprotocol::indexer::dips::{dips_service_client::DipsServiceClient, ProposalResponse},
+    graphprotocol::indexer::dips::{dips_service_client::DipsServiceClient, Decision},
     CancelAgreementRequestMessage, IndexingAgreementVoucher as VoucherRpc,
     IndexingAgreementVoucherMetadata as VoucherMetadataRpc, SubmitAgreementProposalRequestMessage,
 };
@@ -137,14 +137,15 @@ impl DipsClient for DipsIndexerClient {
             .await
             .map_err(|err| DipsError::RequestError(err.into()))?;
 
+        // Check the proposal response
         let response = response.into_inner();
-        if response.response == ProposalResponse::Accept as i32 {
+        if response.decision == Decision::Accept as i32 {
             Ok(AgreementProposalResponse::Accepted)
-        } else if response.response == ProposalResponse::Reject as i32 {
+        } else if response.decision == Decision::Reject as i32 {
             Ok(AgreementProposalResponse::Rejected)
         } else {
             Err(DipsError::ResponseError(
-                format!("Invalid response: {}", response.response).into(),
+                format!("Invalid response decision value: {}", response.decision).into(),
             ))
         }
     }
