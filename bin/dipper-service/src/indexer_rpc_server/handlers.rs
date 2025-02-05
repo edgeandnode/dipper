@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 use dipper_core::state::FromState;
-use dipper_registry::{IndexingAgreementStatus, Registry};
+use dipper_registry::{IndexingAgreementStatus, IndexingReceiptReportedWork, Registry};
 use dipper_rpc::indexer::gateway_server::{
     graphprotocol::gateway::dips::{
         dips_service_server::DipsService, CancelAgreementRequest, CancelAgreementResponse,
@@ -10,7 +10,7 @@ use dipper_rpc::indexer::gateway_server::{
     },
     CancelAgreementRequestMessage, ReportProgressRequestMessage,
 };
-use thegraph_core::{signed_message::SignedMessage, IndexerId};
+use thegraph_core::{alloy::primitives::U256, signed_message::SignedMessage, IndexerId};
 use tonic::{Request, Response, Status};
 
 use crate::{
@@ -136,7 +136,7 @@ where
 
         // Resolve the indexer ID from the operator wallet address who signed the request
         // And check if the signer is allowed to make this request
-        let requested_by = match self
+        let indexer_id = match self
             .network
             .get_indexer_id_for_operator_address(&requested_by)
         {
@@ -146,7 +146,15 @@ where
             }
         };
 
-        let ReportProgressRequestMessage { agreement_id, .. } = req.message;
+        let ReportProgressRequestMessage {
+            agreement_id,
+            epoch,
+            poi,
+            report,
+        } = req.message;
+
+        // TODO: Check the reported epoch is correct, i.e., check against the network subgraph's
+        //  latest reported epoch
 
         // Retrieve the agreement
         let agreement = match self
@@ -156,7 +164,7 @@ where
         {
             Err(err) => {
                 tracing::error!(error=?err, "Failed to get indexing agreement");
-                return Err(Status::internal("Cancellation failed"));
+                return Err(Status::internal("Failed to get indexing agreement"));
             }
             Ok(None) => {
                 return Err(Status::not_found("agreement not found"));
@@ -165,7 +173,7 @@ where
         };
 
         // Ensure the indexer is the owner of the agreement
-        if agreement.indexer.id != requested_by {
+        if agreement.indexer.id != indexer_id {
             return Err(Status::permission_denied("Unauthorized"));
         }
 
@@ -196,6 +204,89 @@ where
 
         // TODO(Post-MVP): Handle agreement expiration
         //  Check if the agreement should be marked as expired, and if so, do it
+        //  Then return an error: `Status::failed_precondition("agreement expired")`
+
+        // Get the latest receipt for the agreement, if any
+        let latest_receipt = match self
+            .registry
+            .get_latest_receipt_for_agreement(&agreement_id)
+            .await
+        {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                tracing::error!(agreement_id=%agreement_id, error=?err, "Failed to get latest receipt");
+                return Err(Status::internal("Failed to get latest receipt"));
+            }
+        };
+
+        // Check the reported epoch is greater than the last reported epoch
+        // Only if the agreement is not in the "initial-sync payment" phase
+        if let Some(receipt) = &latest_receipt {
+            if epoch <= receipt.reported_work.epoch {
+                return Err(Status::failed_precondition("invalid epoch"));
+            }
+        }
+
+        // Check the number of epochs elapsed since the last report is within the agreement's limits
+        // Only if the agreement is not in the "initial-sync payment" phase
+        if let Some(receipt) = &latest_receipt {
+            let epochs_elapsed = epoch.saturating_sub(receipt.reported_work.epoch);
+
+            if epochs_elapsed < agreement.voucher.min_epochs_per_collection {
+                return Err(Status::failed_precondition("too few epochs"));
+            }
+            if epochs_elapsed > agreement.voucher.max_epochs_per_collection {
+                return Err(Status::failed_precondition("too many epochs"));
+            }
+        }
+
+        // Compute the amount to be paid for the reported work
+        // The amount value must be the minimum between the computed value and:
+        //  - If "initial-sync payment", the agreement's "max initial amount"
+        //  - If "ongoing payment", the agreement's "max ongoing amount per epoch"
+        let max_amount = if latest_receipt.is_none() {
+            agreement.voucher.max_initial_amount
+        } else {
+            agreement.voucher.max_ongoing_amount_per_epoch
+        };
+
+        let amount = U256::from(0); // TODO: Compute the amount
+
+        let receipt_amount = std::cmp::min(amount, max_amount);
+
+        // Register the new receipt
+        match self
+            .registry
+            .register_new_indexing_receipt(
+                agreement_id,
+                indexer_id,
+                requested_by,
+                IndexingReceiptReportedWork {
+                    epoch,
+                    blocks: report.blocks,
+                    entities: report.entities,
+                    poi,
+                },
+                amount,
+            )
+            .await
+        {
+            Ok(id) => {
+                tracing::info!(
+                    receipt_id=%id,
+                    indexer_id=%indexer_id,
+                    deployment=%agreement.voucher.metadata.deployment_id,
+                    amount=%receipt_amount,
+                    "New receipt emitted"
+                );
+            }
+            Err(err) => {
+                tracing::error!(error=?err, "Failed to create receipt");
+                return Err(Status::internal("Failed to create receipt"));
+            }
+        };
+
+        // TODO: Sign and respond with the TAP receipt
 
         todo!()
     }
