@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    time::{Duration, Instant},
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 use reqwest::Url;
 use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId, SubgraphId};
@@ -11,11 +8,6 @@ use super::{indexer_operators, indexer_subgraphs};
 /// A snapshot of the network state at a given point in time
 #[derive(Debug, Clone)]
 pub struct Snapshot {
-    /// The timestamp of the network snapshot
-    ///
-    /// The timestamp is set when the network snapshot is created to permit
-    /// measuring the time elapsed since the snapshot was created.
-    timestamp: Instant,
     /// The indexers table
     ///
     /// See [Indexer] for more information
@@ -39,16 +31,6 @@ impl Snapshot {
     /// Whether the network snapshot is empty
     pub fn is_empty(&self) -> bool {
         self.indexers.is_empty() && self.subgraphs.is_empty() && self.deployments.is_empty()
-    }
-
-    /// Get the timestamp of the network snapshot
-    pub fn timestamp(&self) -> Instant {
-        self.timestamp
-    }
-
-    /// Get the time elapsed since the network snapshot was created
-    pub fn elapsed(&self) -> Duration {
-        self.timestamp.elapsed()
     }
 
     /// Get an iterator over the indexers in the network snapshot
@@ -84,7 +66,6 @@ impl Default for Snapshot {
     /// Create a new empty network snapshot with the current timestamp
     fn default() -> Self {
         Self {
-            timestamp: Instant::now(),
             indexers: Default::default(),
             subgraphs: Default::default(),
             deployments: Default::default(),
