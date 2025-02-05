@@ -146,7 +146,7 @@ where
             }
         };
 
-        let ReportProgressRequestMessage { agreement_id } = req.message;
+        let ReportProgressRequestMessage { agreement_id, .. } = req.message;
 
         // Retrieve the agreement
         let agreement = match self

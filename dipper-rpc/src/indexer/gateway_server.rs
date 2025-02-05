@@ -6,6 +6,7 @@ use dipper_core::ids::IndexingAgreementId;
 use thegraph_core::{
     alloy::sol,
     signed_message::{SignedMessage, ToSolStruct},
+    ProofOfIndexing,
 };
 
 // Include the tonic-generated code
@@ -46,11 +47,29 @@ impl TryFrom<CancelAgreementRequest> for SignedMessage<CancelAgreementRequestMes
 
 pub struct ReportProgressRequestMessage {
     pub agreement_id: IndexingAgreementId,
+    pub epoch: u32,
+    pub poi: ProofOfIndexing,
+
+    pub report: WorkReport,
+}
+
+pub struct WorkReport {
+    pub blocks: u64,
+    pub entities: u64,
 }
 
 sol! {
     struct ReportProgressRequestMessageSol {
         bytes16 agreement_id;
+        uint32 epoch;
+        bytes32 poi;
+
+        WorkReportSol report;
+    }
+
+    struct WorkReportSol {
+        uint64 blocks;
+        uint64 entities;
     }
 }
 
@@ -58,6 +77,18 @@ impl ToSolStruct<ReportProgressRequestMessageSol> for ReportProgressRequestMessa
     fn to_sol_struct(&self) -> ReportProgressRequestMessageSol {
         ReportProgressRequestMessageSol {
             agreement_id: self.agreement_id.as_bytes().into(),
+            epoch: self.epoch,
+            poi: self.poi.into(),
+            report: self.report.to_sol_struct(),
+        }
+    }
+}
+
+impl ToSolStruct<WorkReportSol> for WorkReport {
+    fn to_sol_struct(&self) -> WorkReportSol {
+        WorkReportSol {
+            blocks: self.blocks,
+            entities: self.entities,
         }
     }
 }
@@ -68,6 +99,15 @@ impl TryFrom<ReportProgressRequest> for SignedMessage<ReportProgressRequestMessa
     fn try_from(value: ReportProgressRequest) -> Result<Self, Self::Error> {
         let message = ReportProgressRequestMessage {
             agreement_id: value.agreement_id.as_slice().try_into()?,
+            epoch: value.epoch,
+            poi: value.proof_of_indexing.as_slice().try_into()?,
+            report: value
+                .report
+                .map(|report| WorkReport {
+                    blocks: report.blocks,
+                    entities: report.entities,
+                })
+                .ok_or(anyhow::anyhow!("missing work report"))?,
         };
         let signature = value.signature.as_slice().try_into()?;
 

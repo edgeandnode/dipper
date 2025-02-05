@@ -22,7 +22,7 @@ service DipsService {
  * See the `DipsService.SubmitAgreementProposal` method.
  */
 message SubmitAgreementProposalRequest {
-  bytes agreementId = 1; /// The ID of the agreement to register.
+  bytes agreement_id = 1; /// The ID of the agreement to register.
   reserved 2 to 19;      /// Reserved for future use.
 
   Voucher voucher = 20;    /// The voucher of the agreement.
@@ -39,15 +39,15 @@ message Voucher {
   bytes service = 3;   /// Service address that will initiate the payment collection.
   reserved 4 to 9;     /// Reserved for future use.
 
-  uint32 durationEpochs = 10; /// The duration of the agreement in epochs.
+  uint32 duration_epochs = 10; /// The duration of the agreement in epochs.
   reserved 11 to 19;          /// Reserved for future use.
 
-  bytes maxInitialAmount = 20;         /// The maximum amount, in _wei GRT_, that can be collected for the initial subgraph sync.
-  bytes minOngoingAmountPerEpoch = 21; /// The maximum amount, in _wei GRT_, that can be collected per epoch (after the initial sync).
+  bytes max_initial_amount = 20;         /// The maximum amount, in _wei GRT_, that can be collected for the initial subgraph sync.
+  bytes min_ongoing_amount_per_epoch = 21; /// The maximum amount, in _wei GRT_, that can be collected per epoch (after the initial sync).
   reserved 22 to 29;                   /// Reserved for future use.
 
-  uint32 maxEpochsPerCollection = 30; /// The maximum number of epochs that can be collected at once.
-  uint32 minEpochsPerCollection = 31; /// The minimum number of epochs that can be collected at once.
+  uint32 max_epochs_per_collection = 30; /// The maximum number of epochs that can be collected at once.
+  uint32 min_epochs_per_collection = 31; /// The minimum number of epochs that can be collected at once.
   reserved 32 to 39;                  /// Reserved for future use.
 
   VoucherMetadata metadata = 50; /// The voucher metadata.
@@ -58,11 +58,11 @@ message Voucher {
  * The indexing agreement voucher metadata.
  */
 message VoucherMetadata {
-  bytes deploymentId = 1; /// The Subgraph deployment ID to index.
+  bytes deployment_id = 1; /// The Subgraph deployment ID to index.
   reserved 2 to 19;       /// Reserved for future use.
 
-  bytes pricePerBlock = 20;          /// The amount to pay per indexed block in _wei GRT per block_.
-  bytes pricePerEntityPerEpoch = 21; /// The amount to pay per indexed and stored entity in _wei GRT per entity per epoch_.
+  bytes price_per_block = 20;          /// The amount to pay per indexed block in _wei GRT per block_.
+  bytes price_per_entity_per_epoch = 21; /// The amount to pay per indexed and stored entity in _wei GRT per entity per epoch_.
 }
 
 /**
@@ -71,13 +71,13 @@ message VoucherMetadata {
  * See the `DipsService.SubmitAgreementProposal` method.
  */
 message SubmitAgreementProposalResponse {
-  ProposalResponse response = 1; /// The response to the agreement proposal.
+  Decision decision = 1; /// The response to the agreement proposal.
 }
 
 /**
- * The response to an _indexing agreement_ proposal.
+ * The proposal to an _indexing agreement_ proposal.
  */
-enum ProposalResponse {
+enum Decision {
   ACCEPT = 0; /// The agreement proposal was accepted.
   REJECT = 1; /// The agreement proposal was rejected.
 }
@@ -88,7 +88,7 @@ enum ProposalResponse {
  * See the `DipsService.CancelAgreement` method.
  */
 message CancelAgreementRequest {
-  bytes agreementId = 1; /// The ID of the agreement to cancel.
+  bytes agreement_id = 1; /// The ID of the agreement to cancel.
   reserved 2 to 20;      /// Reserved for future use.
 
   bytes signature = 99; /// The signature of the message.

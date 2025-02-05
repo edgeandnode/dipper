@@ -49,10 +49,22 @@ message CancelAgreementResponse {
   * See the `DipsService.ReportProgress` method.
  */
 message ReportProgressRequest {
-  bytes agreement_id = 1;  /// The ID of the agreement to report progress for.
-  // TODO(LNSD): Add fields to the message
+  bytes agreement_id = 1;      /// The ID of the agreement to report progress for.
+  uint32 epoch = 2;            /// The current epoch.
+  bytes proof_of_indexing = 3; /// The proof of indexing associated with the current epoch.
+  reserved 4 to 9;             /// Reserved for future use.
+
+  WorkReport report = 10; /// The work report information.
 
   bytes signature = 99; /// The signature of the message.
+}
+
+/**
+ * The work report information.
+ */
+message WorkReport {
+  uint64 blocks = 1;   /// The number of blocks indexed since the last report.
+  uint64 entities = 2; /// The total number of entities stored at the moment of reporting.
 }
 
 /**
@@ -61,6 +73,6 @@ message ReportProgressRequest {
  * See the `DipsService.ReportProgress` method.
  */
 message ReportProgressResponse {
-  // TODO(LNSD): Add fields to the message
+  bytes receipt = 1; /// The TAP payment receipt.
 }
 

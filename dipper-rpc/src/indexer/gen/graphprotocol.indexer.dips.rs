@@ -68,8 +68,8 @@ pub struct VoucherMetadata {
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct SubmitAgreementProposalResponse {
     /// / The response to the agreement proposal.
-    #[prost(enumeration = "ProposalResponse", tag = "1")]
-    pub response: i32,
+    #[prost(enumeration = "Decision", tag = "1")]
+    pub decision: i32,
 }
 /// *
 /// A request to cancel an existing _indexing agreement_.
@@ -93,16 +93,16 @@ pub struct CancelAgreementRequest {
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct CancelAgreementResponse {}
 /// *
-/// The response to an _indexing agreement_ proposal.
+/// The proposal to an _indexing agreement_ proposal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
-pub enum ProposalResponse {
+pub enum Decision {
     /// / The agreement proposal was accepted.
     Accept = 0,
     /// / The agreement proposal was rejected.
     Reject = 1,
 }
-impl ProposalResponse {
+impl Decision {
     /// String value of the enum field names used in the ProtoBuf definition.
     ///
     /// The values are not transformed in any way and thus are considered stable
