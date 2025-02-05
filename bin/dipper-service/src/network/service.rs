@@ -17,13 +17,6 @@ pub struct Handle {
 }
 
 impl Handle {
-    /// Wait for the service data to have changed
-    ///
-    /// If the underlying channel has been closed, this function will return an error.
-    pub async fn wait_changed(&mut self) -> anyhow::Result<()> {
-        self.rx_snapshot.changed().await.map_err(Into::into)
-    }
-
     /// Get the current snapshot
     pub fn snapshot(&self) -> Ref<'_, Snapshot> {
         self.rx_snapshot.borrow()

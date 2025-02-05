@@ -219,6 +219,9 @@ async fn send_subgraph_paginated() {
     // Assert the query succeeded, and we got a non-empty list of active subscriptions.
     let response = res.expect("Failed to fetch subgraphs");
     assert!(!response.is_empty());
+    assert!(response
+        .iter()
+        .all(|subgraph| subgraph.id != SubgraphId::ZERO));
 }
 
 #[test_with::env(IT_TEST_ARBITRUM_GATEWAY_URL, IT_TEST_ARBITRUM_GATEWAY_AUTH)]
@@ -265,7 +268,10 @@ async fn send_subgraph_paginated_empty_response() {
     .expect("Timeout on subgraph paginated query");
 
     //* Then
-    // Assert the query succeeded, and we got a non-empty list of active subscriptions.
+    // Assert the query succeeded, and we got a empty list of active subscriptions
     let response = res.expect("Failed to fetch subgraphs");
     assert!(response.is_empty());
+    assert!(response
+        .iter()
+        .all(|subgraph| subgraph.id != SubgraphId::ZERO));
 }
