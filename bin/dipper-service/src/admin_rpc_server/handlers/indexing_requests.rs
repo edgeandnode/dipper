@@ -119,7 +119,7 @@ where
             deployment_chain_id,
         } = req.into_message();
 
-        // TODO: check the deployment chain_id is correct
+        // TODO(post-mvp): check the provided deployment chain_id is correct
         if self.network.get_deployment_by_id(&deployment_id).is_none() {
             return Err(ErrorObject::borrowed(404, "Not found", None));
         }

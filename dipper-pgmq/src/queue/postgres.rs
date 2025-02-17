@@ -60,11 +60,11 @@ where
 
         sqlx::query!(
             r#"INSERT INTO pgmq_queue (
-                id, 
-                created_at, 
-                updated_at, 
-                scheduled_for, 
-                status, 
+                id,
+                created_at,
+                updated_at,
+                scheduled_for,
+                status,
                 failed_attempts,
                 message
             ) VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
@@ -138,11 +138,11 @@ where
         // If the number of failed attempts is greater than the maximum number of attempts,
         // mark the job as failed and do not reschedule it
         // Otherwise, reschedule the job for the next execution date
-        // TODO: Return the updated job status and failed attempts, so the caller can check if the
+        // TODO(post-mvp): Return the updated job status and failed attempts, so the caller can check if the
         //  job was marked as failed
         sqlx::query!(
             r#"UPDATE pgmq_queue
-            SET 
+            SET
                 failed_attempts = failed_attempts + 1,
                 status = (CASE
                     WHEN failed_attempts + 1 >= $1 THEN $2::int ELSE $3::int

@@ -5,7 +5,7 @@
 
 use sqlx::{postgres::PgRow, Row};
 
-use super::common::{PgAddress, PgDeploymentId, PgIndexerId, PgU256, PgU32, PgUrl};
+use super::common::{PgAddress, PgDeploymentId, PgIndexerId, PgU256, PgU32, PgU64, PgUrl};
 use crate::indexing_agreement::{Indexer, IndexingAgreement, Status, Voucher, VoucherMetadata};
 
 impl sqlx::FromRow<'_, PgRow> for IndexingAgreement {
@@ -54,6 +54,7 @@ impl sqlx::FromRow<'_, PgRow> for Voucher {
             row.try_get("voucher_max_ongoing_amount_per_epoch")?;
         let PgU32(max_epochs_per_collection) = row.try_get("voucher_max_epochs_per_collection")?;
         let PgU32(min_epochs_per_collection) = row.try_get("voucher_min_epochs_per_collection")?;
+        let PgU64(deadline) = row.try_get("voucher_deadline")?;
         let metadata = sqlx::FromRow::from_row(row)?;
 
         Ok(Self {
@@ -65,6 +66,7 @@ impl sqlx::FromRow<'_, PgRow> for Voucher {
             max_ongoing_amount_per_epoch,
             max_epochs_per_collection,
             min_epochs_per_collection,
+            deadline,
             metadata,
         })
     }
@@ -72,15 +74,19 @@ impl sqlx::FromRow<'_, PgRow> for Voucher {
 
 impl sqlx::FromRow<'_, PgRow> for VoucherMetadata {
     fn from_row(row: &'_ PgRow) -> Result<Self, sqlx::Error> {
-        let PgDeploymentId(deployment_id) = row.try_get("voucher_metadata_deployment_id")?;
-        let PgU256(price_per_block) = row.try_get("voucher_metadata_price_per_block")?;
-        let PgU256(price_per_entity_per_epoch) =
-            row.try_get("voucher_metadata_price_per_entity_per_epoch")?;
+        let PgU256(base_price_per_epoch) = row.try_get("voucher_metadata_base_price_per_epoch")?;
+        let PgU256(price_per_entity) = row.try_get("voucher_metadata_price_per_entity")?;
+        let PgDeploymentId(subgraph_deployment_id) =
+            row.try_get("voucher_metadata_deployment_id")?;
+        let PgU64(protocol_network) = row.try_get("voucher_metadata_protocol_network")?;
+        let PgU64(chain_id) = row.try_get("voucher_metadata_chain_id")?;
 
         Ok(Self {
-            deployment_id,
-            price_per_block,
-            price_per_entity_per_epoch,
+            base_price_per_epoch,
+            price_per_entity,
+            subgraph_deployment_id,
+            protocol_network,
+            chain_id,
         })
     }
 }

@@ -15,7 +15,7 @@ use crate::{client, client::IndexingRequestsRpcClient, config::Config, signer};
 /// This function lists all registered indexing requests.
 ///
 /// This function calls the `get_all_indexing_requests` RPC method on the DIPs gateway server.
-// TODO: Add support for pagination
+// TODO(post-mvp): Add support for pagination
 pub async fn list(conf: Config) -> anyhow::Result<()> {
     let rpc_client = client::new(&conf.server_url);
     let res = rpc_client.get_all_indexing_requests().await?;
@@ -53,7 +53,7 @@ pub async fn status(conf: Config, matches: &clap::ArgMatches) -> anyhow::Result<
         }
         // ID is a Subgraph ID
         Some(_) => {
-            // TODO: Add support for querying by Subgraph ID
+            // TODO(post-mvp): Add support for querying by Subgraph ID
             Err(anyhow!("Invalid indexing request ID"))
         }
         None => unreachable!("No ID provided"),
@@ -88,7 +88,7 @@ pub async fn cancel(conf: Config, matches: &clap::ArgMatches) -> anyhow::Result<
         }
         // ID is a Subgraph ID or Deployment ID
         Some(_) => {
-            // TODO: Add support for querying by Subgraph ID or Deployment ID
+            // TODO(post-mvp): Add support for querying by Subgraph ID or Deployment ID
             Err(anyhow!("Invalid indexing request ID"))
         }
         None => unreachable!("No ID provided"),

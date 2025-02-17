@@ -15,7 +15,7 @@
 
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use thegraph_core::{
-    alloy::primitives::{Address, U256},
+    alloy::primitives::{Address, ChainId, U256},
     DeploymentId, IndexerId,
 };
 use time::OffsetDateTime;
@@ -80,10 +80,13 @@ pub struct Voucher {
     /// The maximum amount, in _wei GRT_, that can be collected per epoch (after the initial sync).
     pub max_ongoing_amount_per_epoch: U256,
 
-    /// The maximum number of epochs that can be collected at once.
-    pub max_epochs_per_collection: u32,
     /// The minimum number of epochs that can be collected at once.
     pub min_epochs_per_collection: u32,
+    /// The maximum number of epochs that can be collected at once.
+    pub max_epochs_per_collection: u32,
+
+    /// The deadline for the indexer to accept the agreement. // TODO: Review this
+    pub deadline: u64,
 
     /// The voucher metadata
     pub metadata: VoucherMetadata,
@@ -92,13 +95,18 @@ pub struct Voucher {
 /// The _indexing agreement_ proposal voucher metadata
 #[derive(Debug, Clone)]
 pub struct VoucherMetadata {
-    /// The Subgraph deployment ID to index.
-    pub deployment_id: DeploymentId,
+    /// The base price per epoch in _wei GRT_.
+    pub base_price_per_epoch: U256,
+    /// The price per entity in _wei GRT_.
+    pub price_per_entity: U256,
 
-    /// The amount to pay per indexed block in _wei GRT per block_.
-    pub price_per_block: U256,
-    /// The amount to pay per indexed and stored entity in _wei GRT per entity per epoch_.
-    pub price_per_entity_per_epoch: U256,
+    /// The Subgraph deployment ID to index.
+    pub subgraph_deployment_id: DeploymentId,
+
+    /// The protocol network, e.g. `eip155:42161` (Arbitrum).
+    pub protocol_network: ChainId,
+    /// Indexed chain, e.g., `eip155:1` (Ethereum Mainnet).
+    pub chain_id: ChainId,
 }
 
 /// The status of the [`IndexingAgreement`].
@@ -210,6 +218,8 @@ pub mod fake_impl {
             let max_epochs_per_collection = u32::dummy_with_rng(config, rng);
             let min_epochs_per_collection = u32::dummy_with_rng(config, rng);
 
+            let deadline = u64::dummy_with_rng(config, rng);
+
             let metadata = VoucherMetadata::dummy_with_rng(config, rng);
 
             Self {
@@ -221,6 +231,7 @@ pub mod fake_impl {
                 max_ongoing_amount_per_epoch,
                 max_epochs_per_collection,
                 min_epochs_per_collection,
+                deadline,
                 metadata,
             }
         }
@@ -228,15 +239,18 @@ pub mod fake_impl {
 
     impl Dummy<Faker> for VoucherMetadata {
         fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
-            let deployment_id = DeploymentId::dummy_with_rng(config, rng);
-            let price_per_block = U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
-            let price_per_entity_per_epoch =
-                U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
+            let base_price_per_epoch = U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
+            let price_per_entity = U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
+            let subgraph_deployment_id = DeploymentId::dummy_with_rng(config, rng);
+            let protocol_network = ChainId::dummy_with_rng(config, rng);
+            let chain_id = ChainId::dummy_with_rng(config, rng);
 
             Self {
-                deployment_id,
-                price_per_block,
-                price_per_entity_per_epoch,
+                base_price_per_epoch,
+                price_per_entity,
+                subgraph_deployment_id,
+                protocol_network,
+                chain_id,
             }
         }
     }

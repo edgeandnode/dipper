@@ -166,7 +166,7 @@ where
         // If the number of failed attempts is greater than the maximum number of attempts,
         // mark the job as failed and do not reschedule it
         // Otherwise, reschedule the job for the next execution date
-        // TODO: Return the updated job status and failed attempts, so the caller can check if the
+        // TODO(post-mvp): Return the updated job status and failed attempts, so the caller can check if the
         //  job was marked as failed
         sqlx::query!(
             r#"UPDATE pgmq_queue

@@ -17,7 +17,7 @@ use super::{
     messages::Message,
     WorkerQueue,
 };
-use crate::{indexers::DipsClient, network::NetworkProvider};
+use crate::{indexers::IndexerDipsClient, network::NetworkProvider};
 
 /// Default period to pull tasks from the queue.
 const DEFAULT_TASK_PULL_PERIOD: Duration = Duration::from_secs(1);
@@ -58,7 +58,7 @@ where
     R: Registry + Clone + Send + Sync,
     N: NetworkProvider + Clone + Send + Sync,
     W: WorkerQueue + Clone + Send + Sync,
-    C: DipsClient + Clone + Send + Sync,
+    C: IndexerDipsClient + Clone + Send + Sync,
     I: CandidateSelection + Clone + Send + Sync,
     ProcessNewIndexingRequestCtx<R, N, W, I>: FromState<S>,
     ProcessIndexingRequestCancellationCtx<R, W>: FromState<S>,
@@ -128,7 +128,7 @@ where
     R: Registry,
     N: NetworkProvider,
     W: WorkerQueue,
-    C: DipsClient,
+    C: IndexerDipsClient,
     I: CandidateSelection,
     ProcessNewIndexingRequestCtx<R, N, W, I>: FromState<S>,
     ProcessIndexingRequestCancellationCtx<R, W>: FromState<S>,

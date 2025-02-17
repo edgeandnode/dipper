@@ -31,11 +31,14 @@ INSERT INTO dipper_reg_indexing_agreements (id,
                                             voucher_duration_epochs,
                                             voucher_max_initial_amount,
                                             voucher_max_ongoing_amount_per_epoch,
-                                            voucher_max_epochs_per_collection,
                                             voucher_min_epochs_per_collection,
+                                            voucher_max_epochs_per_collection,
+                                            voucher_deadline,
+                                            voucher_metadata_base_price_per_epoch,
+                                            voucher_metadata_price_per_entity,
                                             voucher_metadata_deployment_id,
-                                            voucher_metadata_price_per_block,
-                                            voucher_metadata_price_per_entity_per_epoch)
+                                            voucher_metadata_protocol_network,
+                                            voucher_metadata_chain_id)
 VALUES ('019300d4-65e3-7d2d-8736-7ba90cee9b69'::uuid,
         timezone('UTC', now()),
         timezone('UTC', now()),
@@ -44,17 +47,21 @@ VALUES ('019300d4-65e3-7d2d-8736-7ba90cee9b69'::uuid,
         'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
         '\xc509d8fdd5bd42d4915167b49375cc5680c3c604'::bytea,
         'https://qyxrksoqsm.com/yrmgcijervj',
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        4294967295::bigint,
-        '\x0000000000000000000000000000000000000000000000000000000000001000'::bytea,
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea,
-        28::bigint,
-        1::bigint,
-        'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea,
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea);
+        -- voucher
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- payer
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- recipient
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- service
+        4294967295::bigint, -- duration epochs
+        '\x0000000000000000000000000000000000000000000000000000000000001000'::bytea, -- max initial amount
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- max ongoing amount per epoch
+        1::bigint, -- min epochs per collection
+        28::bigint, -- max epochs per collection
+        0::bigint, -- deadline
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- base price per epoch
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- price per entity
+        'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv', -- deployment id
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- protocol network
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea); -- chain id
 
 
 -- Indexing agreement #2: DELIVERY_FAILED
@@ -72,11 +79,14 @@ INSERT INTO dipper_reg_indexing_agreements (id,
                                             voucher_duration_epochs,
                                             voucher_max_initial_amount,
                                             voucher_max_ongoing_amount_per_epoch,
-                                            voucher_max_epochs_per_collection,
                                             voucher_min_epochs_per_collection,
+                                            voucher_max_epochs_per_collection,
+                                            voucher_deadline,
+                                            voucher_metadata_base_price_per_epoch,
+                                            voucher_metadata_price_per_entity,
                                             voucher_metadata_deployment_id,
-                                            voucher_metadata_price_per_block,
-                                            voucher_metadata_price_per_entity_per_epoch)
+                                            voucher_metadata_protocol_network,
+                                            voucher_metadata_chain_id)
 VALUES ('019300db-ffea-7e1f-95f2-2561bcfeecf3'::uuid,
         timezone('UTC', now()),
         timezone('UTC', now()),
@@ -85,17 +95,21 @@ VALUES ('019300db-ffea-7e1f-95f2-2561bcfeecf3'::uuid,
         'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
         '\xc509d8fdd5bd42d4915167b49375cc5680c3c604'::bytea,
         'https://qyxrksoqsm.com/yrmgcijervj',
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        4294967295::bigint,
-        '\x0000000000000000000000000000000000000000000000000000000000001000'::bytea,
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea,
-        28::bigint,
-        1::bigint,
-        'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea,
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea);
+        -- voucher
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- payer
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- recipient
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- service
+        4294967295::bigint, -- duration epochs
+        '\x0000000000000000000000000000000000000000000000000000000000001000'::bytea, -- max initial amount
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- max ongoing amount per epoch
+        1::bigint, -- min epochs per collection
+        28::bigint, -- max epochs per collection
+        0::bigint, -- deadline
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- base price per epoch
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- price per entity
+        'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv', -- deployment id
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- protocol network        
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea); -- chain id
 
 -- Indexing agreement #3: ACCEPTED
 INSERT INTO dipper_reg_indexing_agreements (id,
@@ -112,11 +126,14 @@ INSERT INTO dipper_reg_indexing_agreements (id,
                                             voucher_duration_epochs,
                                             voucher_max_initial_amount,
                                             voucher_max_ongoing_amount_per_epoch,
-                                            voucher_max_epochs_per_collection,
                                             voucher_min_epochs_per_collection,
+                                            voucher_max_epochs_per_collection,
+                                            voucher_deadline,
+                                            voucher_metadata_base_price_per_epoch,
+                                            voucher_metadata_price_per_entity,
                                             voucher_metadata_deployment_id,
-                                            voucher_metadata_price_per_block,
-                                            voucher_metadata_price_per_entity_per_epoch)
+                                            voucher_metadata_protocol_network,
+                                            voucher_metadata_chain_id)
 VALUES ('019300e1-0c52-72b0-ae96-5eed9a9bd77a'::uuid,
         timezone('UTC', now()),
         timezone('UTC', now()),
@@ -125,17 +142,21 @@ VALUES ('019300e1-0c52-72b0-ae96-5eed9a9bd77a'::uuid,
         'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
         '\xc509d8fdd5bd42d4915167b49375cc5680c3c604'::bytea,
         'https://qyxrksoqsm.com/yrmgcijervj',
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        4294967295::bigint,
-        '\x0000000000000000000000000000000000000000000000000000000000001000'::bytea,
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea,
-        28::bigint,
-        1::bigint,
-        'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea,
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea);
+        -- voucher
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- payer
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- recipient
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- service
+        4294967295::bigint, -- duration epochs
+        '\x0000000000000000000000000000000000000000000000000000000000001000'::bytea, -- max initial amount
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- max ongoing amount per epoch
+        1::bigint, -- min epochs per collection
+        28::bigint, -- max epochs per collection
+        0::bigint, -- deadline
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- base price per epoch
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- price per entity
+        'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv', -- deployment id
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- protocol network
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea); -- chain id
 
 -- Indexing agreement #4: REJECTED
 INSERT INTO dipper_reg_indexing_agreements (id,
@@ -152,11 +173,14 @@ INSERT INTO dipper_reg_indexing_agreements (id,
                                             voucher_duration_epochs,
                                             voucher_max_initial_amount,
                                             voucher_max_ongoing_amount_per_epoch,
-                                            voucher_max_epochs_per_collection,
                                             voucher_min_epochs_per_collection,
+                                            voucher_max_epochs_per_collection,
+                                            voucher_deadline,
+                                            voucher_metadata_base_price_per_epoch,
+                                            voucher_metadata_price_per_entity,
                                             voucher_metadata_deployment_id,
-                                            voucher_metadata_price_per_block,
-                                            voucher_metadata_price_per_entity_per_epoch)
+                                            voucher_metadata_protocol_network,
+                                            voucher_metadata_chain_id)
 VALUES ('019300e1-4527-7dd5-a3af-07c84c929cc2'::uuid,
         timezone('UTC', now()),
         timezone('UTC', now()),
@@ -165,17 +189,21 @@ VALUES ('019300e1-4527-7dd5-a3af-07c84c929cc2'::uuid,
         'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
         '\xc509d8fdd5bd42d4915167b49375cc5680c3c604'::bytea,
         'https://qyxrksoqsm.com/yrmgcijervj',
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        4294967295::bigint,
-        '\x0000000000000000000000000000000000000000000000000000000000001000'::bytea,
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea,
-        28::bigint,
-        1::bigint,
-        'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea,
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea);
+        -- voucher
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- payer
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- recipient
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- service
+        4294967295::bigint, -- duration epochs
+        '\x0000000000000000000000000000000000000000000000000000000000001000'::bytea, -- max initial amount
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- max ongoing amount per epoch
+        1::bigint, -- min epochs per collection
+        28::bigint, -- max epochs per collection
+        0::bigint, -- deadline
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- base price per epoch
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- price per entity
+        'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv', -- deployment id
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- protocol network
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea); -- chain id
 
 -- Indexing agreement #5: CANCELLED_BY_REQUESTER
 -- The cancellation of an indexing agreement is done by the requester
@@ -196,9 +224,14 @@ INSERT INTO dipper_reg_indexing_agreements (id,
                                             voucher_duration_epochs,
                                             voucher_max_initial_amount,
                                             voucher_max_ongoing_amount_per_epoch,
-                                            voucher_max_epochs_per_collection,
                                             voucher_min_epochs_per_collection,
+                                            voucher_max_epochs_per_collection,
+                                            voucher_deadline,
+                                            voucher_metadata_base_price_per_epoch,
+                                            voucher_metadata_price_per_entity,
                                             voucher_metadata_deployment_id,
+                                            voucher_metadata_protocol_network,
+                                            voucher_metadata_chain_id)
                                             voucher_metadata_price_per_block,
                                             voucher_metadata_price_per_entity_per_epoch)
 VALUES ('019300e1-6568-751d-b006-420bb5dc1b9e'::uuid,
@@ -209,17 +242,21 @@ VALUES ('019300e1-6568-751d-b006-420bb5dc1b9e'::uuid,
         'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
         '\xc509d8fdd5bd42d4915167b49375cc5680c3c604'::bytea,
         'https://qyxrksoqsm.com/yrmgcijervj',
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        4294967295::bigint,
-        '\x0000000000000000000000000000000000000000000000000000000000001000'::bytea,
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea,
-        28::bigint,
-        1::bigint,
-        'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea,
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea);
+        -- voucher
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- payer
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- recipient
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- service
+        4294967295::bigint, -- duration epochs
+        '\x0000000000000000000000000000000000000000000000000000000000001000'::bytea, -- max initial amount
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- max ongoing amount per epoch
+        1::bigint, -- min epochs per collection
+        28::bigint, -- max epochs per collection
+        0::bigint, -- deadline
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- base price per epoch
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- price per entity
+        'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv', -- deployment id
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- protocol network
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea); -- chain id
 
 -- Indexing agreement #7: EXPIRED
 INSERT INTO dipper_reg_indexing_agreements (id,
@@ -236,11 +273,14 @@ INSERT INTO dipper_reg_indexing_agreements (id,
                                             voucher_duration_epochs,
                                             voucher_max_initial_amount,
                                             voucher_max_ongoing_amount_per_epoch,
-                                            voucher_max_epochs_per_collection,
                                             voucher_min_epochs_per_collection,
+                                            voucher_max_epochs_per_collection,
+                                            voucher_deadline,
+                                            voucher_metadata_base_price_per_epoch,
+                                            voucher_metadata_price_per_entity,
                                             voucher_metadata_deployment_id,
-                                            voucher_metadata_price_per_block,
-                                            voucher_metadata_price_per_entity_per_epoch)
+                                            voucher_metadata_protocol_network,
+                                            voucher_metadata_chain_id)
 VALUES ('019300e1-9458-7f60-a9d6-39921e0647d9'::uuid,
         timezone('UTC', now()),
         timezone('UTC', now()),
@@ -249,17 +289,21 @@ VALUES ('019300e1-9458-7f60-a9d6-39921e0647d9'::uuid,
         'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
         '\xc509d8fdd5bd42d4915167b49375cc5680c3c604'::bytea,
         'https://qyxrksoqsm.com/yrmgcijervj',
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        4294967295::bigint,
-        '\x0000000000000000000000000000000000000000000000000000000000001000'::bytea,
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea,
-        28::bigint,
-        1::bigint,
-        'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea,
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea);
+        -- voucher
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- payer
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- recipient
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- service
+        4294967295::bigint, -- duration epochs
+        '\x0000000000000000000000000000000000000000000000000000000000001000'::bytea, -- max initial amount
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- max ongoing amount per epoch
+        1::bigint, -- min epochs per collection
+        28::bigint, -- max epochs per collection
+        0::bigint, -- deadline
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- base price per epoch
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- price per entity        
+        'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv', -- deployment id
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- protocol network
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea); -- chain id
 
 -- Indexing agreement #8: Random state (should map to UNKNOWN)
 INSERT INTO dipper_reg_indexing_agreements (id,
@@ -276,11 +320,14 @@ INSERT INTO dipper_reg_indexing_agreements (id,
                                             voucher_duration_epochs,
                                             voucher_max_initial_amount,
                                             voucher_max_ongoing_amount_per_epoch,
-                                            voucher_max_epochs_per_collection,
                                             voucher_min_epochs_per_collection,
+                                            voucher_max_epochs_per_collection,
+                                            voucher_deadline,
+                                            voucher_metadata_base_price_per_epoch,
+                                            voucher_metadata_price_per_entity,
                                             voucher_metadata_deployment_id,
-                                            voucher_metadata_price_per_block,
-                                            voucher_metadata_price_per_entity_per_epoch)
+                                            voucher_metadata_protocol_network,
+                                            voucher_metadata_chain_id)
 VALUES ('019300e5-ce09-77b8-a7cd-ae9d0d347a8f'::uuid,
         timezone('UTC', now()),
         timezone('UTC', now()),
@@ -289,14 +336,18 @@ VALUES ('019300e5-ce09-77b8-a7cd-ae9d0d347a8f'::uuid,
         'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
         '\xc509d8fdd5bd42d4915167b49375cc5680c3c604'::bytea,
         'https://qyxrksoqsm.com/yrmgcijervj',
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
-        4294967295::bigint,
-        '\x0000000000000000000000000000000000000000000000000000000000001000'::bytea,
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea,
-        28::bigint,
-        1::bigint,
-        'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea,
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea);
+        -- voucher
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- payer
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- recipient
+        '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- service
+        4294967295::bigint, -- duration epochs
+        '\x0000000000000000000000000000000000000000000000000000000000001000'::bytea, -- max initial amount
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- max ongoing amount per epoch    
+        28::bigint, -- max epochs per collection        
+        1::bigint, -- min epochs per collection 
+        0::bigint, -- deadline
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- base price per epoch
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- price per entity
+        'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv', -- deployment id
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- protocol network
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea); -- chain id       

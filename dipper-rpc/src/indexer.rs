@@ -4,5 +4,49 @@
 //! - [`gateway_server`]: The tonic gRPC service implementation.
 //! - [`indexer_client`]: The indexer's DIPs gRPC client.
 
-pub mod gateway_server;
-pub mod indexer_client;
+// Re-export the indexer-rs crate types
+pub mod gateway_server {
+    pub mod rpc {
+        #[doc(inline)]
+        pub use indexer_dips::proto::gateway::graphprotocol::gateway::dips::{
+            gateway_dips_service_server::{GatewayDipsService, GatewayDipsServiceServer},
+            CancelAgreementRequest, CancelAgreementResponse, CollectPaymentRequest,
+            CollectPaymentResponse, CollectPaymentStatus,
+        };
+    }
+
+    pub mod sol {
+        #[doc(inline)]
+        pub use indexer_dips::{
+            CancellationRequest, CollectionRequest, SignedCancellationRequest,
+            SignedCollectionRequest,
+        };
+    }
+
+    #[doc(inline)]
+    pub use indexer_dips::{dips_cancellation_eip712_domain, dips_collection_eip712_domain};
+}
+
+// Re-export the indexer-rs crate types
+pub mod indexer_client {
+    pub mod rpc {
+        #[doc(inline)]
+        pub use indexer_dips::proto::indexer::graphprotocol::indexer::dips::{
+            indexer_dips_service_client::IndexerDipsServiceClient, CancelAgreementRequest,
+            CancelAgreementResponse, ProposalResponse, SubmitAgreementProposalRequest,
+            SubmitAgreementProposalResponse,
+        };
+    }
+
+    pub mod sol {
+        #[doc(inline)]
+        pub use indexer_dips::{
+            CancellationRequest, CollectionRequest, DipsError, IndexingAgreementVoucher,
+            SignedCancellationRequest, SignedIndexingAgreementVoucher,
+            SubgraphIndexingVoucherMetadata,
+        };
+    }
+
+    #[doc(inline)]
+    pub use indexer_dips::{dips_agreement_eip712_domain, dips_cancellation_eip712_domain};
+}

@@ -8,8 +8,10 @@ use dipper_registry::{
 use fake::{Fake, Faker};
 use sqlx::{Pool, Postgres};
 use thegraph_core::{
-    alloy::primitives::{address, Address, ChainId, U256},
-    deployment_id, indexer_id, DeploymentId, IndexerId,
+    alloy::primitives::{address, ChainId},
+    deployment_id,
+    fake_impl::alloy::Alloy as FakeAlloy,
+    indexer_id, DeploymentId, IndexerId,
 };
 use url::Url;
 use uuid::uuid;
@@ -19,7 +21,7 @@ use uuid::uuid;
 async fn register_new_indexing_request(db: Pool<Postgres>) -> sqlx::Result<()> {
     //* Given
     // Indexing request
-    let requested_by = Address::from(Faker.fake::<[u8; 20]>());
+    let requested_by = FakeAlloy.fake();
     let deployment_id = deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv");
     let deployment_chain_id = Faker.fake::<ChainId>();
 
@@ -307,8 +309,6 @@ async fn register_new_indexing_agreement(db: Pool<Postgres>) -> sqlx::Result<()>
     Ok(())
 }
 
-// TODO: Add tests covering "get" and "mark" methods for indexing agreements
-
 #[test_with::env(DATABASE_URL)]
 #[sqlx::test]
 async fn register_new_indexing_receipt_no_indexing_agreement(
@@ -318,9 +318,9 @@ async fn register_new_indexing_receipt_no_indexing_agreement(
     // Indexing agreement
     let indexing_agreement_id = Faker.fake::<IndexingAgreementId>();
     let indexer_id = Faker.fake::<IndexerId>();
-    let indexer_operator_id = Address::from(Faker.fake::<[u8; 20]>());
+    let indexer_operator_id = FakeAlloy.fake();
     let reported_work = Faker.fake::<IndexingReceiptReportedWork>();
-    let amount = U256::from_be_bytes(Faker.fake::<[u8; 32]>());
+    let amount = FakeAlloy.fake();
 
     let registry = PgRegistry::new(db);
 
@@ -358,7 +358,7 @@ async fn register_new_indexing_receipt(db: Pool<Postgres>) -> sqlx::Result<()> {
     // Indexing receipt
     let indexer_operator_id = address!("f027cfe07afa186afec8144eb20e53715d7f33b2");
     let reported_work = Faker.fake::<IndexingReceiptReportedWork>();
-    let amount = U256::from_be_bytes(Faker.fake::<[u8; 32]>());
+    let amount = FakeAlloy.fake();
 
     let registry = PgRegistry::new(db);
 
@@ -396,5 +396,3 @@ async fn register_new_indexing_receipt(db: Pool<Postgres>) -> sqlx::Result<()> {
 
     Ok(())
 }
-
-// TODO: Add tests covering "get" and "redeem" methods for indexing receipts

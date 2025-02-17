@@ -4,7 +4,7 @@
 
 use thegraph_core::{
     alloy::{
-        primitives::Address,
+        primitives::{Address, ChainId},
         signers::{local::PrivateKeySigner, SignerSync},
         sol_types::{Eip712Domain, SolStruct},
     },
@@ -26,6 +26,8 @@ pub struct Eip712Signer<S> {
     signer: S,
     /// The signer's address
     signer_address: Address,
+    /// The signer's chain ID
+    signer_chain: ChainId,
     /// The EIP-712 domain separator
     domain: Eip712Domain,
 }
@@ -35,10 +37,16 @@ where
     S: SignerSync,
 {
     /// Create a new [`Eip712Signer`] instance
-    pub fn new(signer: S, signer_address: Address, domain: Eip712Domain) -> Self {
+    pub fn new(
+        signer: S,
+        signer_address: Address,
+        signer_chain: ChainId,
+        domain: Eip712Domain,
+    ) -> Self {
         Self {
             signer,
             signer_address,
+            signer_chain,
             domain,
         }
     }
@@ -46,6 +54,11 @@ where
     /// Get the signer's address
     pub fn address(&self) -> Address {
         self.signer_address
+    }
+
+    /// Get the signer's chain ID
+    pub fn chain_id(&self) -> ChainId {
+        self.signer_chain
     }
 
     /// Sign a message using the [EIP-712] standard
@@ -59,6 +72,23 @@ where
         MSol: SolStruct,
     {
         sign(&self.signer, &self.domain, message)
+    }
+
+    /// Sing a message using the [EIP-712] standard with the given domain
+    ///
+    /// Returns a [`SignedMessage`] containing the message and the ECDSA signature of the message
+    ///
+    /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
+    pub fn sign_with_domain<M, MSol>(
+        &self,
+        domain: &Eip712Domain,
+        message: M,
+    ) -> Result<SignedMessage<M>, SigningError>
+    where
+        M: ToSolStruct<MSol>,
+        MSol: SolStruct,
+    {
+        sign(&self.signer, domain, message)
     }
 
     /// Recover the signer's address from an [EIP-712] signed message
@@ -75,6 +105,23 @@ where
         MSol: SolStruct,
     {
         recover_signer_address(&self.domain, signed_message)
+    }
+
+    /// Recover the signer's address from an [EIP-712] signed message with the given domain
+    ///
+    /// Returns the signer's address
+    ///
+    /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
+    pub fn recover_signer_with_domain<M, MSol>(
+        &self,
+        domain: &Eip712Domain,
+        signed_message: &SignedMessage<M>,
+    ) -> Result<Address, RecoverSignerError>
+    where
+        M: ToSolStruct<MSol>,
+        MSol: SolStruct,
+    {
+        recover_signer_address(domain, signed_message)
     }
 }
 
@@ -114,6 +161,7 @@ mod tests {
         //* Given
         let signer = wallet();
         let signer_address = signer.address();
+        let signer_chain = 42161;
         let domain = EIP712_DOMAIN;
 
         // Create a message with some data
@@ -122,7 +170,7 @@ mod tests {
         };
 
         // Create an Eip712Signer instance
-        let eip712_signer = Eip712Signer::new(signer, signer_address, domain);
+        let eip712_signer = Eip712Signer::new(signer, signer_address, signer_chain, domain);
 
         //* When
         // Sign the message

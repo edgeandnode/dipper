@@ -2,7 +2,7 @@ use std::{future::Future, net::SocketAddr};
 
 use dipper_core::state::FromState;
 use dipper_registry::Registry;
-use dipper_rpc::indexer::gateway_server::graphprotocol::gateway::dips::dips_service_server::DipsServiceServer;
+use dipper_rpc::indexer::gateway_server::rpc::GatewayDipsServiceServer;
 use tokio::sync::mpsc;
 use tonic::transport::Server;
 
@@ -58,7 +58,7 @@ where
 
         // Start the RPC server
         Server::builder()
-            .add_service(DipsServiceServer::new(service_impl))
+            .add_service(GatewayDipsServiceServer::new(service_impl))
             .serve_with_shutdown(conf.listen_addr, async move {
                 tracing::debug!("Stopping admin RPC server");
                 let _ = rx_stop.recv().await;

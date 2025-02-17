@@ -1,16 +1,16 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
-use dipper_core::state::FromState;
-use dipper_registry::{IndexingAgreementStatus, IndexingReceiptReportedWork, Registry};
+use dipper_core::{ids::IndexingAgreementId, state::FromState};
+use dipper_registry::{IndexingAgreementStatus, Registry};
 use dipper_rpc::indexer::gateway_server::{
-    graphprotocol::gateway::dips::{
-        dips_service_server::DipsService, CancelAgreementRequest, CancelAgreementResponse,
-        ReportProgressRequest, ReportProgressResponse,
-    },
-    CancelAgreementRequestMessage, ReportProgressRequestMessage,
+    dips_cancellation_eip712_domain, dips_collection_eip712_domain, rpc, sol,
 };
-use thegraph_core::{alloy::primitives::U256, signed_message::SignedMessage, IndexerId};
+use thegraph_core::{
+    alloy::{dyn_abi::SolType, primitives::PrimitiveSignature as Signature},
+    signed_message::SignedMessage,
+    IndexerId,
+};
 use tonic::{Request, Response, Status};
 
 use crate::{
@@ -43,7 +43,7 @@ impl<R, N, W> DipsGatewayServiceImpl<R, N, W> {
 }
 
 #[async_trait]
-impl<R, N, W> DipsService for DipsGatewayServiceImpl<R, N, W>
+impl<R, N, W> rpc::GatewayDipsService for DipsGatewayServiceImpl<R, N, W>
 where
     R: Registry + Clone + Send + Sync + 'static,
     N: NetworkProvider + Clone + Send + Sync + 'static,
@@ -51,15 +51,42 @@ where
 {
     async fn cancel_agreement(
         &self,
-        request: Request<CancelAgreementRequest>,
-    ) -> Result<Response<CancelAgreementResponse>, Status> {
-        let req: SignedMessage<CancelAgreementRequestMessage> = request
-            .into_inner()
-            .try_into()
-            .map_err(|err| Status::invalid_argument(format!("bad request: {err}")))?;
+        request: Request<rpc::CancelAgreementRequest>,
+    ) -> Result<Response<rpc::CancelAgreementResponse>, Status> {
+        let rpc::CancelAgreementRequest {
+            version,
+            signed_cancellation,
+        } = request.into_inner();
+
+        // Check the version of the request, we are only supporting version 0 for the MVP
+        if version != 0 {
+            return Err(Status::invalid_argument("version not supported"));
+        }
+
+        // Deserialize the solidity Signed Cancellation Request struct
+        let (sol_cancellation_req, signature) =
+            match sol::SignedCancellationRequest::abi_decode(&signed_cancellation, true) {
+                Ok(sol::SignedCancellationRequest { request, signature }) => (request, signature),
+                Err(err) => return Err(Status::invalid_argument(format!("bad request: {err}"))),
+            };
+
+        // Deserialize the signature
+        let signature = match Signature::try_from(signature.as_ref()) {
+            Ok(signature) => signature,
+            Err(err) => {
+                tracing::debug!(error=?err, "Failed to parse signature");
+                return Err(Status::invalid_argument(format!("bad request: {err}")));
+            }
+        };
 
         // Recover the signer from the request (operator wallet address)
-        let requested_by = match self.signer.recover_signer(&req) {
+        let requested_by = match self.signer.recover_signer_with_domain(
+            &dips_cancellation_eip712_domain(),
+            &SignedMessage {
+                message: sol_cancellation_req.clone(),
+                signature,
+            },
+        ) {
             Ok(requested_by) => requested_by,
             Err(err) => {
                 tracing::debug!(error=?err, "Failed to recover signer");
@@ -79,7 +106,7 @@ where
             }
         };
 
-        let CancelAgreementRequestMessage { agreement_id } = req.message;
+        let agreement_id = IndexingAgreementId::from(sol_cancellation_req.agreement_id.as_ref());
 
         // Check if the agreement exists and the indexer is the owner
         match self
@@ -113,20 +140,47 @@ where
             return Err(Status::internal("Cancellation failed"));
         };
 
-        Ok(Response::new(CancelAgreementResponse {}))
+        Ok(Response::new(rpc::CancelAgreementResponse {}))
     }
 
-    async fn report_progress(
+    async fn collect_payment(
         &self,
-        request: Request<ReportProgressRequest>,
-    ) -> Result<Response<ReportProgressResponse>, Status> {
-        let req: SignedMessage<ReportProgressRequestMessage> = request
-            .into_inner()
-            .try_into()
-            .map_err(|err| Status::invalid_argument(format!("bad request: {err}")))?;
+        request: Request<rpc::CollectPaymentRequest>,
+    ) -> Result<Response<rpc::CollectPaymentResponse>, Status> {
+        let rpc::CollectPaymentRequest {
+            version,
+            signed_collection,
+        } = request.into_inner();
+
+        // Check the version of the request, we are only supporting version 0 for the MVP
+        if version != 0 {
+            return Err(Status::invalid_argument("version not supported"));
+        }
+
+        // Deserialize the solidity Signed Collection Request struct
+        let (sol_collection_req, signature) =
+            match sol::SignedCollectionRequest::abi_decode(&signed_collection, true) {
+                Ok(sol::SignedCollectionRequest { request, signature }) => (request, signature),
+                Err(err) => return Err(Status::invalid_argument(format!("bad request: {err}"))),
+            };
+
+        // Deserialize the signature
+        let signature = match Signature::try_from(signature.as_ref()) {
+            Ok(signature) => signature,
+            Err(err) => {
+                tracing::debug!(error=?err, "Failed to parse signature");
+                return Err(Status::invalid_argument(format!("bad request: {err}")));
+            }
+        };
 
         // Recover the signer from the request (operator wallet address)
-        let requested_by = match self.signer.recover_signer(&req) {
+        let requested_by = match self.signer.recover_signer_with_domain(
+            &dips_collection_eip712_domain(),
+            &SignedMessage {
+                message: sol_collection_req.clone(),
+                signature,
+            },
+        ) {
             Ok(requested_by) => requested_by,
             Err(err) => {
                 tracing::debug!(error=?err, "Failed to recover signer");
@@ -146,12 +200,13 @@ where
             }
         };
 
-        let ReportProgressRequestMessage {
+        let sol::CollectionRequest {
             agreement_id,
-            epoch,
-            poi,
-            report,
-        } = req.message;
+            allocation_id: _allocation_id,
+            entity_count: _entity_count,
+        } = sol_collection_req;
+
+        let agreement_id = IndexingAgreementId::from(agreement_id.as_ref());
 
         // TODO: Check the reported epoch is correct, i.e., check against the network subgraph's
         //  latest reported epoch
@@ -202,91 +257,92 @@ where
             }
         }
 
-        // TODO(Post-MVP): Handle agreement expiration
-        //  Check if the agreement should be marked as expired, and if so, do it
-        //  Then return an error: `Status::failed_precondition("agreement expired")`
-
-        // Get the latest receipt for the agreement, if any
-        let latest_receipt = match self
-            .registry
-            .get_latest_receipt_for_agreement(&agreement_id)
-            .await
-        {
-            Ok(receipt) => receipt,
-            Err(err) => {
-                tracing::error!(agreement_id=%agreement_id, error=?err, "Failed to get latest receipt");
-                return Err(Status::internal("Failed to get latest receipt"));
-            }
-        };
-
-        // Check the reported epoch is greater than the last reported epoch
-        // Only if the agreement is not in the "initial-sync payment" phase
-        if let Some(receipt) = &latest_receipt {
-            if epoch <= receipt.reported_work.epoch {
-                return Err(Status::failed_precondition("invalid epoch"));
-            }
-        }
-
-        // Check the number of epochs elapsed since the last report is within the agreement's limits
-        // Only if the agreement is not in the "initial-sync payment" phase
-        if let Some(receipt) = &latest_receipt {
-            let epochs_elapsed = epoch.saturating_sub(receipt.reported_work.epoch);
-
-            if epochs_elapsed < agreement.voucher.min_epochs_per_collection {
-                return Err(Status::failed_precondition("too few epochs"));
-            }
-            if epochs_elapsed > agreement.voucher.max_epochs_per_collection {
-                return Err(Status::failed_precondition("too many epochs"));
-            }
-        }
-
-        // Compute the amount to be paid for the reported work
-        // The amount value must be the minimum between the computed value and:
-        //  - If "initial-sync payment", the agreement's "max initial amount"
-        //  - If "ongoing payment", the agreement's "max ongoing amount per epoch"
-        let max_amount = if latest_receipt.is_none() {
-            agreement.voucher.max_initial_amount
-        } else {
-            agreement.voucher.max_ongoing_amount_per_epoch
-        };
-
-        let amount = U256::from(0); // TODO: Compute the amount
-
-        let receipt_amount = std::cmp::min(amount, max_amount);
-
-        // Register the new receipt
-        match self
-            .registry
-            .register_new_indexing_receipt(
-                agreement_id,
-                indexer_id,
-                requested_by,
-                IndexingReceiptReportedWork {
-                    epoch,
-                    blocks: report.blocks,
-                    entities: report.entities,
-                    poi,
-                },
-                amount,
-            )
-            .await
-        {
-            Ok(id) => {
-                tracing::info!(
-                    receipt_id=%id,
-                    indexer_id=%indexer_id,
-                    deployment=%agreement.voucher.metadata.deployment_id,
-                    amount=%receipt_amount,
-                    "New receipt emitted"
-                );
-            }
-            Err(err) => {
-                tracing::error!(error=?err, "Failed to create receipt");
-                return Err(Status::internal("Failed to create receipt"));
-            }
-        };
-
-        // TODO: Sign and respond with the TAP receipt
+        // TODO: Review all of this
+        // // TODO(post-mvp): Handle agreement expiration
+        // //  Check if the agreement should be marked as expired, and if so, do it
+        // //  Then return an error: `Status::failed_precondition("agreement expired")`
+        //
+        // // Get the latest receipt for the agreement, if any
+        // let latest_receipt = match self
+        //     .registry
+        //     .get_latest_receipt_for_agreement(&agreement_id.into())
+        //     .await
+        // {
+        //     Ok(receipt) => receipt,
+        //     Err(err) => {
+        //         tracing::error!(agreement_id=%agreement_id, error=?err, "Failed to get latest receipt");
+        //         return Err(Status::internal("Failed to get latest receipt"));
+        //     }
+        // };
+        //
+        // // Check the reported epoch is greater than the last reported epoch
+        // // Only if the agreement is not in the "initial-sync payment" phase
+        // if let Some(receipt) = &latest_receipt {
+        //     if epoch <= receipt.reported_work.epoch {
+        //         return Err(Status::failed_precondition("invalid epoch"));
+        //     }
+        // }
+        //
+        // // Check the number of epochs elapsed since the last report is within the agreement's limits
+        // // Only if the agreement is not in the "initial-sync payment" phase
+        // if let Some(receipt) = &latest_receipt {
+        //     let epochs_elapsed = epoch.saturating_sub(receipt.reported_work.epoch);
+        //
+        //     if epochs_elapsed < agreement.voucher.min_epochs_per_collection {
+        //         return Err(Status::failed_precondition("too few epochs"));
+        //     }
+        //     if epochs_elapsed > agreement.voucher.max_epochs_per_collection {
+        //         return Err(Status::failed_precondition("too many epochs"));
+        //     }
+        // }
+        //
+        // // Compute the amount to be paid for the reported work
+        // // The amount value must be the minimum between the computed value and:
+        // //  - If "initial-sync payment", the agreement's "max initial amount"
+        // //  - If "ongoing payment", the agreement's "max ongoing amount per epoch"
+        // let max_amount = if latest_receipt.is_none() {
+        //     agreement.voucher.max_initial_amount
+        // } else {
+        //     agreement.voucher.max_ongoing_amount_per_epoch
+        // };
+        //
+        // let amount = U256::from(0); // TODO: Compute the amount
+        //
+        // let receipt_amount = std::cmp::min(amount, max_amount);
+        //
+        // // Register the new receipt
+        // match self
+        //     .registry
+        //     .register_new_indexing_receipt(
+        //         agreement_id.into(),
+        //         indexer_id,
+        //         requested_by,
+        //         IndexingReceiptReportedWork {
+        //             epoch,
+        //             blocks: report.blocks,
+        //             entities: report.entities,
+        //             poi,
+        //         },
+        //         amount,
+        //     )
+        //     .await
+        // {
+        //     Ok(id) => {
+        //         tracing::info!(
+        //             receipt_id=%id,
+        //             indexer_id=%indexer_id,
+        //             deployment=%agreement.voucher.metadata.deployment_id,
+        //             amount=%receipt_amount,
+        //             "New receipt emitted"
+        //         );
+        //     }
+        //     Err(err) => {
+        //         tracing::error!(error=?err, "Failed to create receipt");
+        //         return Err(Status::internal("Failed to create receipt"));
+        //     }
+        // };
+        //
+        // // TODO: Sign and respond with the TAP receipt
 
         todo!()
     }
