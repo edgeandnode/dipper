@@ -6,19 +6,9 @@ edition = "2021"
 [dependencies]
 anyhow.workspace = true
 dipper-core = { version = "0.1.0", path = "../dipper-core", features = ["serde"] }
+indexer-dips = { git = "https://github.com/graphprotocol/indexer-rs.git", rev = "dcc2cdb", version = "0.1.0" , default-features = false, features = ["rpc"] }
 jsonrpsee = { workspace = true, features = ["client", "macros", "server"] }
-prost = "0.13.4"
 serde.workspace = true
 serde_with.workspace = true
-thegraph-core = { workspace = true, features = [
-    "alloy-eip712",
-    "alloy-signers",
-    "alloy-sol-types",
-    "serde",
-    "signed-message"
-] }
+thegraph-core = { workspace = true, features = ["alloy-dyn-abi", "alloy-eip712", "alloy-signers", "alloy-sol-types", "serde", "signed-message"] }
 time = { workspace = true, features = ["formatting", "parsing", "serde"] }
-tonic = "0.12.3"
-
-[build-dependencies]
-tonic-build = "0.12.3"

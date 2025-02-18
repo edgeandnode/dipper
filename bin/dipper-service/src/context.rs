@@ -12,7 +12,7 @@ use thegraph_core::{
 };
 
 use crate::{
-    admin_rpc_server, indexer_rpc_server, indexers::DipsClient, network::NetworkProvider,
+    admin_rpc_server, indexer_rpc_server, indexers::IndexerDipsClient, network::NetworkProvider,
     signer::PrivateKeyEip712Signer, tap::ReceiptSigner, worker, worker::WorkerQueue,
 };
 
@@ -237,9 +237,9 @@ pub struct IndexingAgreementConfig {
 #[derive(Debug)]
 pub struct IndexingAgreementChainPrices {
     /// The price per block in wei GRT.
-    pub price_per_block: U256,
+    pub base_price_per_epoch: U256,
     /// The price per entity in wei GRT per epoch.
-    pub price_per_entity_per_epoch: U256,
+    pub price_per_entity: U256,
 }
 
 impl IndexingAgreementConfig {
@@ -541,7 +541,7 @@ impl<S, T, A, R, N, W, I> CtxBuilder<S, T, A, R, N, W, NotSet, I> {
     /// Sets the indexer client.
     pub fn with_indexer_client<C>(self, client: C) -> CtxBuilder<S, T, A, R, N, W, ClientSet<C>, I>
     where
-        C: DipsClient + 'static,
+        C: IndexerDipsClient + 'static,
     {
         CtxBuilder {
             signer: self.signer,
@@ -641,7 +641,7 @@ mod tests {
 
     use super::{CtxBuilder, IndexingAgreementConfig};
     use crate::{
-        indexers::{AgreementProposalResponse, DipsClient, DipsError},
+        indexers::{AgreementProposalResponse, DipsError, IndexerDipsClient},
         network::{Deployment, Indexer, NetworkProvider},
         signer::PrivateKeyEip712Signer,
         tap::ReceiptSigner,
@@ -908,7 +908,7 @@ mod tests {
     pub struct DummyClient;
 
     #[async_trait]
-    impl DipsClient for DummyClient {
+    impl IndexerDipsClient for DummyClient {
         async fn send_indexing_agreement_proposal(
             &self,
             _indexer: Url,
@@ -955,6 +955,7 @@ mod tests {
         let signer = {
             let signer = PrivateKeySigner::random();
             let signer_address = signer.address();
+            let signer_chain_id = 42161;
             let domain = eip712_domain! {
                 name: "Test domain",
                 version: "1",
@@ -963,7 +964,12 @@ mod tests {
                 salt: b256!("66eb090e6dbb9668c7d32c0ee7ba5e8f08d84385804485d316dd5f5692273593")
             };
 
-            Arc::new(PrivateKeyEip712Signer::new(signer, signer_address, domain))
+            Arc::new(PrivateKeyEip712Signer::new(
+                signer,
+                signer_address,
+                signer_chain_id,
+                domain,
+            ))
         };
         let tap_signer = {
             let signer = PrivateKeySigner::random();

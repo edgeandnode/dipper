@@ -62,9 +62,9 @@ pub struct DipsAgreementConfig {
 #[derive(Debug, serde::Deserialize)]
 pub struct ChainPrices {
     /// The price per block in wei GRT.
-    pub price_per_block: U256,
+    pub base_price_per_epoch: U256,
     /// The price per entity in wei GRT per epoch.
-    pub price_per_entity_per_epoch: U256,
+    pub price_per_entity: U256,
 }
 
 /// The Admin RPC server configuration
@@ -144,7 +144,7 @@ pub struct SignerConfig {
     #[serde_as(as = "HiddenSecretKeyAsHexStr")]
     pub secret_key: Hidden<SecretKey>,
 
-    /// The signer chain ID
+    /// The signer chain ID (protocol chain), e.g. `eip155:42161` (Arbitrum One)
     pub chain_id: ChainId,
 }
 
@@ -156,7 +156,7 @@ pub struct TapSignerConfig {
     #[serde_as(as = "HiddenSecretKeyAsHexStr")]
     pub secret_key: Hidden<SecretKey>,
 
-    /// The signer chain ID
+    /// The signer chain ID (protocol chain)
     pub chain_id: ChainId,
 
     /// The verifier contract address

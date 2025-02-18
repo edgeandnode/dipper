@@ -9,10 +9,9 @@ use dashmap::{DashMap, Entry};
 use dipper_core::ids::IndexingAgreementId;
 use dipper_registry::IndexingAgreementVoucher;
 use dipper_rpc::indexer::indexer_client::{
-    graphprotocol::indexer::dips::{dips_service_client::DipsServiceClient, Decision},
-    CancelAgreementRequestMessage, IndexingAgreementVoucher as VoucherRpc,
-    IndexingAgreementVoucherMetadata as VoucherMetadataRpc, SubmitAgreementProposalRequestMessage,
+    dips_agreement_eip712_domain, dips_cancellation_eip712_domain, rpc, sol,
 };
+use thegraph_core::alloy::sol_types::SolValue;
 use url::Url;
 
 use crate::signer::PrivateKeyEip712Signer;
@@ -52,7 +51,7 @@ impl std::fmt::Display for AgreementProposalResponse {
 
 /// Indexer client's DIPs trait
 #[async_trait]
-pub trait DipsClient {
+pub trait IndexerDipsClient {
     /// Send an indexing agreement proposal request to the indexer
     async fn send_indexing_agreement_proposal(
         &self,
@@ -72,7 +71,7 @@ pub trait DipsClient {
 #[derive(Clone)]
 pub struct DipsIndexerClient {
     signer: Arc<PrivateKeyEip712Signer>,
-    pool: Arc<DashMap<Url, DipsServiceClient<tonic::transport::Channel>>>,
+    pool: Arc<DashMap<Url, rpc::IndexerDipsServiceClient<tonic::transport::Channel>>>,
 }
 
 impl DipsIndexerClient {
@@ -91,7 +90,7 @@ impl DipsIndexerClient {
         &self,
         indexer_url: Url,
     ) -> Result<
-        impl std::ops::DerefMut<Target = DipsServiceClient<tonic::transport::Channel>> + '_,
+        impl std::ops::DerefMut<Target = rpc::IndexerDipsServiceClient<tonic::transport::Channel>> + '_,
         DipsError,
     > {
         // If the client is not in the pool, create a new one
@@ -102,7 +101,7 @@ impl DipsIndexerClient {
                 let channel = tonic::transport::Endpoint::from_str(indexer_url)
                     .map_err(|err| DipsError::ConnectionError(err.into()))?
                     .connect_lazy();
-                let client = DipsServiceClient::new(channel);
+                let client = rpc::IndexerDipsServiceClient::new(channel);
 
                 entry.insert_entry(client)
             }
@@ -114,23 +113,37 @@ impl DipsIndexerClient {
 }
 
 #[async_trait]
-impl DipsClient for DipsIndexerClient {
+impl IndexerDipsClient for DipsIndexerClient {
     async fn send_indexing_agreement_proposal(
         &self,
         indexer: Url,
         indexing_agreement_id: IndexingAgreementId,
         voucher: IndexingAgreementVoucher,
     ) -> Result<AgreementProposalResponse, DipsError> {
-        let message = self
+        // Convert to the solidity voucher data structure
+        let sol_voucher = into_sol_voucher(indexing_agreement_id, voucher);
+
+        // Sign the solidity voucher with the appropriate domain
+        let signed = self
             .signer
-            .sign(SubmitAgreementProposalRequestMessage {
-                agreement_id: indexing_agreement_id,
-                voucher: into_rpc_indexing_agreement_voucher(voucher),
-            })
+            .sign_with_domain(&dips_agreement_eip712_domain(), sol_voucher)
             .map_err(|err| DipsError::SigningError(err.into()))?;
 
-        let request = tonic::Request::new(message.into());
+        // Serialize the Solidity signed voucher to bytes (ABI encoding)
+        let sol_signed_voucher_bytes: Vec<u8> = sol::SignedIndexingAgreementVoucher {
+            voucher: signed.message,
+            signature: signed.signature.as_bytes().into(),
+        }
+        .abi_encode();
 
+        // Build the SubmitAgreementProposalRequest RPC request message
+        // For now, the MVP, we are using version 0
+        let request = tonic::Request::new(rpc::SubmitAgreementProposalRequest {
+            version: 0, // MVP version
+            signed_voucher: sol_signed_voucher_bytes,
+        });
+
+        // Send the proposal request to the indexer
         let mut client = self.get_client(indexer)?;
         let response = client
             .submit_agreement_proposal(request)
@@ -138,14 +151,14 @@ impl DipsClient for DipsIndexerClient {
             .map_err(|err| DipsError::RequestError(err.into()))?;
 
         // Check the proposal response
-        let response = response.into_inner();
-        if response.decision == Decision::Accept as i32 {
+        let resp = response.into_inner();
+        if resp.response == rpc::ProposalResponse::Accept as i32 {
             Ok(AgreementProposalResponse::Accepted)
-        } else if response.decision == Decision::Reject as i32 {
+        } else if resp.response == rpc::ProposalResponse::Reject as i32 {
             Ok(AgreementProposalResponse::Rejected)
         } else {
             Err(DipsError::ResponseError(
-                format!("Invalid response decision value: {}", response.decision).into(),
+                format!("Invalid response decision value: {}", resp.response).into(),
             ))
         }
     }
@@ -155,15 +168,29 @@ impl DipsClient for DipsIndexerClient {
         indexer: Url,
         indexing_agreement_id: IndexingAgreementId,
     ) -> Result<(), DipsError> {
-        let message = self
+        // Convert to the solidity cancellation request data structure
+        let sol_cancellation_request = into_sol_cancellation_request(indexing_agreement_id);
+
+        // Sign the solidity cancellation request with the appropriate domain
+        let signed = self
             .signer
-            .sign(CancelAgreementRequestMessage {
-                agreement_id: indexing_agreement_id,
-            })
+            .sign_with_domain(&dips_cancellation_eip712_domain(), sol_cancellation_request)
             .map_err(|err| DipsError::SigningError(err.into()))?;
 
-        let request = tonic::Request::new(message.into());
+        // Serialize the Solidity signed cancellation request to bytes (ABI encoding)
+        let sol_signed_cancellation_request_bytes: Vec<u8> = sol::SignedCancellationRequest {
+            request: signed.message,
+            signature: signed.signature.as_bytes().into(),
+        }
+        .abi_encode();
 
+        // Build the CancelAgreementRequest RPC request message
+        let request = tonic::Request::new(rpc::CancelAgreementRequest {
+            version: 0,
+            signed_cancellation: sol_signed_cancellation_request_bytes,
+        });
+
+        // Send the cancellation request to the indexer
         let mut client = self.get_client(indexer)?;
         client
             .cancel_agreement(request)
@@ -175,20 +202,36 @@ impl DipsClient for DipsIndexerClient {
 }
 
 #[inline]
-fn into_rpc_indexing_agreement_voucher(voucher: IndexingAgreementVoucher) -> VoucherRpc {
-    VoucherRpc {
+fn into_sol_voucher(
+    agreement_id: IndexingAgreementId,
+    voucher: IndexingAgreementVoucher,
+) -> sol::IndexingAgreementVoucher {
+    sol::IndexingAgreementVoucher {
+        agreement_id: agreement_id.as_bytes().into(),
         payer: voucher.payer,
         recipient: voucher.recipient,
         service: voucher.service,
-        duration_epochs: voucher.duration_epochs,
-        max_initial_amount: voucher.max_initial_amount,
-        max_ongoing_amount_per_epoch: voucher.max_ongoing_amount_per_epoch,
-        max_epochs_per_collection: voucher.max_epochs_per_collection,
-        min_epochs_per_collection: voucher.min_epochs_per_collection,
-        metadata: VoucherMetadataRpc {
-            deployment_id: voucher.metadata.deployment_id,
-            price_per_block: voucher.metadata.price_per_block,
-            price_per_entity_per_epoch: voucher.metadata.price_per_entity_per_epoch,
-        },
+        durationEpochs: voucher.duration_epochs,
+        maxInitialAmount: voucher.max_initial_amount,
+        maxOngoingAmountPerEpoch: voucher.max_ongoing_amount_per_epoch,
+        minEpochsPerCollection: voucher.min_epochs_per_collection,
+        maxEpochsPerCollection: voucher.max_epochs_per_collection,
+        deadline: voucher.deadline,
+        metadata: sol::SubgraphIndexingVoucherMetadata {
+            basePricePerEpoch: voucher.metadata.base_price_per_epoch,
+            pricePerEntity: voucher.metadata.price_per_entity,
+            subgraphDeploymentId: voucher.metadata.subgraph_deployment_id.to_string(),
+            protocolNetwork: format!("eip155:{}", voucher.metadata.protocol_network),
+            chainId: format!("eip155:{}", voucher.metadata.chain_id),
+        }
+        .abi_encode()
+        .into(),
+    }
+}
+
+#[inline]
+fn into_sol_cancellation_request(agreement_id: IndexingAgreementId) -> sol::CancellationRequest {
+    sol::CancellationRequest {
+        agreement_id: agreement_id.as_bytes().into(),
     }
 }

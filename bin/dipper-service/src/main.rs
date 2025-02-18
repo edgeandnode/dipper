@@ -4,7 +4,6 @@ use async_signal::{Signal, Signals};
 use dipper_iisa as iisa;
 use dipper_pgmq::postgres::PgQueue;
 use dipper_registry::postgres::PgRegistry;
-use dipper_rpc::eip712_domain;
 use futures_lite::StreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use thegraph_core::alloy::{primitives::ChainId, signers::local::PrivateKeySigner};
@@ -55,11 +54,12 @@ pub async fn main() -> anyhow::Result<()> {
         let private_key_signer =
             PrivateKeySigner::from_signing_key(conf.signer.secret_key.as_ref().into());
         let private_key_signer_address = private_key_signer.address();
-        let domain = eip712_domain();
+        let domain = dipper_rpc::admin::eip712_domain();
 
         Arc::new(Eip712Signer::new(
             private_key_signer,
             private_key_signer_address,
+            conf.signer.chain_id,
             domain,
         ))
     };
@@ -333,8 +333,8 @@ impl From<config::DipsAgreementConfig>
                 (
                     chain_id,
                     context::IndexingAgreementChainPrices {
-                        price_per_block: prices.price_per_block,
-                        price_per_entity_per_epoch: prices.price_per_entity_per_epoch,
+                        base_price_per_epoch: prices.base_price_per_epoch,
+                        price_per_entity: prices.price_per_entity,
                     },
                 )
             })

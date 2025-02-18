@@ -37,11 +37,14 @@ CREATE TABLE dipper_reg_indexing_agreements
     voucher_duration_epochs                     BIGINT NOT NULL,
     voucher_max_initial_amount                  BYTEA  NOT NULL,
     voucher_max_ongoing_amount_per_epoch        BYTEA  NOT NULL,
-    voucher_max_epochs_per_collection           BIGINT NOT NULL,
     voucher_min_epochs_per_collection           BIGINT NOT NULL,
+    voucher_max_epochs_per_collection           BIGINT NOT NULL,
+    voucher_deadline                            BYTEA  NOT NULL,
+    voucher_metadata_base_price_per_epoch       BYTEA  NOT NULL,
+    voucher_metadata_price_per_entity           BYTEA  NOT NULL,
     voucher_metadata_deployment_id              TEXT   NOT NULL,
-    voucher_metadata_price_per_block            BYTEA  NOT NULL,
-    voucher_metadata_price_per_entity_per_epoch BYTEA  NOT NULL
+    voucher_metadata_protocol_network           BYTEA  NOT NULL,
+    voucher_metadata_chain_id                   BYTEA  NOT NULL
 );
 
 CREATE INDEX dipper_reg_indexing_agreements_status_idx ON dipper_reg_indexing_agreements (status);

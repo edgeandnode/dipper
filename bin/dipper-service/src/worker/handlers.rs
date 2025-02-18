@@ -14,7 +14,7 @@ use super::messages::{
 };
 use crate::{
     context::{IndexingAgreementChainPrices, IndexingAgreementConfig},
-    indexers::{AgreementProposalResponse, DipsClient},
+    indexers::{AgreementProposalResponse, IndexerDipsClient},
     network::NetworkProvider,
     signer::PrivateKeyEip712Signer,
     worker::WorkerQueue,
@@ -90,9 +90,11 @@ where
                     deployment_chain_id
                 ))?;
             IndexingAgreementVoucherMetadata {
-                deployment_id,
-                price_per_block: prices.price_per_block,
-                price_per_entity_per_epoch: prices.price_per_entity_per_epoch,
+                base_price_per_epoch: prices.base_price_per_epoch,
+                price_per_entity: prices.price_per_entity,
+                subgraph_deployment_id: deployment_id,
+                protocol_network: signer.chain_id(),
+                chain_id: deployment_chain_id,
             }
         };
 
@@ -103,8 +105,9 @@ where
             duration_epochs: agreement_conf.duration_epochs(),
             max_initial_amount: agreement_conf.max_initial_amount(),
             max_ongoing_amount_per_epoch: agreement_conf.max_ongoing_amount_per_epoch(),
-            max_epochs_per_collection: agreement_conf.max_epochs_per_collection(),
             min_epochs_per_collection: agreement_conf.min_epochs_per_collection(),
+            max_epochs_per_collection: agreement_conf.max_epochs_per_collection(),
+            deadline: Default::default(), // TODO: add the deadline
             metadata: voucher_metadata,
         };
 
@@ -157,7 +160,7 @@ where
         .await?;
 
     // Mark all the agreements as canceled by the requester
-    // TODO: Allow marking multiple agreements as CANCELED_BY_REQUESTER in a single query
+    // TODO(post-mvp): Allow marking multiple agreements as CANCELED_BY_REQUESTER in a single query
     for agreement in agreements.iter() {
         registry
             .mark_indexing_agreement_as_canceled_by_requester(&agreement.id)
@@ -260,9 +263,11 @@ where
                 deployment_chain_id
             ))?;
         IndexingAgreementVoucherMetadata {
-            deployment_id,
-            price_per_block: prices.price_per_block,
-            price_per_entity_per_epoch: prices.price_per_entity_per_epoch,
+            base_price_per_epoch: prices.base_price_per_epoch,
+            price_per_entity: prices.price_per_entity,
+            subgraph_deployment_id: deployment_id,
+            protocol_network: signer.chain_id(),
+            chain_id: deployment_chain_id,
         }
     };
 
@@ -275,6 +280,7 @@ where
         max_ongoing_amount_per_epoch: agreement_conf.max_ongoing_amount_per_epoch(),
         max_epochs_per_collection: agreement_conf.max_epochs_per_collection(),
         min_epochs_per_collection: agreement_conf.min_epochs_per_collection(),
+        deadline: Default::default(), // TODO: add the deadline
         metadata: voucher_metadata,
     };
 
@@ -337,7 +343,7 @@ pub(super) async fn send_indexing_agreement_proposal<R, W, C>(
 where
     R: Registry,
     W: WorkerQueue,
-    C: DipsClient,
+    C: IndexerDipsClient,
 {
     // Check the status of the agreement before sending the proposal
     let agreement = match registry.get_indexing_agreement_by_id(agreement_id).await? {
@@ -373,10 +379,13 @@ where
         max_ongoing_amount_per_epoch: agreement.voucher.max_ongoing_amount_per_epoch,
         max_epochs_per_collection: agreement.voucher.max_epochs_per_collection,
         min_epochs_per_collection: agreement.voucher.min_epochs_per_collection,
+        deadline: agreement.voucher.deadline,
         metadata: IndexingAgreementVoucherMetadata {
-            deployment_id: agreement.voucher.metadata.deployment_id,
-            price_per_block: agreement.voucher.metadata.price_per_block,
-            price_per_entity_per_epoch: agreement.voucher.metadata.price_per_entity_per_epoch,
+            base_price_per_epoch: agreement.voucher.metadata.base_price_per_epoch,
+            price_per_entity: agreement.voucher.metadata.price_per_entity,
+            subgraph_deployment_id: agreement.voucher.metadata.subgraph_deployment_id,
+            protocol_network: agreement.voucher.metadata.protocol_network,
+            chain_id: agreement.voucher.metadata.chain_id,
         },
     };
 
@@ -441,7 +450,7 @@ pub(super) async fn send_indexing_agreement_cancellation<R, C>(
 ) -> anyhow::Result<JobResult<()>>
 where
     R: Registry,
-    C: DipsClient,
+    C: IndexerDipsClient,
 {
     // Check the status of the agreement before sending the cancellation
     let agreement = registry.get_indexing_agreement_by_id(agreement_id).await?;
