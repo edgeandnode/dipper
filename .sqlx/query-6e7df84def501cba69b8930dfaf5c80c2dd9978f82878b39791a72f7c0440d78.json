@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO pgmq_queue (\n                id,\n                created_at,\n                updated_at,\n                scheduled_for,\n                status,\n                failed_attempts,\n                message\n            ) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz",
+        "Timestamptz",
+        "Int4",
+        "Int4",
+        "Json"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6e7df84def501cba69b8930dfaf5c80c2dd9978f82878b39791a72f7c0440d78"
+}
