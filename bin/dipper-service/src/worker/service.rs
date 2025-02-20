@@ -2,7 +2,7 @@ use std::{future::Future, time::Duration};
 
 use dipper_core::state::FromState;
 use dipper_iisa::CandidateSelection;
-use dipper_pgmq::{queue::Queue, result::JobResult};
+use dipper_pgmq::Queue;
 use dipper_registry::Registry;
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
@@ -15,6 +15,7 @@ use super::{
         SendIndexingAgreementCancellationCtx, SendIndexingAgreementProposalCtx,
     },
     messages::Message,
+    result::JobResult,
     WorkerQueue,
 };
 use crate::{indexers::IndexerDipsClient, network::NetworkProvider};
@@ -99,7 +100,7 @@ where
 
                                 // Retry the task after the specified duration
                                 let scheduled_for = OffsetDateTime::now_utc() + duration;
-                                let _ = queue.fail_job(task.id, Some(scheduled_for)).await;
+                                let _ = queue.mark_job_as_failed(task.id, Some(scheduled_for)).await;
                             }
                             Err(err) => {
                                 tracing::debug!(error=?err, "Failed to process task");

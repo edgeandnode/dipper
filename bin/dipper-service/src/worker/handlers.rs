@@ -1,7 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use dipper_iisa::{CandidateSelection, Indexer as IndexerCandidate};
-use dipper_pgmq::result::JobResult;
 use dipper_registry::{
     IndexingAgreementStatus, IndexingAgreementVoucher, IndexingAgreementVoucherMetadata, Registry,
 };
@@ -17,7 +16,7 @@ use crate::{
     indexers::{AgreementProposalResponse, IndexerDipsClient},
     network::NetworkProvider,
     signer::PrivateKeyEip712Signer,
-    worker::WorkerQueue,
+    worker::{result::JobResult, WorkerQueue},
 };
 
 pub struct ProcessNewIndexingRequestCtx<R, N, W, I> {

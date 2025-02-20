@@ -1,12 +1,13 @@
 mod api;
 mod handlers;
 mod messages;
+mod result;
 pub mod service;
 
 pub use api::WorkerQueue;
 use async_trait::async_trait;
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
-use dipper_pgmq::{postgres::PgQueue, queue::Queue};
+use dipper_pgmq::{postgres::PgQueue, JobId, Queue};
 pub use handlers::{
     FindIndexerForIndexingRequestCtx, ProcessIndexingAgreementCancellationCtx,
     ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
@@ -41,7 +42,7 @@ impl WorkerQueue for Worker {
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
         num_candidates: usize,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<JobId> {
         self.queue
             .push(Message::ProcessNewIndexingRequest(
                 ProcessNewIndexingRequest {
@@ -59,7 +60,7 @@ impl WorkerQueue for Worker {
         indexing_request_id: IndexingRequestId,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<JobId> {
         self.queue
             .push(Message::FindIndexerForIndexingRequest(
                 FindIndexerForIndexingRequest {
@@ -78,7 +79,7 @@ impl WorkerQueue for Worker {
         indexing_request_id: IndexingRequestId,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<JobId> {
         self.queue
             .push(Message::SendIndexingAgreementProposal(
                 SendIndexingAgreementProposal {
@@ -96,7 +97,7 @@ impl WorkerQueue for Worker {
         &self,
         indexer_url: Url,
         agreement_id: IndexingAgreementId,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<JobId> {
         self.queue
             .push(Message::SendIndexingAgreementCancellation(
                 SendIndexingAgreementCancellation {
@@ -110,7 +111,7 @@ impl WorkerQueue for Worker {
     async fn process_indexing_request_cancellation(
         &self,
         indexing_request_id: IndexingRequestId,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<JobId> {
         self.queue
             .push(Message::ProcessIndexingRequestCancellation(
                 ProcessIndexingRequestCancellation {
@@ -123,7 +124,7 @@ impl WorkerQueue for Worker {
     async fn process_indexing_agreement_requester_cancellation(
         &self,
         agreement_id: IndexingAgreementId,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<JobId> {
         self.queue
             .push(Message::ProcessIndexingAgreementRequesterCancellation(
                 ProcessIndexingAgreementCancellation { agreement_id },
@@ -134,7 +135,7 @@ impl WorkerQueue for Worker {
     async fn process_indexing_agreement_indexer_cancellation(
         &self,
         agreement_id: IndexingAgreementId,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<JobId> {
         self.queue
             .push(Message::ProcessIndexingAgreementIndexerCancellation(
                 ProcessIndexingAgreementCancellation { agreement_id },

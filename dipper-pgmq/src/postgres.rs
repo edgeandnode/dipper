@@ -6,7 +6,7 @@ use sqlx::{types::JsonValue, Pool, Postgres};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::queue::{Job, Queue};
+use super::queue::{Job, JobId, Queue};
 
 /// The default maximum number of attempts before a job is considered failed.
 const DEFAULT_MAX_ATTEMPTS: i32 = 3;
@@ -37,15 +37,6 @@ impl PgQueue {
             max_attempts: max_attempts.try_into().unwrap_or(i32::MAX),
         }
     }
-
-    /// Initializes the PostgreSQL message queue.
-    ///
-    /// This method creates the necessary tables and indexes in the database by running the
-    /// migration SQL scripts.
-    pub async fn init(&self) -> anyhow::Result<()> {
-        sqlx::migrate!("./migrations").run(&self.pool).await?;
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -54,17 +45,17 @@ where
     M: Serialize + Send + 'static,
     Job<M>: TryFrom<PgJob>,
 {
-    async fn push(&self, job: M) -> anyhow::Result<()> {
+    async fn push(&self, job: M) -> anyhow::Result<JobId> {
         let message = serde_json::to_value(&job)?;
         let job = PgJob::new(message);
 
         sqlx::query!(
             r#"INSERT INTO pgmq_queue (
-                id, 
-                created_at, 
-                updated_at, 
-                scheduled_for, 
-                status, 
+                id,
+                created_at,
+                updated_at,
+                scheduled_for,
+                status,
                 failed_attempts,
                 message
             ) VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
@@ -79,20 +70,20 @@ where
         .execute(&self.pool)
         .await?;
 
-        Ok(())
+        Ok(JobId::new(job.id))
     }
 
-    async fn push_scheduled(&self, job: M, scheduled_for: OffsetDateTime) -> anyhow::Result<()> {
+    async fn push_scheduled(&self, job: M, scheduled_for: OffsetDateTime) -> anyhow::Result<JobId> {
         let message = serde_json::to_value(&job)?;
         let job = PgJob::with_schedule(message, scheduled_for);
 
         sqlx::query!(
             r#"INSERT INTO pgmq_queue (
-                id, 
-                created_at, 
-                updated_at, 
-                scheduled_for, 
-                status, 
+                id,
+                created_at,
+                updated_at,
+                scheduled_for,
+                status,
                 failed_attempts,
                 message
             ) VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
@@ -107,11 +98,11 @@ where
         .execute(&self.pool)
         .await?;
 
-        Ok(())
+        Ok(JobId::new(job.id))
     }
 
-    async fn pull(&self, number_of_jobs: usize) -> anyhow::Result<Vec<Job<M>>> {
-        let number_of_jobs = number_of_jobs.min(100);
+    async fn pull(&self, jobs: usize) -> anyhow::Result<Vec<Job<M>>> {
+        let number_of_jobs = jobs.min(100);
         let now = OffsetDateTime::now_utc();
 
         let pg_jobs = sqlx::query_as!(
@@ -146,17 +137,17 @@ where
         Ok(jobs)
     }
 
-    async fn remove(&self, id: Uuid) -> anyhow::Result<()> {
-        sqlx::query!("DELETE FROM pgmq_queue WHERE id = $1", id)
+    async fn remove(&self, id: JobId) -> anyhow::Result<()> {
+        sqlx::query!("DELETE FROM pgmq_queue WHERE id = $1", id.as_ref())
             .execute(&self.pool)
             .await?;
 
         Ok(())
     }
 
-    async fn fail_job(
+    async fn mark_job_as_failed(
         &self,
-        id: Uuid,
+        id: JobId,
         scheduled_for: Option<OffsetDateTime>,
     ) -> anyhow::Result<()> {
         let now = OffsetDateTime::now_utc();
@@ -170,7 +161,7 @@ where
         //  job was marked as failed
         sqlx::query!(
             r#"UPDATE pgmq_queue
-            SET 
+            SET
                 failed_attempts = failed_attempts + 1,
                 status = (CASE
                     WHEN failed_attempts + 1 >= $1 THEN $2::int ELSE $3::int
@@ -185,7 +176,7 @@ where
             PgJobStatus::Queued as i32,
             scheduled_for,
             now,
-            id,
+            id.as_ref(),
         )
         .execute(&self.pool)
         .await?;
@@ -260,7 +251,7 @@ where
 
     fn try_from(value: PgJob) -> Result<Self, Self::Error> {
         Ok(Self {
-            id: value.id,
+            id: JobId::new(value.id),
             message: serde_json::from_value(value.message)?,
         })
     }

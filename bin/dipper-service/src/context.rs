@@ -623,6 +623,7 @@ mod tests {
     use async_trait::async_trait;
     use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
     use dipper_iisa::{CandidateSelection, SelectionError};
+    use dipper_pgmq::JobId;
     use dipper_registry::{
         Error, IndexingAgreement, IndexingAgreementVoucher, IndexingReceipt,
         IndexingReceiptReportedWork, IndexingRequest, Registry,
@@ -851,7 +852,7 @@ mod tests {
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
             _num_candidates: usize,
-        ) -> anyhow::Result<()> {
+        ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
 
@@ -860,7 +861,7 @@ mod tests {
             _indexing_request_id: IndexingRequestId,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
-        ) -> anyhow::Result<()> {
+        ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
 
@@ -871,7 +872,7 @@ mod tests {
             _indexing_request_id: IndexingRequestId,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
-        ) -> anyhow::Result<()> {
+        ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
 
@@ -879,28 +880,28 @@ mod tests {
             &self,
             _indexer_url: Url,
             _agreement_id: IndexingAgreementId,
-        ) -> anyhow::Result<()> {
+        ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
 
         async fn process_indexing_request_cancellation(
             &self,
             _indexing_request_id: IndexingRequestId,
-        ) -> anyhow::Result<()> {
+        ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
 
         async fn process_indexing_agreement_requester_cancellation(
             &self,
             _agreement_id: IndexingAgreementId,
-        ) -> anyhow::Result<()> {
+        ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
 
         async fn process_indexing_agreement_indexer_cancellation(
             &self,
             _agreement_id: IndexingAgreementId,
-        ) -> anyhow::Result<()> {
+        ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
     }
