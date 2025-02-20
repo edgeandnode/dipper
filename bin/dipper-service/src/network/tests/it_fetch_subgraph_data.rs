@@ -92,3 +92,31 @@ async fn fetch_indexer_operators_data() {
 
     assert!(!response.is_empty());
 }
+
+#[test_with::env(IT_TEST_ARBITRUM_GATEWAY_URL, IT_TEST_ARBITRUM_GATEWAY_AUTH)]
+#[tokio::test]
+async fn fetch_latest_epoch_data() {
+    init_test_tracing();
+
+    //* Given
+    let subgraph_url = test_subgraph_url(GRAPH_NETWORK_ARBITRUM_DEPLOYMENT_ID);
+    let auth_token = test_auth_token();
+
+    let network_subgraph_client =
+        NetworkSubgraphClient::new(reqwest::Client::new(), subgraph_url, auth_token);
+
+    //* When
+    let res = tokio::time::timeout(
+        Duration::from_secs(30),
+        network_subgraph_client.fetch_latest_epoch(),
+    )
+    .await
+    .expect("Timeout on network fetch latest epoch data query");
+
+    //* Then
+    let response = res.expect("Failed to fetch data");
+
+    // Assert that the epoch ID is valid
+    // At this moment, Feb 2025, the epoch ID is greater than 750
+    assert!(response.id.0 > 750);
+}

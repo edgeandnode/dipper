@@ -18,7 +18,7 @@ use super::{
     result::JobResult,
     WorkerQueue,
 };
-use crate::{indexers::IndexerDipsClient, network::NetworkProvider};
+use crate::{indexer_rpc_client::IndexerClient, network::NetworkProvider};
 
 /// Default period to pull tasks from the queue.
 const DEFAULT_TASK_PULL_PERIOD: Duration = Duration::from_secs(1);
@@ -59,12 +59,12 @@ where
     R: Registry + Clone + Send + Sync,
     N: NetworkProvider + Clone + Send + Sync,
     W: WorkerQueue + Clone + Send + Sync,
-    C: IndexerDipsClient + Clone + Send + Sync,
+    C: IndexerClient + Clone + Send + Sync,
     I: CandidateSelection + Clone + Send + Sync,
     ProcessNewIndexingRequestCtx<R, N, W, I>: FromState<S>,
     ProcessIndexingRequestCancellationCtx<R, W>: FromState<S>,
     FindIndexerForIndexingRequestCtx<R, N, W, I>: FromState<S>,
-    SendIndexingAgreementProposalCtx<R, W, C>: FromState<S>,
+    SendIndexingAgreementProposalCtx<R, N, W, C>: FromState<S>,
     SendIndexingAgreementCancellationCtx<R, C>: FromState<S>,
     ProcessIndexingAgreementCancellationCtx<R, W>: FromState<S>,
 {
@@ -129,12 +129,12 @@ where
     R: Registry,
     N: NetworkProvider,
     W: WorkerQueue,
-    C: IndexerDipsClient,
+    C: IndexerClient,
     I: CandidateSelection,
     ProcessNewIndexingRequestCtx<R, N, W, I>: FromState<S>,
     ProcessIndexingRequestCancellationCtx<R, W>: FromState<S>,
     FindIndexerForIndexingRequestCtx<R, N, W, I>: FromState<S>,
-    SendIndexingAgreementProposalCtx<R, W, C>: FromState<S>,
+    SendIndexingAgreementProposalCtx<R, N, W, C>: FromState<S>,
     SendIndexingAgreementCancellationCtx<R, C>: FromState<S>,
     ProcessIndexingAgreementCancellationCtx<R, W>: FromState<S>,
 {

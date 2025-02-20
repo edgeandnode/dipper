@@ -59,11 +59,18 @@ pub fn new(
                 _ = timer.tick() => {},
             }
 
-            let mut snapshot = match client.fetch_subgraphs().await {
+            // Fetch the current network epoch
+            let mut snapshot = match client.fetch_latest_epoch().await {
+                Ok(epoch) => Snapshot::new(epoch),
+                Err(err) => {
+                    tracing::error!(error=%err, "failed to fetch network latest epoch update");
+                    continue;
+                }
+            };
+
+            match client.fetch_subgraphs().await {
                 Ok(data) if !data.is_empty() => {
-                    let mut snapshot = Snapshot::new();
                     snapshot.extend(data);
-                    snapshot
                 }
                 Ok(_) => {
                     tracing::warn!("empty network subgraph update");
@@ -81,9 +88,11 @@ pub fn new(
                 }
                 Ok(_) => {
                     tracing::warn!("empty network indexer operator update");
+                    continue;
                 }
                 Err(err) => {
                     tracing::warn!(error=%err, "failed to fetch network indexer operator update");
+                    continue;
                 }
             }
 

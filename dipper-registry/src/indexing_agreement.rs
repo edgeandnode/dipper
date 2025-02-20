@@ -39,6 +39,9 @@ pub struct IndexingAgreement {
     /// The indexing agreement status.
     pub status: Status,
 
+    /// The epoch when the agreement was accepted.
+    pub accepted_at_epoch: Option<u32>,
+
     /// The indexing agreement associated indexing request
     pub indexing_request_id: IndexingRequestId,
 

@@ -6,7 +6,7 @@ use sqlx::{
 };
 use thegraph_core::{
     alloy::primitives::{Address, B256, U256},
-    DeploymentId, IndexerId, ProofOfIndexing,
+    AllocationId, DeploymentId, IndexerId, ProofOfIndexing,
 };
 
 /// Wrapper type for `u32` to implement `sqlx::Type` for `Postgres`.
@@ -168,6 +168,32 @@ impl<'r> sqlx::Decode<'r, Postgres> for PgIndexerId {
     fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
         let PgAddress(address) = sqlx::Decode::<Postgres>::decode(value)?;
         Ok(Self(IndexerId::new(address)))
+    }
+}
+
+/// Wrapper type for `AllocationId` to implement `sqlx::Type` for `Postgres`.
+///
+/// This _new-type_ pattern maps the `AllocationId` type to a `[u8; 20]` array
+/// which corresponds to a Postgres `bytea` type.
+#[repr(transparent)]
+pub struct PgAllocationId(pub AllocationId);
+
+impl sqlx::Type<Postgres> for PgAllocationId {
+    fn type_info() -> PgTypeInfo {
+        PgAddress::type_info()
+    }
+}
+
+impl sqlx::Encode<'_, Postgres> for PgAllocationId {
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
+        PgAddress(self.0.into_inner()).encode(buf)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, Postgres> for PgAllocationId {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
+        let PgAddress(address) = sqlx::Decode::<Postgres>::decode(value)?;
+        Ok(Self(AllocationId::new(address)))
     }
 }
 

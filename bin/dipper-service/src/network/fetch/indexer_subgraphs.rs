@@ -16,11 +16,12 @@ pub(super) const GRAPHQL_QUERY_FRAGMENT: &str = indoc::indoc! {r#"
                 ipfsHash
                 indexerAllocations(
                     first: 100
-                    orderBy: allocatedTokens, orderDirection: desc
-                    where: { status: Active }
+                    orderBy: closedAtEpoch, orderDirection: desc
                 ) {
                     id
                     allocatedTokens
+                    createdAtEpoch
+                    closedAtEpoch
                     indexer {
                         id
                         url
@@ -44,7 +45,7 @@ pub(super) const GRAPHQL_QUERY_FRAGMENT: &str = indoc::indoc! {r#"
 /// See: https://github.com/graphprotocol/graph-network-subgraph/blob/master/schema.graphql
 pub(super) mod types {
     use serde_with::serde_as;
-    use thegraph_core::{AllocationId, DeploymentId, IndexerId, SubgraphId};
+    use thegraph_core::{AllocationId, DeploymentId, IndexerId, ProofOfIndexing, SubgraphId};
 
     #[derive(Debug, Clone, serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -74,9 +75,12 @@ pub(super) mod types {
     #[serde(rename_all = "camelCase")]
     pub struct Allocation {
         pub id: AllocationId,
+        pub created_at_epoch: u32,
+        pub closed_at_epoch: Option<u32>,
         #[serde_as(as = "serde_with::DisplayFromStr")]
         pub allocated_tokens: u128,
         pub indexer: Indexer,
+        pub poi: Option<ProofOfIndexing>,
     }
 
     #[serde_as]

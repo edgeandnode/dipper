@@ -1,13 +1,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use reqwest::Url;
-use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId, SubgraphId};
+use thegraph_core::{
+    alloy::primitives::{Address, BlockNumber},
+    AllocationId, DeploymentId, IndexerId, ProofOfIndexing, SubgraphId,
+};
 
-use super::{indexer_operators, indexer_subgraphs};
+use super::{epoches, indexer_operators, indexer_subgraphs};
 
 /// A snapshot of the network state at a given point in time
 #[derive(Debug, Clone)]
 pub struct Snapshot {
+    /// The current network epoch
+    ///
+    /// See [Epoch] for more information
+    epoch: Epoch,
     /// The indexers table
     ///
     /// See [Indexer] for more information
@@ -20,17 +27,31 @@ pub struct Snapshot {
     ///
     /// See [Deployment] for more information
     deployments: BTreeMap<DeploymentId, Deployment>,
+    /// The active allocations table
+    ///
+    /// See [Allocation] for more information
+    allocations: BTreeMap<AllocationId, Allocation>,
 }
 
 impl Snapshot {
     /// Create a new empty network snapshot with the current timestamp
-    pub fn new() -> Self {
-        Default::default()
+    pub fn new(epoch: epoches::types::Epoch) -> Self {
+        Self {
+            epoch: Epoch {
+                number: epoch.id.0,
+                start_block: epoch.start_block,
+                end_block: epoch.end_block,
+            },
+            indexers: Default::default(),
+            subgraphs: Default::default(),
+            deployments: Default::default(),
+            allocations: Default::default(),
+        }
     }
 
-    /// Whether the network snapshot is empty
-    pub fn is_empty(&self) -> bool {
-        self.indexers.is_empty() && self.subgraphs.is_empty() && self.deployments.is_empty()
+    /// Get the current network epoch
+    pub fn epoch(&self) -> &Epoch {
+        &self.epoch
     }
 
     /// Get an iterator over the indexers in the network snapshot
@@ -60,16 +81,10 @@ impl Snapshot {
     pub fn get_deployment(&self, id: &DeploymentId) -> Option<&Deployment> {
         self.deployments.get(id)
     }
-}
 
-impl Default for Snapshot {
-    /// Create a new empty network snapshot with the current timestamp
-    fn default() -> Self {
-        Self {
-            indexers: Default::default(),
-            subgraphs: Default::default(),
-            deployments: Default::default(),
-        }
+    /// Get [Allocation] by [AllocationId]
+    pub fn get_allocation(&self, id: &AllocationId) -> Option<&Allocation> {
+        self.allocations.get(id)
     }
 }
 
@@ -113,12 +128,17 @@ impl Extend<indexer_subgraphs::types::Subgraph> for Snapshot {
                         indexings: Default::default(),
                     });
 
-                for indexer in sub_version.subgraph_deployment.allocations {
-                    let indexer_id = indexer.indexer.id;
-                    let indexer_staked_tokens = indexer.indexer.staked_tokens;
+                for allocation in sub_version.subgraph_deployment.allocations {
+                    let allocation_id = allocation.id;
+                    let allocation_created_at = allocation.created_at_epoch;
+                    let allocation_closed_at = allocation.closed_at_epoch;
+                    let allocation_allocated_tokens = allocation.allocated_tokens;
+                    let allocation_proof_of_indexing = allocation.poi;
+                    let indexer_id = allocation.indexer.id;
+                    let indexer_staked_tokens = allocation.indexer.staked_tokens;
 
                     // Skip indexers without URL
-                    let indexer_url = match indexer.indexer.url {
+                    let indexer_url = match allocation.indexer.url {
                         Some(url) => url,
                         None => continue,
                     };
@@ -150,6 +170,20 @@ impl Extend<indexer_subgraphs::types::Subgraph> for Snapshot {
                         .and_modify(|deployment| {
                             deployment.indexings.insert(indexer_id);
                         });
+
+                    // Add the allocation to the network snapshot table
+                    self.allocations
+                        .entry(allocation_id)
+                        .or_insert_with(|| Allocation {
+                            id: allocation_id,
+                            created_at: allocation_created_at,
+                            closed_at: allocation_closed_at,
+                            indexer: indexer_id,
+                            deployment: deployment_id,
+                            subgraph: deployment_subgraph_id,
+                            allocated_tokens: allocation_allocated_tokens,
+                            proof_of_indexing: allocation_proof_of_indexing,
+                        });
                 }
             }
         }
@@ -157,7 +191,7 @@ impl Extend<indexer_subgraphs::types::Subgraph> for Snapshot {
 }
 
 impl Extend<indexer_operators::types::Indexer> for Snapshot {
-    /// Extend the network snapshot with a indexer-operator set
+    /// Extend the network snapshot with an indexer-operator set
     fn extend<T>(&mut self, iter: T)
     where
         T: IntoIterator<Item = indexer_operators::types::Indexer>,
@@ -248,4 +282,41 @@ pub struct Deployment {
     ///
     /// The indexers are stored in a BTreeSet to ensure that they are unique.
     pub indexings: BTreeSet<IndexerId>,
+}
+
+/// An allocation in the network
+// TODO: Add epoch information to allocations
+#[derive(Debug, Clone)]
+pub struct Allocation {
+    /// The allocation ID
+    pub id: AllocationId,
+    /// The epoch when the allocation was made
+    pub created_at: u32,
+    /// The epoch when the allocation was closed
+    pub closed_at: Option<u32>,
+    /// The indexer ID
+    pub indexer: IndexerId,
+    /// The deployment ID
+    pub deployment: DeploymentId,
+    /// The subgraph ID
+    pub subgraph: SubgraphId,
+    /// The amount of tokens staked by the indexer for the allocation
+    pub allocated_tokens: u128,
+    /// The proof of indexing for the allocation
+    pub proof_of_indexing: Option<ProofOfIndexing>,
+}
+
+/// The network epoch information
+///
+/// The protocol economics are computed over time buckets called epochs that
+/// are approximately 24 hours long. The active epoch is the one in which
+/// Indexers are currently allocating stake and collecting query fees.
+#[derive(Debug, Clone)]
+pub struct Epoch {
+    /// The epoch number
+    pub number: u32,
+    /// The start block number
+    pub start_block: BlockNumber,
+    /// The end block number
+    pub end_block: BlockNumber,
 }

@@ -4,7 +4,8 @@
 //! This module contains the logic necessary to query the Graph to get the latest state of the
 //! network subgraph.
 
-use super::{indexer_operators, indexer_subgraphs};
+use super::{epoches, indexer_operators, indexer_subgraphs};
+use crate::network::fetch::epoches::types::EpochesResponse;
 
 mod paginated_client;
 mod queries;
@@ -37,6 +38,18 @@ impl Client {
             .paginated_query(indexer_operators::GRAPHQL_QUERY_FRAGMENT, 1000)
             .await
             .map_err(Into::into)
+    }
+
+    pub async fn fetch_latest_epoch(&self) -> anyhow::Result<epoches::types::Epoch> {
+        let EpochesResponse { epoches } = self
+            .client
+            .query::<EpochesResponse>(epoches::GRAPHQL_QUERY)
+            .await
+            .map_err(|err| anyhow::anyhow!(err))?;
+        epoches
+            .first()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("No epoch found"))
     }
 }
 

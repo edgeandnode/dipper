@@ -127,6 +127,7 @@ pub trait Registry {
     async fn mark_indexing_agreement_as_accepted(
         &self,
         agreement_id: &IndexingAgreementId,
+        epoch: u32,
     ) -> Result<(), Error>;
 
     /// Mark an indexing agreement as `REJECTED`.
@@ -189,7 +190,7 @@ pub trait Registry {
     ) -> Result<Option<IndexingReceipt>, Error>;
 
     /// Get the latest receipt for the given agreement ID.
-    async fn get_latest_receipt_for_agreement(
+    async fn get_last_receipt_for_agreement(
         &self,
         agreement_id: &IndexingAgreementId,
     ) -> Result<Option<IndexingReceipt>, Error>;

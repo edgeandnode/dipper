@@ -7,7 +7,7 @@
 use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId};
 use thegraph_core::{
     alloy::primitives::{Address, U256},
-    IndexerId, ProofOfIndexing,
+    AllocationId, IndexerId, ProofOfIndexing,
 };
 use time::OffsetDateTime;
 
@@ -47,17 +47,14 @@ pub struct ReportedWork {
     /// This is the epoch timestamp for this collection.
     pub epoch: u32,
 
-    /// The number of blocks indexed since the last collection.
-    ///
-    /// This is the number of blocks indexed since the last collection, not the total number of
-    /// blocks indexed.
-    pub blocks: u64,
+    /// The allocation ID that the indexer reported work for.
+    pub allocation_id: AllocationId,
 
     /// The number of entities stored.
     ///
     /// This is the absolute number of subgraph entities stored, not the number of entities stored
     /// since the last collection.
-    pub entities: u64,
+    pub entity_count: u64,
 
     /// The Proof-Of-Indexing (POI) provided by the indexer when collecting the _indexing receipt_.
     pub poi: ProofOfIndexing,
@@ -74,8 +71,8 @@ pub mod fake_impl {
         fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
             ReportedWork {
                 epoch: u32::dummy_with_rng(config, rng),
-                blocks: u64::dummy_with_rng(config, rng),
-                entities: u64::dummy_with_rng(config, rng),
+                allocation_id: AllocationId::dummy_with_rng(config, rng),
+                entity_count: u64::dummy_with_rng(config, rng),
                 poi: ProofOfIndexing::dummy_with_rng(config, rng),
             }
         }

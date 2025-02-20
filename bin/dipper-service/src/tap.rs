@@ -15,10 +15,12 @@ use thegraph_core::{
 pub struct Receipt(EIP712SignedMessage<TapReceipt>);
 
 impl Receipt {
+    #[allow(dead_code)] // TODO: Required for feeding the receipt to kafka
     pub fn value(&self) -> u128 {
         self.0.message.value
     }
 
+    #[allow(dead_code)] // TODO: Required for feeding the receipt to kafka
     pub fn allocation(&self) -> Address {
         self.0.message.allocation_id
     }

@@ -9,6 +9,7 @@
 //! The client module provides a high-level client API to query subgraphs.
 
 mod client;
+mod epoches;
 mod indexer_operators;
 mod indexer_subgraphs;
 pub mod snapshot;

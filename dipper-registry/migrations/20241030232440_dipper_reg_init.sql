@@ -22,9 +22,10 @@ CREATE TABLE dipper_reg_indexing_agreements
     created_at          TIMESTAMPTZ NOT NULL,
     updated_at          TIMESTAMPTZ NOT NULL,
 
-    status              INT         NOT NULL,
+    status            INT  NOT NULL,
     indexing_request_id UUID REFERENCES dipper_reg_indexing_requests (id),
-    deployment_id                               TEXT   NOT NULL,
+    deployment_id     TEXT NOT NULL,
+    accepted_at_epoch BIGINT,
 
     -- Indexer information
     indexer_id          TEXT        NOT NULL,
@@ -65,8 +66,8 @@ CREATE TABLE dipper_reg_indexing_receipts
 
     -- Report information
     reported_work_epoch BIGINT NOT NULL,
-    reported_work_blocks   BYTEA  NOT NULL,
-    reported_work_entities BYTEA  NOT NULL,
+    reported_work_allocation_id BYTEA NOT NULL,
+    reported_work_entity_count BYTEA  NOT NULL,
     reported_work_poi   BYTEA  NOT NULL,
 
     amount              BYTEA  NOT NULL
