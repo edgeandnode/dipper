@@ -20,7 +20,7 @@ jobs:
         run: sudo apt-get install -y lld protobuf-compiler
 
       - name: Set up Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@11df97af8e8102fd60b60a77dfbf58d40cd843b8 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@9399c7bb15d4c7d47b27263d024f0a4978346ba4 # v1
         with:
           target: x86_64-unknown-linux-gnu
           rustflags: ''
