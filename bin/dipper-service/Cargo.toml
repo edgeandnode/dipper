@@ -36,6 +36,6 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 url.workspace = true
 
 [dev-dependencies]
-fake = "3.1.0"
+fake = { version = "3.1.0", features = ["url"] }
 test-with = { version = "0.14.4", default-features = false }
 thegraph-core = { workspace = true, features = ["fake"] }

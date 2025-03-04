@@ -5,7 +5,6 @@ use std::{
 
 use dipper_core::state::FromState;
 use dipper_iisa::CandidateSelection;
-use dipper_registry::Registry;
 use thegraph_core::{
     alloy::primitives::{Address, ChainId, U256},
     IndexerId,
@@ -16,6 +15,7 @@ use crate::{
     indexer_rpc_client::IndexerClient,
     indexer_rpc_server,
     network::NetworkProvider,
+    registry::{AgreementRegistry, IndexingRequestRegistry, ReceiptRegistry},
     signing::{eip712::PrivateKeyEip712Signer, tap::ReceiptSigner},
     worker,
     worker::WorkerQueue,
@@ -479,7 +479,7 @@ impl<S, T, A, N, W, C, I> CtxBuilder<S, T, A, NotSet, N, W, C, I> {
     /// Sets the DIPs registry.
     pub fn with_registry<R>(self, registry: R) -> CtxBuilder<S, T, A, RegistrySet<R>, N, W, C, I>
     where
-        R: Registry + 'static,
+        R: IndexingRequestRegistry + AgreementRegistry + ReceiptRegistry + 'static,
     {
         CtxBuilder {
             signer: self.signer,

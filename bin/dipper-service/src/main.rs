@@ -3,7 +3,6 @@ use std::{collections::BTreeMap, env, path::PathBuf, sync::Arc};
 use async_signal::{Signal, Signals};
 use dipper_iisa as iisa;
 use dipper_pgmq::postgres::PgQueue;
-use dipper_registry::postgres::PgRegistry;
 use futures_lite::StreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use thegraph_core::alloy::{primitives::ChainId, signers::local::PrivateKeySigner};
@@ -12,6 +11,7 @@ use tracing_subscriber::EnvFilter;
 
 use self::{
     context::{CtxBuilder, DEFAULT_MAX_CANDIDATES},
+    registry::RegistryProvider,
     signing::{eip712::Eip712Signer, tap::ReceiptSigner},
     worker::Worker,
 };
@@ -22,6 +22,7 @@ mod context;
 mod indexer_rpc_client;
 mod indexer_rpc_server;
 mod network;
+mod registry;
 mod signing;
 mod worker;
 
@@ -95,7 +96,7 @@ pub async fn main() -> anyhow::Result<()> {
     let worker_queue = Worker::new(queue.clone());
 
     // The registry component
-    let registry = PgRegistry::new(db.clone());
+    let registry = RegistryProvider::new(db.clone());
 
     //- The indexer client component
     let indexer_client = indexer_rpc_client::DipsIndexerClient::new(signer.clone());

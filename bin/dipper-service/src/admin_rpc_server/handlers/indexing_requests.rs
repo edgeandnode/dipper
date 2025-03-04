@@ -2,10 +2,6 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 use dipper_core::{ids::IndexingRequestId, state::FromState};
-use dipper_registry::{
-    Error as RegistryError, IndexingRequest as IndexingRequestRecord,
-    IndexingRequestStatus as IndexingRequestRecordStatus, Registry,
-};
 use dipper_rpc::admin::{
     indexing_requests::{
         CancelIndexingRequest, IndexingRequest, IndexingRequestStatus, IndexingRequestsRpcServer,
@@ -17,7 +13,13 @@ use jsonrpsee::{core::RpcResult, types::ErrorObject};
 use thegraph_core::{alloy::primitives::Address, DeploymentId};
 
 use crate::{
-    network::NetworkProvider, signing::eip712::PrivateKeyEip712Signer, worker::WorkerQueue,
+    network::NetworkProvider,
+    registry::{
+        IndexingRequest as IndexingRequestRecord, IndexingRequestRegistry,
+        IndexingRequestStatus as IndexingRequestRecordStatus,
+    },
+    signing::eip712::PrivateKeyEip712Signer,
+    worker::WorkerQueue,
 };
 
 /// The substate for the [`IndexingRequestsRpc`] handler
@@ -47,7 +49,7 @@ impl<R, N, W> IndexingRequestsRpcServerImpl<R, N, W> {
 #[async_trait]
 impl<R, N, W> IndexingRequestsRpcServer for IndexingRequestsRpcServerImpl<R, N, W>
 where
-    R: Registry + Clone + Send + Sync + 'static,
+    R: IndexingRequestRegistry + Clone + Send + Sync + 'static,
     N: NetworkProvider + Clone + Send + Sync + 'static,
     W: WorkerQueue + Clone + Send + Sync + 'static,
 {
@@ -87,7 +89,7 @@ where
     ) -> RpcResult<Vec<IndexingRequest>> {
         let indexing_request = match self
             .registry
-            .get_all_indexing_requests_by_deployment_id(&deployment_id)
+            .get_indexing_requests_by_deployment_id(&deployment_id)
             .await
         {
             Ok(res) => res.into_iter().map(into_indexing_request).collect(),
@@ -196,7 +198,7 @@ where
         }
 
         // Mark the indexing request as `CANCELED`
-        if let Err(RegistryError::DbError(err)) = self
+        if let Err(err) = self
             .registry
             .mark_indexing_request_as_canceled(&indexing_request_id)
             .await
@@ -242,6 +244,5 @@ fn into_indexing_request_status(status: IndexingRequestRecordStatus) -> Indexing
     match status {
         IndexingRequestRecordStatus::Open => IndexingRequestStatus::Open,
         IndexingRequestRecordStatus::Canceled => IndexingRequestStatus::Canceled,
-        IndexingRequestRecordStatus::Unknown => IndexingRequestStatus::Unknown,
     }
 }

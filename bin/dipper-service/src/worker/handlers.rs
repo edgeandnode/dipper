@@ -1,9 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use dipper_iisa::{CandidateSelection, Indexer as IndexerCandidate};
-use dipper_registry::{
-    IndexingAgreementStatus, IndexingAgreementVoucher, IndexingAgreementVoucherMetadata, Registry,
-};
 use thegraph_core::alloy::primitives::ChainId;
 
 use super::messages::{
@@ -15,6 +12,10 @@ use crate::{
     context::{IndexingAgreementChainPrices, IndexingAgreementConfig},
     indexer_rpc_client::{AgreementProposalResponse, IndexerClient},
     network::NetworkProvider,
+    registry::{
+        AgreementRegistry, IndexingAgreementStatus, IndexingAgreementVoucher,
+        IndexingAgreementVoucherMetadata, IndexingRequestRegistry,
+    },
     signing::eip712::PrivateKeyEip712Signer,
     worker::{result::JobResult, WorkerQueue},
 };
@@ -47,7 +48,7 @@ pub(super) async fn process_new_indexing_request<R, N, W, I>(
     }: ProcessNewIndexingRequest,
 ) -> anyhow::Result<JobResult<()>>
 where
-    R: Registry,
+    R: IndexingRequestRegistry + AgreementRegistry,
     N: NetworkProvider,
     W: WorkerQueue,
     I: CandidateSelection,
@@ -150,12 +151,12 @@ pub(super) async fn process_indexing_request_cancellation<R, W>(
     }: ProcessIndexingRequestCancellation,
 ) -> anyhow::Result<JobResult<()>>
 where
-    R: Registry,
+    R: IndexingRequestRegistry + AgreementRegistry,
     W: WorkerQueue,
 {
     // Get the indexing agreements associated with the indexing request
     let agreements = registry
-        .get_indexing_request_active_indexing_agreements(&indexing_request_id)
+        .get_active_indexing_agreements_by_indexing_request_id(&indexing_request_id)
         .await?;
 
     // Mark all the agreements as canceled by the requester
@@ -207,7 +208,7 @@ pub(super) async fn find_indexer_for_indexing_request<R, N, W, I>(
     }: FindIndexerForIndexingRequest,
 ) -> anyhow::Result<JobResult<()>>
 where
-    R: Registry,
+    R: IndexingRequestRegistry + AgreementRegistry,
     N: NetworkProvider,
     W: WorkerQueue,
     I: CandidateSelection,
@@ -215,13 +216,13 @@ where
     // Get the indexers that are not indexing the deployment, not rejected or canceled this indexing
     // request, and not already indexing this indexing request
     let already_indexing = registry
-        .get_indexing_request_active_indexing_agreements(&indexing_request_id)
+        .get_active_indexing_agreements_by_indexing_request_id(&indexing_request_id)
         .await?
         .into_iter()
         .map(|agreement| agreement.indexer.id)
         .collect::<Vec<_>>();
     let rejected_or_canceled = registry
-        .get_indexing_request_rejected_indexing_agreements(&indexing_request_id)
+        .get_rejected_indexing_agreements_by_indexing_request_id(&indexing_request_id)
         .await?
         .into_iter()
         .map(|agreement| agreement.indexer.id)
@@ -342,7 +343,7 @@ pub(super) async fn send_indexing_agreement_proposal<R, N, W, C>(
     }: SendIndexingAgreementProposal,
 ) -> anyhow::Result<JobResult<()>>
 where
-    R: Registry,
+    R: IndexingRequestRegistry + AgreementRegistry,
     N: NetworkProvider,
     W: WorkerQueue,
     C: IndexerClient,
@@ -357,7 +358,7 @@ where
         }
         Some(agreement) => match agreement.status {
             IndexingAgreementStatus::Created => agreement,
-            IndexingAgreementStatus::Accepted | IndexingAgreementStatus::Rejected => {
+            IndexingAgreementStatus::Accepted { .. } | IndexingAgreementStatus::Rejected => {
                 tracing::error!(
                     agreement_id=%agreement_id,
                     "Not sending agreement proposal. Agreement already accepted/rejected"
@@ -453,7 +454,7 @@ pub(super) async fn send_indexing_agreement_cancellation<R, C>(
     }: SendIndexingAgreementCancellation,
 ) -> anyhow::Result<JobResult<()>>
 where
-    R: Registry,
+    R: AgreementRegistry,
     C: IndexerClient,
 {
     // Check the status of the agreement before sending the cancellation
@@ -464,7 +465,7 @@ where
             return Ok(JobResult::Ok(()));
         }
         Some(agreement) => match agreement.status {
-            IndexingAgreementStatus::Accepted => {}
+            IndexingAgreementStatus::Accepted { .. } => {}
             IndexingAgreementStatus::CanceledByRequester => {
                 tracing::error!(
                     agreement_id=%agreement_id,
@@ -505,7 +506,7 @@ pub(super) async fn process_indexing_agreement_indexer_cancellation<R, W>(
     ProcessIndexingAgreementCancellation { agreement_id }: ProcessIndexingAgreementCancellation,
 ) -> anyhow::Result<JobResult<()>>
 where
-    R: Registry,
+    R: IndexingRequestRegistry + AgreementRegistry,
     W: WorkerQueue,
 {
     // Check the status of the agreement before processing the cancellation
@@ -558,7 +559,7 @@ pub(super) async fn process_indexing_agreement_requester_cancellation<R, W>(
     ProcessIndexingAgreementCancellation { agreement_id }: ProcessIndexingAgreementCancellation,
 ) -> anyhow::Result<JobResult<()>>
 where
-    R: Registry,
+    R: IndexingRequestRegistry + AgreementRegistry,
     W: WorkerQueue,
 {
     // Check the status of the agreement before processing the cancellation
