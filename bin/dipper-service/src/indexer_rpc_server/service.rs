@@ -1,7 +1,6 @@
 use std::{future::Future, net::SocketAddr};
 
 use dipper_core::state::FromState;
-use dipper_registry::Registry;
 use dipper_rpc::indexer::gateway_server::rpc::GatewayDipsServiceServer;
 use tokio::sync::mpsc;
 use tonic::transport::Server;
@@ -9,6 +8,7 @@ use tonic::transport::Server;
 use crate::{
     indexer_rpc_server::handlers::{DipsGatewayServiceCtx, DipsGatewayServiceImpl},
     network::NetworkProvider,
+    registry::{AgreementRegistry, ReceiptRegistry},
     worker::WorkerQueue,
 };
 
@@ -44,7 +44,7 @@ impl Handle {
 /// Create a new Indexer RPC server service
 pub fn new<S, R, N, W>(conf: Config, ctx: S) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
-    R: Registry + Clone + Send + Sync + 'static,
+    R: AgreementRegistry + ReceiptRegistry + Clone + Send + Sync + 'static,
     N: NetworkProvider + Clone + Send + Sync + 'static,
     W: WorkerQueue + Clone + Send + Sync + 'static,
     DipsGatewayServiceCtx<R, N, W>: FromState<S>,

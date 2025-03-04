@@ -5,10 +5,6 @@ use dipper_core::{
     ids::{IndexingAgreementId, IndexingRequestId},
     state::FromState,
 };
-use dipper_registry::{
-    IndexingAgreement as IndexingAgreementRecord,
-    IndexingAgreementStatus as IndexingAgreementRecordStatus, Registry,
-};
 use dipper_rpc::admin::{
     indexing_agreements::{
         CancelIndexingAgreement, IndexingAgreement, IndexingAgreementsRpcServer,
@@ -19,7 +15,14 @@ use dipper_rpc::admin::{
 use jsonrpsee::{core::RpcResult, types::ErrorObject};
 use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId};
 
-use crate::{signing::eip712::PrivateKeyEip712Signer, worker::WorkerQueue};
+use crate::{
+    registry::{
+        AgreementRegistry, IndexingAgreement as IndexingAgreementRecord,
+        IndexingAgreementStatus as IndexingAgreementRecordStatus,
+    },
+    signing::eip712::PrivateKeyEip712Signer,
+    worker::WorkerQueue,
+};
 
 /// The substate for the [`IndexingAgreementsRpc`] handler
 ///
@@ -54,7 +57,7 @@ impl<R, W> std::ops::Deref for IndexingAgreementsRpcServerImpl<R, W> {
 #[async_trait]
 impl<R, W> IndexingAgreementsRpcServer for IndexingAgreementsRpcServerImpl<R, W>
 where
-    R: Registry + Clone + Send + Sync + 'static,
+    R: AgreementRegistry + Clone + Send + Sync + 'static,
     W: WorkerQueue + Clone + Send + Sync + 'static,
 {
     async fn get_agreement_by_id(
@@ -85,7 +88,7 @@ where
     ) -> RpcResult<Vec<IndexingAgreement>> {
         let indexing_agreements = match self
             .registry
-            .get_all_indexing_agreements_by_deployment_id(&deployment_id)
+            .get_indexing_agreements_by_deployment_id(&deployment_id)
             .await
         {
             Ok(res) => res.into_iter().map(into_indexing_agreement).collect(),
@@ -104,7 +107,7 @@ where
     ) -> RpcResult<Vec<IndexingAgreement>> {
         let indexing_agreements = match self
             .registry
-            .get_all_indexing_agreements_by_indexer_id(&indexer_id)
+            .get_indexing_agreements_by_indexer_id(&indexer_id)
             .await
         {
             Ok(res) => res.into_iter().map(into_indexing_agreement).collect(),
@@ -123,7 +126,7 @@ where
     ) -> RpcResult<Vec<IndexingAgreement>> {
         let indexing_agreements = match self
             .registry
-            .get_all_indexing_agreements_by_indexing_request_id(&request_id)
+            .get_indexing_agreements_by_indexing_request_id(&request_id)
             .await
         {
             Ok(res) => res.into_iter().map(into_indexing_agreement).collect(),
@@ -207,7 +210,7 @@ fn into_indexing_agreement_status(
     match status {
         IndexingAgreementRecordStatus::Created => IndexingAgreementStatus::Created,
         IndexingAgreementRecordStatus::DeliveryFailed => IndexingAgreementStatus::DeliveryFailed,
-        IndexingAgreementRecordStatus::Accepted => IndexingAgreementStatus::Accepted,
+        IndexingAgreementRecordStatus::Accepted { .. } => IndexingAgreementStatus::Accepted,
         IndexingAgreementRecordStatus::Rejected => IndexingAgreementStatus::Rejected,
         IndexingAgreementRecordStatus::CanceledByRequester => {
             IndexingAgreementStatus::CanceledByRequester
@@ -216,6 +219,5 @@ fn into_indexing_agreement_status(
             IndexingAgreementStatus::CanceledByIndexer
         }
         IndexingAgreementRecordStatus::Expired => IndexingAgreementStatus::Expired,
-        IndexingAgreementRecordStatus::Unknown => IndexingAgreementStatus::Unknown,
     }
 }

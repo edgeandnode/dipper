@@ -2,7 +2,6 @@ use std::{cmp::max, collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 use dipper_core::{ids::IndexingAgreementId, state::FromState};
-use dipper_registry::{IndexingAgreementStatus, IndexingReceiptReportedWork, Registry};
 use dipper_rpc::indexer::gateway_server::{
     dips_cancellation_eip712_domain, dips_collection_eip712_domain, rpc, sol,
 };
@@ -18,6 +17,7 @@ use tonic::{Request, Response, Status};
 
 use crate::{
     network::NetworkProvider,
+    registry::{AgreementRegistry, IndexingAgreementStatus, ReceiptRegistry, ReportedWork},
     signing::{eip712::PrivateKeyEip712Signer, tap::ReceiptSigner},
     worker::WorkerQueue,
 };
@@ -49,7 +49,7 @@ impl<R, N, W> DipsGatewayServiceImpl<R, N, W> {
 #[async_trait]
 impl<R, N, W> rpc::GatewayDipsService for DipsGatewayServiceImpl<R, N, W>
 where
-    R: Registry + Clone + Send + Sync + 'static,
+    R: AgreementRegistry + ReceiptRegistry + Clone + Send + Sync + 'static,
     N: NetworkProvider + Clone + Send + Sync + 'static,
     W: WorkerQueue + Clone + Send + Sync + 'static,
 {
@@ -281,9 +281,7 @@ where
 
         // Ensure the agreement is in an accepted state, otherwise return an error
         let agreement_accept_epoch = match &agreement.status {
-            IndexingAgreementStatus::Accepted => agreement
-                .accepted_at_epoch
-                .expect("accepted_at_epoch not found"),
+            IndexingAgreementStatus::Accepted { at_epoch } => *at_epoch,
             IndexingAgreementStatus::Created | IndexingAgreementStatus::DeliveryFailed => {
                 return Err(Status::not_found("agreement not found"));
             }
@@ -301,15 +299,12 @@ where
             IndexingAgreementStatus::Expired => {
                 return Err(Status::failed_precondition("agreement expired"));
             }
-            IndexingAgreementStatus::Unknown => {
-                return Err(Status::data_loss("agreement status unknown"));
-            }
         };
 
         // Get the last receipt for the agreement
         let last_receipt = match self
             .registry
-            .get_last_receipt_for_agreement(&agreement_id)
+            .get_last_receipt_for_agreement_id(&agreement_id)
             .await
         {
             Ok(receipt) => receipt,
@@ -404,7 +399,7 @@ where
                 agreement_id,
                 indexer_id,
                 requested_by,
-                IndexingReceiptReportedWork {
+                ReportedWork {
                     epoch: current_epoch,
                     allocation_id,
                     entity_count,

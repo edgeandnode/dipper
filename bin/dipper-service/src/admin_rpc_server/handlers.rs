@@ -1,5 +1,4 @@
 use dipper_core::state::FromState;
-use dipper_registry::Registry;
 use dipper_rpc::admin::{
     indexing_agreements::IndexingAgreementsRpcServer, indexing_requests::IndexingRequestsRpcServer,
 };
@@ -9,7 +8,11 @@ use self::{
     indexing_agreements::IndexingAgreementsRpcServerImpl,
     indexing_requests::IndexingRequestsRpcServerImpl,
 };
-use crate::{network::NetworkProvider, worker::WorkerQueue};
+use crate::{
+    network::NetworkProvider,
+    registry::{AgreementRegistry, IndexingRequestRegistry},
+    worker::WorkerQueue,
+};
 
 mod indexing_agreements;
 mod indexing_requests;
@@ -21,7 +24,7 @@ pub use self::{
 /// Create a new RPC module with all the admin handlers.
 pub(super) fn rpc_handlers<S, R, N, W>(ctx: S) -> RpcModule<S>
 where
-    R: Registry + Clone + Send + Sync + 'static,
+    R: IndexingRequestRegistry + AgreementRegistry + Clone + Send + Sync + 'static,
     N: NetworkProvider + Clone + Send + Sync + 'static,
     W: WorkerQueue + Clone + Send + Sync + 'static,
     IndexingRequestsCtx<R, N, W>: FromState<S>,

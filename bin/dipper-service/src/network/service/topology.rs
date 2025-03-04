@@ -365,16 +365,6 @@ impl Extend<indexer_operators::types::Indexer> for Snapshot {
     }
 }
 
-impl Snapshot {
-    /// Add an indexer to the network snapshot.
-    ///
-    /// This method is primarily used for testing purposes.
-    #[cfg(test)]
-    pub fn add_indexer(&mut self, indexer: Indexer) {
-        self.indexers.insert(indexer.id, indexer);
-    }
-}
-
 /// An indexer in the network.
 ///
 /// Indexers are entities that stake tokens on subgraph deployments and provide

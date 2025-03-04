@@ -7,14 +7,13 @@ use std::{str::FromStr, sync::Arc};
 use async_trait::async_trait;
 use dashmap::{DashMap, Entry};
 use dipper_core::ids::IndexingAgreementId;
-use dipper_registry::IndexingAgreementVoucher;
 use dipper_rpc::indexer::indexer_client::{
     dips_agreement_eip712_domain, dips_cancellation_eip712_domain, rpc, sol,
 };
 use thegraph_core::alloy::sol_types::SolValue;
 use url::Url;
 
-use crate::signing::eip712::PrivateKeyEip712Signer;
+use crate::{registry::IndexingAgreementVoucher, signing::eip712::PrivateKeyEip712Signer};
 
 /// The indexer client error type for DIPs endpoint
 #[derive(Debug, thiserror::Error)]

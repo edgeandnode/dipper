@@ -116,7 +116,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_all_indexing_requests_by_deployment_id(
+    async fn get_indexing_requests_by_deployment_id(
         &self,
         deployment_id: &DeploymentId,
     ) -> Result<Vec<IndexingRequest>, Error> {
@@ -140,7 +140,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_indexing_request_active_indexing_agreements(
+    async fn get_active_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
     ) -> Result<Vec<IndexingAgreement>, Error> {
@@ -366,7 +366,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_all_indexing_agreements_by_deployment_id(
+    async fn get_indexing_agreements_by_deployment_id(
         &self,
         deployment_id: &DeploymentId,
     ) -> Result<Vec<IndexingAgreement>, Error> {
@@ -407,7 +407,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_all_indexing_agreements_by_indexer_id(
+    async fn get_indexing_agreements_by_indexer_id(
         &self,
         indexer_id: &IndexerId,
     ) -> Result<Vec<IndexingAgreement>, Error> {
@@ -448,7 +448,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_all_indexing_agreements_by_indexing_request_id(
+    async fn get_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
     ) -> Result<Vec<IndexingAgreement>, Error> {
@@ -628,33 +628,6 @@ impl Registry for PgRegistry {
         Ok(())
     }
 
-    async fn mark_indexing_agreement_as_expired(
-        &self,
-        agreement_id: &IndexingAgreementId,
-    ) -> Result<(), Error> {
-        let record: Option<(IndexingAgreementId,)> = sqlx::query_as(
-            r#"
-            UPDATE dipper_reg_indexing_agreements
-            SET
-                status = $1,
-                updated_at = timezone('UTC', now())
-            WHERE id = $2 AND status = $3
-            RETURNING id
-            "#,
-        )
-        .bind(IndexingAgreementStatus::Expired)
-        .bind(agreement_id)
-        .bind(IndexingAgreementStatus::Accepted)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        if record.is_none() {
-            return Err(Error::NoRecordsUpdated);
-        }
-
-        Ok(())
-    }
-
     async fn register_new_indexing_receipt(
         &self,
         agreement_id: IndexingAgreementId,
@@ -728,35 +701,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_indexing_receipt_by_indexer_id(
-        &self,
-        indexer_id: &IndexerId,
-    ) -> Result<Option<IndexingReceipt>, Error> {
-        sqlx::query_as(
-            r#"
-            SELECT
-                id,
-                created_at,
-                updated_at,
-                indexing_agreement_id,
-                indexer_id,
-                indexer_operator_id,
-                reported_work_epoch,
-                reported_work_allocation_id,
-                reported_work_entity_count,
-                reported_work_poi,
-                amount
-            FROM dipper_reg_indexing_receipts
-            WHERE indexer_id = $1
-            "#,
-        )
-        .bind(PgIndexerId(*indexer_id))
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(Into::into)
-    }
-
-    async fn get_last_receipt_for_agreement(
+    async fn get_last_receipt_for_agreement_id(
         &self,
         agreement_id: &IndexingAgreementId,
     ) -> Result<Option<IndexingReceipt>, Error> {

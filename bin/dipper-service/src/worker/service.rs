@@ -3,7 +3,6 @@ use std::{future::Future, time::Duration};
 use dipper_core::state::FromState;
 use dipper_iisa::CandidateSelection;
 use dipper_pgmq::Queue;
-use dipper_registry::Registry;
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
@@ -18,7 +17,11 @@ use super::{
     result::JobResult,
     WorkerQueue,
 };
-use crate::{indexer_rpc_client::IndexerClient, network::NetworkProvider};
+use crate::{
+    indexer_rpc_client::IndexerClient,
+    network::NetworkProvider,
+    registry::{AgreementRegistry, IndexingRequestRegistry, ReceiptRegistry},
+};
 
 /// Default period to pull tasks from the queue.
 const DEFAULT_TASK_PULL_PERIOD: Duration = Duration::from_secs(1);
@@ -56,7 +59,7 @@ pub fn new<S, Q, R, N, W, C, I>(
 ) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
     Q: Queue<Message> + Clone + Send + Sync,
-    R: Registry + Clone + Send + Sync,
+    R: IndexingRequestRegistry + AgreementRegistry + ReceiptRegistry + Clone + Send + Sync,
     N: NetworkProvider + Clone + Send + Sync,
     W: WorkerQueue + Clone + Send + Sync,
     C: IndexerClient + Clone + Send + Sync,
@@ -126,7 +129,7 @@ async fn process_task<S, W, N, R, C, I>(
     message: Message,
 ) -> anyhow::Result<JobResult<()>>
 where
-    R: Registry,
+    R: IndexingRequestRegistry + AgreementRegistry + ReceiptRegistry,
     N: NetworkProvider,
     W: WorkerQueue,
     C: IndexerClient,

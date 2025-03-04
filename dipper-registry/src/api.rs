@@ -47,7 +47,7 @@ pub trait Registry {
     ) -> Result<Option<IndexingRequest>, Error>;
 
     /// Get all indexing requests by Deployment ID
-    async fn get_all_indexing_requests_by_deployment_id(
+    async fn get_indexing_requests_by_deployment_id(
         &self,
         deployment_id: &DeploymentId,
     ) -> Result<Vec<IndexingRequest>, Error>;
@@ -55,7 +55,7 @@ pub trait Registry {
     /// Get the active agreements for an indexing request.
     ///
     /// Agreements are considered active if they are in `CREATED` or `ACCEPTED` status.
-    async fn get_indexing_request_active_indexing_agreements(
+    async fn get_active_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
     ) -> Result<Vec<IndexingAgreement>, Error>;
@@ -94,19 +94,19 @@ pub trait Registry {
     ) -> Result<Option<IndexingAgreement>, Error>;
 
     /// Get all agreements by deployment ID.
-    async fn get_all_indexing_agreements_by_deployment_id(
+    async fn get_indexing_agreements_by_deployment_id(
         &self,
         deployment_id: &DeploymentId,
     ) -> Result<Vec<IndexingAgreement>, Error>;
 
     /// Get all agreements by indexer ID.
-    async fn get_all_indexing_agreements_by_indexer_id(
+    async fn get_indexing_agreements_by_indexer_id(
         &self,
         indexer_id: &IndexerId,
     ) -> Result<Vec<IndexingAgreement>, Error>;
 
     /// Get all agreements by associated indexing request ID.
-    async fn get_all_indexing_agreements_by_indexing_request_id(
+    async fn get_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
     ) -> Result<Vec<IndexingAgreement>, Error>;
@@ -158,15 +158,6 @@ pub trait Registry {
         agreement_id: &IndexingAgreementId,
     ) -> Result<(), Error>;
 
-    /// Mark an indexing agreement as `EXPIRED`.
-    ///
-    /// If there is no indexing agreement with the given ID, or if the agreement is not in the
-    /// `ACCEPTED` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
-    async fn mark_indexing_agreement_as_expired(
-        &self,
-        agreement_id: &IndexingAgreementId,
-    ) -> Result<(), Error>;
-
     /// Register a new indexing receipt.
     async fn register_new_indexing_receipt(
         &self,
@@ -183,14 +174,8 @@ pub trait Registry {
         agreement_id: &IndexingAgreementId,
     ) -> Result<Vec<IndexingReceipt>, Error>;
 
-    /// Get the indexing receipt by the given indexer ID.
-    async fn get_indexing_receipt_by_indexer_id(
-        &self,
-        indexer_id: &IndexerId,
-    ) -> Result<Option<IndexingReceipt>, Error>;
-
     /// Get the latest receipt for the given agreement ID.
-    async fn get_last_receipt_for_agreement(
+    async fn get_last_receipt_for_agreement_id(
         &self,
         agreement_id: &IndexingAgreementId,
     ) -> Result<Option<IndexingReceipt>, Error>;
