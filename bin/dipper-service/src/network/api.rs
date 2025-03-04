@@ -34,13 +34,6 @@ pub struct Allocation {
     pub proof_of_indexing: Option<ProofOfIndexing>,
 }
 
-impl Allocation {
-    /// Returns true if the allocation is closed.
-    pub fn is_closed(&self) -> bool {
-        self.closed_at.is_some()
-    }
-}
-
 /// The network provider trait.
 ///
 /// Provides a set of methods to interact with the network provider abstracting the

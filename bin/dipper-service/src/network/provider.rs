@@ -4,14 +4,19 @@ use thegraph_core::{alloy::primitives::Address, AllocationId, DeploymentId, Inde
 
 use super::{
     api::{Deployment, Indexer, NetworkProvider},
-    service::Handle,
-    Allocation,
+    service, Allocation,
 };
 
 #[derive(Clone)]
 pub struct NetworkProviderService {
+    /// The network provider epoch service handler
+    epoch: service::epoch::Handle,
+
+    /// The network provider topology service handler
+    topology: service::topology::Handle,
+
     /// The network provider service handler.
-    inner: Handle,
+    ///
     /// The indexers allowlist.
     ///
     /// This list contains all the indexers that are allowed to interact with the
@@ -22,9 +27,14 @@ pub struct NetworkProviderService {
 
 impl NetworkProviderService {
     /// Creates a new network provider service instance.
-    pub fn new(inner: Handle, allowlist: impl Into<BTreeSet<IndexerId>>) -> Self {
+    pub fn new(
+        epoch: service::epoch::Handle,
+        topology: service::topology::Handle,
+        allowlist: impl Into<BTreeSet<IndexerId>>,
+    ) -> Self {
         Self {
-            inner,
+            epoch,
+            topology,
             allowlist: allowlist.into(),
         }
     }
@@ -32,14 +42,14 @@ impl NetworkProviderService {
 
 impl NetworkProvider for NetworkProviderService {
     fn get_deployment_by_id(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
-        self.inner
+        self.topology
             .snapshot()
             .get_deployment(deployment_id)
             .map(|_| Deployment {})
     }
 
     fn get_allocation_by_id(&self, allocation_id: &AllocationId) -> Option<Allocation> {
-        self.inner
+        self.topology
             .snapshot()
             .get_allocation(allocation_id)
             .map(|allocation| Allocation {
@@ -58,7 +68,7 @@ impl NetworkProvider for NetworkProviderService {
         &self,
         deployment_id: &DeploymentId,
     ) -> Vec<Indexer> {
-        self.inner
+        self.topology
             .snapshot()
             .indexers_iter()
             // Filter out indexers that are not in the allowlist
@@ -73,7 +83,7 @@ impl NetworkProvider for NetworkProviderService {
     }
 
     fn get_indexer_id_for_operator_address(&self, operator_address: &Address) -> Option<IndexerId> {
-        self.inner
+        self.topology
             .snapshot()
             .indexers_iter()
             .find(|indexer| indexer.operators.contains(operator_address))
@@ -81,6 +91,6 @@ impl NetworkProvider for NetworkProviderService {
     }
 
     fn get_current_epoch(&self) -> u32 {
-        self.inner.snapshot().epoch().number
+        self.epoch.snapshot().epoch().number
     }
 }

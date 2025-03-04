@@ -25,7 +25,6 @@ pub(super) const GRAPHQL_QUERY_FRAGMENT: &str = indoc::indoc! {r#"
                     indexer {
                         id
                         url
-                        stakedTokens
                     }
                 }
             }
@@ -43,7 +42,7 @@ pub(super) const GRAPHQL_QUERY_FRAGMENT: &str = indoc::indoc! {r#"
 /// </div>
 ///
 /// See: https://github.com/graphprotocol/graph-network-subgraph/blob/master/schema.graphql
-pub(super) mod types {
+pub(in crate::network) mod types {
     use serde_with::serde_as;
     use thegraph_core::{AllocationId, DeploymentId, IndexerId, ProofOfIndexing, SubgraphId};
 
@@ -89,7 +88,5 @@ pub(super) mod types {
     pub struct Indexer {
         pub id: IndexerId,
         pub url: Option<String>,
-        #[serde_as(as = "serde_with::DisplayFromStr")]
-        pub staked_tokens: u128,
     }
 }

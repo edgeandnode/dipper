@@ -29,7 +29,7 @@ pub(super) const GRAPHQL_QUERY_FRAGMENT: &str = indoc::indoc! {r#"
 /// </div>
 ///
 /// See: https://github.com/graphprotocol/graph-network-subgraph/blob/master/schema.graphql
-pub(super) mod types {
+pub(in crate::network) mod types {
     use thegraph_core::{alloy::primitives::Address, IndexerId};
 
     #[derive(Debug, Clone, serde::Deserialize)]

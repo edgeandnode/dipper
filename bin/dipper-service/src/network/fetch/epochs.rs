@@ -4,8 +4,6 @@ pub(super) const GRAPHQL_QUERY: &str = indoc::indoc! {r#"{
       orderBy: startBlock, orderDirection: desc
     ) {
       id
-      startBlock
-      endBlock
     }
   }"#,
 };
@@ -20,24 +18,19 @@ pub(super) const GRAPHQL_QUERY: &str = indoc::indoc! {r#"{
 /// </div>
 ///
 /// See: https://github.com/graphprotocol/graph-network-subgraph/blob/master/schema.graphql
-pub(super) mod types {
+pub(in crate::network) mod types {
     use serde_with::serde_as;
-    use thegraph_core::alloy::primitives::BlockNumber;
 
     #[derive(Debug, Clone, serde::Deserialize)]
     pub struct EpochesResponse {
         pub epoches: Vec<Epoch>,
     }
 
+    #[serde_as]
     #[derive(Debug, Clone, serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     pub struct Epoch {
-        pub id: EpochId,
-        pub start_block: BlockNumber,
-        pub end_block: BlockNumber,
+        #[serde_as(as = "serde_with::DisplayFromStr")]
+        pub id: u32,
     }
-
-    #[serde_as]
-    #[derive(Debug, Clone, serde::Deserialize)]
-    pub struct EpochId(#[serde_as(as = "serde_with::DisplayFromStr")] pub u32);
 }
