@@ -26,7 +26,7 @@ snmalloc-rs = "0.3.6"
 sqlx.workspace = true
 tap_core = { git = "https://github.com/semiotic-ai/timeline-aggregation-protocol", rev = "5c0b2b3" }
 thegraph-core = { workspace = true, features = ["alloy-signer-local", "serde", "signed-message"] }
-thegraph-graphql-http = { version = "0.2.4", features = ["http-client-reqwest"] }
+thegraph-graphql-http = { version = "0.3.0", features = ["http-client-reqwest"] }
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
