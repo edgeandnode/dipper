@@ -16,7 +16,9 @@ use dipper_rpc::admin::{
 use jsonrpsee::{core::RpcResult, types::ErrorObject};
 use thegraph_core::{alloy::primitives::Address, DeploymentId};
 
-use crate::{network::NetworkProvider, signer::PrivateKeyEip712Signer, worker::WorkerQueue};
+use crate::{
+    network::NetworkProvider, signing::eip712::PrivateKeyEip712Signer, worker::WorkerQueue,
+};
 
 /// The substate for the [`IndexingRequestsRpc`] handler
 ///

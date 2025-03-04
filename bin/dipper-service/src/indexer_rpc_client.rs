@@ -14,7 +14,7 @@ use dipper_rpc::indexer::indexer_client::{
 use thegraph_core::alloy::sol_types::SolValue;
 use url::Url;
 
-use crate::signer::PrivateKeyEip712Signer;
+use crate::signing::eip712::PrivateKeyEip712Signer;
 
 /// The indexer client error type for DIPs endpoint
 #[derive(Debug, thiserror::Error)]

@@ -15,7 +15,7 @@ use crate::{
     context::{IndexingAgreementChainPrices, IndexingAgreementConfig},
     indexer_rpc_client::{AgreementProposalResponse, IndexerClient},
     network::NetworkProvider,
-    signer::PrivateKeyEip712Signer,
+    signing::eip712::PrivateKeyEip712Signer,
     worker::{result::JobResult, WorkerQueue},
 };
 

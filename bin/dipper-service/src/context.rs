@@ -12,8 +12,12 @@ use thegraph_core::{
 };
 
 use crate::{
-    admin_rpc_server, indexer_rpc_client::IndexerClient, indexer_rpc_server,
-    network::NetworkProvider, signer::PrivateKeyEip712Signer, tap::ReceiptSigner, worker,
+    admin_rpc_server,
+    indexer_rpc_client::IndexerClient,
+    indexer_rpc_server,
+    network::NetworkProvider,
+    signing::{eip712::PrivateKeyEip712Signer, tap::ReceiptSigner},
+    worker,
     worker::WorkerQueue,
 };
 
