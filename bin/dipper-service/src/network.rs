@@ -5,8 +5,8 @@ pub mod fetch;
 pub mod provider;
 pub mod service;
 
-#[allow(unused_imports)] // TODO: Remove this once the module types are used
-pub use api::{Deployment, Indexer, NetworkProvider};
+#[allow(unused_imports)]
+pub use api::{Allocation, Deployment, Indexer, NetworkProvider};
 pub use fetch::snapshot::Snapshot;
 
 #[cfg(test)]

@@ -51,7 +51,7 @@ impl std::fmt::Display for AgreementProposalResponse {
 
 /// Indexer client's DIPs trait
 #[async_trait]
-pub trait IndexerDipsClient {
+pub trait IndexerClient {
     /// Send an indexing agreement proposal request to the indexer
     async fn send_indexing_agreement_proposal(
         &self,
@@ -113,7 +113,7 @@ impl DipsIndexerClient {
 }
 
 #[async_trait]
-impl IndexerDipsClient for DipsIndexerClient {
+impl IndexerClient for DipsIndexerClient {
     async fn send_indexing_agreement_proposal(
         &self,
         indexer: Url,

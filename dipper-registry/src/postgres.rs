@@ -10,7 +10,8 @@ use thegraph_core::{
 use url::Url;
 
 use self::common::{
-    PgAddress, PgDeploymentId, PgIndexerId, PgProofOfIndexing, PgU256, PgU32, PgU64, PgUrl,
+    PgAddress, PgAllocationId, PgDeploymentId, PgIndexerId, PgProofOfIndexing, PgU256, PgU32,
+    PgU64, PgUrl,
 };
 use super::{
     api::{Error, Registry},
@@ -269,6 +270,7 @@ impl Registry for PgRegistry {
                 created_at,
                 updated_at,
                 status,
+                accepted_at_epoch,
                 indexing_request_id,
                 deployment_id,
                 indexer_id,
@@ -291,13 +293,14 @@ impl Registry for PgRegistry {
             )
             VALUES (
                 $1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, $5, $6,
-                $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+                $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
             )
             RETURNING id
             "#,
         )
         .bind(IndexingAgreementId::new())
         .bind(IndexingAgreementStatus::default())
+        .bind(None::<PgU32>)
         .bind(request_id)
         .bind(PgDeploymentId(deployment_id))
         .bind(PgIndexerId(indexer_id))
@@ -333,6 +336,7 @@ impl Registry for PgRegistry {
                 created_at,
                 updated_at,
                 status,
+                accepted_at_epoch,
                 indexing_request_id,
                 deployment_id,
                 indexer_id,
@@ -373,6 +377,7 @@ impl Registry for PgRegistry {
                 created_at,
                 updated_at,
                 status,
+                accepted_at_epoch,
                 indexing_request_id,
                 deployment_id,
                 indexer_id,
@@ -413,6 +418,7 @@ impl Registry for PgRegistry {
                 created_at,
                 updated_at,
                 status,
+                accepted_at_epoch,
                 indexing_request_id,
                 deployment_id,
                 indexer_id,
@@ -453,6 +459,7 @@ impl Registry for PgRegistry {
                 created_at,
                 updated_at,
                 status,
+                accepted_at_epoch,
                 indexing_request_id,
                 deployment_id,
                 indexer_id,
@@ -512,18 +519,21 @@ impl Registry for PgRegistry {
     async fn mark_indexing_agreement_as_accepted(
         &self,
         agreement_id: &IndexingAgreementId,
+        epoch: u32,
     ) -> Result<(), Error> {
         let record: Option<(IndexingAgreementId,)> = sqlx::query_as(
             r#"
             UPDATE dipper_reg_indexing_agreements
             SET
                 status = $1,
+                accepted_at_epoch = $2,
                 updated_at = timezone('UTC', now())
-            WHERE id = $2 AND status = $3
+            WHERE id = $3 AND status = $4
             RETURNING id
             "#,
         )
         .bind(IndexingAgreementStatus::Accepted)
+        .bind(Some(PgU32(epoch)))
         .bind(agreement_id)
         .bind(IndexingAgreementStatus::Created)
         .fetch_optional(&self.pool)
@@ -663,8 +673,8 @@ impl Registry for PgRegistry {
                 indexer_id,
                 indexer_operator_id,
                 reported_work_epoch,
-                reported_work_blocks,
-                reported_work_entities,
+                reported_work_allocation_id,
+                reported_work_entity_count,
                 reported_work_poi,
                 amount
             )
@@ -680,8 +690,8 @@ impl Registry for PgRegistry {
         .bind(PgIndexerId(indexer_id))
         .bind(PgAddress(indexer_operator_id))
         .bind(PgU32(reported_work.epoch))
-        .bind(PgU64(reported_work.blocks))
-        .bind(PgU64(reported_work.entities))
+        .bind(PgAllocationId(reported_work.allocation_id))
+        .bind(PgU64(reported_work.entity_count))
         .bind(PgProofOfIndexing(reported_work.poi))
         .bind(PgU256(amount))
         .fetch_one(&self.pool)
@@ -704,8 +714,8 @@ impl Registry for PgRegistry {
                 indexer_id,
                 indexer_operator_id,
                 reported_work_epoch,
-                reported_work_blocks,
-                reported_work_entities,
+                reported_work_allocation_id,
+                reported_work_entity_count,
                 reported_work_poi,
                 amount
             FROM dipper_reg_indexing_receipts
@@ -732,8 +742,8 @@ impl Registry for PgRegistry {
                 indexer_id,
                 indexer_operator_id,
                 reported_work_epoch,
-                reported_work_blocks,
-                reported_work_entities,
+                reported_work_allocation_id,
+                reported_work_entity_count,
                 reported_work_poi,
                 amount
             FROM dipper_reg_indexing_receipts
@@ -746,7 +756,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_latest_receipt_for_agreement(
+    async fn get_last_receipt_for_agreement(
         &self,
         agreement_id: &IndexingAgreementId,
     ) -> Result<Option<IndexingReceipt>, Error> {
@@ -760,8 +770,8 @@ impl Registry for PgRegistry {
                 indexer_id,
                 indexer_operator_id,
                 reported_work_epoch,
-                reported_work_blocks,
-                reported_work_entities,
+                reported_work_allocation_id,
+                reported_work_entity_count,
                 reported_work_poi,
                 amount
             FROM dipper_reg_indexing_receipts

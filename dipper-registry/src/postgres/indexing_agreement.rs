@@ -16,6 +16,9 @@ impl sqlx::FromRow<'_, PgRow> for IndexingAgreement {
         let updated_at = row.try_get("updated_at")?;
 
         let status = row.try_get("status")?;
+        let accepted_at_epoch = row
+            .try_get::<Option<PgU32>, _>("accepted_at_epoch")?
+            .map(|PgU32(x)| x);
 
         let indexing_request_id = row.try_get("indexing_request_id")?;
 
@@ -27,6 +30,7 @@ impl sqlx::FromRow<'_, PgRow> for IndexingAgreement {
             created_at,
             updated_at,
             status,
+            accepted_at_epoch,
             indexing_request_id,
             indexer,
             voucher,

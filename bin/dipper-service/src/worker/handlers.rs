@@ -13,7 +13,7 @@ use super::messages::{
 };
 use crate::{
     context::{IndexingAgreementChainPrices, IndexingAgreementConfig},
-    indexers::{AgreementProposalResponse, IndexerDipsClient},
+    indexer_rpc_client::{AgreementProposalResponse, IndexerClient},
     network::NetworkProvider,
     signer::PrivateKeyEip712Signer,
     worker::{result::JobResult, WorkerQueue},
@@ -312,8 +312,9 @@ where
     Ok(JobResult::Ok(()))
 }
 
-pub struct SendIndexingAgreementProposalCtx<R, W, C> {
+pub struct SendIndexingAgreementProposalCtx<R, N, W, C> {
     pub registry: R,
+    pub network: N,
     pub queue: W,
     pub indexer_client: C,
 }
@@ -325,12 +326,13 @@ pub struct SendIndexingAgreementProposalCtx<R, W, C> {
 /// is marked as rejected in the registry.
 ///
 /// In the case of an error, mark the agreement as delivery failed in the registry.
-pub(super) async fn send_indexing_agreement_proposal<R, W, C>(
+pub(super) async fn send_indexing_agreement_proposal<R, N, W, C>(
     SendIndexingAgreementProposalCtx {
         registry,
+        network,
         queue,
         indexer_client,
-    }: SendIndexingAgreementProposalCtx<R, W, C>,
+    }: SendIndexingAgreementProposalCtx<R, N, W, C>,
     SendIndexingAgreementProposal {
         indexer_url,
         agreement_id,
@@ -341,9 +343,12 @@ pub(super) async fn send_indexing_agreement_proposal<R, W, C>(
 ) -> anyhow::Result<JobResult<()>>
 where
     R: Registry,
+    N: NetworkProvider,
     W: WorkerQueue,
-    C: IndexerDipsClient,
+    C: IndexerClient,
 {
+    let current_epoch = network.get_current_epoch();
+
     // Check the status of the agreement before sending the proposal
     let agreement = match registry.get_indexing_agreement_by_id(agreement_id).await? {
         None => {
@@ -395,7 +400,7 @@ where
         Ok(resp) => match resp {
             AgreementProposalResponse::Accepted => {
                 registry
-                    .mark_indexing_agreement_as_accepted(&agreement_id)
+                    .mark_indexing_agreement_as_accepted(&agreement_id, current_epoch)
                     .await?;
             }
             AgreementProposalResponse::Rejected => {
@@ -449,7 +454,7 @@ pub(super) async fn send_indexing_agreement_cancellation<R, C>(
 ) -> anyhow::Result<JobResult<()>>
 where
     R: Registry,
-    C: IndexerDipsClient,
+    C: IndexerClient,
 {
     // Check the status of the agreement before sending the cancellation
     let agreement = registry.get_indexing_agreement_by_id(agreement_id).await?;

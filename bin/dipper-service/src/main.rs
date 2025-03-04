@@ -21,8 +21,8 @@ use crate::tap::ReceiptSigner;
 mod admin_rpc_server;
 mod config;
 mod context;
+mod indexer_rpc_client;
 mod indexer_rpc_server;
-mod indexers;
 mod network;
 mod signer;
 mod tap;
@@ -101,7 +101,7 @@ pub async fn main() -> anyhow::Result<()> {
     let registry = PgRegistry::new(db.clone());
 
     //- The indexer client component
-    let indexer_client = indexers::DipsIndexerClient::new(signer.clone());
+    let indexer_client = indexer_rpc_client::DipsIndexerClient::new(signer.clone());
 
     //- The network service
     let (network_handle, network_service) = {
@@ -120,24 +120,41 @@ pub async fn main() -> anyhow::Result<()> {
             conf.network.api_key.into_inner(),
         );
 
-        // Fetch the initial network snapshot
+        // Fetch the initial network snapshot, it MUST succeed to start the service
         let init_snapshot = {
+            let curr_epoch = network_subgraph_client.fetch_latest_epoch().await?;
+
+            let mut snapshot = Snapshot::new(curr_epoch);
+            tracing::debug!(epoch=%snapshot.epoch().number, "fetched initial network snapshot");
+
+            // Fetch the network subgraphs
             let subgraphs_data = network_subgraph_client.fetch_subgraphs().await?;
             if subgraphs_data.is_empty() {
                 return Err(anyhow::anyhow!("empty network subgraph update"));
             }
+            let subgraphs_data_len = subgraphs_data.len();
 
-            tracing::debug!(snapshot_size=%subgraphs_data.len(), "fetched initial network snapshot");
-
-            let mut snapshot = Snapshot::new();
+            tracing::debug!(snapshot_subgraphs=%subgraphs_data_len, "fetched initial network subgraphs snapshot");
             snapshot.extend(subgraphs_data);
 
+            // Fetch the network indexer operators, if this query fails or is empty, we should fail
             let operators_data = network_subgraph_client.fetch_indexer_operators().await?;
-            if !operators_data.is_empty() {
-                snapshot.extend(operators_data);
-            } else {
-                tracing::warn!("empty network indexer operators update");
+            if operators_data.is_empty() {
+                return Err(anyhow::anyhow!("empty network indexer operators update"));
             }
+            let operators_data_len = operators_data.len();
+
+            tracing::debug!(snapshot_operators=%operators_data_len, "fetched initial network operators snapshot");
+            snapshot.extend(operators_data);
+
+            tracing::info!(
+                epoch=%snapshot.epoch().number,
+                epoch_start_block=%snapshot.epoch().start_block,
+                epoch_end_block=%snapshot.epoch().end_block,
+                subgraphs=%subgraphs_data_len,
+                operators=%operators_data_len,
+                "initialized network snapshot",
+            );
 
             snapshot
         };

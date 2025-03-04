@@ -12,8 +12,9 @@ use thegraph_core::{
 };
 
 use crate::{
-    admin_rpc_server, indexer_rpc_server, indexers::IndexerDipsClient, network::NetworkProvider,
-    signer::PrivateKeyEip712Signer, tap::ReceiptSigner, worker, worker::WorkerQueue,
+    admin_rpc_server, indexer_rpc_client::IndexerClient, indexer_rpc_server,
+    network::NetworkProvider, signer::PrivateKeyEip712Signer, tap::ReceiptSigner, worker,
+    worker::WorkerQueue,
 };
 
 /// The maximum number of candidates to select.
@@ -182,15 +183,17 @@ where
 }
 
 impl<R, N, W, C, I> FromState<Ctx<R, N, W, C, I>>
-    for worker::SendIndexingAgreementProposalCtx<R, W, C>
+    for worker::SendIndexingAgreementProposalCtx<R, N, W, C>
 where
     R: Clone,
+    N: Clone,
     W: Clone,
     C: Clone,
 {
     fn from_state(state: &Ctx<R, N, W, C, I>) -> Self {
         Self {
             registry: state.registry.clone(),
+            network: state.network.clone(),
             queue: state.worker.clone(),
             indexer_client: state.client.clone(),
         }
@@ -541,7 +544,7 @@ impl<S, T, A, R, N, W, I> CtxBuilder<S, T, A, R, N, W, NotSet, I> {
     /// Sets the indexer client.
     pub fn with_indexer_client<C>(self, client: C) -> CtxBuilder<S, T, A, R, N, W, ClientSet<C>, I>
     where
-        C: IndexerDipsClient + 'static,
+        C: IndexerClient + 'static,
     {
         CtxBuilder {
             signer: self.signer,
@@ -636,14 +639,14 @@ mod tests {
             sol_types::{eip712_domain, private::Address},
         },
         fake_impl::alloy::Alloy as FakeAlloy,
-        indexer_id, DeploymentId, IndexerId,
+        indexer_id, AllocationId, DeploymentId, IndexerId,
     };
     use url::Url;
 
     use super::{CtxBuilder, IndexingAgreementConfig};
     use crate::{
-        indexers::{AgreementProposalResponse, DipsError, IndexerDipsClient},
-        network::{Deployment, Indexer, NetworkProvider},
+        indexer_rpc_client::{AgreementProposalResponse, DipsError, IndexerClient},
+        network::{Allocation, Deployment, Indexer, NetworkProvider},
         signer::PrivateKeyEip712Signer,
         tap::ReceiptSigner,
         worker::WorkerQueue,
@@ -750,6 +753,7 @@ mod tests {
         async fn mark_indexing_agreement_as_accepted(
             &self,
             _agreement_id: &IndexingAgreementId,
+            _epoch: u32,
         ) -> Result<(), Error> {
             unimplemented!()
         }
@@ -807,7 +811,7 @@ mod tests {
             unimplemented!()
         }
 
-        async fn get_latest_receipt_for_agreement(
+        async fn get_last_receipt_for_agreement(
             &self,
             _agreement_id: &IndexingAgreementId,
         ) -> Result<Option<IndexingReceipt>, Error> {
@@ -823,7 +827,7 @@ mod tests {
             unimplemented!()
         }
 
-        fn get_indexer_by_id(&self, _indexer_id: &IndexerId) -> Option<Indexer> {
+        fn get_allocation_by_id(&self, _allocation_id: &AllocationId) -> Option<Allocation> {
             unimplemented!()
         }
 
@@ -838,6 +842,10 @@ mod tests {
             &self,
             _operator_address: &Address,
         ) -> Option<IndexerId> {
+            unimplemented!()
+        }
+
+        fn get_current_epoch(&self) -> u32 {
             unimplemented!()
         }
     }
@@ -909,7 +917,7 @@ mod tests {
     pub struct DummyClient;
 
     #[async_trait]
-    impl IndexerDipsClient for DummyClient {
+    impl IndexerClient for DummyClient {
         async fn send_indexing_agreement_proposal(
             &self,
             _indexer: Url,

@@ -1,10 +1,11 @@
 use std::collections::BTreeSet;
 
-use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId};
+use thegraph_core::{alloy::primitives::Address, AllocationId, DeploymentId, IndexerId};
 
 use super::{
     api::{Deployment, Indexer, NetworkProvider},
     service::Handle,
+    Allocation,
 };
 
 #[derive(Clone)]
@@ -37,15 +38,19 @@ impl NetworkProvider for NetworkProviderService {
             .map(|_| Deployment {})
     }
 
-    fn get_indexer_by_id(&self, indexer_id: &IndexerId) -> Option<Indexer> {
+    fn get_allocation_by_id(&self, allocation_id: &AllocationId) -> Option<Allocation> {
         self.inner
             .snapshot()
-            .get_indexer(indexer_id)
-            // Filter out indexers that are not in the allowlist
-            .filter(|indexer| self.allowlist.is_empty() || self.allowlist.contains(&indexer.id))
-            .map(|indexer| Indexer {
-                id: indexer.id,
-                url: indexer.url.clone(),
+            .get_allocation(allocation_id)
+            .map(|allocation| Allocation {
+                id: allocation.id,
+                opened_at: allocation.created_at,
+                closed_at: allocation.closed_at,
+                indexer_id: allocation.indexer,
+                deployment_id: allocation.deployment,
+                subgraph_id: allocation.subgraph,
+                allocated_tokens: allocation.allocated_tokens,
+                proof_of_indexing: allocation.proof_of_indexing,
             })
     }
 
@@ -73,5 +78,9 @@ impl NetworkProvider for NetworkProviderService {
             .indexers_iter()
             .find(|indexer| indexer.operators.contains(operator_address))
             .map(|indexer| indexer.id)
+    }
+
+    fn get_current_epoch(&self) -> u32 {
+        self.inner.snapshot().epoch().number
     }
 }

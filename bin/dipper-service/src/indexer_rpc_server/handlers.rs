@@ -1,15 +1,18 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{cmp::max, collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 use dipper_core::{ids::IndexingAgreementId, state::FromState};
-use dipper_registry::{IndexingAgreementStatus, Registry};
+use dipper_registry::{IndexingAgreementStatus, IndexingReceiptReportedWork, Registry};
 use dipper_rpc::indexer::gateway_server::{
     dips_cancellation_eip712_domain, dips_collection_eip712_domain, rpc, sol,
 };
 use thegraph_core::{
-    alloy::{dyn_abi::SolType, primitives::PrimitiveSignature as Signature},
+    alloy::{
+        dyn_abi::SolType,
+        primitives::{PrimitiveSignature as Signature, U256},
+    },
     signed_message::SignedMessage,
-    IndexerId,
+    AllocationId, IndexerId, ProofOfIndexing,
 };
 use tonic::{Request, Response, Status};
 
@@ -202,16 +205,59 @@ where
 
         let sol::CollectionRequest {
             agreement_id,
-            allocation_id: _allocation_id,
-            entity_count: _entity_count,
+            allocation_id,
+            entity_count,
         } = sol_collection_req;
 
         let agreement_id = IndexingAgreementId::from(agreement_id.as_ref());
+        let allocation_id = AllocationId::from(allocation_id);
 
-        // TODO: Check the reported epoch is correct, i.e., check against the network subgraph's
-        //  latest reported epoch
+        // Get the current epoch
+        let current_epoch = self.network.get_current_epoch();
 
-        // Retrieve the agreement
+        // Resolve the provided allocation from the network,
+        // otherwise return an error if the allocation is not found
+        let allocation = match self.network.get_allocation_by_id(&allocation_id) {
+            None => {
+                return Err(Status::not_found("allocation not found"));
+            }
+            Some(allocation) => allocation,
+        };
+
+        // Ensure the allocation is closed, at the current epoch or before
+        // If the allocation is still open, or the closing epoch is in the future,
+        // return a "too early" error
+        let allocation_closed_at = match allocation.closed_at {
+            None => {
+                return Ok(Response::new(rpc::CollectPaymentResponse {
+                    version, // Use the same version as the request
+                    status: rpc::CollectPaymentStatus::ErrTooEarly as i32,
+                    tap_receipt: vec![],
+                }));
+            }
+            Some(closed_at) if closed_at > current_epoch => {
+                return Ok(Response::new(rpc::CollectPaymentResponse {
+                    version, // Use the same version as the request
+                    status: rpc::CollectPaymentStatus::ErrTooEarly as i32,
+                    tap_receipt: vec![],
+                }));
+            }
+            Some(closed_at) => closed_at,
+        };
+
+        // Ensure the allocation has a valid proof of indexing
+        // If the proof of indexing is not found, or is the zero value, return an error
+        let allocation_poi = match allocation.proof_of_indexing {
+            None => {
+                return Err(Status::not_found("allocation POI not found"));
+            }
+            Some(poi) if poi == ProofOfIndexing::ZERO => {
+                return Err(Status::not_found("allocation POI invalid"));
+            }
+            Some(poi) => poi,
+        };
+
+        // Fetch the agreement from the registry
         let agreement = match self
             .registry
             .get_indexing_agreement_by_id(agreement_id)
@@ -233,11 +279,13 @@ where
         }
 
         // Ensure the agreement is in an accepted state, otherwise return an error
-        match &agreement.status {
+        let agreement_accept_epoch = match &agreement.status {
+            IndexingAgreementStatus::Accepted => agreement
+                .accepted_at_epoch
+                .expect("accepted_at_epoch not found"),
             IndexingAgreementStatus::Created | IndexingAgreementStatus::DeliveryFailed => {
                 return Err(Status::not_found("agreement not found"));
             }
-            IndexingAgreementStatus::Accepted => { /* OK */ }
             IndexingAgreementStatus::Rejected => {
                 return Err(Status::failed_precondition("agreement rejected"));
             }
@@ -255,96 +303,137 @@ where
             IndexingAgreementStatus::Unknown => {
                 return Err(Status::data_loss("agreement status unknown"));
             }
+        };
+
+        // Get the last receipt for the agreement
+        let last_receipt = match self
+            .registry
+            .get_last_receipt_for_agreement(&agreement_id)
+            .await
+        {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                tracing::error!(agreement_id=%agreement_id, error=?err, "Failed to get latest receipt");
+                return Err(Status::internal("Failed to get latest receipt"));
+            }
+        };
+
+        // If one has already redeemed a receipt for a later allocation, they must NOT be
+        // allowed to redeem a receipt for an earlier allocation. In that case,
+        // return a "too late" error
+        if matches!(&last_receipt, Some(receipt) if receipt.reported_work.epoch >= allocation_closed_at)
+        {
+            return Ok(Response::new(rpc::CollectPaymentResponse {
+                version, // Use the same version as the request
+                status: rpc::CollectPaymentStatus::ErrTooLate as i32,
+                tap_receipt: vec![],
+            }));
         }
 
-        // TODO: Review all of this
-        // // TODO(post-mvp): Handle agreement expiration
-        // //  Check if the agreement should be marked as expired, and if so, do it
-        // //  Then return an error: `Status::failed_precondition("agreement expired")`
-        //
-        // // Get the latest receipt for the agreement, if any
-        // let latest_receipt = match self
-        //     .registry
-        //     .get_latest_receipt_for_agreement(&agreement_id.into())
-        //     .await
-        // {
-        //     Ok(receipt) => receipt,
-        //     Err(err) => {
-        //         tracing::error!(agreement_id=%agreement_id, error=?err, "Failed to get latest receipt");
-        //         return Err(Status::internal("Failed to get latest receipt"));
-        //     }
-        // };
-        //
-        // // Check the reported epoch is greater than the last reported epoch
-        // // Only if the agreement is not in the "initial-sync payment" phase
-        // if let Some(receipt) = &latest_receipt {
-        //     if epoch <= receipt.reported_work.epoch {
-        //         return Err(Status::failed_precondition("invalid epoch"));
-        //     }
-        // }
-        //
-        // // Check the number of epochs elapsed since the last report is within the agreement's limits
-        // // Only if the agreement is not in the "initial-sync payment" phase
-        // if let Some(receipt) = &latest_receipt {
-        //     let epochs_elapsed = epoch.saturating_sub(receipt.reported_work.epoch);
-        //
-        //     if epochs_elapsed < agreement.voucher.min_epochs_per_collection {
-        //         return Err(Status::failed_precondition("too few epochs"));
-        //     }
-        //     if epochs_elapsed > agreement.voucher.max_epochs_per_collection {
-        //         return Err(Status::failed_precondition("too many epochs"));
-        //     }
-        // }
-        //
-        // // Compute the amount to be paid for the reported work
-        // // The amount value must be the minimum between the computed value and:
-        // //  - If "initial-sync payment", the agreement's "max initial amount"
-        // //  - If "ongoing payment", the agreement's "max ongoing amount per epoch"
-        // let max_amount = if latest_receipt.is_none() {
-        //     agreement.voucher.max_initial_amount
-        // } else {
-        //     agreement.voucher.max_ongoing_amount_per_epoch
-        // };
-        //
-        // let amount = U256::from(0); // TODO: Compute the amount
-        //
-        // let receipt_amount = std::cmp::min(amount, max_amount);
-        //
-        // // Register the new receipt
-        // match self
-        //     .registry
-        //     .register_new_indexing_receipt(
-        //         agreement_id.into(),
-        //         indexer_id,
-        //         requested_by,
-        //         IndexingReceiptReportedWork {
-        //             epoch,
-        //             blocks: report.blocks,
-        //             entities: report.entities,
-        //             poi,
-        //         },
-        //         amount,
-        //     )
-        //     .await
-        // {
-        //     Ok(id) => {
-        //         tracing::info!(
-        //             receipt_id=%id,
-        //             indexer_id=%indexer_id,
-        //             deployment=%agreement.voucher.metadata.deployment_id,
-        //             amount=%receipt_amount,
-        //             "New receipt emitted"
-        //         );
-        //     }
-        //     Err(err) => {
-        //         tracing::error!(error=?err, "Failed to create receipt");
-        //         return Err(Status::internal("Failed to create receipt"));
-        //     }
-        // };
-        //
-        // // TODO: Sign and respond with the TAP receipt
+        // If the agreement was accepted after the allocation was opened, use the agreement's
+        // accept epoch as the payment origin epoch, otherwise use the allocation's opening epoch
+        let payment_orig_epoch = max(agreement_accept_epoch, allocation.opened_at);
+        let payment_end_epoch = allocation_closed_at;
+        let payment_epochs_elapsed = payment_end_epoch.saturating_sub(payment_orig_epoch);
 
-        todo!()
+        // Compute the amount to be paid for the reported work
+        // The amount value must be less than or equal to:
+        //  - If "initial-sync payment", the agreement's "max initial amount"
+        //  - If "ongoing payment", the agreement's "max ongoing amount per epoch"
+        let max_amount = if last_receipt.is_some() {
+            agreement
+                .voucher
+                .max_ongoing_amount_per_epoch
+                .saturating_mul(U256::from(payment_epochs_elapsed))
+        } else {
+            agreement.voucher.max_initial_amount
+        };
+
+        // Fee calculation:
+        // total = (epochs_elapsed * base_price_per_epoch) + (entity_count * price_per_entity)
+        let fee = {
+            let mut total = U256::ZERO;
+            total = total.saturating_add(
+                U256::from(payment_epochs_elapsed)
+                    .saturating_mul(U256::from(agreement.voucher.metadata.base_price_per_epoch)),
+            );
+            total = total.saturating_add(
+                U256::from(entity_count)
+                    .saturating_mul(U256::from(agreement.voucher.metadata.price_per_entity)),
+            );
+            total
+        };
+
+        // If the amount is out of bounds, return an error
+        if fee > max_amount {
+            tracing::debug!(
+                requested_by=%requested_by,
+                indexer_id=%indexer_id,
+                agreement_id=%agreement_id,
+                amount=%fee,
+                max_amount=%max_amount,
+                "Amount out of bounds"
+            );
+            return Ok(Response::new(rpc::CollectPaymentResponse {
+                version, // Use the same version as the request
+                status: rpc::CollectPaymentStatus::ErrAmountOutOfBounds as i32,
+                tap_receipt: vec![],
+            }));
+        }
+
+        // Create (and sign) the TAP receipt
+        // As we are working with _wei GRT_, it is safe to downcast from alloy's U256 to u128
+        let tap_receipt_fee = fee.saturating_to::<u128>();
+
+        let tap_receipt = match self
+            .tap_signer
+            .create_receipt(allocation_id, tap_receipt_fee)
+        {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                tracing::error!(error=?err, "Failed to create the TAP receipt");
+                return Err(Status::internal("Failed to create the TAP receipt"));
+            }
+        };
+
+        // Register the new receipt
+        match self
+            .registry
+            .register_new_indexing_receipt(
+                agreement_id,
+                indexer_id,
+                requested_by,
+                IndexingReceiptReportedWork {
+                    epoch: current_epoch,
+                    allocation_id,
+                    entity_count,
+                    poi: allocation_poi,
+                },
+                fee,
+            )
+            .await
+        {
+            Ok(id) => {
+                tracing::info!(
+                    receipt_id=%id,
+                    indexer_id=%indexer_id,
+                    allocation_id=%allocation_id,
+                    deployment=%agreement.voucher.metadata.subgraph_deployment_id,
+                    amount=%fee,
+                    "New receipt emitted"
+                );
+            }
+            Err(err) => {
+                tracing::error!(error=?err, "Failed to create receipt");
+                return Err(Status::internal("Failed to create receipt"));
+            }
+        };
+
+        Ok(Response::new(rpc::CollectPaymentResponse {
+            version, // Use the same version as the request
+            status: rpc::CollectPaymentStatus::Accept as i32,
+            tap_receipt: tap_receipt.serialize().into_bytes(),
+        }))
     }
 }
 

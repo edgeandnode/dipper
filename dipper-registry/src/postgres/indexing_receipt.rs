@@ -1,6 +1,8 @@
 use sqlx::{postgres::PgRow, Row};
 
-use super::common::{PgAddress, PgIndexerId, PgProofOfIndexing, PgU256, PgU32, PgU64};
+use super::common::{
+    PgAddress, PgAllocationId, PgIndexerId, PgProofOfIndexing, PgU256, PgU32, PgU64,
+};
 use crate::indexing_receipt::{IndexingReceipt, ReportedWork};
 
 impl sqlx::FromRow<'_, PgRow> for IndexingReceipt {
@@ -30,14 +32,14 @@ impl sqlx::FromRow<'_, PgRow> for IndexingReceipt {
 impl sqlx::FromRow<'_, PgRow> for ReportedWork {
     fn from_row(row: &'_ PgRow) -> Result<Self, sqlx::Error> {
         let PgU32(epoch) = row.try_get("reported_work_epoch")?;
-        let PgU64(blocks) = row.try_get("reported_work_blocks")?;
-        let PgU64(entities) = row.try_get("reported_work_entities")?;
+        let PgAllocationId(allocation_id) = row.try_get("reported_work_allocation_id")?;
+        let PgU64(entity_count) = row.try_get("reported_work_entity_count")?;
         let PgProofOfIndexing(poi) = row.try_get("reported_work_poi")?;
 
         Ok(Self {
             epoch,
-            blocks,
-            entities,
+            allocation_id,
+            entity_count,
             poi,
         })
     }
