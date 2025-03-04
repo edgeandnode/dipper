@@ -88,7 +88,8 @@ pub struct Voucher {
     /// The maximum number of epochs that can be collected at once.
     pub max_epochs_per_collection: u32,
 
-    /// The deadline for the indexer to accept the agreement. // TODO: Review this
+    /// The deadline for the indexer to accept the agreement.
+    // TODO(v2): Review this
     pub deadline: u64,
 
     /// The voucher metadata

@@ -3,8 +3,8 @@ use std::str::FromStr;
 use anyhow::anyhow;
 use clap::{arg, command, value_parser, Command};
 use dipper_core::ids::IndexingRequestId;
-use dipper_rpc::admin::indexing_requests::CancelIndexingRequest;
-use thegraph_core::{signed_message, DeploymentId, SubgraphId};
+use dipper_rpc::admin::indexing_requests::{CancelIndexingRequest, NewIndexingRequest};
+use thegraph_core::{alloy::primitives::ChainId, signed_message, DeploymentId, SubgraphId};
 use uuid::Uuid;
 
 use super::common;
@@ -52,17 +52,53 @@ pub async fn status(conf: Config, matches: &clap::ArgMatches) -> anyhow::Result<
             Ok(())
         }
         // ID is a Subgraph ID
-        Some(_) => {
+        Some(IndexingRequestSelector::SubgraphId(id)) => {
             // TODO(post-mvp): Add support for querying by Subgraph ID
-            Err(anyhow!("Invalid indexing request ID"))
+            Err(anyhow!("Invalid indexing request ID: `{id}`"))
         }
         None => unreachable!("No ID provided"),
     }
 }
 
 /// The `indexings register` command
-pub async fn register(_conf: Config, _matches: &clap::ArgMatches) -> anyhow::Result<()> {
-    Err(anyhow!("command not implemented"))
+pub async fn register(conf: Config, matches: &clap::ArgMatches) -> anyhow::Result<()> {
+    let rpc_client = client::new(&conf.server_url);
+    let signer = signer::new_private_key_eip712_signer(&conf.signing_key);
+    let signer_eip712_domain = signer::eip712_domain();
+
+    let request_deployment_id = match matches.get_one::<SubgraphIdOrDeploymentId>("SUBGRAPH") {
+        // ID is a Deployment ID
+        Some(SubgraphIdOrDeploymentId::DeploymentId(id)) => id,
+
+        // ID is a Subgraph ID
+        // TODO(post-mvp): Add support for querying by Subgraph ID
+        Some(SubgraphIdOrDeploymentId::SubgraphId(id)) => {
+            return Err(anyhow!("Invalid subgraph ID: `{id}`"));
+        }
+        None => unreachable!("No ID provided"),
+    };
+
+    let request_chain_id = matches
+        .get_one::<ChainId>("CHAIN_ID")
+        .ok_or_else(|| anyhow!("No chain ID provided"))?;
+
+    let req = signed_message::sign(
+        &signer,
+        &signer_eip712_domain,
+        NewIndexingRequest {
+            deployment_id: *request_deployment_id,
+            deployment_chain_id: *request_chain_id,
+        },
+    )
+    .map_err(|err| anyhow!("Failed to sign RPC request: {}", err))?;
+
+    let res = rpc_client.register_new_indexing_request(req.into()).await.map_err(
+        |err| anyhow!("Failed to register new indexing request for deployment '{request_deployment_id}' : {err}"),
+    )?;
+
+    println!("{}", res);
+
+    Ok(())
 }
 
 /// The `indexings cancel` command
@@ -119,10 +155,12 @@ pub(super) fn indexings_cmd() -> Command {
                 ),
             command!("register")
                 .about("Register a new indexing request")
-                .arg(
+                .args([
                     arg!(<SUBGRAPH> "The indexing request's Subgraph (or Deployment) ID")
                         .value_parser(value_parser!(SubgraphIdOrDeploymentId)),
-                ),
+                    arg!(<CHAIN_ID> "The ID of the chain indexed by the subgraph")
+                        .required(true),
+                ]),
             command!("cancel")
                 .about("Cancel an existing indexing request")
                 .arg(

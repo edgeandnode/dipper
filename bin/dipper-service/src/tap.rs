@@ -15,18 +15,13 @@ use thegraph_core::{
 pub struct Receipt(EIP712SignedMessage<TapReceipt>);
 
 impl Receipt {
-    #[allow(dead_code)] // TODO: Required for feeding the receipt to kafka
-    pub fn value(&self) -> u128 {
-        self.0.message.value
-    }
-
-    #[allow(dead_code)] // TODO: Required for feeding the receipt to kafka
-    pub fn allocation(&self) -> Address {
-        self.0.message.allocation_id
-    }
-
     pub fn serialize(&self) -> String {
         serde_json::to_string(&self.0).expect("receipt serialization failed")
+    }
+
+    #[cfg(test)]
+    pub fn value(&self) -> u128 {
+        self.0.message.value
     }
 }
 

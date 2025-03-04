@@ -106,7 +106,7 @@ where
             max_ongoing_amount_per_epoch: agreement_conf.max_ongoing_amount_per_epoch(),
             min_epochs_per_collection: agreement_conf.min_epochs_per_collection(),
             max_epochs_per_collection: agreement_conf.max_epochs_per_collection(),
-            deadline: Default::default(), // TODO: add the deadline
+            deadline: Default::default(), // TODO(v2): add the deadline
             metadata: voucher_metadata,
         };
 
@@ -279,7 +279,7 @@ where
         max_ongoing_amount_per_epoch: agreement_conf.max_ongoing_amount_per_epoch(),
         max_epochs_per_collection: agreement_conf.max_epochs_per_collection(),
         min_epochs_per_collection: agreement_conf.min_epochs_per_collection(),
-        deadline: Default::default(), // TODO: add the deadline
+        deadline: Default::default(), // TODO(v2): add the deadline
         metadata: voucher_metadata,
     };
 
