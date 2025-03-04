@@ -12,7 +12,6 @@ use tracing_subscriber::EnvFilter;
 
 use self::{
     context::{CtxBuilder, DEFAULT_MAX_CANDIDATES},
-    network::Snapshot,
     signer::Eip712Signer,
     worker::Worker,
 };
@@ -103,8 +102,11 @@ pub async fn main() -> anyhow::Result<()> {
     //- The indexer client component
     let indexer_client = indexer_rpc_client::DipsIndexerClient::new(signer.clone());
 
-    //- The network service
-    let (network_handle, network_service) = {
+    //- The network services
+    let (
+        (network_epoch_handle, network_epoch_service),
+        (network_topology_handle, network_topology_service),
+    ) = {
         let network_subgraph_url = conf
             .network
             .gateway_url
@@ -120,56 +122,31 @@ pub async fn main() -> anyhow::Result<()> {
             conf.network.api_key.into_inner(),
         );
 
-        // Fetch the initial network snapshot, it MUST succeed to start the service
-        let init_snapshot = {
-            let curr_epoch = network_subgraph_client.fetch_latest_epoch().await?;
+        // Fetch the initial network snapshots, a succesful fetch is required to start the service
+        let epoch_init_snapshot =
+            network::service::epoch::fetch_snapshot(&network_subgraph_client).await?;
+        let topology_init_snapshot =
+            network::service::topology::fetch_snapshot(&network_subgraph_client).await?;
 
-            let mut snapshot = Snapshot::new(curr_epoch);
-            tracing::debug!(epoch=%snapshot.epoch().number, "fetched initial network snapshot");
-
-            // Fetch the network subgraphs
-            let subgraphs_data = network_subgraph_client.fetch_subgraphs().await?;
-            if subgraphs_data.is_empty() {
-                return Err(anyhow::anyhow!("empty network subgraph update"));
-            }
-            let subgraphs_data_len = subgraphs_data.len();
-
-            tracing::debug!(snapshot_subgraphs=%subgraphs_data_len, "fetched initial network subgraphs snapshot");
-            snapshot.extend(subgraphs_data);
-
-            // Fetch the network indexer operators, if this query fails or is empty, we should fail
-            let operators_data = network_subgraph_client.fetch_indexer_operators().await?;
-            if operators_data.is_empty() {
-                return Err(anyhow::anyhow!("empty network indexer operators update"));
-            }
-            let operators_data_len = operators_data.len();
-
-            tracing::debug!(snapshot_operators=%operators_data_len, "fetched initial network operators snapshot");
-            snapshot.extend(operators_data);
-
-            tracing::info!(
-                epoch=%snapshot.epoch().number,
-                epoch_start_block=%snapshot.epoch().start_block,
-                epoch_end_block=%snapshot.epoch().end_block,
-                subgraphs=%subgraphs_data_len,
-                operators=%operators_data_len,
-                "initialized network snapshot",
-            );
-
-            snapshot
-        };
-
-        network::service::new(
-            network_subgraph_client,
-            conf.network.update_interval,
-            init_snapshot,
+        (
+            network::service::epoch::new(
+                network_subgraph_client.clone(),
+                conf.network.update_interval,
+                epoch_init_snapshot,
+            ),
+            network::service::topology::new(
+                network_subgraph_client,
+                conf.network.update_interval,
+                topology_init_snapshot,
+            ),
         )
     };
     tracing::info!("initialized Graph network service");
 
     //- The network provider component
     let network_provider = network::provider::NetworkProviderService::new(
-        network_handle.clone(),
+        network_epoch_handle.clone(),
+        network_topology_handle.clone(),
         conf.indexer_rpc.allowlist.clone(),
     );
 
@@ -219,8 +196,11 @@ pub async fn main() -> anyhow::Result<()> {
     // Construct the task tree
     let mut task_tree: JoinSet<anyhow::Result<()>> = JoinSet::new();
 
-    let network_task_handle = task_tree.spawn(network_service);
-    tracing::debug!(task_id=%network_task_handle.id(), "Graph network service started");
+    let network_epoch_task_handle = task_tree.spawn(network_epoch_service);
+    tracing::debug!(task_id=%network_epoch_task_handle.id(), "Graph network epoch service started");
+
+    let network_topology_task_handle = task_tree.spawn(network_topology_service);
+    tracing::debug!(task_id=%network_topology_task_handle.id(), "Graph network topology service started");
 
     let iisa_task_handle = task_tree.spawn_blocking(iisa_service);
     tracing::debug!(task_id=%iisa_task_handle.id(), "IISA service started");
@@ -266,7 +246,8 @@ pub async fn main() -> anyhow::Result<()> {
         tracing::trace!("stopped IISA service");
 
         tracing::trace!("stopping Graph network service");
-        network_handle.stop().await;
+        network_epoch_handle.stop().await;
+        network_topology_handle.stop().await;
         tracing::trace!("stopped Graph network service");
 
         tracing::trace!("shutting down DB connection pool");
