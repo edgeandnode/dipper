@@ -12,10 +12,9 @@ use tracing_subscriber::EnvFilter;
 
 use self::{
     context::{CtxBuilder, DEFAULT_MAX_CANDIDATES},
-    signer::Eip712Signer,
+    signing::{eip712::Eip712Signer, tap::ReceiptSigner},
     worker::Worker,
 };
-use crate::tap::ReceiptSigner;
 
 mod admin_rpc_server;
 mod config;
@@ -23,8 +22,7 @@ mod context;
 mod indexer_rpc_client;
 mod indexer_rpc_server;
 mod network;
-mod signer;
-mod tap;
+mod signing;
 mod worker;
 
 #[global_allocator]
@@ -122,7 +120,7 @@ pub async fn main() -> anyhow::Result<()> {
             conf.network.api_key.into_inner(),
         );
 
-        // Fetch the initial network snapshots, a succesful fetch is required to start the service
+        // Fetch the initial network snapshots, a successful fetch is required to start the service
         let epoch_init_snapshot =
             network::service::epoch::fetch_snapshot(&network_subgraph_client).await?;
         let topology_init_snapshot =

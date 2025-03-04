@@ -17,7 +17,8 @@ use thegraph_core::{
 use tonic::{Request, Response, Status};
 
 use crate::{
-    network::NetworkProvider, signer::PrivateKeyEip712Signer, tap::ReceiptSigner,
+    network::NetworkProvider,
+    signing::{eip712::PrivateKeyEip712Signer, tap::ReceiptSigner},
     worker::WorkerQueue,
 };
 
