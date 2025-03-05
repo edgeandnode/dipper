@@ -1,9 +1,8 @@
 #![cfg(feature = "fake")]
 
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
-use dipper_registry::{
-    postgres::PgRegistry, Error, IndexingAgreementVoucher, IndexingReceiptReportedWork,
-    IndexingRequestStatus, Registry,
+use dipper_pgregistry::{
+    Error, IndexingAgreementVoucher, IndexingReceiptReportedWork, IndexingRequestStatus, PgRegistry,
 };
 use fake::{Fake, Faker};
 use sqlx::{Pool, Postgres};

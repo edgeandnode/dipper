@@ -12,9 +12,11 @@ use thegraph_core::{
 };
 use time::OffsetDateTime;
 
+use super::result::Result as RegistryResult;
+
 /// The Indexing Request registry trait.
 ///
-/// This is a subset of the [`Registry`](dipper_registry::api::Registry) trait that is specific to
+/// This is a subset of the [`Registry`](dipper_pgregistry::result::Registry) trait that is specific to
 /// indexing requests.
 #[async_trait]
 pub trait IndexingRequestRegistry {
@@ -26,29 +28,29 @@ pub trait IndexingRequestRegistry {
         requested_by: Address,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
-    ) -> anyhow::Result<IndexingRequestId>;
+    ) -> RegistryResult<IndexingRequestId>;
 
     /// Get all indexing requests.
-    async fn get_all_indexing_requests(&self) -> anyhow::Result<Vec<IndexingRequest>>;
+    async fn get_all_indexing_requests(&self) -> RegistryResult<Vec<IndexingRequest>>;
 
     /// Get the indexing request by ID.
     async fn get_indexing_request_by_id(
         &self,
         id: &IndexingRequestId,
-    ) -> anyhow::Result<Option<IndexingRequest>>;
+    ) -> RegistryResult<Option<IndexingRequest>>;
 
     /// Get all indexing requests by Deployment ID.
     async fn get_indexing_requests_by_deployment_id(
         &self,
         deployment_id: &DeploymentId,
-    ) -> anyhow::Result<Vec<IndexingRequest>>;
+    ) -> RegistryResult<Vec<IndexingRequest>>;
 
     /// Mark an indexing request as `CANCELED`.
     ///
     /// If there is no indexing request with the given ID, or if the request is not in the
     /// `OPEN` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
     async fn mark_indexing_request_as_canceled(&self, id: &IndexingRequestId)
-        -> anyhow::Result<()>;
+        -> RegistryResult<()>;
 }
 
 /// An Indexing Request represents the request for indexing services initiated by the customer.
@@ -114,10 +116,10 @@ impl std::fmt::Display for Status {
     }
 }
 
-impl TryFrom<dipper_registry::IndexingRequest> for IndexingRequest {
+impl TryFrom<dipper_pgregistry::IndexingRequest> for IndexingRequest {
     type Error = anyhow::Error;
 
-    fn try_from(value: dipper_registry::IndexingRequest) -> Result<Self, Self::Error> {
+    fn try_from(value: dipper_pgregistry::IndexingRequest) -> Result<Self, Self::Error> {
         Ok(Self {
             id: value.id,
             created_at: value.created_at,
@@ -130,13 +132,13 @@ impl TryFrom<dipper_registry::IndexingRequest> for IndexingRequest {
     }
 }
 
-impl TryFrom<dipper_registry::IndexingRequestStatus> for Status {
+impl TryFrom<dipper_pgregistry::IndexingRequestStatus> for Status {
     type Error = anyhow::Error;
 
-    fn try_from(value: dipper_registry::IndexingRequestStatus) -> Result<Self, Self::Error> {
+    fn try_from(value: dipper_pgregistry::IndexingRequestStatus) -> Result<Self, Self::Error> {
         match value {
-            dipper_registry::IndexingRequestStatus::Open => Ok(Status::Open),
-            dipper_registry::IndexingRequestStatus::Canceled => Ok(Status::Canceled),
+            dipper_pgregistry::IndexingRequestStatus::Open => Ok(Status::Open),
+            dipper_pgregistry::IndexingRequestStatus::Canceled => Ok(Status::Canceled),
             _ => Err(anyhow::anyhow!("invalid indexing request status")),
         }
     }

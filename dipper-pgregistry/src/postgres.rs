@@ -1,6 +1,5 @@
 //! PostgreSQL implementation of the registry
 
-use async_trait::async_trait;
 use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
 use sqlx::{Pool, Postgres};
 use thegraph_core::{
@@ -14,10 +13,10 @@ use self::common::{
     PgU64, PgUrl,
 };
 use super::{
-    api::{Error, Registry},
     indexing_agreement::{IndexingAgreement, Status as IndexingAgreementStatus, Voucher},
     indexing_receipt::IndexingReceipt,
     indexing_request::{IndexingRequest, Status as IndexingRequestStatus},
+    result::Error,
     IndexingReceiptReportedWork,
 };
 
@@ -39,9 +38,8 @@ impl PgRegistry {
     }
 }
 
-#[async_trait]
-impl Registry for PgRegistry {
-    async fn register_new_indexing_request(
+impl PgRegistry {
+    pub async fn register_new_indexing_request(
         &self,
         requested_by: Address,
         deployment_id: DeploymentId,
@@ -73,7 +71,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_all_indexing_requests(&self) -> Result<Vec<IndexingRequest>, Error> {
+    pub async fn get_all_indexing_requests(&self) -> Result<Vec<IndexingRequest>, Error> {
         sqlx::query_as(
             r#"
             SELECT
@@ -92,7 +90,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_indexing_request_by_id(
+    pub async fn get_indexing_request_by_id(
         &self,
         request_id: &IndexingRequestId,
     ) -> Result<Option<IndexingRequest>, Error> {
@@ -116,7 +114,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_indexing_requests_by_deployment_id(
+    pub async fn get_indexing_requests_by_deployment_id(
         &self,
         deployment_id: &DeploymentId,
     ) -> Result<Vec<IndexingRequest>, Error> {
@@ -140,7 +138,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_active_indexing_agreements_by_indexing_request_id(
+    pub async fn get_active_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
     ) -> Result<Vec<IndexingAgreement>, Error> {
@@ -182,7 +180,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_indexing_request_rejected_indexing_agreements(
+    pub async fn get_indexing_request_rejected_indexing_agreements(
         &self,
         request_id: &IndexingRequestId,
     ) -> Result<Vec<IndexingAgreement>, Error> {
@@ -228,7 +226,7 @@ impl Registry for PgRegistry {
     ///
     /// If there is no indexing request with the given ID, or if the request is not in the
     /// `OPEN` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
-    async fn mark_indexing_request_as_canceled(
+    pub async fn mark_indexing_request_as_canceled(
         &self,
         request_id: &IndexingRequestId,
     ) -> Result<(), Error> {
@@ -255,7 +253,7 @@ impl Registry for PgRegistry {
         Ok(())
     }
 
-    async fn register_new_indexing_agreement(
+    pub async fn register_new_indexing_agreement(
         &self,
         request_id: IndexingRequestId,
         deployment_id: DeploymentId,
@@ -325,7 +323,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_indexing_agreement_by_id(
+    pub async fn get_indexing_agreement_by_id(
         &self,
         agreement_id: IndexingAgreementId,
     ) -> Result<Option<IndexingAgreement>, Error> {
@@ -366,7 +364,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_indexing_agreements_by_deployment_id(
+    pub async fn get_indexing_agreements_by_deployment_id(
         &self,
         deployment_id: &DeploymentId,
     ) -> Result<Vec<IndexingAgreement>, Error> {
@@ -407,7 +405,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_indexing_agreements_by_indexer_id(
+    pub async fn get_indexing_agreements_by_indexer_id(
         &self,
         indexer_id: &IndexerId,
     ) -> Result<Vec<IndexingAgreement>, Error> {
@@ -448,7 +446,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_indexing_agreements_by_indexing_request_id(
+    pub async fn get_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
     ) -> Result<Vec<IndexingAgreement>, Error> {
@@ -489,7 +487,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn mark_indexing_agreement_as_delivery_failed(
+    pub async fn mark_indexing_agreement_as_delivery_failed(
         &self,
         agreement_id: &IndexingAgreementId,
     ) -> Result<(), Error> {
@@ -516,7 +514,7 @@ impl Registry for PgRegistry {
         Ok(())
     }
 
-    async fn mark_indexing_agreement_as_accepted(
+    pub async fn mark_indexing_agreement_as_accepted(
         &self,
         agreement_id: &IndexingAgreementId,
         epoch: u32,
@@ -546,7 +544,7 @@ impl Registry for PgRegistry {
         Ok(())
     }
 
-    async fn mark_indexing_agreement_as_rejected(
+    pub async fn mark_indexing_agreement_as_rejected(
         &self,
         agreement_id: &IndexingAgreementId,
     ) -> Result<(), Error> {
@@ -573,7 +571,7 @@ impl Registry for PgRegistry {
         Ok(())
     }
 
-    async fn mark_indexing_agreement_as_canceled_by_requester(
+    pub async fn mark_indexing_agreement_as_canceled_by_requester(
         &self,
         agreement_id: &IndexingAgreementId,
     ) -> Result<(), Error> {
@@ -601,7 +599,7 @@ impl Registry for PgRegistry {
         Ok(())
     }
 
-    async fn mark_indexing_agreement_as_canceled_by_indexer(
+    pub async fn mark_indexing_agreement_as_canceled_by_indexer(
         &self,
         agreement_id: &IndexingAgreementId,
     ) -> Result<(), Error> {
@@ -628,7 +626,7 @@ impl Registry for PgRegistry {
         Ok(())
     }
 
-    async fn register_new_indexing_receipt(
+    pub async fn register_new_indexing_receipt(
         &self,
         agreement_id: IndexingAgreementId,
         indexer_id: IndexerId,
@@ -673,7 +671,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_all_indexing_receipts_by_indexing_agreement_id(
+    pub async fn get_all_indexing_receipts_by_indexing_agreement_id(
         &self,
         agreement_id: &IndexingAgreementId,
     ) -> Result<Vec<IndexingReceipt>, Error> {
@@ -701,7 +699,7 @@ impl Registry for PgRegistry {
         .map_err(Into::into)
     }
 
-    async fn get_last_receipt_for_agreement_id(
+    pub async fn get_last_receipt_for_agreement_id(
         &self,
         agreement_id: &IndexingAgreementId,
     ) -> Result<Option<IndexingReceipt>, Error> {

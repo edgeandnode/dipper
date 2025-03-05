@@ -1,5 +1,5 @@
 [package]
-name = "dipper-registry"
+name = "dipper-pgregistry"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,7 +8,6 @@ default = []
 fake = ["dep:fake", "dipper-core/fake"]
 
 [dependencies]
-async-trait.workspace = true
 dipper-core = { version = "0.1.0", path = "../dipper-core", features = ["sqlx"] }
 fake = { version = "3.0.1", optional = true, features = ["url"] }
 num-derive = "0.4.2"

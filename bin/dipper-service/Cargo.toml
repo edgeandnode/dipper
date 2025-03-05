@@ -12,7 +12,7 @@ dashmap = "6.1.0"
 dipper-core = { version = "0.1.0", path = "../../dipper-core" }
 dipper-iisa = { path = "../../dipper-iisa" }
 dipper-pgmq = { path = "../../dipper-pgmq" }
-dipper-registry = { path = "../../dipper-registry" }
+dipper-pgregistry = { path = "../../dipper-pgregistry" }
 dipper-rpc = { version = "0.1.0", path = "../../dipper-rpc" }
 futures-lite = { version = "2.4.0", default-features = false }
 indoc = "2.0.5"

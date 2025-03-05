@@ -2304,10 +2304,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "dipper-registry"
+name = "dipper-pgregistry"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "dipper-core",
  "fake 3.1.0",
  "num-derive",
@@ -2347,7 +2346,7 @@ dependencies = [
  "dipper-core",
  "dipper-iisa",
  "dipper-pgmq",
- "dipper-registry",
+ "dipper-pgregistry",
  "dipper-rpc",
  "fake 3.1.0",
  "futures-lite",

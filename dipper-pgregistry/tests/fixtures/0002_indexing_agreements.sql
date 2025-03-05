@@ -12,8 +12,7 @@ VALUES ('019300ce-4751-780e-b58c-bf696b67eb23'::uuid,
         0, -- IndexingRequestStatus::Open
         '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
         'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
-        '\x000000000000a4b1'::bytea);
--- arbitrum-one (chain_id: 42161)
+        '\x000000000000a4b1'::bytea); -- arbitrum-one (chain_id: 42161)
 
 -- Insert multiple indexing agreements
 -- Indexing agreement #1: CREATED
@@ -108,7 +107,7 @@ VALUES ('019300db-ffea-7e1f-95f2-2561bcfeecf3'::uuid,
         '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- base price per epoch
         '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- price per entity
         'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv', -- deployment id
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- protocol network        
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- protocol network
         '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea); -- chain id
 
 -- Indexing agreement #3: ACCEPTED
@@ -232,8 +231,6 @@ INSERT INTO dipper_reg_indexing_agreements (id,
                                             voucher_metadata_deployment_id,
                                             voucher_metadata_protocol_network,
                                             voucher_metadata_chain_id)
-                                            voucher_metadata_price_per_block,
-                                            voucher_metadata_price_per_entity_per_epoch)
 VALUES ('019300e1-6568-751d-b006-420bb5dc1b9e'::uuid,
         timezone('UTC', now()),
         timezone('UTC', now()),
@@ -300,7 +297,7 @@ VALUES ('019300e1-9458-7f60-a9d6-39921e0647d9'::uuid,
         28::bigint, -- max epochs per collection
         0::bigint, -- deadline
         '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- base price per epoch
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- price per entity        
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- price per entity
         'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv', -- deployment id
         '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- protocol network
         '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea); -- chain id
@@ -342,12 +339,12 @@ VALUES ('019300e5-ce09-77b8-a7cd-ae9d0d347a8f'::uuid,
         '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea, -- service
         4294967295::bigint, -- duration epochs
         '\x0000000000000000000000000000000000000000000000000000000000001000'::bytea, -- max initial amount
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- max ongoing amount per epoch    
-        28::bigint, -- max epochs per collection        
-        1::bigint, -- min epochs per collection 
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- max ongoing amount per epoch
+        28::bigint, -- max epochs per collection
+        1::bigint, -- min epochs per collection
         0::bigint, -- deadline
         '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- base price per epoch
         '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- price per entity
         'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv', -- deployment id
         '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea, -- protocol network
-        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea); -- chain id       
+        '\x0000000000000000000000000000000000000000000000000000000000000001'::bytea); -- chain id
