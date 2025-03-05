@@ -15,7 +15,7 @@ use thegraph_core::{alloy::primitives::Address, DeploymentId};
 use crate::{
     network::NetworkProvider,
     registry::{
-        IndexingRequest as IndexingRequestRecord, IndexingRequestRegistry,
+        Error as RegistryError, IndexingRequest as IndexingRequestRecord, IndexingRequestRegistry,
         IndexingRequestStatus as IndexingRequestRecordStatus,
     },
     signing::eip712::PrivateKeyEip712Signer,
@@ -198,7 +198,7 @@ where
         }
 
         // Mark the indexing request as `CANCELED`
-        if let Err(err) = self
+        if let Err(RegistryError::BackendError(err)) = self
             .registry
             .mark_indexing_request_as_canceled(&indexing_request_id)
             .await

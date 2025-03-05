@@ -12,6 +12,8 @@ use thegraph_core::{
 };
 use time::OffsetDateTime;
 
+use super::result::Result as RegistryResult;
+
 #[async_trait]
 pub trait ReceiptRegistry {
     /// Register a new indexing receipt.
@@ -22,13 +24,13 @@ pub trait ReceiptRegistry {
         indexer_operator_id: Address,
         reported_work: ReportedWork,
         amount: U256,
-    ) -> anyhow::Result<IndexingReceiptId>;
+    ) -> RegistryResult<IndexingReceiptId>;
 
     /// Get the latest receipt for the given agreement ID.
     async fn get_last_receipt_for_agreement_id(
         &self,
         agreement_id: &IndexingAgreementId,
-    ) -> anyhow::Result<Option<IndexingReceipt>>;
+    ) -> RegistryResult<Option<IndexingReceipt>>;
 }
 
 /// An Indexing Receipt represents the redeemable receipt associated with a given indexing
@@ -80,8 +82,8 @@ pub struct ReportedWork {
     pub poi: ProofOfIndexing,
 }
 
-impl From<dipper_registry::IndexingReceiptReportedWork> for ReportedWork {
-    fn from(value: dipper_registry::IndexingReceiptReportedWork) -> Self {
+impl From<dipper_pgregistry::IndexingReceiptReportedWork> for ReportedWork {
+    fn from(value: dipper_pgregistry::IndexingReceiptReportedWork) -> Self {
         Self {
             epoch: value.epoch,
             allocation_id: value.allocation_id,
@@ -91,7 +93,7 @@ impl From<dipper_registry::IndexingReceiptReportedWork> for ReportedWork {
     }
 }
 
-impl From<ReportedWork> for dipper_registry::IndexingReceiptReportedWork {
+impl From<ReportedWork> for dipper_pgregistry::IndexingReceiptReportedWork {
     fn from(value: ReportedWork) -> Self {
         Self {
             epoch: value.epoch,
@@ -102,8 +104,8 @@ impl From<ReportedWork> for dipper_registry::IndexingReceiptReportedWork {
     }
 }
 
-impl From<dipper_registry::IndexingReceipt> for IndexingReceipt {
-    fn from(value: dipper_registry::IndexingReceipt) -> Self {
+impl From<dipper_pgregistry::IndexingReceipt> for IndexingReceipt {
+    fn from(value: dipper_pgregistry::IndexingReceipt) -> Self {
         Self {
             id: value.id,
             created_at: value.created_at,

@@ -22,31 +22,33 @@ use thegraph_core::{
 use time::OffsetDateTime;
 use url::Url;
 
+use super::result::Result as RegistryResult;
+
 #[async_trait]
 pub trait AgreementRegistry {
     /// Get agreement by ID.
     async fn get_indexing_agreement_by_id(
         &self,
         id: IndexingAgreementId,
-    ) -> anyhow::Result<Option<IndexingAgreement>>;
+    ) -> RegistryResult<Option<IndexingAgreement>>;
 
     /// Get all agreements by deployment ID.
     async fn get_indexing_agreements_by_deployment_id(
         &self,
         deployment_id: &DeploymentId,
-    ) -> anyhow::Result<Vec<IndexingAgreement>>;
+    ) -> RegistryResult<Vec<IndexingAgreement>>;
 
     /// Get all agreements by indexer ID.
     async fn get_indexing_agreements_by_indexer_id(
         &self,
         indexer_id: &IndexerId,
-    ) -> anyhow::Result<Vec<IndexingAgreement>>;
+    ) -> RegistryResult<Vec<IndexingAgreement>>;
 
     /// Get all agreements by associated indexing request ID.
     async fn get_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
-    ) -> anyhow::Result<Vec<IndexingAgreement>>;
+    ) -> RegistryResult<Vec<IndexingAgreement>>;
 
     /// Get the active agreements for an indexing request.
     ///
@@ -54,7 +56,7 @@ pub trait AgreementRegistry {
     async fn get_active_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
-    ) -> anyhow::Result<Vec<IndexingAgreement>>;
+    ) -> RegistryResult<Vec<IndexingAgreement>>;
 
     /// Get the rejected (and canceled by indexer) agreements for an indexing request.
     ///
@@ -62,7 +64,7 @@ pub trait AgreementRegistry {
     async fn get_rejected_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
-    ) -> anyhow::Result<Vec<IndexingAgreement>>;
+    ) -> RegistryResult<Vec<IndexingAgreement>>;
 
     /// Register a new indexing agreement.
     async fn register_new_indexing_agreement(
@@ -72,7 +74,7 @@ pub trait AgreementRegistry {
         indexer_id: IndexerId,
         indexer_url: Url,
         voucher: Voucher,
-    ) -> anyhow::Result<IndexingAgreementId>;
+    ) -> RegistryResult<IndexingAgreementId>;
 
     /// Mark an indexing agreement as `DELIVERY_FAILED`.
     ///
@@ -81,7 +83,7 @@ pub trait AgreementRegistry {
     async fn mark_indexing_agreement_as_delivery_failed(
         &self,
         id: &IndexingAgreementId,
-    ) -> anyhow::Result<()>;
+    ) -> RegistryResult<()>;
 
     /// Mark an indexing agreement as `ACCEPTED`.
     ///
@@ -91,7 +93,7 @@ pub trait AgreementRegistry {
         &self,
         id: &IndexingAgreementId,
         epoch: u32,
-    ) -> anyhow::Result<()>;
+    ) -> RegistryResult<()>;
 
     /// Mark an indexing agreement as `REJECTED`.
     ///
@@ -100,7 +102,7 @@ pub trait AgreementRegistry {
     async fn mark_indexing_agreement_as_rejected(
         &self,
         id: &IndexingAgreementId,
-    ) -> anyhow::Result<()>;
+    ) -> RegistryResult<()>;
 
     /// Mark an indexing agreement as `CANCELED_BY_REQUESTER`.
     ///
@@ -110,7 +112,7 @@ pub trait AgreementRegistry {
     async fn mark_indexing_agreement_as_canceled_by_requester(
         &self,
         id: &IndexingAgreementId,
-    ) -> anyhow::Result<()>;
+    ) -> RegistryResult<()>;
 
     /// Mark an indexing agreement as `CANCELED_BY_INDEXER`.
     ///
@@ -119,7 +121,7 @@ pub trait AgreementRegistry {
     async fn mark_indexing_agreement_as_canceled_by_indexer(
         &self,
         id: &IndexingAgreementId,
-    ) -> anyhow::Result<()>;
+    ) -> RegistryResult<()>;
 }
 
 /// An Indexing Agreement represents the contract between the DIPs Gateway (Dipper) and the indexer
@@ -272,30 +274,30 @@ impl std::fmt::Display for Status {
     }
 }
 
-impl TryFrom<dipper_registry::IndexingAgreement> for IndexingAgreement {
+impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
     type Error = anyhow::Error;
 
-    fn try_from(value: dipper_registry::IndexingAgreement) -> Result<Self, Self::Error> {
+    fn try_from(value: dipper_pgregistry::IndexingAgreement) -> Result<Self, Self::Error> {
         Ok(Self {
             id: value.id,
             created_at: value.created_at,
             updated_at: value.updated_at,
             status: match (value.status, value.accepted_at_epoch) {
-                (dipper_registry::IndexingAgreementStatus::Created, _) => Status::Created,
-                (dipper_registry::IndexingAgreementStatus::DeliveryFailed, _) => {
+                (dipper_pgregistry::IndexingAgreementStatus::Created, _) => Status::Created,
+                (dipper_pgregistry::IndexingAgreementStatus::DeliveryFailed, _) => {
                     Status::DeliveryFailed
                 }
-                (dipper_registry::IndexingAgreementStatus::Accepted, Some(at_epoch)) => {
+                (dipper_pgregistry::IndexingAgreementStatus::Accepted, Some(at_epoch)) => {
                     Status::Accepted { at_epoch }
                 }
-                (dipper_registry::IndexingAgreementStatus::Rejected, _) => Status::Rejected,
-                (dipper_registry::IndexingAgreementStatus::CanceledByRequester, _) => {
+                (dipper_pgregistry::IndexingAgreementStatus::Rejected, _) => Status::Rejected,
+                (dipper_pgregistry::IndexingAgreementStatus::CanceledByRequester, _) => {
                     Status::CanceledByRequester
                 }
-                (dipper_registry::IndexingAgreementStatus::CanceledByIndexer, _) => {
+                (dipper_pgregistry::IndexingAgreementStatus::CanceledByIndexer, _) => {
                     Status::CanceledByIndexer
                 }
-                (dipper_registry::IndexingAgreementStatus::Expired, _) => Status::Expired,
+                (dipper_pgregistry::IndexingAgreementStatus::Expired, _) => Status::Expired,
                 _ => {
                     return Err(anyhow::anyhow!("Invalid status: {:?}", value.status));
                 }
@@ -307,8 +309,8 @@ impl TryFrom<dipper_registry::IndexingAgreement> for IndexingAgreement {
     }
 }
 
-impl From<dipper_registry::IndexingAgreementIndexer> for Indexer {
-    fn from(value: dipper_registry::IndexingAgreementIndexer) -> Self {
+impl From<dipper_pgregistry::IndexingAgreementIndexer> for Indexer {
+    fn from(value: dipper_pgregistry::IndexingAgreementIndexer) -> Self {
         Self {
             id: value.id,
             url: value.url,
@@ -316,8 +318,8 @@ impl From<dipper_registry::IndexingAgreementIndexer> for Indexer {
     }
 }
 
-impl From<dipper_registry::IndexingAgreementVoucher> for Voucher {
-    fn from(value: dipper_registry::IndexingAgreementVoucher) -> Self {
+impl From<dipper_pgregistry::IndexingAgreementVoucher> for Voucher {
+    fn from(value: dipper_pgregistry::IndexingAgreementVoucher) -> Self {
         Self {
             payer: value.payer,
             recipient: value.recipient,
@@ -333,8 +335,8 @@ impl From<dipper_registry::IndexingAgreementVoucher> for Voucher {
     }
 }
 
-impl From<dipper_registry::IndexingAgreementVoucherMetadata> for VoucherMetadata {
-    fn from(value: dipper_registry::IndexingAgreementVoucherMetadata) -> Self {
+impl From<dipper_pgregistry::IndexingAgreementVoucherMetadata> for VoucherMetadata {
+    fn from(value: dipper_pgregistry::IndexingAgreementVoucherMetadata) -> Self {
         Self {
             base_price_per_epoch: value.base_price_per_epoch,
             price_per_entity: value.price_per_entity,
@@ -345,7 +347,7 @@ impl From<dipper_registry::IndexingAgreementVoucherMetadata> for VoucherMetadata
     }
 }
 
-impl From<Voucher> for dipper_registry::IndexingAgreementVoucher {
+impl From<Voucher> for dipper_pgregistry::IndexingAgreementVoucher {
     fn from(value: Voucher) -> Self {
         Self {
             payer: value.payer,
@@ -362,7 +364,7 @@ impl From<Voucher> for dipper_registry::IndexingAgreementVoucher {
     }
 }
 
-impl From<VoucherMetadata> for dipper_registry::IndexingAgreementVoucherMetadata {
+impl From<VoucherMetadata> for dipper_pgregistry::IndexingAgreementVoucherMetadata {
     fn from(value: VoucherMetadata) -> Self {
         Self {
             base_price_per_epoch: value.base_price_per_epoch,

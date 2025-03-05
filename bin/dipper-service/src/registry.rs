@@ -1,10 +1,11 @@
 mod agreement;
 mod indexing_request;
 mod receipt;
+mod result;
 
 use async_trait::async_trait;
 use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
-use dipper_registry::{postgres::PgRegistry, Registry};
+use dipper_pgregistry::PgRegistry;
 use sqlx::{Pool, Postgres};
 use thegraph_core::{
     alloy::primitives::{Address, ChainId, U256},
@@ -12,6 +13,7 @@ use thegraph_core::{
 };
 use url::Url;
 
+use self::result::Result as RegistryResult;
 pub use self::{
     agreement::{
         AgreementRegistry, IndexingAgreement, Status as IndexingAgreementStatus,
@@ -19,6 +21,7 @@ pub use self::{
     },
     indexing_request::{IndexingRequest, IndexingRequestRegistry, Status as IndexingRequestStatus},
     receipt::{IndexingReceipt, ReceiptRegistry, ReportedWork},
+    result::{Error, Result},
 };
 
 /// A service for interacting with the registry.
@@ -46,14 +49,14 @@ impl IndexingRequestRegistry for RegistryProvider {
         requested_by: Address,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
-    ) -> anyhow::Result<IndexingRequestId> {
+    ) -> RegistryResult<IndexingRequestId> {
         self.inner
             .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id)
             .await
             .map_err(Into::into)
     }
 
-    async fn get_all_indexing_requests(&self) -> anyhow::Result<Vec<IndexingRequest>> {
+    async fn get_all_indexing_requests(&self) -> RegistryResult<Vec<IndexingRequest>> {
         Ok(self
             .inner
             .get_all_indexing_requests()
@@ -67,7 +70,7 @@ impl IndexingRequestRegistry for RegistryProvider {
     async fn get_indexing_request_by_id(
         &self,
         id: &IndexingRequestId,
-    ) -> anyhow::Result<Option<IndexingRequest>> {
+    ) -> RegistryResult<Option<IndexingRequest>> {
         Ok(self
             .inner
             .get_indexing_request_by_id(id)
@@ -79,7 +82,7 @@ impl IndexingRequestRegistry for RegistryProvider {
     async fn get_indexing_requests_by_deployment_id(
         &self,
         deployment_id: &DeploymentId,
-    ) -> anyhow::Result<Vec<IndexingRequest>> {
+    ) -> RegistryResult<Vec<IndexingRequest>> {
         Ok(self
             .inner
             .get_indexing_requests_by_deployment_id(deployment_id)
@@ -93,7 +96,7 @@ impl IndexingRequestRegistry for RegistryProvider {
     async fn mark_indexing_request_as_canceled(
         &self,
         id: &IndexingRequestId,
-    ) -> anyhow::Result<()> {
+    ) -> RegistryResult<()> {
         self.inner
             .mark_indexing_request_as_canceled(id)
             .await
@@ -106,7 +109,7 @@ impl AgreementRegistry for RegistryProvider {
     async fn get_indexing_agreement_by_id(
         &self,
         id: IndexingAgreementId,
-    ) -> anyhow::Result<Option<IndexingAgreement>> {
+    ) -> RegistryResult<Option<IndexingAgreement>> {
         Ok(self
             .inner
             .get_indexing_agreement_by_id(id)
@@ -118,7 +121,7 @@ impl AgreementRegistry for RegistryProvider {
     async fn get_indexing_agreements_by_deployment_id(
         &self,
         deployment_id: &DeploymentId,
-    ) -> anyhow::Result<Vec<IndexingAgreement>> {
+    ) -> RegistryResult<Vec<IndexingAgreement>> {
         Ok(self
             .inner
             .get_indexing_agreements_by_deployment_id(deployment_id)
@@ -132,7 +135,7 @@ impl AgreementRegistry for RegistryProvider {
     async fn get_indexing_agreements_by_indexer_id(
         &self,
         indexer_id: &IndexerId,
-    ) -> anyhow::Result<Vec<IndexingAgreement>> {
+    ) -> RegistryResult<Vec<IndexingAgreement>> {
         Ok(self
             .inner
             .get_indexing_agreements_by_indexer_id(indexer_id)
@@ -146,7 +149,7 @@ impl AgreementRegistry for RegistryProvider {
     async fn get_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
-    ) -> anyhow::Result<Vec<IndexingAgreement>> {
+    ) -> RegistryResult<Vec<IndexingAgreement>> {
         Ok(self
             .inner
             .get_indexing_agreements_by_indexing_request_id(request_id)
@@ -159,7 +162,7 @@ impl AgreementRegistry for RegistryProvider {
     async fn get_active_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
-    ) -> anyhow::Result<Vec<IndexingAgreement>> {
+    ) -> RegistryResult<Vec<IndexingAgreement>> {
         Ok(self
             .inner
             .get_active_indexing_agreements_by_indexing_request_id(request_id)
@@ -172,7 +175,7 @@ impl AgreementRegistry for RegistryProvider {
     async fn get_rejected_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
-    ) -> anyhow::Result<Vec<IndexingAgreement>> {
+    ) -> RegistryResult<Vec<IndexingAgreement>> {
         Ok(self
             .inner
             .get_indexing_request_rejected_indexing_agreements(request_id)
@@ -190,7 +193,7 @@ impl AgreementRegistry for RegistryProvider {
         indexer_id: IndexerId,
         indexer_url: Url,
         voucher: IndexingAgreementVoucher,
-    ) -> anyhow::Result<IndexingAgreementId> {
+    ) -> RegistryResult<IndexingAgreementId> {
         self.inner
             .register_new_indexing_agreement(
                 request_id,
@@ -206,7 +209,7 @@ impl AgreementRegistry for RegistryProvider {
     async fn mark_indexing_agreement_as_delivery_failed(
         &self,
         id: &IndexingAgreementId,
-    ) -> anyhow::Result<()> {
+    ) -> RegistryResult<()> {
         self.inner
             .mark_indexing_agreement_as_delivery_failed(id)
             .await
@@ -217,7 +220,7 @@ impl AgreementRegistry for RegistryProvider {
         &self,
         id: &IndexingAgreementId,
         epoch: u32,
-    ) -> anyhow::Result<()> {
+    ) -> RegistryResult<()> {
         self.inner
             .mark_indexing_agreement_as_accepted(id, epoch)
             .await
@@ -227,7 +230,7 @@ impl AgreementRegistry for RegistryProvider {
     async fn mark_indexing_agreement_as_rejected(
         &self,
         id: &IndexingAgreementId,
-    ) -> anyhow::Result<()> {
+    ) -> RegistryResult<()> {
         self.inner
             .mark_indexing_agreement_as_rejected(id)
             .await
@@ -237,7 +240,7 @@ impl AgreementRegistry for RegistryProvider {
     async fn mark_indexing_agreement_as_canceled_by_requester(
         &self,
         id: &IndexingAgreementId,
-    ) -> anyhow::Result<()> {
+    ) -> RegistryResult<()> {
         self.inner
             .mark_indexing_agreement_as_canceled_by_requester(id)
             .await
@@ -247,7 +250,7 @@ impl AgreementRegistry for RegistryProvider {
     async fn mark_indexing_agreement_as_canceled_by_indexer(
         &self,
         id: &IndexingAgreementId,
-    ) -> anyhow::Result<()> {
+    ) -> RegistryResult<()> {
         self.inner
             .mark_indexing_agreement_as_canceled_by_indexer(id)
             .await
@@ -264,7 +267,7 @@ impl ReceiptRegistry for RegistryProvider {
         indexer_operator_id: Address,
         reported_work: ReportedWork,
         amount: U256,
-    ) -> anyhow::Result<IndexingReceiptId> {
+    ) -> RegistryResult<IndexingReceiptId> {
         self.inner
             .register_new_indexing_receipt(
                 agreement_id,
@@ -280,7 +283,7 @@ impl ReceiptRegistry for RegistryProvider {
     async fn get_last_receipt_for_agreement_id(
         &self,
         agreement_id: &IndexingAgreementId,
-    ) -> anyhow::Result<Option<IndexingReceipt>> {
+    ) -> RegistryResult<Option<IndexingReceipt>> {
         Ok(self
             .inner
             .get_last_receipt_for_agreement_id(agreement_id)
