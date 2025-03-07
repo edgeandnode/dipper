@@ -1,10 +1,10 @@
 use std::str::FromStr;
 
 use anyhow::anyhow;
-use clap::{arg, command, value_parser, Command};
+use clap::{Command, arg, command, value_parser};
 use dipper_core::ids::IndexingRequestId;
 use dipper_rpc::admin::indexing_requests::{CancelIndexingRequest, NewIndexingRequest};
-use thegraph_core::{alloy::primitives::ChainId, signed_message, DeploymentId, SubgraphId};
+use thegraph_core::{DeploymentId, SubgraphId, alloy::primitives::ChainId, signed_message};
 use uuid::Uuid;
 
 use super::common;

@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
-use clap::{arg, value_parser, Arg, ArgMatches, Error, FromArgMatches};
+use clap::{Arg, ArgMatches, Error, FromArgMatches, arg, value_parser};
 use dipper_core::config::{Hidden, HiddenSecretKeyAsHexStr};
 use figment::{
-    providers::{Env, Serialized},
     Figment,
+    providers::{Env, Serialized},
 };
-use serde_with::{serde_as, skip_serializing_none, DisplayFromStr};
+use serde_with::{DisplayFromStr, serde_as, skip_serializing_none};
 use thegraph_core::alloy::{
     primitives::{Address, ChainId},
     signers::k256::SecretKey,

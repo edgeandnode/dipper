@@ -3,12 +3,12 @@ use std::time::SystemTime;
 use rand::RngCore;
 use tap_core::{receipt::Receipt as TapReceipt, signed_message::EIP712SignedMessage};
 use thegraph_core::{
+    AllocationId,
     alloy::{
         primitives::{Address, ChainId},
         signers::local::PrivateKeySigner,
-        sol_types::{eip712_domain, Eip712Domain},
+        sol_types::{Eip712Domain, eip712_domain},
     },
-    AllocationId,
 };
 
 /// A receipt.
@@ -61,7 +61,7 @@ impl ReceiptSigner {
             .map_err(|_| anyhow::anyhow!("failed to convert timestamp to ns"))?;
 
         let receipt = TapReceipt {
-            allocation_id: allocation.0 .0.into(),
+            allocation_id: allocation.0.0.into(),
             timestamp_ns,
             nonce,
             value: fee,

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{arg, command, value_parser, ArgGroup, Command};
+use clap::{ArgGroup, Command, arg, command, value_parser};
 use url::Url;
 
 /// The `init` command

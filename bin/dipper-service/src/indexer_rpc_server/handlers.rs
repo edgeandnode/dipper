@@ -6,12 +6,12 @@ use dipper_rpc::indexer::gateway_server::{
     dips_cancellation_eip712_domain, dips_collection_eip712_domain, rpc, sol,
 };
 use thegraph_core::{
+    AllocationId, IndexerId, ProofOfIndexing,
     alloy::{
         dyn_abi::SolType,
         primitives::{PrimitiveSignature as Signature, U256},
     },
     signed_message::SignedMessage,
-    AllocationId, IndexerId, ProofOfIndexing,
 };
 use tonic::{Request, Response, Status};
 

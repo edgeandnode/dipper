@@ -7,8 +7,8 @@
 use async_trait::async_trait;
 use dipper_core::ids::IndexingRequestId;
 use thegraph_core::{
-    alloy::primitives::{Address, ChainId},
     DeploymentId,
+    alloy::primitives::{Address, ChainId},
 };
 use time::OffsetDateTime;
 
@@ -50,7 +50,7 @@ pub trait IndexingRequestRegistry {
     /// If there is no indexing request with the given ID, or if the request is not in the
     /// `OPEN` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
     async fn mark_indexing_request_as_canceled(&self, id: &IndexingRequestId)
-        -> RegistryResult<()>;
+    -> RegistryResult<()>;
 }
 
 /// An Indexing Request represents the request for indexing services initiated by the customer.

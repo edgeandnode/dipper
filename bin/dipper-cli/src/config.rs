@@ -1,5 +1,5 @@
 use dipper_core::config::{Hidden, HiddenSecretKeyAsHexStr};
-use serde_with::{serde_as, DisplayFromStr};
+use serde_with::{DisplayFromStr, serde_as};
 use thegraph_core::alloy::signers::k256::SecretKey;
 use url::Url;
 

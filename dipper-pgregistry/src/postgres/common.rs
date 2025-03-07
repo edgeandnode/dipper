@@ -1,12 +1,12 @@
 use sqlx::{
+    Postgres,
     encode::IsNull,
     error::BoxDynError,
     postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef},
-    Postgres,
 };
 use thegraph_core::{
-    alloy::primitives::{Address, B256, U256},
     AllocationId, DeploymentId, IndexerId, ProofOfIndexing,
+    alloy::primitives::{Address, B256, U256},
 };
 
 /// Wrapper type for `u32` to implement `sqlx::Type` for `Postgres`.

@@ -7,7 +7,7 @@ use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
 use super::{
-    handlers,
+    WorkerQueue, handlers,
     handlers::{
         FindIndexerForIndexingRequestCtx, ProcessIndexingAgreementCancellationCtx,
         ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
@@ -15,7 +15,6 @@ use super::{
     },
     messages::Message,
     result::JobResult,
-    WorkerQueue,
 };
 use crate::{
     indexer_rpc_client::IndexerClient,

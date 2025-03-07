@@ -1,10 +1,11 @@
-use log::{logger, Level, MetadataBuilder, Record};
+use log::{Level, MetadataBuilder, Record, logger};
 use pyo3::{
+    Bound, Py, PyResult, Python,
     ffi::c_str,
     intern, pyfunction,
     sync::GILOnceCell,
     types::{PyAny, PyAnyMethods, PyListMethods, PyModule, PyModuleMethods},
-    wrap_pyfunction, Bound, Py, PyResult, Python,
+    wrap_pyfunction,
 };
 
 /// Import the Python `logging` module.

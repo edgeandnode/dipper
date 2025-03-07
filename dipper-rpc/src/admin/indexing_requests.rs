@@ -1,9 +1,9 @@
 use dipper_core::ids::IndexingRequestId;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use thegraph_core::{
+    DeploymentId,
     alloy::primitives::{Address, ChainId},
     signed_message::ToSolStruct,
-    DeploymentId,
 };
 use time::OffsetDateTime;
 
@@ -22,7 +22,7 @@ pub trait IndexingRequestsRpc {
     /// returned.
     #[method(name = "get_indexing_request_by_id")]
     async fn get_indexing_request_by_id(&self, id: IndexingRequestId)
-        -> RpcResult<IndexingRequest>;
+    -> RpcResult<IndexingRequest>;
 
     /// Get _indexing requests_ by deployment ID
     #[method(name = "get_indexing_requests_by_deployment_id")]

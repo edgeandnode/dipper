@@ -6,14 +6,14 @@ use dipper_core::{
     state::FromState,
 };
 use dipper_rpc::admin::{
+    SignedMessage,
     indexing_agreements::{
         CancelIndexingAgreement, IndexingAgreement, IndexingAgreementsRpcServer,
         Status as IndexingAgreementStatus,
     },
-    SignedMessage,
 };
 use jsonrpsee::{core::RpcResult, types::ErrorObject};
-use thegraph_core::{alloy::primitives::Address, DeploymentId, IndexerId};
+use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::Address};
 
 use crate::{
     registry::{

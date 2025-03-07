@@ -1,10 +1,11 @@
 use std::collections::BTreeSet;
 
-use thegraph_core::{alloy::primitives::Address, AllocationId, DeploymentId, IndexerId};
+use thegraph_core::{AllocationId, DeploymentId, IndexerId, alloy::primitives::Address};
 
 use super::{
+    Allocation,
     api::{Deployment, Indexer, NetworkProvider},
-    service, Allocation,
+    service,
 };
 
 #[derive(Clone)]

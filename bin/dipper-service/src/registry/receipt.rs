@@ -7,8 +7,8 @@
 use async_trait::async_trait;
 use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId};
 use thegraph_core::{
-    alloy::primitives::{Address, U256},
     AllocationId, IndexerId, ProofOfIndexing,
+    alloy::primitives::{Address, U256},
 };
 use time::OffsetDateTime;
 

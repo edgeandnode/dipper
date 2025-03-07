@@ -9,11 +9,11 @@ use std::{
 use dipper_core::config::{Hidden, HiddenSecretKeyAsHexStr};
 use serde_with::serde_as;
 use thegraph_core::{
+    DeploymentId, IndexerId,
     alloy::{
         primitives::{Address, ChainId, U256},
         signers::k256::SecretKey,
     },
-    DeploymentId, IndexerId,
 };
 use url::Url;
 

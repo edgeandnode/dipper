@@ -4,7 +4,7 @@ use dipper_core::state::FromState;
 use jsonrpsee::server::Server;
 use tokio::sync::mpsc;
 
-use super::handlers::{rpc_handlers, IndexingAgreementsCtx, IndexingRequestsCtx};
+use super::handlers::{IndexingAgreementsCtx, IndexingRequestsCtx, rpc_handlers};
 use crate::{
     network::NetworkProvider,
     registry::{AgreementRegistry, IndexingRequestRegistry},

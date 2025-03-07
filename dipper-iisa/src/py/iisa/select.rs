@@ -1,6 +1,6 @@
 use pyo3::{
-    exceptions::PyTypeError, sync::GILOnceCell, types::PyAnyMethods, Bound, Py, PyAny, PyResult,
-    Python,
+    Bound, Py, PyAny, PyResult, Python, exceptions::PyTypeError, sync::GILOnceCell,
+    types::PyAnyMethods,
 };
 use thegraph_core::IndexerId;
 

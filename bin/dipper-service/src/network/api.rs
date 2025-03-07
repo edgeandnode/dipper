@@ -1,6 +1,6 @@
 use reqwest::Url;
 use thegraph_core::{
-    alloy::primitives::Address, AllocationId, DeploymentId, IndexerId, ProofOfIndexing, SubgraphId,
+    AllocationId, DeploymentId, IndexerId, ProofOfIndexing, SubgraphId, alloy::primitives::Address,
 };
 
 /// An indexer.

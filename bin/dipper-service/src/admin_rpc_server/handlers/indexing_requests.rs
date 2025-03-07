@@ -3,14 +3,14 @@ use std::{collections::BTreeSet, sync::Arc};
 use async_trait::async_trait;
 use dipper_core::{ids::IndexingRequestId, state::FromState};
 use dipper_rpc::admin::{
+    SignedMessage,
     indexing_requests::{
         CancelIndexingRequest, IndexingRequest, IndexingRequestStatus, IndexingRequestsRpcServer,
         NewIndexingRequest,
     },
-    SignedMessage,
 };
 use jsonrpsee::{core::RpcResult, types::ErrorObject};
-use thegraph_core::{alloy::primitives::Address, DeploymentId};
+use thegraph_core::{DeploymentId, alloy::primitives::Address};
 
 use crate::{
     network::NetworkProvider,

@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use serde::Serialize;
-use sqlx::{types::JsonValue, Pool, Postgres};
+use sqlx::{Pool, Postgres, types::JsonValue};
 use time::OffsetDateTime;
 use uuid::Uuid;
 

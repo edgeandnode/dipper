@@ -5,11 +5,11 @@
 use thegraph_core::{
     alloy::{
         primitives::{Address, ChainId},
-        signers::{local::PrivateKeySigner, SignerSync},
+        signers::{SignerSync, local::PrivateKeySigner},
         sol_types::{Eip712Domain, SolStruct},
     },
     signed_message::{
-        recover_signer_address, sign, RecoverSignerError, SignedMessage, SigningError, ToSolStruct,
+        RecoverSignerError, SignedMessage, SigningError, ToSolStruct, recover_signer_address, sign,
     },
 };
 
@@ -130,7 +130,7 @@ mod tests {
     use thegraph_core::alloy::{
         primitives::{address, b256, keccak256},
         signers::local::PrivateKeySigner,
-        sol_types::{eip712_domain, Eip712Domain},
+        sol_types::{Eip712Domain, eip712_domain},
     };
 
     use super::Eip712Signer;

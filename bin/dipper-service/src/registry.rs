@@ -8,8 +8,8 @@ use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId
 use dipper_pgregistry::PgRegistry;
 use sqlx::{Pool, Postgres};
 use thegraph_core::{
-    alloy::primitives::{Address, ChainId, U256},
     DeploymentId, IndexerId,
+    alloy::primitives::{Address, ChainId, U256},
 };
 use url::Url;
 

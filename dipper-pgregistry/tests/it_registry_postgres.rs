@@ -7,10 +7,11 @@ use dipper_pgregistry::{
 use fake::{Fake, Faker};
 use sqlx::{Pool, Postgres};
 use thegraph_core::{
-    alloy::primitives::{address, ChainId},
+    DeploymentId, IndexerId,
+    alloy::primitives::{ChainId, address},
     deployment_id,
     fake_impl::alloy::Alloy as FakeAlloy,
-    indexer_id, DeploymentId, IndexerId,
+    indexer_id,
 };
 use url::Url;
 use uuid::uuid;

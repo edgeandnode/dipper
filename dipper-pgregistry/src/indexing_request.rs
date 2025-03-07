@@ -8,8 +8,8 @@ use std::convert::Infallible;
 
 use dipper_core::ids::IndexingRequestId;
 use thegraph_core::{
-    alloy::primitives::{Address, ChainId},
     DeploymentId,
+    alloy::primitives::{Address, ChainId},
 };
 use time::OffsetDateTime;
 
