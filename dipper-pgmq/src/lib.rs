@@ -1,6 +1,11 @@
 //! # A PostgreSQL-based message queue.
 
-pub mod postgres;
+mod id;
+mod job;
+mod postgres;
 mod queue;
 
-pub use queue::{Job, JobId, Queue};
+pub use id::JobId;
+pub use job::JobGuard;
+pub use postgres::PgQueue;
+pub use queue::Queue;

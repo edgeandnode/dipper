@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO pgmq_queue (\n                id,\n                created_at,\n                updated_at,\n                scheduled_for,\n                status,\n                retry_max,\n                retry_count,\n                message\n            ) VALUES (\n                $1, timezone('UTC', now()), timezone('UTC', now()),\n                timezone('UTC', now()), $2, $3, 0::int, $4\n            )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Int4",
+        "Json"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "36869222ce5c88c0c9f26e55807db3f75f61c4567a810de7306aeb29eb5224a1"
+}

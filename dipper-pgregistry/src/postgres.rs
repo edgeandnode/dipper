@@ -325,7 +325,7 @@ impl PgRegistry {
 
     pub async fn get_indexing_agreement_by_id(
         &self,
-        agreement_id: IndexingAgreementId,
+        agreement_id: &IndexingAgreementId,
     ) -> Result<Option<IndexingAgreement>, Error> {
         sqlx::query_as(
             r#"

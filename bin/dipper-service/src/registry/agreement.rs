@@ -29,7 +29,7 @@ pub trait AgreementRegistry {
     /// Get agreement by ID.
     async fn get_indexing_agreement_by_id(
         &self,
-        id: IndexingAgreementId,
+        id: &IndexingAgreementId,
     ) -> RegistryResult<Option<IndexingAgreement>>;
 
     /// Get all agreements by deployment ID.

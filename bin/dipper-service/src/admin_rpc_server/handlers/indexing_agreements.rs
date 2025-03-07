@@ -66,7 +66,7 @@ where
     ) -> RpcResult<IndexingAgreement> {
         let indexing_agreement = match self
             .registry
-            .get_indexing_agreement_by_id(agreement_id)
+            .get_indexing_agreement_by_id(&agreement_id)
             .await
         {
             Ok(Some(res)) => into_indexing_agreement(res),
@@ -160,7 +160,7 @@ where
         // Check if the agreement exists
         match self
             .registry
-            .get_indexing_agreement_by_id(agreement_id)
+            .get_indexing_agreement_by_id(&agreement_id)
             .await
         {
             Ok(None) => {

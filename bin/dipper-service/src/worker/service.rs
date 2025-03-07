@@ -23,10 +23,7 @@ use crate::{
 };
 
 /// Default period to pull tasks from the queue.
-const DEFAULT_TASK_PULL_PERIOD: Duration = Duration::from_secs(1);
-
-/// Default number of tasks that can be processed concurrently.
-const DEFAULT_TASK_BATCH_SIZE: usize = 5;
+const DEFAULT_TASK_PULL_PERIOD: Duration = Duration::from_millis(200);
 
 /// The worker service handle.
 #[derive(Clone)]
@@ -84,32 +81,35 @@ where
                     break;
                 }
                 _ = tokio::time::sleep(DEFAULT_TASK_PULL_PERIOD) => {
-                    let Ok(tasks) = queue.pull(DEFAULT_TASK_BATCH_SIZE).await else {
+                    let Ok(Some(task)) = queue.pop().await else {
                         continue
                     };
 
                     // Process the tasks sequentially
-                    for task in tasks {
-                       let _span = tracing::debug_span!("process_task", task = %task.id);
+                    let _span = tracing::debug_span!("process_task", task = %task.id());
 
-                        match process_task(&state, task.message).await {
-                            Ok(JobResult::Ok(_)) => {
-                                // Remove the task from the queue
-                                let _ = queue.remove(task.id).await;
+                    match process_task(&state, task.message()).await {
+                        Ok(JobResult::Ok(_)) => {
+                            if let Err(err) = task.remove().await {
+                            tracing::debug!("failed to remove task: {}", err);
                             }
-                            Ok(JobResult::Retry(duration, err)) => {
-                                tracing::debug!(error=?err, "Rescheduling task after failure");
+                        }
+                        Ok(JobResult::Retry(duration, err)) => {
+                            tracing::debug!(error=?err, "Rescheduling task after failure");
 
-                                // Retry the task after the specified duration
-                                let scheduled_for = OffsetDateTime::now_utc() + duration;
-                                let _ = queue.mark_job_as_failed(task.id, Some(scheduled_for)).await;
+                            // Retry the task after the specified duration
+                            let scheduled_for = OffsetDateTime::now_utc() + duration;
+                            if let Err(err) = task.mark_as_failed_and_reschedule(scheduled_for).await {
+                                tracing::debug!(error=?err, "failed to mark job as failed");
                             }
-                            Err(err) => {
-                                tracing::debug!(error=?err, "Failed to process task");
+                        }
+                        Err(err) => {
+                            tracing::debug!(error=?err, "Failed to process task");
 
-                                // Remove the task from the queue as it failed and
-                                // should not be retried
-                                let _ = queue.remove(task.id).await;
+                            // Remove the task from the queue as it failed and
+                            // should not be retried
+                            if let Err(err) = task.remove().await {
+                                tracing::debug!(error=?err, "failed to remove job from queue");
                             }
                         }
                     }
@@ -125,7 +125,7 @@ where
 
 async fn process_task<S, W, N, R, C, I>(
     state: &S,
-    message: Message,
+    message: &Message,
 ) -> anyhow::Result<JobResult<()>>
 where
     R: IndexingRequestRegistry + AgreementRegistry + ReceiptRegistry,

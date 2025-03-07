@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE pgmq_queue\n           SET\n               updated_at = timezone('UTC', now()),\n               retry_count = retry_count + 1,\n               status = (CASE\n                   WHEN retry_count + 1 >= retry_max THEN $2::int ELSE $3::int\n               END),\n               scheduled_for = (CASE\n                   WHEN retry_count + 1 < retry_max THEN $4 ELSE scheduled_for\n               END)\n           WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "052d7bb3516ffbe852a54f63876254938f1fb7fb347a992b1c04932893c4f315"
+}
