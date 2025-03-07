@@ -1,8 +1,8 @@
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr};
-use thegraph_core::{alloy::primitives::ChainId, DeploymentId};
+use serde_with::{DisplayFromStr, serde_as};
+use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 
 /// The queue worker message enum.
 #[derive(Debug, Serialize, Deserialize)]

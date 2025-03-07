@@ -3,9 +3,9 @@
 //! Data conversion between the database and the Rust types is done using the `FromRow` trait from
 //! the `sqlx` crate.
 
-use sqlx::{postgres::PgRow, Row};
+use sqlx::{Row, postgres::PgRow};
 
-use super::common::{PgAddress, PgDeploymentId, PgIndexerId, PgU256, PgU32, PgU64, PgUrl};
+use super::common::{PgAddress, PgDeploymentId, PgIndexerId, PgU32, PgU64, PgU256, PgUrl};
 use crate::indexing_agreement::{Indexer, IndexingAgreement, Status, Voucher, VoucherMetadata};
 
 impl sqlx::FromRow<'_, PgRow> for IndexingAgreement {

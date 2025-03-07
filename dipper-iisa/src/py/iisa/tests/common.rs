@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
 use pyo3::{
+    Bound, Python,
     ffi::c_str,
     prelude::{PyAnyMethods, PyListMethods},
     types::{IntoPyDict, PyList},
-    Bound, Python,
 };
 use tracing_log::LogTracer;
-use tracing_subscriber::{fmt::TestWriter, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt::TestWriter};
 
 use crate::py::logging;
 

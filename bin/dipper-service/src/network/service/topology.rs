@@ -20,7 +20,7 @@ use std::{
 
 use anyhow::Context;
 use thegraph_core::{
-    alloy::primitives::Address, AllocationId, DeploymentId, IndexerId, ProofOfIndexing, SubgraphId,
+    AllocationId, DeploymentId, IndexerId, ProofOfIndexing, SubgraphId, alloy::primitives::Address,
 };
 use tokio::{
     sync::{mpsc, watch, watch::Ref},
@@ -28,7 +28,7 @@ use tokio::{
 };
 use url::Url;
 
-use crate::network::fetch::{indexer_operators, indexer_subgraphs, Client as SubgraphClient};
+use crate::network::fetch::{Client as SubgraphClient, indexer_operators, indexer_subgraphs};
 
 /// Fetches the latest network topology snapshot from the subgraph
 pub async fn fetch_snapshot(client: &SubgraphClient) -> anyhow::Result<Snapshot> {

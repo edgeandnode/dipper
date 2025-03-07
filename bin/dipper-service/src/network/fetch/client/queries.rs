@@ -77,7 +77,7 @@ pub mod meta {
 }
 
 pub mod page {
-    use serde::{ser::SerializeMap as _, Deserialize, Serialize, Serializer};
+    use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap as _};
     use serde_json::value::RawValue;
     use thegraph_core::alloy::primitives::{BlockHash, BlockNumber};
     use thegraph_graphql_http::{

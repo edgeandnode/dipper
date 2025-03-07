@@ -2,7 +2,7 @@ use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use jsonrpsee::{client_transport::ws::Url, core::RpcResult, proc_macros::rpc};
 use serde::Serializer;
 use serde_with::serde_as;
-use thegraph_core::{signed_message::ToSolStruct, DeploymentId, IndexerId};
+use thegraph_core::{DeploymentId, IndexerId, signed_message::ToSolStruct};
 use time::OffsetDateTime;
 
 use super::message::SignedMessage;

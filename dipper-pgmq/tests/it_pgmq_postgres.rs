@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use dipper_pgmq::{postgres::PgQueue, Job, Queue};
+use dipper_pgmq::{Job, Queue, postgres::PgQueue};
 use fake::{Dummy, Fake, Faker};
 use sqlx::{Pool, Postgres};
 

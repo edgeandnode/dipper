@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use reqwest::Url;
-use tracing_subscriber::{fmt::TestWriter, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt::TestWriter};
 
 use crate::network::fetch::Client as NetworkSubgraphClient;
 

@@ -34,7 +34,9 @@ fn main() {
                 Some(path)
             }
             _ => {
-                println!("cargo:warning=Failed to determine libpython path using `uv tool run find_libpython`");
+                println!(
+                    "cargo:warning=Failed to determine libpython path using `uv tool run find_libpython`"
+                );
                 None
             }
         }

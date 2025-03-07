@@ -15,8 +15,8 @@
 
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use thegraph_core::{
-    alloy::primitives::{Address, ChainId, U256},
     DeploymentId, IndexerId,
+    alloy::primitives::{Address, ChainId, U256},
 };
 use time::OffsetDateTime;
 use url::Url;

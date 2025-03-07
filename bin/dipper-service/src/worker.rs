@@ -7,7 +7,7 @@ pub mod service;
 pub use api::WorkerQueue;
 use async_trait::async_trait;
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
-use dipper_pgmq::{postgres::PgQueue, JobId, Queue};
+use dipper_pgmq::{JobId, Queue, postgres::PgQueue};
 pub use handlers::{
     FindIndexerForIndexingRequestCtx, ProcessIndexingAgreementCancellationCtx,
     ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
@@ -18,7 +18,7 @@ use messages::{
     ProcessIndexingRequestCancellation, ProcessNewIndexingRequest,
     SendIndexingAgreementCancellation, SendIndexingAgreementProposal,
 };
-use thegraph_core::{alloy::primitives::ChainId, DeploymentId};
+use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 use url::Url;
 
 /// The worker that processes messages from the queue.

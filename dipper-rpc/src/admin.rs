@@ -6,7 +6,7 @@ mod message;
 pub use message::SignedMessage;
 use thegraph_core::alloy::{
     dyn_abi::Eip712Domain,
-    primitives::{b256, ChainId, B256},
+    primitives::{B256, ChainId, b256},
     sol_types::eip712_domain,
 };
 

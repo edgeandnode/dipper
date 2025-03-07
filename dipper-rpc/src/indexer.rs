@@ -9,9 +9,9 @@ pub mod gateway_server {
     pub mod rpc {
         #[doc(inline)]
         pub use indexer_dips::proto::gateway::graphprotocol::gateway::dips::{
-            gateway_dips_service_server::{GatewayDipsService, GatewayDipsServiceServer},
             CancelAgreementRequest, CancelAgreementResponse, CollectPaymentRequest,
             CollectPaymentResponse, CollectPaymentStatus,
+            gateway_dips_service_server::{GatewayDipsService, GatewayDipsServiceServer},
         };
     }
 
@@ -32,9 +32,9 @@ pub mod indexer_client {
     pub mod rpc {
         #[doc(inline)]
         pub use indexer_dips::proto::indexer::graphprotocol::indexer::dips::{
-            indexer_dips_service_client::IndexerDipsServiceClient, CancelAgreementRequest,
-            CancelAgreementResponse, ProposalResponse, SubmitAgreementProposalRequest,
-            SubmitAgreementProposalResponse,
+            CancelAgreementRequest, CancelAgreementResponse, ProposalResponse,
+            SubmitAgreementProposalRequest, SubmitAgreementProposalResponse,
+            indexer_dips_service_client::IndexerDipsServiceClient,
         };
     }
 

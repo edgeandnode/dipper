@@ -2,7 +2,7 @@
 
 mod select;
 
-use pyo3::{sync::GILOnceCell, types::PyModule, Bound, Py, PyResult, Python};
+use pyo3::{Bound, Py, PyResult, Python, sync::GILOnceCell, types::PyModule};
 pub use select::{select_many, select_one};
 
 /// Import the `iisa` python module.

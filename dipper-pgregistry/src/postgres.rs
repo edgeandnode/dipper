@@ -3,21 +3,21 @@
 use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
 use sqlx::{Pool, Postgres};
 use thegraph_core::{
-    alloy::primitives::{Address, ChainId, U256},
     DeploymentId, IndexerId,
+    alloy::primitives::{Address, ChainId, U256},
 };
 use url::Url;
 
 use self::common::{
-    PgAddress, PgAllocationId, PgDeploymentId, PgIndexerId, PgProofOfIndexing, PgU256, PgU32,
-    PgU64, PgUrl,
+    PgAddress, PgAllocationId, PgDeploymentId, PgIndexerId, PgProofOfIndexing, PgU32, PgU64,
+    PgU256, PgUrl,
 };
 use super::{
+    IndexingReceiptReportedWork,
     indexing_agreement::{IndexingAgreement, Status as IndexingAgreementStatus, Voucher},
     indexing_receipt::IndexingReceipt,
     indexing_request::{IndexingRequest, Status as IndexingRequestStatus},
     result::Error,
-    IndexingReceiptReportedWork,
 };
 
 mod common;

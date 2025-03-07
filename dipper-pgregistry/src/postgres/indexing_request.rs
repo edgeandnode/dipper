@@ -6,10 +6,10 @@
 
 use num_traits::ToPrimitive;
 use sqlx::{
+    Error, Postgres, Row as _,
     encode::IsNull,
     error::BoxDynError,
     postgres::{PgArgumentBuffer, PgRow, PgTypeInfo, PgValueRef},
-    Error, Postgres, Row as _,
 };
 
 use super::common::{PgAddress, PgDeploymentId, PgU64};

@@ -17,7 +17,7 @@ use crate::{
         IndexingAgreementVoucherMetadata, IndexingRequestRegistry,
     },
     signing::eip712::PrivateKeyEip712Signer,
-    worker::{result::JobResult, WorkerQueue},
+    worker::{WorkerQueue, result::JobResult},
 };
 
 pub struct ProcessNewIndexingRequestCtx<R, N, W, I> {

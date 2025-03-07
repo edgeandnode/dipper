@@ -5,7 +5,7 @@ use std::str::FromStr as _;
 use thegraph_core::alloy::{
     hex::FromHexError,
     primitives::B256,
-    signers::k256::{elliptic_curve::Error as CryptoError, SecretKey},
+    signers::k256::{SecretKey, elliptic_curve::Error as CryptoError},
 };
 
 /// A _new-type_ wrapper for a configuration value that should be kept secret.

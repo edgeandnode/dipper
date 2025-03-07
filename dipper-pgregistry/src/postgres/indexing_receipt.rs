@@ -1,7 +1,7 @@
-use sqlx::{postgres::PgRow, Row};
+use sqlx::{Row, postgres::PgRow};
 
 use super::common::{
-    PgAddress, PgAllocationId, PgIndexerId, PgProofOfIndexing, PgU256, PgU32, PgU64,
+    PgAddress, PgAllocationId, PgIndexerId, PgProofOfIndexing, PgU32, PgU64, PgU256,
 };
 use crate::indexing_receipt::{IndexingReceipt, ReportedWork};
 

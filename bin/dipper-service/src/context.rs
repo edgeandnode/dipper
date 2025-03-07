@@ -6,8 +6,8 @@ use std::{
 use dipper_core::state::FromState;
 use dipper_iisa::CandidateSelection;
 use thegraph_core::{
-    alloy::primitives::{Address, ChainId, U256},
     IndexerId,
+    alloy::primitives::{Address, ChainId, U256},
 };
 
 use crate::{

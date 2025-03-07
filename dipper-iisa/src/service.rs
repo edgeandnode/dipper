@@ -1,6 +1,6 @@
 use anyhow::Context;
 use async_trait::async_trait;
-use pyo3::{ffi::c_str, Python};
+use pyo3::{Python, ffi::c_str};
 use thegraph_core::DeploymentId;
 use tokio::sync::{mpsc, oneshot};
 

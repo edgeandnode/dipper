@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_pgmq::JobId;
-use thegraph_core::{alloy::primitives::ChainId, DeploymentId};
+use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 use url::Url;
 
 #[async_trait]

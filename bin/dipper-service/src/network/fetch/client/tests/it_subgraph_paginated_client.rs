@@ -5,13 +5,13 @@ use std::time::Duration;
 use reqwest::Url;
 use serde::Deserialize;
 use thegraph_core::{BlockPointer, SubgraphId};
-use tracing_subscriber::{fmt::TestWriter, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt::TestWriter};
 
 use crate::network::fetch::client::{
     paginated_client::Client,
     queries::{
         meta::send_bootstrap_meta_query,
-        page::{send_subgraph_page_query, BlockHeight},
+        page::{BlockHeight, send_subgraph_page_query},
     },
 };
 
@@ -219,9 +219,11 @@ async fn send_subgraph_paginated() {
     // Assert the query succeeded, and we got a non-empty list of active subscriptions.
     let response = res.expect("Failed to fetch subgraphs");
     assert!(!response.is_empty());
-    assert!(response
-        .iter()
-        .all(|subgraph| subgraph.id != SubgraphId::ZERO));
+    assert!(
+        response
+            .iter()
+            .all(|subgraph| subgraph.id != SubgraphId::ZERO)
+    );
 }
 
 #[test_with::env(IT_TEST_ARBITRUM_GATEWAY_URL, IT_TEST_ARBITRUM_GATEWAY_AUTH)]
@@ -271,7 +273,9 @@ async fn send_subgraph_paginated_empty_response() {
     // Assert the query succeeded, and we got a empty list of active subscriptions
     let response = res.expect("Failed to fetch subgraphs");
     assert!(response.is_empty());
-    assert!(response
-        .iter()
-        .all(|subgraph| subgraph.id != SubgraphId::ZERO));
+    assert!(
+        response
+            .iter()
+            .all(|subgraph| subgraph.id != SubgraphId::ZERO)
+    );
 }

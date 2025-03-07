@@ -1,5 +1,5 @@
 use thegraph_core::{
-    alloy::primitives::{normalize_v, PrimitiveSignature as Signature},
+    alloy::primitives::{PrimitiveSignature as Signature, normalize_v},
     signed_message::SignedMessage as InnerSignedMessage,
 };
 

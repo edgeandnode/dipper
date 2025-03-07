@@ -2,7 +2,7 @@
 name = "dipper-pgmq"
 description = "A simple PostgreSQL-backed message queue"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 anyhow.workspace = true
