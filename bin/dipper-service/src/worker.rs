@@ -7,7 +7,7 @@ pub mod service;
 pub use api::WorkerQueue;
 use async_trait::async_trait;
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
-use dipper_pgmq::{JobId, Queue, postgres::PgQueue};
+use dipper_pgmq::{JobId, PgQueue, Queue};
 pub use handlers::{
     FindIndexerForIndexingRequestCtx, ProcessIndexingAgreementCancellationCtx,
     ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,

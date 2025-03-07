@@ -108,7 +108,7 @@ impl IndexingRequestRegistry for RegistryProvider {
 impl AgreementRegistry for RegistryProvider {
     async fn get_indexing_agreement_by_id(
         &self,
-        id: IndexingAgreementId,
+        id: &IndexingAgreementId,
     ) -> RegistryResult<Option<IndexingAgreement>> {
         Ok(self
             .inner

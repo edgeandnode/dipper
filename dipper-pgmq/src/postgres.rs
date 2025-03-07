@@ -1,23 +1,26 @@
 //! PostgreSQL-backed message queue implementation.
 
+use anyhow::Context;
 use async_trait::async_trait;
-use serde::Serialize;
 use sqlx::{Pool, Postgres, types::JsonValue};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::queue::{Job, JobId, Queue};
+use super::{
+    id::JobId,
+    job::{Job, JobGuard},
+    queue::Queue,
+};
 
-/// The default maximum number of attempts before a job is considered failed.
+/// The default maximum number of attempts before a job is considered as failed.
 const DEFAULT_MAX_ATTEMPTS: i32 = 3;
 
-/// A PostgreSQL message queue.
+/// A PostgreSQL message queue
 #[derive(Debug, Clone)]
 pub struct PgQueue {
     /// The DB connection pool.
     pool: Pool<Postgres>,
-
-    /// The maximum number of attempts before a job is considered failed.
+    /// The maximum number of attempts before a job is considered failed
     max_attempts: i32,
 }
 
@@ -42,12 +45,12 @@ impl PgQueue {
 #[async_trait]
 impl<M> Queue<M> for PgQueue
 where
-    M: Serialize + Send + 'static,
+    M: serde::Serialize + Send + 'static,
     Job<M>: TryFrom<PgJob>,
 {
     async fn push(&self, job: M) -> anyhow::Result<JobId> {
+        let id = Uuid::now_v7();
         let message = serde_json::to_value(&job)?;
-        let job = PgJob::new(message);
 
         sqlx::query!(
             r#"INSERT INTO pgmq_queue (
@@ -56,26 +59,27 @@ where
                 updated_at,
                 scheduled_for,
                 status,
-                failed_attempts,
+                retry_max,
+                retry_count,
                 message
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
-            job.id,
-            job.created_at,
-            job.updated_at,
-            job.scheduled_for,
-            job.status as i32,
-            job.failed_attempts,
-            job.message,
+            ) VALUES (
+                $1, timezone('UTC', now()), timezone('UTC', now()),
+                timezone('UTC', now()), $2, $3, 0::int, $4
+            )"#,
+            id,
+            PgJobStatus::default() as i32,
+            self.max_attempts,
+            message,
         )
         .execute(&self.pool)
         .await?;
 
-        Ok(JobId::new(job.id))
+        Ok(JobId::from_uuid(id))
     }
 
-    async fn push_scheduled(&self, job: M, scheduled_for: OffsetDateTime) -> anyhow::Result<JobId> {
-        let message = serde_json::to_value(&job)?;
-        let job = PgJob::with_schedule(message, scheduled_for);
+    async fn push_scheduled(&self, msg: M, scheduled_for: OffsetDateTime) -> anyhow::Result<JobId> {
+        let id = Uuid::now_v7();
+        let message = serde_json::to_value(&msg)?;
 
         sqlx::query!(
             r#"INSERT INTO pgmq_queue (
@@ -84,104 +88,53 @@ where
                 updated_at,
                 scheduled_for,
                 status,
-                failed_attempts,
+                retry_max,
+                retry_count,
                 message
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
-            job.id,
-            job.created_at,
-            job.updated_at,
-            job.scheduled_for,
-            job.status as i32,
-            job.failed_attempts,
-            job.message,
+            ) VALUES (
+                $1, timezone('UTC', now()), timezone('UTC', now()),
+                $2, $3, $4, 0::int, $5
+            )"#,
+            id,
+            scheduled_for,
+            PgJobStatus::default() as i32,
+            self.max_attempts,
+            message,
         )
         .execute(&self.pool)
         .await?;
 
-        Ok(JobId::new(job.id))
+        Ok(JobId::from_uuid(id))
     }
 
-    async fn pull(&self, jobs: usize) -> anyhow::Result<Vec<Job<M>>> {
-        let number_of_jobs = jobs.min(100);
-        let now = OffsetDateTime::now_utc();
+    async fn pop(&self) -> anyhow::Result<Option<JobGuard<'_, M>>> {
+        let mut tx = self.pool.begin().await?;
 
-        let pg_jobs = sqlx::query_as!(
+        // Get one job from the queue
+        let res = sqlx::query_as!(
             PgJob,
             r#"UPDATE pgmq_queue
-            SET status = $1, updated_at = $2
+            SET
+                updated_at = timezone('UTC', now()),
+                status = $1
             WHERE id IN (
                 SELECT id
                 FROM pgmq_queue
-                WHERE status = $3 AND scheduled_for <= $4 AND failed_attempts < $5
+                WHERE status = $2 AND scheduled_for <= timezone('UTC', now())
                 ORDER BY scheduled_for
                 FOR UPDATE SKIP LOCKED
-                LIMIT $6
+                LIMIT 1
             )
             RETURNING *"#,
             PgJobStatus::Running as i32,
-            now,
             PgJobStatus::Queued as i32,
-            now,
-            self.max_attempts as i32,
-            number_of_jobs as i64,
         )
-        .fetch_all(&self.pool)
-        .await?;
+        .fetch_optional(&mut *tx)
+        .await?
+        .and_then(|pg_job| pg_job.try_into().ok())
+        .map(|job| JobGuard::new(tx, job));
 
-        // Deserialize the message JSON value into the message type
-        // Ignore any messages that fail to deserialize
-        let jobs = pg_jobs
-            .into_iter()
-            .filter_map(|pg_job| pg_job.try_into().ok())
-            .collect::<Vec<_>>();
-        Ok(jobs)
-    }
-
-    async fn remove(&self, id: JobId) -> anyhow::Result<()> {
-        sqlx::query!("DELETE FROM pgmq_queue WHERE id = $1", id.as_ref())
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
-    }
-
-    async fn mark_job_as_failed(
-        &self,
-        id: JobId,
-        scheduled_for: Option<OffsetDateTime>,
-    ) -> anyhow::Result<()> {
-        let now = OffsetDateTime::now_utc();
-        let scheduled_for = scheduled_for.unwrap_or(now);
-
-        // Update the job status and increment the number of failed attempts
-        // If the number of failed attempts is greater than the maximum number of attempts,
-        // mark the job as failed and do not reschedule it
-        // Otherwise, reschedule the job for the next execution date
-        // TODO(post-mvp): Return the updated job status and failed attempts, so the caller can check if the
-        //  job was marked as failed
-        sqlx::query!(
-            r#"UPDATE pgmq_queue
-            SET
-                failed_attempts = failed_attempts + 1,
-                status = (CASE
-                    WHEN failed_attempts + 1 >= $1 THEN $2::int ELSE $3::int
-                END),
-                scheduled_for = (CASE
-                    WHEN failed_attempts + 1 < $1 THEN $4 ELSE scheduled_for
-                END),
-                updated_at = $5
-            WHERE id = $6"#,
-            self.max_attempts as i32,
-            PgJobStatus::Failed as i32,
-            PgJobStatus::Queued as i32,
-            scheduled_for,
-            now,
-            id.as_ref(),
-        )
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
+        Ok(res)
     }
 
     async fn clear(&self) -> anyhow::Result<()> {
@@ -191,6 +144,56 @@ where
 
         Ok(())
     }
+}
+
+pub(crate) async fn remove<'q, E>(executor: E, id: &JobId) -> anyhow::Result<()>
+where
+    E: sqlx::Executor<'q, Database = sqlx::Postgres>,
+{
+    sqlx::query!("DELETE FROM pgmq_queue WHERE id = $1", id.as_ref())
+        .execute(executor)
+        .await?;
+
+    Ok(())
+}
+
+// TODO(post-mvp): Return the updated job status and failed attempts, so the caller can check if the
+//  job was marked as failed
+pub(crate) async fn mark_as_failed<'q, E>(
+    executor: E,
+    id: &JobId,
+    scheduled_for: Option<OffsetDateTime>,
+) -> anyhow::Result<()>
+where
+    E: sqlx::Executor<'q, Database = Postgres>,
+{
+    let scheduled_for = scheduled_for.unwrap_or_else(OffsetDateTime::now_utc);
+
+    // Update the job status and increment the number of failed attempts
+    // If the number of failed attempts is greater than the maximum number of attempts,
+    // mark the job as failed and do not reschedule it
+    // Otherwise, reschedule the job for the next execution date
+    sqlx::query!(
+        r#"UPDATE pgmq_queue
+           SET
+               updated_at = timezone('UTC', now()),
+               retry_count = retry_count + 1,
+               status = (CASE
+                   WHEN retry_count + 1 >= retry_max THEN $2::int ELSE $3::int
+               END),
+               scheduled_for = (CASE
+                   WHEN retry_count + 1 < retry_max THEN $4 ELSE scheduled_for
+               END)
+           WHERE id = $1"#,
+        id.as_ref(),
+        PgJobStatus::Failed as i32,
+        PgJobStatus::Queued as i32,
+        scheduled_for,
+    )
+    .execute(executor)
+    .await?;
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -206,53 +209,26 @@ struct PgJob {
 
     /// The job status (queued, running, failed).
     status: PgJobStatus,
-    /// The number of failed execution attempts.
-    failed_attempts: i32,
+    /// The maximum number of execution attempts.
+    retry_max: i32,
+    /// The number of execution attempts.
+    retry_count: i32,
 
     /// The job message (serialized).
     message: JsonValue,
-}
-
-impl PgJob {
-    /// Creates a new job with the given message and scheduled execution date.
-    fn new(message: JsonValue) -> Self {
-        let now = OffsetDateTime::now_utc();
-        Self {
-            id: Uuid::now_v7(),
-            created_at: now,
-            updated_at: now,
-            scheduled_for: now,
-            status: Default::default(),
-            failed_attempts: 0,
-            message,
-        }
-    }
-
-    /// Creates a new job with the given message and scheduled execution date.
-    fn with_schedule(message: JsonValue, scheduled_for: OffsetDateTime) -> Self {
-        let now = OffsetDateTime::now_utc();
-        Self {
-            id: Uuid::now_v7(),
-            created_at: now,
-            updated_at: now,
-            scheduled_for,
-            status: Default::default(),
-            failed_attempts: 0,
-            message,
-        }
-    }
 }
 
 impl<M> TryFrom<PgJob> for Job<M>
 where
     M: for<'de> serde::Deserialize<'de>,
 {
-    type Error = serde_json::Error;
+    type Error = anyhow::Error;
 
     fn try_from(value: PgJob) -> Result<Self, Self::Error> {
         Ok(Self {
-            id: JobId::new(value.id),
-            message: serde_json::from_value(value.message)?,
+            id: JobId::from_uuid(value.id),
+            message: serde_json::from_value(value.message)
+                .context("Failed job JSON message deserialization")?,
         })
     }
 }
@@ -280,10 +256,9 @@ enum PgJobStatus {
 impl From<i32> for PgJobStatus {
     fn from(value: i32) -> Self {
         match value {
+            i32::MIN..=-1_i32 => Self::Running,
             0 => Self::Queued,
-            -1 => Self::Running,
-            1 => Self::Failed,
-            _ => Self::Queued,
+            1_i32..=i32::MAX => Self::Failed,
         }
     }
 }

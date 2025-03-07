@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, env, path::PathBuf, sync::Arc};
 
 use async_signal::{Signal, Signals};
 use dipper_iisa as iisa;
-use dipper_pgmq::postgres::PgQueue;
+use dipper_pgmq::PgQueue;
 use futures_lite::StreamExt;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use thegraph_core::alloy::{primitives::ChainId, signers::local::PrivateKeySigner};

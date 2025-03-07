@@ -45,7 +45,7 @@ pub(super) async fn process_new_indexing_request<R, N, W, I>(
         deployment_id,
         deployment_chain_id,
         num_candidates,
-    }: ProcessNewIndexingRequest,
+    }: &ProcessNewIndexingRequest,
 ) -> anyhow::Result<JobResult<()>>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
@@ -56,7 +56,7 @@ where
     // Get the indexers that are not indexing the deployment amd treat it as the raw candidate list
     // and pass it to the IISA to get the final list of candidates
     let indexers = network
-        .get_indexers_not_indexing_a_deployment_id(&deployment_id)
+        .get_indexers_not_indexing_a_deployment_id(deployment_id)
         .into_iter()
         .map(|indexer| IndexerCandidate {
             id: indexer.id,
@@ -71,7 +71,9 @@ where
         return Ok(JobResult::Ok(()));
     }
 
-    let candidates = iisa.select(deployment_id, indexers, num_candidates).await?;
+    let candidates = iisa
+        .select(*deployment_id, indexers, *num_candidates)
+        .await?;
     if candidates.is_empty() {
         tracing::error!(
             indexing_request_id=%indexing_request_id,
@@ -83,18 +85,16 @@ where
     // Create indexing agreements for the selected indexers and register them in the registry
     for candidate in candidates {
         let voucher_metadata = {
-            let prices = chain_price
-                .get(&deployment_chain_id)
-                .ok_or(anyhow::anyhow!(
-                    "Chain prices not found for chain_id: {}",
-                    deployment_chain_id
-                ))?;
+            let prices = chain_price.get(deployment_chain_id).ok_or(anyhow::anyhow!(
+                "Chain prices not found for chain_id: {}",
+                deployment_chain_id
+            ))?;
             IndexingAgreementVoucherMetadata {
                 base_price_per_epoch: prices.base_price_per_epoch,
                 price_per_entity: prices.price_per_entity,
-                subgraph_deployment_id: deployment_id,
+                subgraph_deployment_id: *deployment_id,
                 protocol_network: signer.chain_id(),
-                chain_id: deployment_chain_id,
+                chain_id: *deployment_chain_id,
             }
         };
 
@@ -113,8 +113,8 @@ where
 
         let agreement_id = registry
             .register_new_indexing_agreement(
-                indexing_request_id,
-                deployment_id,
+                *indexing_request_id,
+                *deployment_id,
                 candidate.id,
                 candidate.url.clone(),
                 voucher,
@@ -125,9 +125,9 @@ where
             .send_indexing_agreement_proposal(
                 candidate.url,
                 agreement_id,
-                indexing_request_id,
-                deployment_id,
-                deployment_chain_id,
+                *indexing_request_id,
+                *deployment_id,
+                *deployment_chain_id,
             )
             .await
         {
@@ -148,7 +148,7 @@ pub(super) async fn process_indexing_request_cancellation<R, W>(
     ProcessIndexingRequestCancellationCtx { registry, queue }: ProcessIndexingRequestCancellationCtx<R, W>,
     ProcessIndexingRequestCancellation {
         indexing_request_id,
-    }: ProcessIndexingRequestCancellation,
+    }: &ProcessIndexingRequestCancellation,
 ) -> anyhow::Result<JobResult<()>>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
@@ -156,7 +156,7 @@ where
 {
     // Get the indexing agreements associated with the indexing request
     let agreements = registry
-        .get_active_indexing_agreements_by_indexing_request_id(&indexing_request_id)
+        .get_active_indexing_agreements_by_indexing_request_id(indexing_request_id)
         .await?;
 
     // Mark all the agreements as canceled by the requester
@@ -205,7 +205,7 @@ pub(super) async fn find_indexer_for_indexing_request<R, N, W, I>(
         indexing_request_id,
         deployment_id,
         deployment_chain_id,
-    }: FindIndexerForIndexingRequest,
+    }: &FindIndexerForIndexingRequest,
 ) -> anyhow::Result<JobResult<()>>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
@@ -216,20 +216,20 @@ where
     // Get the indexers that are not indexing the deployment, not rejected or canceled this indexing
     // request, and not already indexing this indexing request
     let already_indexing = registry
-        .get_active_indexing_agreements_by_indexing_request_id(&indexing_request_id)
+        .get_active_indexing_agreements_by_indexing_request_id(indexing_request_id)
         .await?
         .into_iter()
         .map(|agreement| agreement.indexer.id)
         .collect::<Vec<_>>();
     let rejected_or_canceled = registry
-        .get_rejected_indexing_agreements_by_indexing_request_id(&indexing_request_id)
+        .get_rejected_indexing_agreements_by_indexing_request_id(indexing_request_id)
         .await?
         .into_iter()
         .map(|agreement| agreement.indexer.id)
         .collect::<Vec<_>>();
 
     let indexers = network
-        .get_indexers_not_indexing_a_deployment_id(&deployment_id)
+        .get_indexers_not_indexing_a_deployment_id(deployment_id)
         .into_iter()
         .filter(|indexer| {
             !already_indexing.contains(&indexer.id) && !rejected_or_canceled.contains(&indexer.id)
@@ -247,7 +247,7 @@ where
         return Ok(JobResult::Ok(()));
     }
 
-    let Some(candidate) = iisa.select_one(deployment_id, indexers).await? else {
+    let Some(candidate) = iisa.select_one(*deployment_id, indexers).await? else {
         tracing::warn!(
             indexing_request_id=%indexing_request_id,
             "No candidates selected to fulfill the indexing request"
@@ -256,18 +256,16 @@ where
     };
 
     let voucher_metadata = {
-        let prices = chain_price
-            .get(&deployment_chain_id)
-            .ok_or(anyhow::anyhow!(
-                "Chain prices not found for chain_id: {}",
-                deployment_chain_id
-            ))?;
+        let prices = chain_price.get(deployment_chain_id).ok_or(anyhow::anyhow!(
+            "Chain prices not found for chain_id: {}",
+            deployment_chain_id
+        ))?;
         IndexingAgreementVoucherMetadata {
             base_price_per_epoch: prices.base_price_per_epoch,
             price_per_entity: prices.price_per_entity,
-            subgraph_deployment_id: deployment_id,
+            subgraph_deployment_id: *deployment_id,
             protocol_network: signer.chain_id(),
-            chain_id: deployment_chain_id,
+            chain_id: *deployment_chain_id,
         }
     };
 
@@ -287,8 +285,8 @@ where
     // Create indexing agreements for the selected indexers and register them in the registry
     let agreement_id = registry
         .register_new_indexing_agreement(
-            indexing_request_id,
-            deployment_id,
+            *indexing_request_id,
+            *deployment_id,
             candidate.id,
             candidate.url.clone(),
             voucher,
@@ -300,9 +298,9 @@ where
         .send_indexing_agreement_proposal(
             candidate.url,
             agreement_id,
-            indexing_request_id,
-            deployment_id,
-            deployment_chain_id,
+            *indexing_request_id,
+            *deployment_id,
+            *deployment_chain_id,
         )
         .await
     {
@@ -340,7 +338,7 @@ pub(super) async fn send_indexing_agreement_proposal<R, N, W, C>(
         indexing_request_id,
         deployment_id,
         deployment_chain_id,
-    }: SendIndexingAgreementProposal,
+    }: &SendIndexingAgreementProposal,
 ) -> anyhow::Result<JobResult<()>>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
@@ -395,26 +393,26 @@ where
     };
 
     match indexer_client
-        .send_indexing_agreement_proposal(indexer_url, agreement_id, voucher)
+        .send_indexing_agreement_proposal(indexer_url.clone(), *agreement_id, voucher)
         .await
     {
         Ok(resp) => match resp {
             AgreementProposalResponse::Accepted => {
                 registry
-                    .mark_indexing_agreement_as_accepted(&agreement_id, current_epoch)
+                    .mark_indexing_agreement_as_accepted(agreement_id, current_epoch)
                     .await?;
             }
             AgreementProposalResponse::Rejected => {
                 registry
-                    .mark_indexing_agreement_as_rejected(&agreement_id)
+                    .mark_indexing_agreement_as_rejected(agreement_id)
                     .await?;
 
                 // Request a new indexer to fulfill the indexing request
                 if let Err(err) = queue
                     .find_indexer_for_indexing_request(
-                        indexing_request_id,
-                        deployment_id,
-                        deployment_chain_id,
+                        *indexing_request_id,
+                        *deployment_id,
+                        *deployment_chain_id,
                     )
                     .await
                 {
@@ -426,7 +424,7 @@ where
         Err(err) => {
             tracing::error!(error=?err, "Failed to send indexing agreement proposal");
             registry
-                .mark_indexing_agreement_as_delivery_failed(&agreement_id)
+                .mark_indexing_agreement_as_delivery_failed(agreement_id)
                 .await?;
         }
     }
@@ -451,7 +449,7 @@ pub(super) async fn send_indexing_agreement_cancellation<R, C>(
     SendIndexingAgreementCancellation {
         indexer_url,
         agreement_id,
-    }: SendIndexingAgreementCancellation,
+    }: &SendIndexingAgreementCancellation,
 ) -> anyhow::Result<JobResult<()>>
 where
     R: AgreementRegistry,
@@ -485,7 +483,7 @@ where
     }
 
     if let Err(err) = indexer_client
-        .send_indexing_agreement_cancellation_notification(indexer_url, agreement_id)
+        .send_indexing_agreement_cancellation_notification(indexer_url.clone(), *agreement_id)
         .await
     {
         tracing::error!(error=?err, "Failed to send indexing agreement cancellation");
@@ -503,7 +501,7 @@ pub struct ProcessIndexingAgreementCancellationCtx<R, W> {
 /// Process indexing agreement cancellation.
 pub(super) async fn process_indexing_agreement_indexer_cancellation<R, W>(
     ProcessIndexingAgreementCancellationCtx { queue, registry }: ProcessIndexingAgreementCancellationCtx<R, W>,
-    ProcessIndexingAgreementCancellation { agreement_id }: ProcessIndexingAgreementCancellation,
+    ProcessIndexingAgreementCancellation { agreement_id }: &ProcessIndexingAgreementCancellation,
 ) -> anyhow::Result<JobResult<()>>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
@@ -556,7 +554,7 @@ where
 
 pub(super) async fn process_indexing_agreement_requester_cancellation<R, W>(
     ProcessIndexingAgreementCancellationCtx { queue, registry }: ProcessIndexingAgreementCancellationCtx<R, W>,
-    ProcessIndexingAgreementCancellation { agreement_id }: ProcessIndexingAgreementCancellation,
+    ProcessIndexingAgreementCancellation { agreement_id }: &ProcessIndexingAgreementCancellation,
 ) -> anyhow::Result<JobResult<()>>
 where
     R: IndexingRequestRegistry + AgreementRegistry,

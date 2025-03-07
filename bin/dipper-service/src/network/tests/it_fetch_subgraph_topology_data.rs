@@ -55,7 +55,7 @@ async fn fetch_subgraph_data() {
 
     //* When
     let res = tokio::time::timeout(
-        Duration::from_secs(30),
+        Duration::from_secs(60),
         network_subgraph_client.fetch_subgraphs(),
     )
     .await
@@ -81,7 +81,7 @@ async fn fetch_indexer_operators_data() {
 
     //* When
     let res = tokio::time::timeout(
-        Duration::from_secs(30),
+        Duration::from_secs(45),
         network_subgraph_client.fetch_indexer_operators(),
     )
     .await

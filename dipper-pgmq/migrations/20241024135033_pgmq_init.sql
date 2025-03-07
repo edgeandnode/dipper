@@ -7,7 +7,8 @@ CREATE TABLE pgmq_queue
     scheduled_for   TIMESTAMPTZ NOT NULL,
 
     status          INT         NOT NULL,
-    failed_attempts INT         NOT NULL,
+    retry_max       INT         NOT NULL, -- The retry limit
+    retry_count     INT         NOT NULL, -- The number of times the job has been retried
 
     message         JSON        NOT NULL
 );

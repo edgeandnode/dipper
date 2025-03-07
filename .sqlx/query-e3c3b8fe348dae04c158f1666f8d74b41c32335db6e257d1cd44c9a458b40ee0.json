@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE pgmq_queue\n            SET status = $1, updated_at = $2\n            WHERE id IN (\n                SELECT id\n                FROM pgmq_queue\n                WHERE status = $3 AND scheduled_for <= $4 AND failed_attempts < $5\n                ORDER BY scheduled_for\n                FOR UPDATE SKIP LOCKED\n                LIMIT $6\n            )\n            RETURNING *",
+  "query": "UPDATE pgmq_queue\n            SET\n                updated_at = timezone('UTC', now()),\n                status = $1\n            WHERE id IN (\n                SELECT id\n                FROM pgmq_queue\n                WHERE status = $2 AND scheduled_for <= timezone('UTC', now())\n                ORDER BY scheduled_for\n                FOR UPDATE SKIP LOCKED\n                LIMIT 1\n            )\n            RETURNING *",
   "describe": {
     "columns": [
       {
@@ -30,11 +30,16 @@
       },
       {
         "ordinal": 5,
-        "name": "failed_attempts",
+        "name": "retry_max",
         "type_info": "Int4"
       },
       {
         "ordinal": 6,
+        "name": "retry_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
         "name": "message",
         "type_info": "Json"
       }
@@ -42,11 +47,7 @@
     "parameters": {
       "Left": [
         "Int4",
-        "Timestamptz",
-        "Int4",
-        "Timestamptz",
-        "Int4",
-        "Int8"
+        "Int4"
       ]
     },
     "nullable": [
@@ -56,8 +57,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "8d021ff97de6451913e05eb2a6f567a267350d92595ef5c80126619c1e19d77b"
+  "hash": "e3c3b8fe348dae04c158f1666f8d74b41c32335db6e257d1cd44c9a458b40ee0"
 }

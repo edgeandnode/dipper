@@ -115,7 +115,7 @@ where
         // Check if the agreement exists and the indexer is the owner
         match self
             .registry
-            .get_indexing_agreement_by_id(agreement_id)
+            .get_indexing_agreement_by_id(&agreement_id)
             .await
         {
             Ok(None) => {
@@ -261,7 +261,7 @@ where
         // Fetch the agreement from the registry
         let agreement = match self
             .registry
-            .get_indexing_agreement_by_id(agreement_id)
+            .get_indexing_agreement_by_id(&agreement_id)
             .await
         {
             Err(err) => {
