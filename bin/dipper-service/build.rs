@@ -5,8 +5,12 @@
 //
 // If neither of these options work, do not set the variable.
 fn main() {
+    // Instruct cargo to rerun this build script if the `../../migrations` directory changes
+    println!("cargo:rerun-if-changed=../../migrations");
+
+    // Check if the `PYTHON_LIB_DIR` environment variable is set
     let python_lib_dir = if let Ok(path) = std::env::var("PYTHON_LIB_DIR") {
-        // Instruct cargo to rerun this build script if the `PYTHON_LIB_DIR` env variable changes.
+        // Instruct cargo to rerun this build script if the `PYTHON_LIB_DIR` env variable change.
         println!("cargo:rerun-if-env-changed=PYTHON_LIB_DIR");
 
         Some(path)

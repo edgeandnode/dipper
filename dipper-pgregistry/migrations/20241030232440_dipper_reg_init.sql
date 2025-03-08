@@ -11,10 +11,6 @@ CREATE TABLE dipper_reg_indexing_requests
     deployment_chain_id BYTEA NOT NULL
 );
 
-CREATE INDEX dipper_reg_indexing_requests_requested_by_idx ON dipper_reg_indexing_requests (requested_by);
-CREATE INDEX dipper_reg_indexing_requests_status_idx ON dipper_reg_indexing_requests (status);
-CREATE INDEX dipper_reg_indexing_requests_deployment_id_idx ON dipper_reg_indexing_requests (deployment_id);
-
 -- Table: dipper_reg_indexing_agreements
 CREATE TABLE dipper_reg_indexing_agreements
 (
@@ -48,11 +44,6 @@ CREATE TABLE dipper_reg_indexing_agreements
     voucher_metadata_chain_id                   BYTEA  NOT NULL
 );
 
-CREATE INDEX dipper_reg_indexing_agreements_status_idx ON dipper_reg_indexing_agreements (status);
-CREATE INDEX dipper_reg_indexing_agreements_indexing_request_id_idx ON dipper_reg_indexing_agreements (indexing_request_id);
-CREATE INDEX dipper_reg_indexing_agreements_indexer_id_idx ON dipper_reg_indexing_agreements (indexer_id);
-CREATE INDEX dipper_reg_indexing_agreements_deployment_id_idx ON dipper_reg_indexing_agreements (deployment_id);
-
 -- Table: dipper_reg_indexing_receipts
 CREATE TABLE dipper_reg_indexing_receipts
 (
@@ -72,7 +63,3 @@ CREATE TABLE dipper_reg_indexing_receipts
 
     amount              BYTEA  NOT NULL
 );
-
-CREATE INDEX dipper_reg_indexing_receipts_indexing_agreement_id_idx ON dipper_reg_indexing_receipts (indexing_agreement_id);
-CREATE INDEX dipper_reg_indexing_receipts_indexer_id_idx ON dipper_reg_indexing_receipts (indexer_id);
-CREATE INDEX dipper_reg_indexing_receipts_created_at_idx ON dipper_reg_indexing_receipts (created_at);
