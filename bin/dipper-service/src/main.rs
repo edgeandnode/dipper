@@ -4,7 +4,6 @@ use async_signal::{Signal, Signals};
 use dipper_iisa as iisa;
 use dipper_pgmq::PgQueue;
 use futures_lite::StreamExt;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use thegraph_core::alloy::{primitives::ChainId, signers::local::PrivateKeySigner};
 use tokio::task::JoinSet;
 use tracing_subscriber::EnvFilter;
@@ -19,6 +18,7 @@ use self::{
 mod admin_rpc_server;
 mod config;
 mod context;
+mod db;
 mod indexer_rpc_client;
 mod indexer_rpc_server;
 mod network;
@@ -75,28 +75,19 @@ pub async fn main() -> anyhow::Result<()> {
         ))
     };
 
-    //- The DB connection pool component
-    let db = {
-        let mut conn_options: PgConnectOptions =
-            conf.db.url.as_str().parse().expect("Invalid DB URL");
-        conn_options = conn_options
-            .username(&conf.db.username)
-            .password(&conf.db.password);
-
-        // Try to connect to the DB
-        PgPoolOptions::new()
-            .max_connections(conf.db.max_connections.unwrap_or(10))
-            .connect_with(conn_options)
-            .await
-    }?;
+    //- DB connect and run migrations
+    let db_conn = db::connect(&conf.db).await?;
     tracing::info!(db_url=%conf.db.url, "initialized DB connection pool");
 
-    //- The worker queue component
-    let queue = PgQueue::with_max_attempts(db.clone(), 3);
-    let worker_queue = Worker::new(queue.clone());
+    db::run_migrations(&db_conn).await?;
+    tracing::info!("applied DB migrations");
 
-    // The registry component
-    let registry = RegistryProvider::new(db.clone());
+    //- The worker and worker queue component
+    let queue = PgQueue::with_max_attempts(db_conn.clone(), 3);
+    let worker = Worker::new(queue.clone());
+
+    //- The registry component
+    let registry = RegistryProvider::new(db_conn.clone());
 
     //- The indexer client component
     let indexer_client = indexer_rpc_client::DipsIndexerClient::new(signer.clone());
@@ -158,7 +149,7 @@ pub async fn main() -> anyhow::Result<()> {
         .with_signer(signer)
         .with_tap_signer(tap_signer)
         .with_agreement_config(conf.dips)
-        .with_worker(worker_queue)
+        .with_worker(worker)
         .with_network_provider(network_provider)
         .with_registry(registry)
         .with_indexer_client(indexer_client)
@@ -250,7 +241,7 @@ pub async fn main() -> anyhow::Result<()> {
         tracing::trace!("stopped Graph network service");
 
         tracing::trace!("shutting down DB connection pool");
-        db.close().await;
+        db_conn.close().await;
         tracing::trace!("shut down DB connection pool");
 
         Ok(())
