@@ -9,7 +9,7 @@ serde = ["dep:serde", "dep:serde_with", "thegraph-core/serde", "uuid/serde"]
 sqlx = ["dep:sqlx"]
 
 [dependencies]
-fake = { version = "3.0.1", optional = true, features = ["uuid"] }
+fake = { workspace = true, optional = true, features = ["uuid"] }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true, features = ["base64"] }
 sqlx = { workspace = true, optional = true }

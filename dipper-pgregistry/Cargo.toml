@@ -9,7 +9,7 @@ fake = ["dep:fake", "dipper-core/fake"]
 
 [dependencies]
 dipper-core = { version = "0.1.0", path = "../dipper-core", features = ["sqlx"] }
-fake = { version = "3.0.1", optional = true, features = ["url"] }
+fake = { workspace = true, optional = true, features = ["url"] }
 num-derive = "0.4.2"
 num-traits = "0.2.19"
 sqlx = { workspace = true, features = ["runtime-tokio"] }
@@ -20,7 +20,7 @@ url.workspace = true
 
 [dev-dependencies]
 dipper-core = { path = "../dipper-core" }
-fake = { version = "3.0.1", features = ["url"] }
+fake = { workspace = true, features = ["url"] }
 test-with = { version = "0.14.4", default-features = false }
 thegraph-core = { workspace = true, features = ["fake"] }
 uuid.workspace = true
