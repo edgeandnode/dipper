@@ -15,6 +15,6 @@ tokio.workspace = true
 uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
-fake = "4.0.0"
+fake.workspace = true
 test-with = "0.14.7"
 tokio = { workspace = true, features = ["macros", "test-util"] }
