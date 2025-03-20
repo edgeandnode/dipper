@@ -6710,9 +6710,9 @@ dependencies = [
 
 [[package]]
 name = "test-with"
-version = "0.14.7"
+version = "0.14.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb39a1199760f44d7e11b6644b620d35abe7e012fa34288abae9e5aa95a243da"
+checksum = "03ed0eeaca420c94c7fbcfd53f425b6ea2ce25e23111523b76bde45ec1c4e2ca"
 dependencies = [
  "byte-unit",
  "chrono",
@@ -7583,7 +7583,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
