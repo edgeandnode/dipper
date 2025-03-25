@@ -4,9 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow.workspace = true
 dipper-core = { version = "0.1.0", path = "../dipper-core", features = ["serde"] }
-indexer-dips = { git = "https://github.com/graphprotocol/indexer-rs.git", rev = "dcc2cdb", version = "0.1.0" , default-features = false, features = ["rpc"] }
+indexer-dips = { git = "https://github.com/graphprotocol/indexer-rs.git", rev = "6c01c03", default-features = false, features = ["rpc"] }
 jsonrpsee = { workspace = true, features = ["client", "macros", "server"] }
 serde.workspace = true
 serde_with.workspace = true
