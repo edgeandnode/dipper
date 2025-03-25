@@ -3920,7 +3920,7 @@ dependencies = [
 [[package]]
 name = "indexer-allocation"
 version = "0.1.0"
-source = "git+https://github.com/graphprotocol/indexer-rs.git?rev=6c01c03#6c01c03eaeb45b8bad411fbb4e5b53ee8b076f82"
+source = "git+https://github.com/graphprotocol/indexer-rs.git?rev=c94e355#c94e35557b98879883d5740bbc7b18186edaec22"
 dependencies = [
  "anyhow",
  "indexer-query",
@@ -3931,7 +3931,7 @@ dependencies = [
 [[package]]
 name = "indexer-attestation"
 version = "0.1.0"
-source = "git+https://github.com/graphprotocol/indexer-rs.git?rev=6c01c03#6c01c03eaeb45b8bad411fbb4e5b53ee8b076f82"
+source = "git+https://github.com/graphprotocol/indexer-rs.git?rev=c94e355#c94e35557b98879883d5740bbc7b18186edaec22"
 dependencies = [
  "anyhow",
  "indexer-allocation",
@@ -3941,7 +3941,7 @@ dependencies = [
 [[package]]
 name = "indexer-dips"
 version = "0.1.0"
-source = "git+https://github.com/graphprotocol/indexer-rs.git?rev=6c01c03#6c01c03eaeb45b8bad411fbb4e5b53ee8b076f82"
+source = "git+https://github.com/graphprotocol/indexer-rs.git?rev=c94e355#c94e35557b98879883d5740bbc7b18186edaec22"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3967,7 +3967,7 @@ dependencies = [
 [[package]]
 name = "indexer-monitor"
 version = "0.1.0"
-source = "git+https://github.com/graphprotocol/indexer-rs.git?rev=6c01c03#6c01c03eaeb45b8bad411fbb4e5b53ee8b076f82"
+source = "git+https://github.com/graphprotocol/indexer-rs.git?rev=c94e355#c94e35557b98879883d5740bbc7b18186edaec22"
 dependencies = [
  "anyhow",
  "axum",
@@ -3989,7 +3989,7 @@ dependencies = [
 [[package]]
 name = "indexer-query"
 version = "0.1.0"
-source = "git+https://github.com/graphprotocol/indexer-rs.git?rev=6c01c03#6c01c03eaeb45b8bad411fbb4e5b53ee8b076f82"
+source = "git+https://github.com/graphprotocol/indexer-rs.git?rev=c94e355#c94e35557b98879883d5740bbc7b18186edaec22"
 dependencies = [
  "anyhow",
  "graphql_client",
@@ -4000,7 +4000,7 @@ dependencies = [
 [[package]]
 name = "indexer-watcher"
 version = "0.1.0"
-source = "git+https://github.com/graphprotocol/indexer-rs.git?rev=6c01c03#6c01c03eaeb45b8bad411fbb4e5b53ee8b076f82"
+source = "git+https://github.com/graphprotocol/indexer-rs.git?rev=c94e355#c94e35557b98879883d5740bbc7b18186edaec22"
 dependencies = [
  "anyhow",
  "tokio",
