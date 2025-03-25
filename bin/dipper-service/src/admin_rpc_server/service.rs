@@ -72,10 +72,8 @@ where
                 tracing::debug!("Stopping admin RPC server");
 
                 // Notify the server and wait for it to stop
-                if let Ok(()) = handle.stop() {
+                if handle.stop().is_ok() {
                     handle.stopped().await;
-                } else {
-                    tracing::warn!("The admin RPC server is already stopped")
                 }
             }
         }

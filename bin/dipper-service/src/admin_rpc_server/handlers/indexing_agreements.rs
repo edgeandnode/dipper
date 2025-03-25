@@ -158,7 +158,7 @@ where
         let CancelIndexingAgreement { id: agreement_id } = req.into_message();
 
         // Check if the agreement exists
-        match self
+        let agreement = match self
             .registry
             .get_indexing_agreement_by_id(&agreement_id)
             .await
@@ -170,15 +170,19 @@ where
                 tracing::error!(error=?err, "Failed to get indexing agreement");
                 return Err(ErrorObject::borrowed(503, "Internal error", None));
             }
-            _ => {
+            Ok(Some(agreement)) => {
                 // The agreement exists, proceed with cancellation
+                agreement
             }
-        }
+        };
 
         // Process the indexing request cancellation
         if let Err(err) = self
             .worker
-            .process_indexing_agreement_requester_cancellation(agreement_id)
+            .process_indexing_agreement_requester_cancellation(
+                agreement.indexing_request_id,
+                agreement.id,
+            )
             .await
         {
             tracing::error!(error=?err, "Failed to queue task: 'process_indexing_agreement_requester_cancellation'");

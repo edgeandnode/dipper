@@ -113,7 +113,7 @@ where
         let agreement_id = IndexingAgreementId::from(sol_cancellation_req.agreement_id.as_ref());
 
         // Check if the agreement exists and the indexer is the owner
-        match self
+        let agreement = match self
             .registry
             .get_indexing_agreement_by_id(&agreement_id)
             .await
@@ -128,16 +128,20 @@ where
                 tracing::error!(error=?err, "Failed to get indexing agreement");
                 return Err(Status::internal("Cancellation failed"));
             }
-            _ => {
+            Ok(Some(agreement)) => {
                 // The agreement exists and the requester is authorised
                 // Proceed with cancellation
+                agreement
             }
-        }
+        };
 
         // Process the indexing agreement cancellation
         if let Err(err) = self
             .worker
-            .process_indexing_agreement_indexer_cancellation(agreement_id)
+            .process_indexing_agreement_indexer_cancellation(
+                agreement.indexing_request_id,
+                agreement.id,
+            )
             .await
         {
             tracing::error!(error=?err, "Failed to queue task: 'process_indexing_agreement_indexer_cancellation'");

@@ -60,8 +60,8 @@ where
         Server::builder()
             .add_service(GatewayDipsServiceServer::new(service_impl))
             .serve_with_shutdown(conf.listen_addr, async move {
-                tracing::debug!("Stopping admin RPC server");
                 let _ = rx_stop.recv().await;
+                tracing::debug!("Stopping indexer RPC server");
             })
             .await?;
 

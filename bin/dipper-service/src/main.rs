@@ -74,6 +74,7 @@ pub async fn main() -> anyhow::Result<()> {
             conf.tap_signer.verifier,
         ))
     };
+    tracing::info!(address=%tap_signer.address(), "TAP Signer wallet imported");
 
     //- DB connect and run migrations
     let db_conn = db::connect(&conf.db).await?;
@@ -198,11 +199,11 @@ pub async fn main() -> anyhow::Result<()> {
     let worker_task_handle = task_tree.spawn(worker_service);
     tracing::debug!(task_id=%worker_task_handle.id(), "Worker service started");
 
-    let admin_rpc_task_handle = task_tree.spawn(admin_rpc_service);
-    tracing::debug!(task_id=%admin_rpc_task_handle.id(), "Admin RPC service started");
-
     let indexer_rpc_task_handle = task_tree.spawn(indexer_rpc_service);
     tracing::debug!(task_id=%indexer_rpc_task_handle.id(), "Indexer RPC service started");
+
+    let admin_rpc_task_handle = task_tree.spawn(admin_rpc_service);
+    tracing::debug!(task_id=%admin_rpc_task_handle.id(), "Admin RPC service started");
 
     let signal_handler_task_handle = task_tree.spawn(async move {
         let signal = signal_task().await;
@@ -219,13 +220,13 @@ pub async fn main() -> anyhow::Result<()> {
         //
         // Services are stopped in the reverse order of their dependencies. This is to ensure that
         // the services that depend on other services are stopped first
-        tracing::trace!("stopping Indexer RPC service");
-        indexer_rpc_handle.stop().await;
-        tracing::trace!("stopped Indexer RPC service");
-
         tracing::trace!("stopping Admin RPC service");
         admin_rpc_handle.stop().await;
         tracing::trace!("stopped Admin RPC service");
+
+        tracing::trace!("stopping Indexer RPC service");
+        indexer_rpc_handle.stop().await;
+        tracing::trace!("stopped Indexer RPC service");
 
         tracing::trace!("stopping Worker service");
         worker_handle.stop().await;
