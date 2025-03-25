@@ -2,6 +2,7 @@
 //!
 //! The EIP-712 signer is a wrapper around an ECDSA signer and an EIP-712 domain separator.
 
+use dipper_rpc::indexer::{gateway_server, indexer_client};
 use thegraph_core::{
     alloy::{
         primitives::{Address, ChainId},
@@ -74,23 +75,6 @@ where
         sign(&self.signer, &self.domain, message)
     }
 
-    /// Sing a message using the [EIP-712] standard with the given domain
-    ///
-    /// Returns a [`SignedMessage`] containing the message and the ECDSA signature of the message
-    ///
-    /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
-    pub fn sign_with_domain<M, MSol>(
-        &self,
-        domain: &Eip712Domain,
-        message: M,
-    ) -> Result<SignedMessage<M>, SigningError>
-    where
-        M: ToSolStruct<MSol>,
-        MSol: SolStruct,
-    {
-        sign(&self.signer, domain, message)
-    }
-
     /// Recover the signer's address from an [EIP-712] signed message
     ///
     /// Returns the signer's address
@@ -107,21 +91,73 @@ where
         recover_signer_address(&self.domain, signed_message)
     }
 
-    /// Recover the signer's address from an [EIP-712] signed message with the given domain
+    /// Sign a DIPs Agreement message using the [EIP-712] standard
+    ///
+    /// Returns a [`SignedMessage`] containing the message and the ECDSA signature of the message
+    ///
+    /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
+    pub fn sign_dips_agreement_msg<M, MSol>(&self, msg: M) -> Result<SignedMessage<M>, SigningError>
+    where
+        M: ToSolStruct<MSol>,
+        MSol: SolStruct,
+    {
+        sign(
+            &self.signer,
+            &indexer_client::dips_agreement_eip712_domain(),
+            msg,
+        )
+    }
+
+    /// Sign a DIPs Cancellation message using the [EIP-712] standard
+    ///
+    /// Returns a [`SignedMessage`] containing the message and the ECDSA signature of the message
+    ///
+    /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
+    pub fn sign_dips_cancellation_msg<M, MSol>(
+        &self,
+        msg: M,
+    ) -> Result<SignedMessage<M>, SigningError>
+    where
+        M: ToSolStruct<MSol>,
+        MSol: SolStruct,
+    {
+        sign(
+            &self.signer,
+            &indexer_client::dips_cancellation_eip712_domain(),
+            msg,
+        )
+    }
+
+    /// Recover the signer's address from an [EIP-712] signed DIPs collection message
     ///
     /// Returns the signer's address
     ///
     /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
-    pub fn recover_signer_with_domain<M, MSol>(
+    pub fn recover_dips_collection_msg_signer<M, MSol>(
         &self,
-        domain: &Eip712Domain,
-        signed_message: &SignedMessage<M>,
+        msg: &SignedMessage<M>,
     ) -> Result<Address, RecoverSignerError>
     where
         M: ToSolStruct<MSol>,
         MSol: SolStruct,
     {
-        recover_signer_address(domain, signed_message)
+        recover_signer_address(&gateway_server::dips_collection_eip712_domain(), msg)
+    }
+
+    /// Recover the signer's address from an [EIP-712] signed DIPs cancellation message
+    ///
+    /// Returns the signer's address
+    ///
+    /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
+    pub fn recover_dips_cancellation_msg_signer<M, MSol>(
+        &self,
+        msg: &SignedMessage<M>,
+    ) -> Result<Address, RecoverSignerError>
+    where
+        M: ToSolStruct<MSol>,
+        MSol: SolStruct,
+    {
+        recover_signer_address(&gateway_server::dips_cancellation_eip712_domain(), msg)
     }
 }
 

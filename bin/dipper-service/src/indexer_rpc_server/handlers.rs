@@ -2,9 +2,7 @@ use std::{cmp::max, collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 use dipper_core::{ids::IndexingAgreementId, state::FromState};
-use dipper_rpc::indexer::gateway_server::{
-    dips_cancellation_eip712_domain, dips_collection_eip712_domain, rpc, sol,
-};
+use dipper_rpc::indexer::gateway_server::{rpc, sol};
 use thegraph_core::{
     AllocationId, IndexerId, ProofOfIndexing,
     alloy::{
@@ -84,13 +82,12 @@ where
         };
 
         // Recover the signer from the request (operator wallet address)
-        let requested_by = match self.signer.recover_signer_with_domain(
-            &dips_cancellation_eip712_domain(),
-            &SignedMessage {
+        let requested_by = match self
+            .signer
+            .recover_dips_cancellation_msg_signer(&SignedMessage {
                 message: sol_cancellation_req.clone(),
                 signature,
-            },
-        ) {
+            }) {
             Ok(requested_by) => requested_by,
             Err(err) => {
                 tracing::debug!(error=?err, "Failed to recover signer");
@@ -182,13 +179,12 @@ where
         };
 
         // Recover the signer from the request (operator wallet address)
-        let requested_by = match self.signer.recover_signer_with_domain(
-            &dips_collection_eip712_domain(),
-            &SignedMessage {
+        let requested_by = match self
+            .signer
+            .recover_dips_collection_msg_signer(&SignedMessage {
                 message: sol_collection_req.clone(),
                 signature,
-            },
-        ) {
+            }) {
             Ok(requested_by) => requested_by,
             Err(err) => {
                 tracing::debug!(error=?err, "Failed to recover signer");

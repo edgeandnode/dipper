@@ -6,9 +6,7 @@ use std::{str::FromStr, sync::Arc};
 
 use async_trait::async_trait;
 use dipper_core::ids::IndexingAgreementId;
-use dipper_rpc::indexer::indexer_client::{
-    dips_agreement_eip712_domain, dips_cancellation_eip712_domain, rpc, sol,
-};
+use dipper_rpc::indexer::indexer_client::{rpc, sol};
 use thegraph_core::alloy::sol_types::SolValue;
 use url::Url;
 
@@ -107,7 +105,7 @@ impl IndexerClient for DipsIndexerClient {
         // Sign the solidity voucher with the appropriate domain
         let signed = self
             .signer
-            .sign_with_domain(&dips_agreement_eip712_domain(), sol_voucher)
+            .sign_dips_agreement_msg(sol_voucher)
             .map_err(|err| DipsError::SigningError(err.into()))?;
 
         // Serialize the Solidity signed voucher to bytes (ABI encoding)
@@ -118,7 +116,7 @@ impl IndexerClient for DipsIndexerClient {
         .abi_encode();
 
         // Build the SubmitAgreementProposalRequest RPC request message
-        // For now, the MVP, we are using version 0
+        // For now, the MVP, we are using version 1
         let request = tonic::Request::new(rpc::SubmitAgreementProposalRequest {
             version: 1, // MVP version
             signed_voucher: sol_signed_voucher_bytes,
@@ -155,7 +153,7 @@ impl IndexerClient for DipsIndexerClient {
         // Sign the solidity cancellation request with the appropriate domain
         let signed = self
             .signer
-            .sign_with_domain(&dips_cancellation_eip712_domain(), sol_cancellation_request)
+            .sign_dips_cancellation_msg(sol_cancellation_request)
             .map_err(|err| DipsError::SigningError(err.into()))?;
 
         // Serialize the Solidity signed cancellation request to bytes (ABI encoding)
