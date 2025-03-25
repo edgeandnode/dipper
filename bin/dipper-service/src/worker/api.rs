@@ -33,6 +33,7 @@ pub trait WorkerQueue {
     async fn send_indexing_agreement_cancellation(
         &self,
         indexer_url: Url,
+        indexing_request_id: IndexingRequestId,
         agreement_id: IndexingAgreementId,
     ) -> anyhow::Result<JobId>;
 
@@ -43,11 +44,13 @@ pub trait WorkerQueue {
 
     async fn process_indexing_agreement_requester_cancellation(
         &self,
+        indexing_request_id: IndexingRequestId,
         agreement_id: IndexingAgreementId,
     ) -> anyhow::Result<JobId>;
 
     async fn process_indexing_agreement_indexer_cancellation(
         &self,
+        indexing_request_id: IndexingRequestId,
         agreement_id: IndexingAgreementId,
     ) -> anyhow::Result<JobId>;
 }

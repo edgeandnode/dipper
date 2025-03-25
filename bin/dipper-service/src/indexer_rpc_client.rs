@@ -5,7 +5,6 @@
 use std::{str::FromStr, sync::Arc};
 
 use async_trait::async_trait;
-use dashmap::{DashMap, Entry};
 use dipper_core::ids::IndexingAgreementId;
 use dipper_rpc::indexer::indexer_client::{
     dips_agreement_eip712_domain, dips_cancellation_eip712_domain, rpc, sol,
@@ -54,7 +53,7 @@ pub trait IndexerClient {
     /// Send an indexing agreement proposal request to the indexer
     async fn send_indexing_agreement_proposal(
         &self,
-        indexer: Url,
+        indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
         voucher: IndexingAgreementVoucher,
     ) -> Result<AgreementProposalResponse, DipsError>;
@@ -62,7 +61,7 @@ pub trait IndexerClient {
     /// Send an indexing agreement cancel request to the indexer
     async fn send_indexing_agreement_cancellation_notification(
         &self,
-        indexer: Url,
+        indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
     ) -> Result<(), DipsError>;
 }
@@ -70,16 +69,12 @@ pub trait IndexerClient {
 #[derive(Clone)]
 pub struct DipsIndexerClient {
     signer: Arc<PrivateKeyEip712Signer>,
-    pool: Arc<DashMap<Url, rpc::IndexerDipsServiceClient<tonic::transport::Channel>>>,
 }
 
 impl DipsIndexerClient {
     /// Create a new indexer client
     pub fn new(signer: Arc<PrivateKeyEip712Signer>) -> Self {
-        Self {
-            signer,
-            pool: Default::default(),
-        }
+        Self { signer }
     }
 
     /// Get a client for the given indexer URL
@@ -87,27 +82,14 @@ impl DipsIndexerClient {
     /// If the client is not in the pool, create a new instance.
     fn get_client(
         &self,
-        indexer_url: Url,
-    ) -> Result<
-        impl std::ops::DerefMut<Target = rpc::IndexerDipsServiceClient<tonic::transport::Channel>> + '_,
-        DipsError,
-    > {
-        // If the client is not in the pool, create a new one
-        let entry = match self.pool.entry(indexer_url) {
-            Entry::Vacant(entry) => {
-                let indexer_url = entry.key().as_str();
-
-                let channel = tonic::transport::Endpoint::from_str(indexer_url)
-                    .map_err(|err| DipsError::ConnectionError(err.into()))?
-                    .connect_lazy();
-                let client = rpc::IndexerDipsServiceClient::new(channel);
-
-                entry.insert_entry(client)
-            }
-            Entry::Occupied(entry) => entry,
-        };
-
-        Ok(entry.into_ref())
+        indexer_url: &Url,
+    ) -> Result<rpc::IndexerDipsServiceClient<tonic::transport::Channel>, DipsError> {
+        let indexer_url = indexer_url.as_str();
+        let channel = tonic::transport::Endpoint::from_str(indexer_url)
+            .map_err(|err| DipsError::ConnectionError(err.into()))?
+            .connect_lazy();
+        let client = rpc::IndexerDipsServiceClient::new(channel);
+        Ok(client)
     }
 }
 
@@ -115,7 +97,7 @@ impl DipsIndexerClient {
 impl IndexerClient for DipsIndexerClient {
     async fn send_indexing_agreement_proposal(
         &self,
-        indexer: Url,
+        indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
         voucher: IndexingAgreementVoucher,
     ) -> Result<AgreementProposalResponse, DipsError> {
@@ -138,7 +120,7 @@ impl IndexerClient for DipsIndexerClient {
         // Build the SubmitAgreementProposalRequest RPC request message
         // For now, the MVP, we are using version 0
         let request = tonic::Request::new(rpc::SubmitAgreementProposalRequest {
-            version: 0, // MVP version
+            version: 1, // MVP version
             signed_voucher: sol_signed_voucher_bytes,
         });
 
@@ -164,7 +146,7 @@ impl IndexerClient for DipsIndexerClient {
 
     async fn send_indexing_agreement_cancellation_notification(
         &self,
-        indexer: Url,
+        indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
     ) -> Result<(), DipsError> {
         // Convert to the solidity cancellation request data structure
@@ -185,7 +167,7 @@ impl IndexerClient for DipsIndexerClient {
 
         // Build the CancelAgreementRequest RPC request message
         let request = tonic::Request::new(rpc::CancelAgreementRequest {
-            version: 0,
+            version: 1,
             signed_cancellation: sol_signed_cancellation_request_bytes,
         });
 

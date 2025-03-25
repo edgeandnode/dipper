@@ -122,6 +122,7 @@ pub struct SendIndexingAgreementProposal {
 pub struct SendIndexingAgreementCancellation {
     #[serde_as(as = "DisplayFromStr")]
     pub indexer_url: Url,
+    pub indexing_request_id: IndexingRequestId,
     pub agreement_id: IndexingAgreementId,
 }
 
@@ -131,6 +132,8 @@ pub struct SendIndexingAgreementCancellation {
 /// to fulfill the indexing request.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProcessIndexingAgreementCancellation {
-    /// The ID of the indexing agreement.
+    /// The ID of the indexing request
+    pub indexing_request_id: IndexingRequestId,
+    /// The ID of the indexing agreement
     pub agreement_id: IndexingAgreementId,
 }

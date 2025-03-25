@@ -54,16 +54,18 @@ pub struct DipsAgreementConfig {
     pub duration_epochs: Option<u32>,
 
     /// The _indexing agreement_'s per chain pricing table.
-    #[serde_as(as = "serde_with::MapSkipError<_ ,_>")]
     pub pricing_table: BTreeMap<ChainId, ChainPrices>,
 }
 
 /// Per-chain prices for the DIPs _indexing agreement_.
+#[serde_as]
 #[derive(Debug, serde::Deserialize)]
 pub struct ChainPrices {
     /// The price per block in wei GRT.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
     pub base_price_per_epoch: U256,
     /// The price per entity in wei GRT per epoch.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
     pub price_per_entity: U256,
 }
 
