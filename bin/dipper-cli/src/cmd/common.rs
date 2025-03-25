@@ -7,10 +7,7 @@ use figment::{
     providers::{Env, Serialized},
 };
 use serde_with::{DisplayFromStr, serde_as, skip_serializing_none};
-use thegraph_core::alloy::{
-    primitives::{Address, ChainId},
-    signers::k256::SecretKey,
-};
+use thegraph_core::alloy::signers::k256::SecretKey;
 use url::Url;
 
 use crate::config::Config;
@@ -97,10 +94,6 @@ struct CliConfig {
     /// The secret key to sign requests with
     #[serde_as(as = "Option<HiddenSecretKeyAsHexStr>")]
     pub signing_key: Option<Hidden<SecretKey>>,
-    /// The DIPs payment wallet chain ID
-    pub chain_id: Option<ChainId>,
-    /// The address of the DIPs payment wallet
-    pub payer: Option<Address>,
 }
 
 impl FromArgMatches for CliConfig {
@@ -108,8 +101,6 @@ impl FromArgMatches for CliConfig {
         Ok(Self {
             server_url: matches.get_one("server-url").cloned(),
             signing_key: matches.get_one("signing-key").cloned(),
-            chain_id: matches.get_one("chain-id").cloned(),
-            payer: matches.get_one("payer").cloned(),
         })
     }
 
