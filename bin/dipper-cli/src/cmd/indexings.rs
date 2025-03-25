@@ -159,6 +159,7 @@ pub(super) fn indexings_cmd() -> Command {
                     arg!(<SUBGRAPH> "The indexing request's Subgraph (or Deployment) ID")
                         .value_parser(value_parser!(SubgraphIdOrDeploymentId)),
                     arg!(<CHAIN_ID> "The ID of the chain indexed by the subgraph")
+                        .value_parser(value_parser!(ChainId))
                         .required(true),
                 ]),
             command!("cancel")
