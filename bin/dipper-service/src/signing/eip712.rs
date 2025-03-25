@@ -62,19 +62,6 @@ where
         self.signer_chain
     }
 
-    /// Sign a message using the [EIP-712] standard
-    ///
-    /// Returns a [`SignedMessage`] containing the message and the ECDSA signature of the message
-    ///
-    /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
-    pub fn sign<M, MSol>(&self, message: M) -> Result<SignedMessage<M>, SigningError>
-    where
-        M: ToSolStruct<MSol>,
-        MSol: SolStruct,
-    {
-        sign(&self.signer, &self.domain, message)
-    }
-
     /// Recover the signer's address from an [EIP-712] signed message
     ///
     /// Returns the signer's address
@@ -103,7 +90,7 @@ where
     {
         sign(
             &self.signer,
-            &indexer_client::dips_agreement_eip712_domain(),
+            &indexer_client::dips_agreement_eip712_domain(self.signer_chain),
             msg,
         )
     }
@@ -123,7 +110,7 @@ where
     {
         sign(
             &self.signer,
-            &indexer_client::dips_cancellation_eip712_domain(),
+            &indexer_client::dips_cancellation_eip712_domain(self.signer_chain),
             msg,
         )
     }
@@ -141,7 +128,10 @@ where
         M: ToSolStruct<MSol>,
         MSol: SolStruct,
     {
-        recover_signer_address(&gateway_server::dips_collection_eip712_domain(), msg)
+        recover_signer_address(
+            &gateway_server::dips_collection_eip712_domain(self.signer_chain),
+            msg,
+        )
     }
 
     /// Recover the signer's address from an [EIP-712] signed DIPs cancellation message
@@ -157,16 +147,22 @@ where
         M: ToSolStruct<MSol>,
         MSol: SolStruct,
     {
-        recover_signer_address(&gateway_server::dips_cancellation_eip712_domain(), msg)
+        recover_signer_address(
+            &gateway_server::dips_cancellation_eip712_domain(self.signer_chain),
+            msg,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use thegraph_core::alloy::{
-        primitives::{address, b256, keccak256},
-        signers::local::PrivateKeySigner,
-        sol_types::{Eip712Domain, eip712_domain},
+    use thegraph_core::{
+        alloy::{
+            primitives::{address, b256, keccak256},
+            signers::local::PrivateKeySigner,
+            sol_types::{Eip712Domain, eip712_domain},
+        },
+        signed_message::sign,
     };
 
     use super::Eip712Signer;
@@ -208,10 +204,11 @@ mod tests {
         // Create an Eip712Signer instance
         let eip712_signer = Eip712Signer::new(signer, signer_address, signer_chain, domain);
 
-        //* When
         // Sign the message
-        let signed_message = eip712_signer.sign(message).expect("message signing failed");
+        let signed_message = sign(&eip712_signer.signer, &eip712_signer.domain, message)
+            .expect("message signing failed");
 
+        //* When
         // Verify the signed message
         let result = eip712_signer.recover_signer(&signed_message);
 
