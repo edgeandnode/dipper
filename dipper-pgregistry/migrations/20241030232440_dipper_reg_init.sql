@@ -24,13 +24,13 @@ CREATE TABLE dipper_reg_indexing_agreements
     accepted_at_epoch BIGINT,
 
     -- Indexer information
-    indexer_id          TEXT        NOT NULL,
+    indexer_id          BYTEA       NOT NULL,
     indexer_url         TEXT        NOT NULL,
 
     -- Voucher information
-    voucher_payer                               TEXT   NOT NULL,
-    voucher_recipient                           TEXT   NOT NULL,
-    voucher_service                             TEXT   NOT NULL,
+    voucher_payer                               BYTEA  NOT NULL,
+    voucher_recipient                           BYTEA  NOT NULL,
+    voucher_service                             BYTEA  NOT NULL,
     voucher_duration_epochs                     BIGINT NOT NULL,
     voucher_max_initial_amount                  BYTEA  NOT NULL,
     voucher_max_ongoing_amount_per_epoch        BYTEA  NOT NULL,
