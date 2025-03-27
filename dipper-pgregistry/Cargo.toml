@@ -12,8 +12,9 @@ dipper-core = { version = "0.1.0", path = "../dipper-core", features = ["sqlx"] 
 fake = { workspace = true, optional = true, features = ["url"] }
 num-derive = "0.4.2"
 num-traits = "0.2.19"
+serde = { workspace = true, features = ["derive"] }
 sqlx = { workspace = true, features = ["runtime-tokio"] }
-thegraph-core.workspace = true
+thegraph-core = { workspace = true, features = ["serde"] }
 thiserror.workspace = true
 time.workspace = true
 url.workspace = true
