@@ -1,7 +1,7 @@
 //! PostgreSQL implementation of the registry
 
 use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
-use sqlx::{Pool, Postgres};
+use sqlx::{Pool, Postgres, types::Json};
 use thegraph_core::{
     DeploymentId, IndexerId,
     alloy::primitives::{Address, ChainId, U256},
@@ -138,6 +138,8 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
+    /// Returns all indexing associated with an indexing request that are in the `CREATED` or
+    /// `ACCEPTED` state.
     pub async fn get_active_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
@@ -151,23 +153,10 @@ impl PgRegistry {
                 status,
                 indexing_request_id,
                 deployment_id,
+                accepted_at_epoch,
                 indexer_id,
                 indexer_url,
-
-                voucher_payer,
-                voucher_recipient,
-                voucher_service,
-                voucher_duration_epochs,
-                voucher_max_initial_amount,
-                voucher_max_ongoing_amount_per_epoch,
-                voucher_min_epochs_per_collection,
-                voucher_max_epochs_per_collection,
-                voucher_deadline,
-                voucher_metadata_base_price_per_epoch,
-                voucher_metadata_price_per_entity,
-                voucher_metadata_deployment_id,
-                voucher_metadata_protocol_network,
-                voucher_metadata_chain_id
+                voucher
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1 AND status IN ($2, $3)
             "#,
@@ -180,7 +169,9 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
-    pub async fn get_indexing_request_rejected_indexing_agreements(
+    /// Returns all indexing agreements associated with an indexing request that are in
+    /// either `REJECTED` or `CANCELED_BY_INDEXER` state.
+    pub async fn get_rejected_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
     ) -> Result<Vec<IndexingAgreement>, Error> {
@@ -193,25 +184,12 @@ impl PgRegistry {
                 status,
                 indexing_request_id,
                 deployment_id,
+                accepted_at_epoch,
                 indexer_id,
                 indexer_url,
-
-                voucher_payer,
-                voucher_recipient,
-                voucher_service,
-                voucher_duration_epochs,
-                voucher_max_initial_amount,
-                voucher_max_ongoing_amount_per_epoch,
-                voucher_min_epochs_per_collection,
-                voucher_max_epochs_per_collection,
-                voucher_deadline,
-                voucher_metadata_base_price_per_epoch,
-                voucher_metadata_price_per_entity,
-                voucher_metadata_deployment_id,
-                voucher_metadata_protocol_network,
-                voucher_metadata_chain_id
+                voucher
             FROM dipper_reg_indexing_agreements
-            WHERE id = $1 AND status IN ($2, $3)
+        WHERE indexing_request_id = $1 AND status IN ($2, $3)
             "#,
         )
         .bind(request_id)
@@ -273,25 +251,11 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-
-                voucher_payer,
-                voucher_recipient,
-                voucher_service,
-                voucher_duration_epochs,
-                voucher_max_initial_amount,
-                voucher_max_ongoing_amount_per_epoch,
-                voucher_min_epochs_per_collection,
-                voucher_max_epochs_per_collection,
-                voucher_deadline,
-                voucher_metadata_base_price_per_epoch,
-                voucher_metadata_price_per_entity,
-                voucher_metadata_deployment_id,
-                voucher_metadata_protocol_network,
-                voucher_metadata_chain_id
+                voucher
             )
             VALUES (
                 $1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, $5, $6,
-                $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+                $7, $8
             )
             RETURNING id
             "#,
@@ -303,20 +267,7 @@ impl PgRegistry {
         .bind(PgDeploymentId(deployment_id))
         .bind(PgIndexerId(indexer_id))
         .bind(PgUrl(indexer_url))
-        .bind(PgAddress(voucher.payer))
-        .bind(PgAddress(voucher.recipient))
-        .bind(PgAddress(voucher.service))
-        .bind(PgU32(voucher.duration_epochs))
-        .bind(PgU256(voucher.max_initial_amount))
-        .bind(PgU256(voucher.max_ongoing_amount_per_epoch))
-        .bind(PgU32(voucher.min_epochs_per_collection))
-        .bind(PgU32(voucher.max_epochs_per_collection))
-        .bind(PgU64(voucher.deadline))
-        .bind(PgU256(voucher.metadata.base_price_per_epoch))
-        .bind(PgU256(voucher.metadata.price_per_entity))
-        .bind(PgDeploymentId(voucher.metadata.subgraph_deployment_id))
-        .bind(PgU64(voucher.metadata.protocol_network))
-        .bind(PgU64(voucher.metadata.chain_id))
+        .bind(Json(voucher))
         .fetch_one(&self.pool)
         .await
         .map(|(id,)| id)
@@ -337,23 +288,10 @@ impl PgRegistry {
                 accepted_at_epoch,
                 indexing_request_id,
                 deployment_id,
+                accepted_at_epoch,
                 indexer_id,
                 indexer_url,
-
-                voucher_payer,
-                voucher_recipient,
-                voucher_service,
-                voucher_duration_epochs,
-                voucher_max_initial_amount,
-                voucher_max_ongoing_amount_per_epoch,
-                voucher_min_epochs_per_collection,
-                voucher_max_epochs_per_collection,
-                voucher_deadline,
-                voucher_metadata_base_price_per_epoch,
-                voucher_metadata_price_per_entity,
-                voucher_metadata_deployment_id,
-                voucher_metadata_protocol_network,
-                voucher_metadata_chain_id
+                voucher
             FROM dipper_reg_indexing_agreements
             WHERE id = $1
             "#,
@@ -378,23 +316,10 @@ impl PgRegistry {
                 accepted_at_epoch,
                 indexing_request_id,
                 deployment_id,
+                accepted_at_epoch,
                 indexer_id,
                 indexer_url,
-
-                voucher_payer,
-                voucher_recipient,
-                voucher_service,
-                voucher_duration_epochs,
-                voucher_max_initial_amount,
-                voucher_max_ongoing_amount_per_epoch,
-                voucher_min_epochs_per_collection,
-                voucher_max_epochs_per_collection,
-                voucher_deadline,
-                voucher_metadata_base_price_per_epoch,
-                voucher_metadata_price_per_entity,
-                voucher_metadata_deployment_id,
-                voucher_metadata_protocol_network,
-                voucher_metadata_chain_id
+                voucher
             FROM dipper_reg_indexing_agreements
             WHERE deployment_id = $1
             "#,
@@ -419,23 +344,10 @@ impl PgRegistry {
                 accepted_at_epoch,
                 indexing_request_id,
                 deployment_id,
+                accepted_at_epoch,
                 indexer_id,
                 indexer_url,
-
-                voucher_payer,
-                voucher_recipient,
-                voucher_service,
-                voucher_duration_epochs,
-                voucher_max_initial_amount,
-                voucher_max_ongoing_amount_per_epoch,
-                voucher_min_epochs_per_collection,
-                voucher_max_epochs_per_collection,
-                voucher_deadline,
-                voucher_metadata_base_price_per_epoch,
-                voucher_metadata_price_per_entity,
-                voucher_metadata_deployment_id,
-                voucher_metadata_protocol_network,
-                voucher_metadata_chain_id
+                voucher
             FROM dipper_reg_indexing_agreements
             WHERE indexer_id = $1
             "#,
@@ -460,23 +372,10 @@ impl PgRegistry {
                 accepted_at_epoch,
                 indexing_request_id,
                 deployment_id,
+                accepted_at_epoch,
                 indexer_id,
                 indexer_url,
-
-                voucher_payer,
-                voucher_recipient,
-                voucher_service,
-                voucher_duration_epochs,
-                voucher_max_initial_amount,
-                voucher_max_ongoing_amount_per_epoch,
-                voucher_min_epochs_per_collection,
-                voucher_max_epochs_per_collection,
-                voucher_deadline,
-                voucher_metadata_base_price_per_epoch,
-                voucher_metadata_price_per_entity,
-                voucher_metadata_deployment_id,
-                voucher_metadata_protocol_network,
-                voucher_metadata_chain_id
+                voucher
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1
             "#,

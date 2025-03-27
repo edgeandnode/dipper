@@ -27,21 +27,8 @@ CREATE TABLE dipper_reg_indexing_agreements
     indexer_id          BYTEA       NOT NULL,
     indexer_url         TEXT        NOT NULL,
 
-    -- Voucher information
-    voucher_payer                               BYTEA  NOT NULL,
-    voucher_recipient                           BYTEA  NOT NULL,
-    voucher_service                             BYTEA  NOT NULL,
-    voucher_duration_epochs                     BIGINT NOT NULL,
-    voucher_max_initial_amount                  BYTEA  NOT NULL,
-    voucher_max_ongoing_amount_per_epoch        BYTEA  NOT NULL,
-    voucher_min_epochs_per_collection           BIGINT NOT NULL,
-    voucher_max_epochs_per_collection           BIGINT NOT NULL,
-    voucher_deadline                            BYTEA  NOT NULL,
-    voucher_metadata_base_price_per_epoch       BYTEA  NOT NULL,
-    voucher_metadata_price_per_entity           BYTEA  NOT NULL,
-    voucher_metadata_deployment_id              TEXT   NOT NULL,
-    voucher_metadata_protocol_network           BYTEA  NOT NULL,
-    voucher_metadata_chain_id                   BYTEA  NOT NULL
+    -- Voucher
+    voucher JSON NOT NULL
 );
 
 -- Table: dipper_reg_indexing_receipts
@@ -52,8 +39,8 @@ CREATE TABLE dipper_reg_indexing_receipts
     updated_at            TIMESTAMPTZ NOT NULL,
 
     indexing_agreement_id UUID REFERENCES dipper_reg_indexing_agreements (id),
-    indexer_id             TEXT   NOT NULL,
-    indexer_operator_id    TEXT   NOT NULL,
+    indexer_id             BYTEA   NOT NULL,
+    indexer_operator_id    BYTEA   NOT NULL,
 
     -- Report information
     reported_work_epoch BIGINT NOT NULL,

@@ -54,65 +54,6 @@ pub struct IndexingAgreement {
     pub voucher: Voucher,
 }
 
-/// The _indexing agreement_ indexer information.
-#[derive(Debug, Clone)]
-pub struct Indexer {
-    /// The indexer's ID (ETH address).
-    pub id: IndexerId,
-    /// The indexer's URL.
-    pub url: Url,
-}
-
-/// The _indexing agreement_ proposal voucher.
-#[derive(Debug, Clone)]
-pub struct Voucher {
-    /// The agreement payer.
-    ///
-    /// It should coincide with the voucher signer address.
-    pub payer: Address,
-    /// The voucher recipient address. The indexer ID.
-    pub recipient: Address,
-    /// Data service that will initiate the payment collection.
-    pub service: Address,
-
-    /// The duration of the agreement in epochs.
-    pub duration_epochs: u32,
-
-    /// The maximum amount, in _wei GRT_, that can be collected for the initial subgraph sync.
-    pub max_initial_amount: U256,
-    /// The maximum amount, in _wei GRT_, that can be collected per epoch (after the initial sync).
-    pub max_ongoing_amount_per_epoch: U256,
-
-    /// The minimum number of epochs that can be collected at once.
-    pub min_epochs_per_collection: u32,
-    /// The maximum number of epochs that can be collected at once.
-    pub max_epochs_per_collection: u32,
-
-    /// The deadline for the indexer to accept the agreement.
-    // TODO(v2): Review this
-    pub deadline: u64,
-
-    /// The voucher metadata
-    pub metadata: VoucherMetadata,
-}
-
-/// The _indexing agreement_ proposal voucher metadata
-#[derive(Debug, Clone)]
-pub struct VoucherMetadata {
-    /// The base price per epoch in _wei GRT_.
-    pub base_price_per_epoch: U256,
-    /// The price per entity in _wei GRT_.
-    pub price_per_entity: U256,
-
-    /// The Subgraph deployment ID to index.
-    pub subgraph_deployment_id: DeploymentId,
-
-    /// The protocol network, e.g. `eip155:42161` (Arbitrum).
-    pub protocol_network: ChainId,
-    /// Indexed chain, e.g., `eip155:1` (Ethereum Mainnet).
-    pub chain_id: ChainId,
-}
-
 /// The status of the [`IndexingAgreement`].
 #[derive(
     Debug,
@@ -189,6 +130,65 @@ impl std::fmt::Display for Status {
         };
         f.write_str(status)
     }
+}
+
+/// The _indexing agreement_ indexer information.
+#[derive(Debug, Clone)]
+pub struct Indexer {
+    /// The indexer's ID (ETH address)
+    pub id: IndexerId,
+    /// The indexer's URL
+    pub url: Url,
+}
+
+/// The _indexing agreement_ proposal voucher
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Voucher {
+    /// The agreement payer.
+    ///
+    /// It should coincide with the voucher signer address.
+    pub payer: Address,
+    /// The voucher recipient address. The indexer ID.
+    pub recipient: Address,
+    /// Data service that will initiate the payment collection.
+    pub service: Address,
+
+    /// The duration of the agreement in epochs.
+    pub duration_epochs: u32,
+
+    /// The maximum amount, in _wei GRT_, that can be collected for the initial subgraph sync.
+    pub max_initial_amount: U256,
+    /// The maximum amount, in _wei GRT_, that can be collected per epoch (after the initial sync).
+    pub max_ongoing_amount_per_epoch: U256,
+
+    /// The minimum number of epochs that can be collected at once.
+    pub min_epochs_per_collection: u32,
+    /// The maximum number of epochs that can be collected at once.
+    pub max_epochs_per_collection: u32,
+
+    /// The deadline for the indexer to accept the agreement.
+    // TODO(v2): Review this
+    pub deadline: u64,
+
+    /// The voucher metadata
+    pub metadata: VoucherMetadata,
+}
+
+/// The _indexing agreement_ proposal voucher metadata
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VoucherMetadata {
+    /// The base price per epoch in _wei GRT_.
+    pub base_price_per_epoch: U256,
+    /// The price per entity in _wei GRT_.
+    pub price_per_entity: U256,
+
+    /// The Subgraph deployment ID to index.
+    pub subgraph_deployment_id: DeploymentId,
+
+    /// The protocol network, e.g. `eip155:42161` (Arbitrum).
+    pub protocol_network: ChainId,
+    /// Indexed chain, e.g., `eip155:1` (Ethereum Mainnet).
+    pub chain_id: ChainId,
 }
 
 /// The _indexing agreement_ [`fake`] implementation for test data generation.

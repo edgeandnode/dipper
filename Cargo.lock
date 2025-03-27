@@ -2648,6 +2648,7 @@ dependencies = [
  "fake",
  "num-derive",
  "num-traits",
+ "serde",
  "sqlx",
  "test-with",
  "thegraph-core 0.12.0",

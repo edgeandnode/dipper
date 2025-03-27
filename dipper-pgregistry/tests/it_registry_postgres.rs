@@ -2,7 +2,8 @@
 
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_pgregistry::{
-    Error, IndexingAgreementVoucher, IndexingReceiptReportedWork, IndexingRequestStatus, PgRegistry,
+    Error, IndexingAgreementStatus, IndexingAgreementVoucher, IndexingReceiptReportedWork,
+    IndexingRequestStatus, PgRegistry,
 };
 use fake::{Fake, Faker};
 use sqlx::{Pool, Postgres};
@@ -305,6 +306,140 @@ async fn register_new_indexing_agreement(db: Pool<Postgres>) -> sqlx::Result<()>
 
     //* Then
     let _indexing_agreement_id = res.expect("Failed to register new indexing agreement");
+
+    Ok(())
+}
+
+#[test_with::env(DATABASE_URL)]
+#[sqlx::test]
+async fn register_new_and_get_indexing_agreement_by_id(db: Pool<Postgres>) -> sqlx::Result<()> {
+    //* Given
+    let registry = PgRegistry::new(db);
+
+    // Indexing request
+    let requested_by = address!("8f8c426f956876325b1e037c6eae9b189952994c");
+    let deployment_id = deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv");
+    let deployment_chain_id = 42161; // arbitrum-one (0xa4b1)
+
+    // Indexing agreement
+    let indexer_id = indexer_id!("3c584ee1d89f43c6ccee17e886a001de2bb4d8a9");
+    let indexer_url = "http://localhost:8020".parse().expect("Invalid URL");
+    let agreement_voucher = {
+        let mut voucher = Faker.fake::<IndexingAgreementVoucher>();
+        voucher.metadata.subgraph_deployment_id = deployment_id;
+        voucher
+    };
+
+    // Register a new indexing request
+    let indexing_request_id = registry
+        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id)
+        .await
+        .expect("Failed to register new indexing request");
+
+    // Register a new indexing agreement
+    let indexing_agreement_id = registry
+        .register_new_indexing_agreement(
+            indexing_request_id,
+            deployment_id,
+            indexer_id,
+            indexer_url,
+            agreement_voucher,
+        )
+        .await
+        .expect("Failed to register new indexing agreement");
+
+    //* When
+    let indexing_agreement = registry
+        .get_indexing_agreement_by_id(&indexing_agreement_id)
+        .await
+        .expect("Failed to get indexing agreement by ID")
+        .expect("Agreement not found");
+
+    //* Then
+    assert_eq!(indexing_agreement.id, indexing_agreement_id);
+    assert_eq!(indexing_agreement.indexing_request_id, indexing_request_id);
+    assert_eq!(indexing_agreement.status, IndexingAgreementStatus::Created);
+    assert_eq!(indexing_agreement.indexer.id, indexer_id);
+    assert_eq!(
+        indexing_agreement.voucher.metadata.subgraph_deployment_id,
+        deployment_id
+    );
+
+    Ok(())
+}
+
+#[test_with::env(DATABASE_URL)]
+#[sqlx::test(fixtures("0002_indexing_agreements"))]
+async fn get_indexing_agreements_by_indexing_request_id(db: Pool<Postgres>) -> sqlx::Result<()> {
+    //* Given
+    let registry = PgRegistry::new(db);
+
+    let indexing_request_id = uuid!("019300ce-4751-780e-b58c-bf696b67eb23").into();
+
+    //* When
+    let res = registry
+        .get_active_indexing_agreements_by_indexing_request_id(&indexing_request_id)
+        .await;
+
+    //* Then
+    let agreements = res.expect("Failed to get indexing agreements by indexing request ID");
+    assert_eq!(agreements.len(), 2);
+
+    // Assert the agreements are in the expected state
+    assert!(
+        agreements
+            .iter()
+            .all(|agreement| { agreement.indexing_request_id == indexing_request_id }),
+        "Expected all agreements to be associated with the given indexing request"
+    );
+    assert!(
+        agreements.iter().all(|agreement| {
+            matches!(
+                agreement.status,
+                IndexingAgreementStatus::Created | IndexingAgreementStatus::Accepted
+            )
+        }),
+        "Expected all agreements to be in CREATED or ACCEPTED state"
+    );
+
+    Ok(())
+}
+
+#[test_with::env(DATABASE_URL)]
+#[sqlx::test(fixtures("0002_indexing_agreements"))]
+async fn get_rejected_indexing_agreements_by_indexing_request_id(
+    db: Pool<Postgres>,
+) -> sqlx::Result<()> {
+    //* Given
+    let registry = PgRegistry::new(db);
+
+    let indexing_request_id = uuid!("019300ce-4751-780e-b58c-bf696b67eb23").into();
+
+    //* When
+    let res = registry
+        .get_rejected_indexing_agreements_by_indexing_request_id(&indexing_request_id)
+        .await;
+
+    //* Then
+    let agreements = res.expect("Failed to get indexing agreements by indexing request ID");
+    assert_eq!(agreements.len(), 2);
+
+    // Assert the agreements are in the expected state
+    assert!(
+        agreements
+            .iter()
+            .all(|agreement| { agreement.indexing_request_id == indexing_request_id }),
+        "Expected all agreements to be associated with the given indexing request"
+    );
+    assert!(
+        agreements.iter().all(|agreement| {
+            matches!(
+                agreement.status,
+                IndexingAgreementStatus::Rejected | IndexingAgreementStatus::CanceledByIndexer
+            )
+        }),
+        "Expected all agreements to be in REJECTED state"
+    );
 
     Ok(())
 }

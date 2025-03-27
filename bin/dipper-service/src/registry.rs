@@ -178,7 +178,7 @@ impl AgreementRegistry for RegistryProvider {
     ) -> RegistryResult<Vec<IndexingAgreement>> {
         Ok(self
             .inner
-            .get_indexing_request_rejected_indexing_agreements(request_id)
+            .get_rejected_indexing_agreements_by_indexing_request_id(request_id)
             .await?
             .into_iter()
             .map(IndexingAgreement::try_from)
