@@ -46,13 +46,13 @@ pub trait IndexingRequestsRpc {
     ) -> RpcResult<()>;
 }
 
-/// The new indexing request message
+/// The new _indexing request_ message
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct NewIndexingRequest {
-    /// The deployment ID of the subgraph that should be indexed
+    /// The deployment ID of the subgraph
     pub deployment_id: DeploymentId,
-    /// The chain ID of the subgraph that should be indexed
-    pub deployment_chain_id: ChainId,
+    /// The chain ID the subgraph is indexing
+    pub chain_id: ChainId,
 }
 
 impl ToSolStruct<NewIndexingRequestSol> for NewIndexingRequest {

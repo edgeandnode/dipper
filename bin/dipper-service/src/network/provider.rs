@@ -4,7 +4,7 @@ use thegraph_core::{AllocationId, DeploymentId, IndexerId, alloy::primitives::Ad
 
 use super::{
     Allocation,
-    api::{Deployment, Indexer, NetworkProvider},
+    api::{Indexer, NetworkProvider},
     service,
 };
 
@@ -42,13 +42,6 @@ impl NetworkProviderService {
 }
 
 impl NetworkProvider for NetworkProviderService {
-    fn get_deployment_by_id(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
-        self.topology
-            .snapshot()
-            .get_deployment(deployment_id)
-            .map(|_| Deployment {})
-    }
-
     fn get_allocation_by_id(&self, allocation_id: &AllocationId) -> Option<Allocation> {
         self.topology
             .snapshot()

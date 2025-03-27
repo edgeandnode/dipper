@@ -6,7 +6,7 @@ pub mod provider;
 pub mod service;
 
 #[allow(unused_imports)]
-pub use api::{Allocation, Deployment, Indexer, NetworkProvider};
+pub use api::{Allocation, Indexer, NetworkProvider};
 
 #[cfg(test)]
 mod tests {

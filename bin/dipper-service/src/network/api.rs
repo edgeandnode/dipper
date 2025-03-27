@@ -11,9 +11,6 @@ pub struct Indexer {
     pub url: Url,
 }
 
-/// A Subgraph deployment.
-pub struct Deployment {}
-
 /// A network allocation.
 pub struct Allocation {
     /// The allocation ID
@@ -34,27 +31,24 @@ pub struct Allocation {
     pub proof_of_indexing: Option<ProofOfIndexing>,
 }
 
-/// The network provider trait.
+/// The network provider
 ///
 /// Provides a set of methods to interact with the network provider abstracting the
 /// access to the Graph network snapshot.
 pub trait NetworkProvider {
-    /// Get Deployment by ID.
-    fn get_deployment_by_id(&self, deployment_id: &DeploymentId) -> Option<Deployment>;
-
-    /// Get allocation by ID.
+    /// Get allocation by [`AllocationId`].
     fn get_allocation_by_id(&self, allocation_id: &AllocationId) -> Option<Allocation>;
 
-    /// Get a list of indexers not indexing the subgraph deployment.
+    /// Get a list of indexers not indexing the subgraph [`DeploymentId`].
     fn get_indexers_not_indexing_a_deployment_id(
         &self,
         deployment_id: &DeploymentId,
     ) -> Vec<Indexer>;
 
-    /// Get indexer ID for operator address.
+    /// Get [`IndexerId`] for operator address
     fn get_indexer_id_for_operator_address(&self, operator_address: &Address) -> Option<IndexerId>;
 
-    /// Get the latest epoch.
+    /// Get the latest epoch
     ///
     /// This is the latest known epoch in the network. If the network snapshot fails to
     /// update, this epoch may be outdated.
