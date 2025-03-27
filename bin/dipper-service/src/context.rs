@@ -64,10 +64,9 @@ pub struct Ctx<R, N, W, C, I> {
     iisa: I,
 }
 
-impl<R, N, W, C, I> FromState<Ctx<R, N, W, C, I>> for admin_rpc_server::IndexingRequestsCtx<R, N, W>
+impl<R, N, W, C, I> FromState<Ctx<R, N, W, C, I>> for admin_rpc_server::IndexingRequestsCtx<R, W>
 where
     R: Clone,
-    N: Clone,
     W: Clone,
 {
     fn from_state(ctx: &Ctx<R, N, W, C, I>) -> Self {
@@ -75,7 +74,6 @@ where
             signer: ctx.signer.clone(),
             allowlist: ctx.admin_allowlist.clone(),
             registry: ctx.registry.clone(),
-            network: ctx.network.clone(),
             worker: ctx.worker.clone(),
             max_candidates: ctx.max_candidates,
         }
