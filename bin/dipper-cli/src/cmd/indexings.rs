@@ -87,7 +87,7 @@ pub async fn register(conf: Config, matches: &clap::ArgMatches) -> anyhow::Resul
         &signer_eip712_domain,
         NewIndexingRequest {
             deployment_id: *request_deployment_id,
-            deployment_chain_id: *request_chain_id,
+            chain_id: *request_chain_id,
         },
     )
     .map_err(|err| anyhow!("Failed to sign RPC request: {}", err))?;

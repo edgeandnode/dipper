@@ -120,18 +120,13 @@ where
 
         let NewIndexingRequest {
             deployment_id,
-            deployment_chain_id,
+            chain_id,
         } = req.into_message();
-
-        // TODO(post-mvp): check the provided deployment chain_id is correct
-        if self.network.get_deployment_by_id(&deployment_id).is_none() {
-            return Err(ErrorObject::borrowed(404, "Not found", None));
-        }
 
         // Register the new indexing request
         let indexing_request_id = match self
             .registry
-            .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id)
+            .register_new_indexing_request(requested_by, deployment_id, chain_id)
             .await
         {
             Ok(indexing_request_id) => indexing_request_id,
@@ -147,7 +142,7 @@ where
             .process_new_indexing_request(
                 indexing_request_id,
                 deployment_id,
-                deployment_chain_id,
+                chain_id,
                 self.max_candidates,
             )
             .await
