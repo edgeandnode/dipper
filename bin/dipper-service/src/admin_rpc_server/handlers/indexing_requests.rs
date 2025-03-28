@@ -13,7 +13,6 @@ use jsonrpsee::{core::RpcResult, types::ErrorObject};
 use thegraph_core::{DeploymentId, alloy::primitives::Address};
 
 use crate::{
-    network::NetworkProvider,
     registry::{
         Error as RegistryError, IndexingRequest as IndexingRequestRecord, IndexingRequestRegistry,
         IndexingRequestStatus as IndexingRequestRecordStatus,
@@ -25,32 +24,30 @@ use crate::{
 /// The substate for the [`IndexingRequestsRpc`] handler
 ///
 /// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
-pub struct IndexingRequestsCtx<R, N, W> {
+pub struct IndexingRequestsCtx<R, W> {
     pub signer: Arc<PrivateKeyEip712Signer>,
     pub allowlist: Arc<BTreeSet<Address>>,
     pub registry: R,
-    pub network: N,
     pub worker: W,
     pub max_candidates: usize,
 }
 
-pub struct IndexingRequestsRpcServerImpl<R, N, W>(IndexingRequestsCtx<R, N, W>);
+pub struct IndexingRequestsRpcServerImpl<R, W>(IndexingRequestsCtx<R, W>);
 
-impl<R, N, W> IndexingRequestsRpcServerImpl<R, N, W> {
+impl<R, W> IndexingRequestsRpcServerImpl<R, W> {
     /// Create a new instance of the `IndexingRequestsRpcServerImpl` with the given context
     pub fn with_context<C>(ctx: &C) -> Self
     where
-        IndexingRequestsCtx<R, N, W>: FromState<C>,
+        IndexingRequestsCtx<R, W>: FromState<C>,
     {
         Self(FromState::from_state(ctx))
     }
 }
 
 #[async_trait]
-impl<R, N, W> IndexingRequestsRpcServer for IndexingRequestsRpcServerImpl<R, N, W>
+impl<R, W> IndexingRequestsRpcServer for IndexingRequestsRpcServerImpl<R, W>
 where
     R: IndexingRequestRegistry + Clone + Send + Sync + 'static,
-    N: NetworkProvider + Clone + Send + Sync + 'static,
     W: WorkerQueue + Clone + Send + Sync + 'static,
 {
     async fn get_all_indexing_requests(&self) -> RpcResult<Vec<IndexingRequest>> {
@@ -216,8 +213,8 @@ where
     }
 }
 
-impl<R, N, W> std::ops::Deref for IndexingRequestsRpcServerImpl<R, N, W> {
-    type Target = IndexingRequestsCtx<R, N, W>;
+impl<R, W> std::ops::Deref for IndexingRequestsRpcServerImpl<R, W> {
+    type Target = IndexingRequestsCtx<R, W>;
 
     fn deref(&self) -> &Self::Target {
         &self.0

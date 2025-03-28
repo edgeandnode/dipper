@@ -9,7 +9,6 @@ use self::{
     indexing_requests::IndexingRequestsRpcServerImpl,
 };
 use crate::{
-    network::NetworkProvider,
     registry::{AgreementRegistry, IndexingRequestRegistry},
     worker::WorkerQueue,
 };
@@ -22,12 +21,11 @@ pub use self::{
 };
 
 /// Create a new RPC module with all the admin handlers.
-pub(super) fn rpc_handlers<S, R, N, W>(ctx: S) -> RpcModule<S>
+pub(super) fn rpc_handlers<S, R, W>(ctx: S) -> RpcModule<S>
 where
     R: IndexingRequestRegistry + AgreementRegistry + Clone + Send + Sync + 'static,
-    N: NetworkProvider + Clone + Send + Sync + 'static,
     W: WorkerQueue + Clone + Send + Sync + 'static,
-    IndexingRequestsCtx<R, N, W>: FromState<S>,
+    IndexingRequestsCtx<R, W>: FromState<S>,
     IndexingAgreementsCtx<R, W>: FromState<S>,
 {
     // Indexing requests

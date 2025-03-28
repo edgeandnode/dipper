@@ -6,7 +6,6 @@ use tokio::sync::mpsc;
 
 use super::handlers::{IndexingAgreementsCtx, IndexingRequestsCtx, rpc_handlers};
 use crate::{
-    network::NetworkProvider,
     registry::{AgreementRegistry, IndexingRequestRegistry},
     worker::WorkerQueue,
 };
@@ -41,12 +40,11 @@ impl Handle {
 }
 
 /// Create a new Admin RPC server service
-pub fn new<S, R, N, W>(conf: Config, ctx: S) -> (Handle, impl Future<Output = anyhow::Result<()>>)
+pub fn new<S, R, W>(conf: Config, ctx: S) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
     R: IndexingRequestRegistry + AgreementRegistry + Clone + Send + Sync + 'static,
-    N: NetworkProvider + Clone + Send + Sync + 'static,
     W: WorkerQueue + Clone + Send + Sync + 'static,
-    IndexingRequestsCtx<R, N, W>: FromState<S>,
+    IndexingRequestsCtx<R, W>: FromState<S>,
     IndexingAgreementsCtx<R, W>: FromState<S>,
 {
     let (tx_stop, mut rx_stop) = mpsc::channel(1);
