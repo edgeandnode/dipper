@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, env, path::PathBuf, sync::Arc};
 
 use async_signal::{Signal, Signals};
+use dipper_core::state::FromState;
 use dipper_iisa as iisa;
 use dipper_pgmq::PgQueue;
 use futures_lite::StreamExt;
@@ -161,7 +162,8 @@ pub async fn main() -> anyhow::Result<()> {
         .build();
 
     //- The worker service
-    let (worker_handle, worker_service) = worker::service::new(queue, context.clone());
+    let (worker_handle, worker_service) =
+        worker::service::new(queue, FromState::from_state(&context));
     tracing::info!("initialized Worker service");
 
     //- The admin RPC service

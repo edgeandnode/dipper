@@ -157,6 +157,8 @@ where
 
         let CancelIndexingAgreement { id: agreement_id } = req.into_message();
 
+        tracing::debug!(%agreement_id, %requested_by, "Canceling indexing agreement");
+
         // Check if the agreement exists
         let agreement = match self
             .registry
