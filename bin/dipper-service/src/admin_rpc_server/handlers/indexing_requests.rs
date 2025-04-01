@@ -171,6 +171,8 @@ where
             id: indexing_request_id,
         } = req.into_message();
 
+        tracing::debug!(%indexing_request_id, %requested_by, "Canceling indexing request");
+
         // Check if the indexing request exists
         match self
             .registry
@@ -178,10 +180,20 @@ where
             .await
         {
             Ok(None) => {
+                tracing::debug!(
+                    %indexing_request_id,
+                    %requested_by,
+                    "Indexing request not found"
+                );
                 return Err(ErrorObject::borrowed(404, "Not found", None));
             }
             Err(err) => {
-                tracing::error!(error=?err, "Failed to get indexing request");
+                tracing::error!(
+                    %indexing_request_id,
+                    %requested_by,
+                    error=?err,
+                    "Failed to get indexing request"
+                );
                 return Err(ErrorObject::borrowed(503, "Service unavailable", None));
             }
             _ => {
@@ -195,7 +207,11 @@ where
             .mark_indexing_request_as_canceled(&indexing_request_id)
             .await
         {
-            tracing::error!(%indexing_request_id, error=?err, "Failed to mark indexing request as canceled");
+            tracing::error!(
+                %indexing_request_id,
+                error=?err,
+                "Failed to mark indexing request as canceled"
+            );
             return Err(ErrorObject::borrowed(503, "Service unavailable", None));
         };
 

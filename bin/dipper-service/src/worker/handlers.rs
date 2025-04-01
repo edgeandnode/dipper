@@ -168,13 +168,11 @@ where
         .get_active_indexing_agreements_by_indexing_request_id(indexing_request_id)
         .await?;
 
-    // Mark all the agreements as canceled by the requester
-    // TODO(post-mvp): Allow marking multiple agreements as CANCELED_BY_REQUESTER in a single query
-    for agreement in agreements.iter() {
-        registry
-            .mark_indexing_agreement_as_canceled_by_requester(&agreement.id)
-            .await?;
-    }
+    tracing::trace!(
+        indexing_request_id=%indexing_request_id,
+        agreements=?agreements.iter().map(|agreement| agreement.id.to_string()).collect::<Vec<_>>(),
+        "Processing indexing request cancellation"
+    );
 
     // Send the indexing agreement cancellation notification to the indexers
     for agreement in agreements {
@@ -512,6 +510,13 @@ where
     R: AgreementRegistry,
     C: IndexerClient,
 {
+    // TODO: THIS IS A HACK
+    let indexer_url = {
+        let mut url = indexer_url.clone();
+        url.set_port(Some(7602)).unwrap();
+        url
+    };
+
     // Check the status of the agreement before sending the cancellation
     let agreement = registry.get_indexing_agreement_by_id(agreement_id).await?;
     match agreement {
@@ -545,18 +550,44 @@ where
         },
     }
 
+    tracing::debug!(
+        indexing_request_id=%indexing_request_id,
+        agreement_id=%agreement_id,
+        indexer_url=%indexer_url,
+        "Sending indexing agreement cancellation notification"
+    );
+
     if let Err(err) = indexer_client
-        .send_indexing_agreement_cancellation_notification(indexer_url, *agreement_id)
+        .send_indexing_agreement_cancellation_notification(&indexer_url, *agreement_id)
         .await
     {
         tracing::error!(
             indexing_request_id=%indexing_request_id,
             agreement_id=%agreement_id,
             error=?err,
-            "Failed to send indexing agreement cancellation"
+            "Failed to send indexing agreement cancellation. Re-trying in 20 seconds"
         );
         return Ok(JobResult::Retry(Duration::from_secs(20), err.into()));
     };
+
+    tracing::debug!(
+        %indexing_request_id,
+        %agreement_id,
+        %indexer_url,
+        "Indexing agreement cancellation accepted by indexer"
+    );
+
+    registry
+        .mark_indexing_agreement_as_canceled_by_requester(agreement_id)
+        .await
+        .map_err(|err| {
+            tracing::error!(
+                %indexing_request_id,
+                %agreement_id,
+                error=?err,
+                "Failed to mark indexing agreement as CANCELED_BY_REQUESTER");
+            err
+        })?;
 
     Ok(JobResult::Ok(()))
 }
@@ -580,11 +611,7 @@ where
 {
     // Check the status of the agreement before processing the cancellation
     let Some(agreement) = registry.get_indexing_agreement_by_id(agreement_id).await? else {
-        tracing::error!(
-            indexing_request_id=%indexing_request_id,
-            agreement_id=%agreement_id,
-            "Indexing agreement not found"
-        );
+        tracing::error!(%indexing_request_id, %agreement_id, "Indexing agreement not found");
         return Ok(JobResult::Ok(()));
     };
 
@@ -592,6 +619,13 @@ where
     registry
         .mark_indexing_agreement_as_canceled_by_indexer(&agreement.id)
         .await?;
+
+    tracing::debug!(
+        indexing_request_id=%indexing_request_id,
+        agreement_id=%agreement_id,
+        indexer_url=%agreement.indexer.url,
+        "Sending indexing agreement cancellation to the indexer"
+    );
 
     // Send an agreement cancellation notification to the indexer
     if let Err(err) = queue
