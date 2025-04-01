@@ -5,8 +5,8 @@ use dipper_rpc::indexer::gateway_server::rpc::GatewayDipsServiceServer;
 use tokio::sync::mpsc;
 use tonic::transport::Server;
 
+use super::handlers::{Ctx, RpcServiceImpl};
 use crate::{
-    indexer_rpc_server::handlers::{DipsGatewayServiceCtx, DipsGatewayServiceImpl},
     network::NetworkProvider,
     registry::{AgreementRegistry, ReceiptRegistry},
     worker::WorkerQueue,
@@ -47,14 +47,14 @@ where
     R: AgreementRegistry + ReceiptRegistry + Clone + Send + Sync + 'static,
     N: NetworkProvider + Clone + Send + Sync + 'static,
     W: WorkerQueue + Clone + Send + Sync + 'static,
-    DipsGatewayServiceCtx<R, N, W>: FromState<S>,
+    Ctx<R, N, W>: FromState<S>,
 {
     let (tx_stop, mut rx_stop) = mpsc::channel(1);
 
     let fut = async move {
         tracing::info!(listen_addr=%conf.listen_addr, "Starting indexer RPC server");
 
-        let service_impl = DipsGatewayServiceImpl::with_context(&ctx);
+        let service_impl = RpcServiceImpl::with_context(&ctx);
 
         // Start the RPC server
         Server::builder()

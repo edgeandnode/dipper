@@ -172,7 +172,7 @@ pub async fn main() -> anyhow::Result<()> {
             listen_addr: conf.admin_rpc.listen_addr,
         };
 
-        admin_rpc_server::service::new(config, context.clone())
+        admin_rpc_server::service::new(config, FromState::from_state(&context))
     };
     tracing::info!("initialized Admin RPC service");
 
@@ -182,7 +182,7 @@ pub async fn main() -> anyhow::Result<()> {
             listen_addr: conf.indexer_rpc.listen_addr,
         };
 
-        indexer_rpc_server::service::new(config, context)
+        indexer_rpc_server::service::new(config, context.clone())
     };
     tracing::info!("initialized Admin RPC service");
 
