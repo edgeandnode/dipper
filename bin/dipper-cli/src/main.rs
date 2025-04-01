@@ -97,6 +97,27 @@ pub async fn main() {
                 std::process::exit(1);
             }
         },
+        Some(("agreements", matches)) => match matches.subcommand() {
+            Some(("list", matches)) => {
+                let conf = match cmd::load_conf(matches) {
+                    Ok(conf) => conf,
+                    Err(err) => {
+                        eprintln!("Failed to load configuration: {err}");
+                        std::process::exit(1);
+                    }
+                };
+                tracing::debug!("Configuration loaded: {:?}", conf);
+
+                if let Err(err) = cmd::agreements::list(conf, matches).await {
+                    eprintln!("Failed to list agreements: {}", err);
+                    std::process::exit(1);
+                }
+            }
+            _ => {
+                eprintln!("No agreements command specified");
+                std::process::exit(1);
+            }
+        },
         _ => {
             eprintln!("No command specified");
             std::process::exit(1);
