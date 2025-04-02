@@ -7,8 +7,59 @@ use dipper_rpc::admin::indexing_requests::{CancelIndexingRequest, NewIndexingReq
 use thegraph_core::{DeploymentId, SubgraphId, alloy::primitives::ChainId, signed_message};
 use uuid::Uuid;
 
-use super::common;
+use super::{common, result::Result};
 use crate::{client, client::IndexingRequestsRpcClient, config::Config, signer};
+
+/// The `indexings` command implementation
+pub(crate) async fn run(matches: &clap::ArgMatches) -> Result<()> {
+    match matches.subcommand() {
+        Some(("list", matches)) => {
+            let conf = common::load_conf(matches)
+                .map_err(|err| anyhow::anyhow!("Failed to load configuration: {err}"))?;
+            tracing::debug!("Configuration loaded: {:?}", conf);
+
+            if let Err(err) = list(conf).await {
+                return Err(anyhow::anyhow!("Failed to list indexings: {err}").into());
+            }
+
+            Ok(())
+        }
+        Some(("status", matches)) => {
+            let conf = common::load_conf(matches)
+                .map_err(|err| anyhow::anyhow!("Failed to load configuration: {err}"))?;
+            tracing::debug!("Configuration loaded: {:?}", conf);
+
+            if let Err(err) = status(conf, matches).await {
+                return Err(anyhow::anyhow!("Failed to get indexing request status: {err}").into());
+            }
+
+            Ok(())
+        }
+        Some(("register", matches)) => {
+            let conf = common::load_conf(matches)
+                .map_err(|err| anyhow::anyhow!("Failed to load configuration: {err}"))?;
+            tracing::debug!("Configuration loaded: {:?}", conf);
+
+            if let Err(err) = register(conf, matches).await {
+                return Err(anyhow::anyhow!("Failed to register indexing request: {err}").into());
+            }
+
+            Ok(())
+        }
+        Some(("cancel", matches)) => {
+            let conf = common::load_conf(matches)
+                .map_err(|err| anyhow::anyhow!("Failed to load configuration: {err}"))?;
+            tracing::debug!("Configuration loaded: {:?}", conf);
+
+            if let Err(err) = cancel(conf, matches).await {
+                return Err(anyhow::anyhow!("Failed to cancel indexing request: {err}").into());
+            }
+
+            Ok(())
+        }
+        _ => Err(anyhow::anyhow!("No indexings command specified").into()),
+    }
+}
 
 /// The `indexings list` command
 ///
@@ -16,27 +67,42 @@ use crate::{client, client::IndexingRequestsRpcClient, config::Config, signer};
 ///
 /// This function calls the `get_all_indexing_requests` RPC method on the DIPs gateway server.
 // TODO(post-mvp): Add support for pagination
-pub async fn list(conf: Config) -> anyhow::Result<()> {
+pub async fn list(conf: Config) -> Result<()> {
     let rpc_client = client::new(&conf.server_url);
-    let res = rpc_client.get_all_indexing_requests().await?;
+    let res = rpc_client
+        .get_all_indexing_requests()
+        .await
+        .map_err(|err| anyhow::anyhow!("Failed to list indexing requests: {err}"))?;
 
     // Print the result as pretty JSON so one can use `jq` to explore the output
-    println!("{}", serde_json::to_string_pretty(&res)?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&res)
+            .map_err(|err| anyhow::anyhow!("Failed to serialize indexing requests: {err}"))?
+    );
 
     Ok(())
 }
 
 /// The `indexings status` command
-pub async fn status(conf: Config, matches: &clap::ArgMatches) -> anyhow::Result<()> {
+pub async fn status(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
     let rpc_client = client::new(&conf.server_url);
 
     match matches.get_one::<IndexingRequestSelector>("INDEXING_ID") {
         // ID is an UUIDv7
         Some(IndexingRequestSelector::IndexingRequestId(id)) => {
-            let res = rpc_client.get_indexing_request_by_id(*id).await?;
+            let res = rpc_client
+                .get_indexing_request_by_id(*id)
+                .await
+                .map_err(|err| anyhow::anyhow!("Failed to get indexing request by ID: {err}"))?;
 
             // Print the result as pretty JSON so one can use `jq` to explore the output
-            println!("{}", serde_json::to_string_pretty(&res)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&res).map_err(|err| anyhow::anyhow!(
+                    "Failed to serialize indexing request: {err}"
+                ))?
+            );
 
             Ok(())
         }
@@ -44,24 +110,32 @@ pub async fn status(conf: Config, matches: &clap::ArgMatches) -> anyhow::Result<
         Some(IndexingRequestSelector::DeploymentId(id)) => {
             let res = rpc_client
                 .get_indexing_requests_by_deployment_id(*id)
-                .await?;
+                .await
+                .map_err(|err| {
+                    anyhow::anyhow!("Failed to get indexing requests by deployment ID: {err}")
+                })?;
 
             // Print the result as pretty JSON so one can use `jq` to explore the output
-            println!("{}", serde_json::to_string_pretty(&res)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&res).map_err(|err| anyhow::anyhow!(
+                    "Failed to serialize indexing requests: {err}"
+                ))?
+            );
 
             Ok(())
         }
         // ID is a Subgraph ID
         Some(IndexingRequestSelector::SubgraphId(id)) => {
             // TODO(post-mvp): Add support for querying by Subgraph ID
-            Err(anyhow!("Invalid indexing request ID: `{id}`"))
+            Err(anyhow::anyhow!("Invalid indexing request ID: `{id}`").into())
         }
         None => unreachable!("No ID provided"),
     }
 }
 
 /// The `indexings register` command
-pub async fn register(conf: Config, matches: &clap::ArgMatches) -> anyhow::Result<()> {
+pub async fn register(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
     let rpc_client = client::new(&conf.server_url);
     let signer = signer::new_private_key_eip712_signer(&conf.signing_key);
     let signer_eip712_domain = signer::eip712_domain();
@@ -73,7 +147,7 @@ pub async fn register(conf: Config, matches: &clap::ArgMatches) -> anyhow::Resul
         // ID is a Subgraph ID
         // TODO(post-mvp): Add support for querying by Subgraph ID
         Some(SubgraphIdOrDeploymentId::SubgraphId(id)) => {
-            return Err(anyhow!("Invalid subgraph ID: `{id}`"));
+            return Err(anyhow::anyhow!("Invalid subgraph ID: `{id}`").into());
         }
         None => unreachable!("No ID provided"),
     };
@@ -90,10 +164,10 @@ pub async fn register(conf: Config, matches: &clap::ArgMatches) -> anyhow::Resul
             chain_id: *request_chain_id,
         },
     )
-    .map_err(|err| anyhow!("Failed to sign RPC request: {}", err))?;
+    .map_err(|err| anyhow::anyhow!("Failed to sign RPC request: {err}"))?;
 
     let res = rpc_client.register_new_indexing_request(req.into()).await.map_err(
-        |err| anyhow!("Failed to register new indexing request for deployment '{request_deployment_id}' : {err}"),
+        |err| anyhow::anyhow!("Failed to register new indexing request for deployment '{request_deployment_id}' : {err}"),
     )?;
 
     println!("{}", res);
@@ -102,7 +176,7 @@ pub async fn register(conf: Config, matches: &clap::ArgMatches) -> anyhow::Resul
 }
 
 /// The `indexings cancel` command
-pub async fn cancel(conf: Config, matches: &clap::ArgMatches) -> anyhow::Result<()> {
+pub async fn cancel(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
     let rpc_client = client::new(&conf.server_url);
     let signer = signer::new_private_key_eip712_signer(&conf.signing_key);
     let signer_eip712_domain = signer::eip712_domain();
@@ -115,17 +189,21 @@ pub async fn cancel(conf: Config, matches: &clap::ArgMatches) -> anyhow::Result<
                 &signer_eip712_domain,
                 CancelIndexingRequest { id: *id },
             )
-            .map_err(|err| anyhow!("Failed to sign RPC request: {}", err))?;
+            .map_err(|err| anyhow::anyhow!("Failed to sign RPC request: {err}"))?;
 
             rpc_client
                 .cancel_indexing_request(req.into())
                 .await
-                .map_err(|err| anyhow!("Failed to cancel indexing request '{id}' : {}", err))
+                .map_err(|err| {
+                    anyhow::anyhow!("Failed to cancel indexing request '{id}' : {err}")
+                })?;
+
+            Ok(())
         }
         // ID is a Subgraph ID or Deployment ID
         Some(_) => {
             // TODO(post-mvp): Add support for querying by Subgraph ID or Deployment ID
-            Err(anyhow!("Invalid indexing request ID"))
+            Err(anyhow::anyhow!("Invalid indexing request ID").into())
         }
         None => unreachable!("No ID provided"),
     }

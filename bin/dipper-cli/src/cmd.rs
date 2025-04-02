@@ -2,9 +2,9 @@ pub mod agreements;
 mod common;
 pub mod indexings;
 pub mod init;
+mod result;
 
 use clap::{Command, command};
-pub use common::load_conf;
 
 /// Create the DIPs CLI command line interface
 pub fn cli() -> Command {

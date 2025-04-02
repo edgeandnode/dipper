@@ -17,6 +17,7 @@ serde_json.workspace = true
 serde_with.workspace = true
 snmalloc-rs = "0.3.6"
 thegraph-core = { workspace = true, features = ["alloy-signer-local", "signed-message"] }
+thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
