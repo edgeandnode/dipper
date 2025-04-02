@@ -2,4 +2,4 @@
 mod handlers;
 pub mod service;
 
-pub use handlers::DipsGatewayServiceCtx;
+pub use handlers::Ctx;

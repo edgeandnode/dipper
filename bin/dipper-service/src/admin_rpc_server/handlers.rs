@@ -4,10 +4,6 @@ use dipper_rpc::admin::{
 };
 use jsonrpsee::RpcModule;
 
-use self::{
-    indexing_agreements::IndexingAgreementsRpcServerImpl,
-    indexing_requests::IndexingRequestsRpcServerImpl,
-};
 use crate::{
     registry::{AgreementRegistry, IndexingRequestRegistry},
     worker::WorkerQueue,
@@ -17,7 +13,8 @@ mod indexing_agreements;
 mod indexing_requests;
 
 pub use self::{
-    indexing_agreements::IndexingAgreementsCtx, indexing_requests::IndexingRequestsCtx,
+    indexing_agreements::Ctx as IndexingAgreementsCtx,
+    indexing_requests::Ctx as IndexingRequestsCtx,
 };
 
 /// Create a new RPC module with all the admin handlers.
@@ -28,13 +25,8 @@ where
     IndexingRequestsCtx<R, W>: FromState<S>,
     IndexingAgreementsCtx<R, W>: FromState<S>,
 {
-    // Indexing requests
-    let indexing_requests = IndexingRequestsRpcServerImpl::with_context(&ctx);
-
-    // Indexing agreements
-    let indexing_agreements = IndexingAgreementsRpcServerImpl::with_context(&ctx);
-
-    // Indexing receipts
+    let indexing_requests = indexing_requests::RpcServerImpl::with_context(&ctx);
+    let indexing_agreements = indexing_agreements::RpcServerImpl::with_context(&ctx);
     // TODO(post-mvp): Register the indexing receipts RPC handlers
 
     let mut module = RpcModule::new(ctx);

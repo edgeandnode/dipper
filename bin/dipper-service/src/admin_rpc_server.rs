@@ -1,5 +1,6 @@
 //! The Admin CLI RPC server.
+mod context;
 mod handlers;
 pub mod service;
 
-pub use handlers::{IndexingAgreementsCtx, IndexingRequestsCtx};
+pub use context::Ctx;

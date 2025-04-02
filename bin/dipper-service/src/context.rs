@@ -64,7 +64,7 @@ pub struct Ctx<R, N, W, C, I> {
     iisa: I,
 }
 
-impl<R, N, W, C, I> FromState<Ctx<R, N, W, C, I>> for admin_rpc_server::IndexingRequestsCtx<R, W>
+impl<R, N, W, C, I> FromState<Ctx<R, N, W, C, I>> for admin_rpc_server::Ctx<R, W>
 where
     R: Clone,
     W: Clone,
@@ -72,44 +72,29 @@ where
     fn from_state(ctx: &Ctx<R, N, W, C, I>) -> Self {
         Self {
             signer: ctx.signer.clone(),
-            allowlist: ctx.admin_allowlist.clone(),
-            registry: ctx.registry.clone(),
-            worker: ctx.worker.clone(),
+            admin_allowlist: ctx.admin_allowlist.clone(),
             max_candidates: ctx.max_candidates,
-        }
-    }
-}
-
-impl<R, N, W, C, I> FromState<Ctx<R, N, W, C, I>> for admin_rpc_server::IndexingAgreementsCtx<R, W>
-where
-    R: Clone,
-    W: Clone,
-{
-    fn from_state(ctx: &Ctx<R, N, W, C, I>) -> Self {
-        Self {
-            signer: ctx.signer.clone(),
-            allowlist: ctx.admin_allowlist.clone(),
             registry: ctx.registry.clone(),
             worker: ctx.worker.clone(),
         }
     }
 }
 
-impl<R, N, W, C, I> FromState<Ctx<R, N, W, C, I>>
-    for indexer_rpc_server::DipsGatewayServiceCtx<R, N, W>
+impl<R, N, W, C, I> FromState<Ctx<R, N, W, C, I>> for indexer_rpc_server::Ctx<R, N, W>
 where
     R: Clone,
     N: Clone,
     W: Clone,
 {
-    fn from_state(ctx: &Ctx<R, N, W, C, I>) -> Self {
+    #[inline]
+    fn from_state(state: &Ctx<R, N, W, C, I>) -> Self {
         Self {
-            signer: ctx.signer.clone(),
-            tap_signer: ctx.tap_signer.clone(),
-            allowlist: ctx.network_allowlist.clone(),
-            registry: ctx.registry.clone(),
-            network: ctx.network.clone(),
-            worker: ctx.worker.clone(),
+            signer: state.signer.clone(),
+            tap_signer: state.tap_signer.clone(),
+            allowlist: state.network_allowlist.clone(),
+            registry: state.registry.clone(),
+            network: state.network.clone(),
+            worker: state.worker.clone(),
         }
     }
 }

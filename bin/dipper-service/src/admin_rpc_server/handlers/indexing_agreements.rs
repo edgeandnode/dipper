@@ -27,27 +27,27 @@ use crate::{
 /// The substate for the [`IndexingAgreementsRpc`] handler
 ///
 /// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
-pub struct IndexingAgreementsCtx<R, W> {
+pub struct Ctx<R, W> {
     pub signer: Arc<PrivateKeyEip712Signer>,
     pub allowlist: Arc<BTreeSet<Address>>,
     pub registry: R,
     pub worker: W,
 }
 
-pub struct IndexingAgreementsRpcServerImpl<R, W>(IndexingAgreementsCtx<R, W>);
+pub struct RpcServerImpl<R, W>(Ctx<R, W>);
 
-impl<R, W> IndexingAgreementsRpcServerImpl<R, W> {
+impl<R, W> RpcServerImpl<R, W> {
     /// Create a new instance of the `IndexingAgreementsRpcServerImpl` with the given context
     pub fn with_context<C>(ctx: &C) -> Self
     where
-        IndexingAgreementsCtx<R, W>: FromState<C>,
+        Ctx<R, W>: FromState<C>,
     {
         Self(FromState::from_state(ctx))
     }
 }
 
-impl<R, W> std::ops::Deref for IndexingAgreementsRpcServerImpl<R, W> {
-    type Target = IndexingAgreementsCtx<R, W>;
+impl<R, W> std::ops::Deref for RpcServerImpl<R, W> {
+    type Target = Ctx<R, W>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -55,7 +55,7 @@ impl<R, W> std::ops::Deref for IndexingAgreementsRpcServerImpl<R, W> {
 }
 
 #[async_trait]
-impl<R, W> IndexingAgreementsRpcServer for IndexingAgreementsRpcServerImpl<R, W>
+impl<R, W> IndexingAgreementsRpcServer for RpcServerImpl<R, W>
 where
     R: AgreementRegistry + Clone + Send + Sync + 'static,
     W: WorkerQueue + Clone + Send + Sync + 'static,

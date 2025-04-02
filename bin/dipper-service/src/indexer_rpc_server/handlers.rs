@@ -20,32 +20,42 @@ use crate::{
     worker::WorkerQueue,
 };
 
-/// The substate for the [`DipsGatewayServiceImpl`] handler
-///
-/// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
-pub struct DipsGatewayServiceCtx<R, N, W> {
+/// The context shared across all requests.
+#[derive(Clone)]
+pub struct Ctx<R, N, W> {
+    /// The EIP-712 signer
     pub signer: Arc<PrivateKeyEip712Signer>,
+
+    /// The TAP receipt signer
     pub tap_signer: Arc<ReceiptSigner>,
+
+    /// The allowlist of indexers that allowed to make requests to the DIPs gateway Network API
     pub allowlist: Arc<BTreeSet<IndexerId>>,
+
+    /// The DIPs registry
     pub registry: R,
+
+    /// The Network provider
     pub network: N,
+
+    /// The message queue worker
     pub worker: W,
 }
 
-pub struct DipsGatewayServiceImpl<R, N, W>(DipsGatewayServiceCtx<R, N, W>);
+pub struct RpcServiceImpl<R, N, W>(Ctx<R, N, W>);
 
-impl<R, N, W> DipsGatewayServiceImpl<R, N, W> {
-    /// Create a new instance of the [`DipsGatewayServiceImpl`] with the given context.
+impl<R, N, W> RpcServiceImpl<R, N, W> {
+    /// Create a new instance of the [`RpcServiceImpl`] with the given context.
     pub fn with_context<S>(ctx: &S) -> Self
     where
-        DipsGatewayServiceCtx<R, N, W>: FromState<S>,
+        Ctx<R, N, W>: FromState<S>,
     {
         Self(FromState::from_state(ctx))
     }
 }
 
 #[async_trait]
-impl<R, N, W> rpc::GatewayDipsService for DipsGatewayServiceImpl<R, N, W>
+impl<R, N, W> rpc::GatewayDipsService for RpcServiceImpl<R, N, W>
 where
     R: AgreementRegistry + ReceiptRegistry + Clone + Send + Sync + 'static,
     N: NetworkProvider + Clone + Send + Sync + 'static,
@@ -433,8 +443,8 @@ where
     }
 }
 
-impl<R, N, W> std::ops::Deref for DipsGatewayServiceImpl<R, N, W> {
-    type Target = DipsGatewayServiceCtx<R, N, W>;
+impl<R, N, W> std::ops::Deref for RpcServiceImpl<R, N, W> {
+    type Target = Ctx<R, N, W>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
