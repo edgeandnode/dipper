@@ -17,122 +17,34 @@ pub async fn main() {
         if err.not_found() {
             tracing::debug!("No .env file found");
         } else {
-            tracing::debug!("Failed to load .env file: {}", err);
+            tracing::debug!("Failed to load .env file: {err}");
         }
     } else {
         tracing::debug!("Loaded .env file");
     }
 
-    // Parse command line arguments and construct the configuration
-    match cmd::cli().get_matches().subcommand() {
+    // Parse and run
+    let arg_matches = cmd::cli().get_matches();
+
+    match arg_matches.subcommand() {
         Some(("init", matches)) => {
             if let Err(err) = cmd::init::run(matches) {
-                eprintln!("Failed to initialize configuration: {err}");
-                std::process::exit(1);
+                eprintln!("{err}");
+                std::process::exit(err.code());
             }
         }
-        Some(("indexings", matches)) => match matches.subcommand() {
-            Some(("list", matches)) => {
-                let conf = match cmd::load_conf(matches) {
-                    Ok(conf) => conf,
-                    Err(err) => {
-                        eprintln!("Failed to load configuration: {err}");
-                        std::process::exit(1);
-                    }
-                };
-                tracing::debug!("Configuration loaded: {:?}", conf);
-
-                if let Err(err) = cmd::indexings::list(conf).await {
-                    eprintln!("Failed to list indexings: {}", err);
-                    std::process::exit(1);
-                }
+        Some(("indexings", matches)) => {
+            if let Err(err) = cmd::indexings::run(matches).await {
+                eprintln!("{err}");
+                std::process::exit(err.code());
             }
-            Some(("status", matches)) => {
-                let conf = match cmd::load_conf(matches) {
-                    Ok(conf) => conf,
-                    Err(err) => {
-                        eprintln!("Failed to load configuration: {err}");
-                        std::process::exit(1);
-                    }
-                };
-                tracing::debug!("Configuration loaded: {:?}", conf);
-
-                if let Err(err) = cmd::indexings::status(conf, matches).await {
-                    eprintln!("{}", err);
-                    std::process::exit(1);
-                }
+        }
+        Some(("agreements", matches)) => {
+            if let Err(err) = cmd::agreements::run(matches).await {
+                eprintln!("{err}");
+                std::process::exit(err.code());
             }
-            Some(("register", matches)) => {
-                let conf = match cmd::load_conf(matches) {
-                    Ok(conf) => conf,
-                    Err(err) => {
-                        eprintln!("Failed to load configuration: {err}");
-                        std::process::exit(1);
-                    }
-                };
-                tracing::debug!("Configuration loaded: {:?}", conf);
-
-                if let Err(err) = cmd::indexings::register(conf, matches).await {
-                    eprintln!("{}", err);
-                    std::process::exit(1);
-                }
-            }
-            Some(("cancel", matches)) => {
-                let conf = match cmd::load_conf(matches) {
-                    Ok(conf) => conf,
-                    Err(err) => {
-                        eprintln!("Failed to load configuration: {err}");
-                        std::process::exit(1);
-                    }
-                };
-                tracing::debug!("Configuration loaded: {:?}", conf);
-
-                if let Err(err) = cmd::indexings::cancel(conf, matches).await {
-                    eprintln!("{}", err);
-                    std::process::exit(1);
-                }
-            }
-            _ => {
-                eprintln!("No indexings command specified");
-                std::process::exit(1);
-            }
-        },
-        Some(("agreements", matches)) => match matches.subcommand() {
-            Some(("list", matches)) => {
-                let conf = match cmd::load_conf(matches) {
-                    Ok(conf) => conf,
-                    Err(err) => {
-                        eprintln!("Failed to load configuration: {err}");
-                        std::process::exit(1);
-                    }
-                };
-                tracing::debug!("Configuration loaded: {:?}", conf);
-
-                if let Err(err) = cmd::agreements::list(conf, matches).await {
-                    eprintln!("Failed to list agreements: {}", err);
-                    std::process::exit(1);
-                }
-            }
-            Some(("cancel", matches)) => {
-                let conf = match cmd::load_conf(matches) {
-                    Ok(conf) => conf,
-                    Err(err) => {
-                        eprintln!("Failed to load configuration: {err}");
-                        std::process::exit(1);
-                    }
-                };
-                tracing::debug!("Configuration loaded: {:?}", conf);
-
-                if let Err(err) = cmd::agreements::cancel(conf, matches).await {
-                    eprintln!("Failed to cancel agreement: {}", err);
-                    std::process::exit(1);
-                }
-            }
-            _ => {
-                eprintln!("No agreements command specified");
-                std::process::exit(1);
-            }
-        },
+        }
         _ => {
             eprintln!("No command specified");
             std::process::exit(1);

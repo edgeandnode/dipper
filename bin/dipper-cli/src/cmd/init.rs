@@ -3,9 +3,11 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Command, arg, command, value_parser};
 use url::Url;
 
-/// The `init` command
-pub fn run(_args: &clap::ArgMatches) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("init command not implemented yet"))
+use super::result::Result;
+
+/// The `init` command implementation
+pub fn run(_args: &clap::ArgMatches) -> Result<()> {
+    Err(anyhow::anyhow!("init command not implemented").into())
 }
 
 /// Create the `init` DIPs CLI configuration bootstrap command
