@@ -1,7 +1,7 @@
 dipper-iisa-python
 ==================
 
-The Python implementation of the IISA (Intelligent Information System Architecture) framework.
+The Python implementation of the IISA (Indexing Indexer Selection Algorithm) framework.
 
 This code is tightly related to the [dipper-iisa](../dipper-iisa/README.md) crate.
 
