@@ -114,104 +114,25 @@ where
     }
 }
 
-impl<R, N, W, C, I> FromState<Ctx<R, N, W, C, I>>
-    for worker::FindIndexerForIndexingRequestCtx<R, N, W, I>
-where
-    R: Clone,
-    N: Clone,
-    W: Clone,
-    I: Clone,
-{
-    fn from_state(state: &Ctx<R, N, W, C, I>) -> Self {
-        Self {
-            signer: state.signer.clone(),
-            agreement_conf: state.agreement_conf.clone(),
-            chain_price: state.pricing_table.clone(),
-            registry: state.registry.clone(),
-            network: state.network.clone(),
-            queue: state.worker.clone(),
-            iisa: state.iisa.clone(),
-        }
-    }
-}
-
-impl<R, N, W, C, I> FromState<Ctx<R, N, W, C, I>>
-    for worker::SendIndexingAgreementCancellationCtx<R, C>
-where
-    R: Clone,
-    C: Clone,
-{
-    fn from_state(state: &Ctx<R, N, W, C, I>) -> Self {
-        Self {
-            registry: state.registry.clone(),
-            indexer_client: state.client.clone(),
-        }
-    }
-}
-
-impl<R, N, W, C, I> FromState<Ctx<R, N, W, C, I>>
-    for worker::ProcessIndexingRequestCancellationCtx<R, W>
-where
-    R: Clone,
-    W: Clone,
-{
-    fn from_state(state: &Ctx<R, N, W, C, I>) -> Self {
-        Self {
-            registry: state.registry.clone(),
-            queue: state.worker.clone(),
-        }
-    }
-}
-
-impl<W, N, R, C, I> FromState<Ctx<R, N, W, C, I>>
-    for worker::ProcessNewIndexingRequestCtx<R, N, W, I>
-where
-    R: Clone,
-    N: Clone,
-    W: Clone,
-    I: Clone,
-{
-    fn from_state(state: &Ctx<R, N, W, C, I>) -> Self {
-        Self {
-            signer: state.signer.clone(),
-            agreement_conf: state.agreement_conf.clone(),
-            chain_price: state.pricing_table.clone(),
-            registry: state.registry.clone(),
-            network: state.network.clone(),
-            queue: state.worker.clone(),
-            iisa: state.iisa.clone(),
-        }
-    }
-}
-
-impl<R, N, W, C, I> FromState<Ctx<R, N, W, C, I>>
-    for worker::SendIndexingAgreementProposalCtx<R, N, W, C>
+impl<R, N, W, C, I> FromState<Ctx<R, N, W, C, I>> for worker::Ctx<R, N, W, C, I>
 where
     R: Clone,
     N: Clone,
     W: Clone,
     C: Clone,
+    I: Clone,
 {
+    #[inline]
     fn from_state(state: &Ctx<R, N, W, C, I>) -> Self {
         Self {
+            signer: state.signer.clone(),
+            agreement_conf: state.agreement_conf.clone(),
+            pricing_table: state.pricing_table.clone(),
             registry: state.registry.clone(),
             network: state.network.clone(),
-            queue: state.worker.clone(),
-            indexer_client: state.client.clone(),
-        }
-    }
-}
-
-impl<R, N, W, C, I> FromState<Ctx<R, N, W, C, I>>
-    for worker::ProcessIndexingAgreementCancellationCtx<R, W>
-where
-    R: Clone,
-    W: Clone,
-{
-    fn from_state(state: &Ctx<R, N, W, C, I>) -> Self {
-        Self {
-            queue: state.worker.clone(),
-            registry: state.registry.clone(),
+            worker: state.worker.clone(),
+            client: state.client.clone(),
+            iisa: state.iisa.clone(),
         }
     }
 }

@@ -1,4 +1,5 @@
 mod api;
+mod context;
 mod handlers;
 mod messages;
 mod result;
@@ -6,18 +7,15 @@ pub mod service;
 
 pub use api::WorkerQueue;
 use async_trait::async_trait;
+pub use context::Ctx;
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_pgmq::{JobId, PgQueue, Queue};
-pub use handlers::{
-    FindIndexerForIndexingRequestCtx, ProcessIndexingAgreementCancellationCtx,
-    ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
-    SendIndexingAgreementCancellationCtx, SendIndexingAgreementProposalCtx,
-};
-use messages::{
-    FindIndexerForIndexingRequest, Message, ProcessIndexingAgreementCancellation,
+use handlers::{
+    FindIndexerForIndexingRequest, ProcessIndexingAgreementCancellation,
     ProcessIndexingRequestCancellation, ProcessNewIndexingRequest,
     SendIndexingAgreementCancellation, SendIndexingAgreementProposal,
 };
+use messages::Message;
 use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 use url::Url;
 

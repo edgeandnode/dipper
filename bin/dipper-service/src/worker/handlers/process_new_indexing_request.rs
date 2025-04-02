@@ -1,0 +1,154 @@
+use std::{collections::BTreeMap, sync::Arc};
+
+use dipper_core::ids::IndexingRequestId;
+use dipper_iisa::{CandidateSelection, Indexer as IndexerCandidate};
+use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
+
+use crate::{
+    context::{IndexingAgreementChainPrices, IndexingAgreementConfig},
+    network::NetworkProvider,
+    registry::{
+        AgreementRegistry, IndexingAgreementVoucher, IndexingAgreementVoucherMetadata,
+        IndexingRequestRegistry,
+    },
+    signing::eip712::PrivateKeyEip712Signer,
+    worker::{WorkerQueue, result::JobResult},
+};
+
+pub struct Ctx<R, N, W, I> {
+    pub signer: Arc<PrivateKeyEip712Signer>,
+    pub agreement_conf: Arc<IndexingAgreementConfig>,
+    pub chain_price: Arc<BTreeMap<ChainId, IndexingAgreementChainPrices>>,
+    pub registry: R,
+    pub network: N,
+    pub queue: W,
+    pub iisa: I,
+}
+
+/// Given a new indexing request, run the IISA and get a list of indexers that
+/// can index the subgraph deployment.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct Message {
+    /// The ID of the indexing request
+    pub indexing_request_id: IndexingRequestId,
+    /// The ID of the subgraph deployment
+    pub deployment_id: DeploymentId,
+    /// The chain ID of the subgraph deployment
+    pub deployment_chain_id: ChainId,
+    /// The maximum number of indexers to select
+    pub num_candidates: usize,
+}
+
+pub async fn handle<R, N, W, I>(
+    ctx: Ctx<R, N, W, I>,
+    Message {
+        indexing_request_id,
+        deployment_id,
+        deployment_chain_id,
+        num_candidates,
+    }: &Message,
+) -> anyhow::Result<JobResult<()>>
+where
+    R: IndexingRequestRegistry + AgreementRegistry,
+    N: NetworkProvider,
+    W: WorkerQueue,
+    I: CandidateSelection,
+{
+    // Get the indexers that are not indexing the deployment amd treat it as the raw candidate list
+    // and pass it to the IISA to get the final list of candidates
+    let indexers = ctx
+        .network
+        .get_indexers_not_indexing_a_deployment_id(deployment_id)
+        .into_iter()
+        .map(|indexer| IndexerCandidate {
+            id: indexer.id,
+            url: indexer.url,
+        })
+        .collect::<Vec<_>>();
+    if indexers.is_empty() {
+        tracing::error!(
+            indexing_request_id=%indexing_request_id,
+            "No indexers available to fulfill the indexing request"
+        );
+        return Ok(JobResult::Ok(()));
+    }
+
+    let candidates = ctx
+        .iisa
+        .select(*deployment_id, indexers, *num_candidates)
+        .await?;
+    if candidates.is_empty() {
+        tracing::error!(
+            indexing_request_id=%indexing_request_id,
+            "No candidates selected to fulfill the indexing request"
+        );
+        return Ok(JobResult::Ok(()));
+    }
+
+    // Create indexing agreements for the selected indexers and register them in the registry
+    for candidate in candidates {
+        let voucher_metadata = {
+            let prices = match ctx.chain_price.get(deployment_chain_id) {
+                Some(prices) => prices,
+                None => {
+                    tracing::warn!(
+                        indexing_request_id=%indexing_request_id,
+                        deployment_id=%deployment_id,
+                        chain_id=%deployment_chain_id,
+                        "Chain prices not found"
+                    );
+                    return Err(anyhow::anyhow!("Chain prices not found for chain_id"));
+                }
+            };
+
+            IndexingAgreementVoucherMetadata {
+                base_price_per_epoch: prices.base_price_per_epoch,
+                price_per_entity: prices.price_per_entity,
+                subgraph_deployment_id: *deployment_id,
+                protocol_network: ctx.signer.chain_id(),
+                chain_id: *deployment_chain_id,
+            }
+        };
+
+        let voucher = IndexingAgreementVoucher {
+            payer: ctx.signer.address(),
+            recipient: candidate.id.into_inner(),
+            service: ctx.agreement_conf.service(),
+            duration_epochs: ctx.agreement_conf.duration_epochs(),
+            max_initial_amount: ctx.agreement_conf.max_initial_amount(),
+            max_ongoing_amount_per_epoch: ctx.agreement_conf.max_ongoing_amount_per_epoch(),
+            min_epochs_per_collection: ctx.agreement_conf.min_epochs_per_collection(),
+            max_epochs_per_collection: ctx.agreement_conf.max_epochs_per_collection(),
+            deadline: Default::default(), // TODO(v2): add the deadline
+            metadata: voucher_metadata,
+        };
+
+        let agreement_id = ctx
+            .registry
+            .register_new_indexing_agreement(
+                *indexing_request_id,
+                *deployment_id,
+                candidate.id,
+                candidate.url.clone(),
+                voucher,
+            )
+            .await?;
+
+        if let Err(err) = ctx
+            .queue
+            .send_indexing_agreement_proposal(
+                candidate.url,
+                agreement_id,
+                *indexing_request_id,
+                *deployment_id,
+                *deployment_chain_id,
+            )
+            .await
+        {
+            tracing::error!(error=?err, "Failed to queue task: 'send_indexing_agreement_proposal'");
+            return Err(err);
+        }
+    }
+
+    Ok(JobResult::Ok(()))
+}
