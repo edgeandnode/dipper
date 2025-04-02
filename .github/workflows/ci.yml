@@ -124,7 +124,6 @@ jobs:
       run: uv run --frozen ruff check
 
     - name: Run mypy static type checker
-      if: false  # TODO: Enable this once the mypy errors are fixed
       run: uv run --frozen mypy
 
     ## Test

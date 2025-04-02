@@ -3,31 +3,14 @@ name = "iisa"
 version = "0.1.0"
 readme = "dipper-iisa-python/README.md"
 requires-python = ">=3.11"
-dependencies = [
-    "airportsdata>=20240806",
-    "bigframes>=1.16.0,<2.0",
-    "community>=1.0.0b1,<2.0",
-    "networkx>=3.3,<4.0",
-    "numpy>=2.1.1,<3.0",
-    "pandas>=2.2.2,<3.0",
-    "pandera>=0.23,<0.24",
-    "requests>=2.32.3,<3.0",
-    "scipy>=1.14.1,<2.0",
-    "scikit-learn>=1.5.1,<2.0",
-    "tenacity>=9.0.0,<10.0",
-]
+dependencies = []
 
 [tool.uv]
 dev-dependencies = [
     "faker>=37,<37.2",
-    "faker-airtravel>=0.4,<0.5",
-    "freezegun>=1.5.1,<2.0",
     "mypy>=1.11.2,<2.0",
-    "pandera[mypy]>=0.23,<0.24",
     "pytest>=8.3.2,<9.0",
-    "pytest-mock>=3.14.0,<4.0",
     "ruff>=0.11,<0.12",
-    "types-requests>=2.32.0.20240905,<3.0",
 ]
 
 ## ruff configuration
@@ -48,20 +31,6 @@ exclude = [
     'test_.*\.py$',
     '_test\.py$',
 ]
-plugins = 'pandera.mypy'
-
-[[tool.mypy.overrides]]
-module = "scipy.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "sklearn.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "pyarrow.*"
-ignore_missing_imports = true
-
 
 # pytest configuration
 [tool.pytest.ini_options]
