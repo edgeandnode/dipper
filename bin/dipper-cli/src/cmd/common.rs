@@ -53,6 +53,7 @@ pub(super) fn server_url_arg() -> Arg {
 pub(super) fn signing_key_arg() -> Arg {
     arg!(--"signing-key" <KEY> "The secret key to sign requests with (hex)")
         .env(name_prefixed!("SIGNING_KEY"))
+        .hide_env_values(true)
         .value_parser(dipper_core::config::secret_key_from_str)
 }
 
