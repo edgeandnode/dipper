@@ -1,0 +1,25 @@
+## Rust builder
+FROM rust:1.86.0-slim-bookworm AS rust-builder
+
+RUN --mount=type=cache,target=/var/cache/apt \
+    apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        clang \
+        cmake \
+        pkg-config \
+        libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY ./ ./
+
+RUN cargo build --package dipper-cli --release
+
+
+## Final image
+FROM debian:bookworm-slim
+
+COPY --from=rust-builder /src/target/release/dipper-cli /usr/local/bin/dipper-cli
+
+ENTRYPOINT [ "dipper-cli" ]

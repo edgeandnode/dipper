@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use clap::{arg, command, value_parser, ArgMatches, Command};
+use clap::{ArgMatches, Command, arg, command, value_parser};
 use thegraph_core::alloy::{primitives::B256, signers::local::PrivateKeySigner};
 use url::Url;
 
