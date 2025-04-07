@@ -3,11 +3,17 @@ name = "dipper-rpc"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Enables the admin RPC functionality
+admin-rpc = ["dep:serde", "dep:serde_with", "dep:thegraph-core", "dep:time", "dep:jsonrpsee", "dep:dipper-core"]
+# Enables the indexer RPC functionality
+indexer-rpc = ["dep:indexer-dips", "indexer-dips/rpc"]
+
 [dependencies]
-dipper-core = { version = "0.1.0", path = "../dipper-core", features = ["serde"] }
-indexer-dips = { git = "https://github.com/graphprotocol/indexer-rs.git", rev = "c94e355", default-features = false, features = ["rpc"] }
-jsonrpsee = { workspace = true, features = ["client", "macros", "server"] }
-serde.workspace = true
-serde_with.workspace = true
-thegraph-core = { workspace = true, features = ["alloy-dyn-abi", "alloy-eip712", "alloy-signers", "alloy-sol-types", "serde", "signed-message"] }
-time = { workspace = true, features = ["formatting", "parsing", "serde"] }
+dipper-core = { version = "0.1.0", path = "../dipper-core", features = ["serde"], optional = true }
+indexer-dips = { git = "https://github.com/graphprotocol/indexer-rs.git", rev = "c94e355", default-features = false, optional = true }
+jsonrpsee = { workspace = true, features = ["client", "macros", "server"], optional = true }
+serde = { workspace = true, optional = true }
+serde_with = { workspace = true, optional = true }
+thegraph-core = { workspace = true, features = ["alloy-dyn-abi", "alloy-eip712", "alloy-signers", "alloy-sol-types", "serde", "signed-message"], optional = true }
+time = { workspace = true, features = ["formatting", "parsing", "serde"], optional = true }

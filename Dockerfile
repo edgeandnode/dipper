@@ -1,7 +1,7 @@
 ## Rust builder
 # Compile the Rust code and link against the uv installed libpython
 # The libpython3-dev package version must match the final image's python version
-FROM rust:1.86.0-bookworm AS rust-builder
+FROM rust:1.86.0-slim-bookworm AS rust-builder
 
 RUN --mount=type=cache,target=/var/cache/apt \
   apt-get update \
@@ -11,6 +11,8 @@ RUN --mount=type=cache,target=/var/cache/apt \
       cmake \
       git \
       lld \
+      pkg-config \
+      libssl-dev \
       protobuf-compiler \
   && rm -rf /var/lib/apt/lists/*
 
