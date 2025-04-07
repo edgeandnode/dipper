@@ -2591,8 +2591,10 @@ dependencies = [
  "dipper-rpc",
  "dotenvy",
  "figment",
+ "indoc",
  "jsonrpsee",
  "serde",
+ "serde-envfile",
  "serde_json",
  "serde_with",
  "snmalloc-rs",
@@ -2836,6 +2838,15 @@ name = "env_home"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7f84e12ccf0a7ddc17a6c41c93326024c42920d7ee630d04950e6926645c0fe"
+
+[[package]]
+name = "envy"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f47e0157f2cb54f5ae1bd371b30a2ae4311e1c028f575cd4e81de7353215965"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "equivalent"
@@ -6309,6 +6320,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e2c6ed6606019b4e29e69dbaba95b11854410e5347d525002456dbbb786b6"
 dependencies = [
  "serde_derive",
+]
+
+[[package]]
+name = "serde-envfile"
+version = "0.2.0"
+source = "git+https://github.com/LNSD/serde-envfile.git?rev=006e135#006e1353ca6115402d7e232a26f8d25b913a744a"
+dependencies = [
+ "cfg-if",
+ "dotenvy",
+ "envy",
+ "indexmap 2.9.0",
+ "serde",
 ]
 
 [[package]]

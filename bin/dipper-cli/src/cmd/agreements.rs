@@ -98,7 +98,7 @@ pub(super) fn cmd() -> Command {
         .about("Manage agreements")
         .args(
             // Common arg options to be used by all subcommands
-            &[
+            [
                 common::env_file_arg().global(true),
                 common::server_url_arg().global(true),
                 common::signing_key_arg().global(true),
