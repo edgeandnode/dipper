@@ -7,7 +7,6 @@ use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_rpc::admin::indexing_agreements::{
     CancelIndexingAgreement, IndexingAgreementsRpcClient,
 };
-use serde_json;
 use thegraph_core::signed_message;
 use uuid::Uuid;
 
@@ -15,7 +14,7 @@ use super::{common, result::Result};
 use crate::{client, config::Config, signer};
 
 /// The `agreements` command implementation
-pub async fn run(matches: &clap::ArgMatches) -> Result<()> {
+pub(super) async fn run(matches: &clap::ArgMatches) -> Result<()> {
     match matches.subcommand() {
         Some(("list", matches)) => {
             let conf = common::load_conf(matches)?;
@@ -94,7 +93,7 @@ async fn cancel(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
 }
 
 /// Create the `agreements` DIPs agreements admin command
-pub(super) fn agreements_cmd() -> Command {
+pub(super) fn cmd() -> Command {
     command!("agreements")
         .about("Manage agreements")
         .args(

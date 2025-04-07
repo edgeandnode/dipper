@@ -6,12 +6,12 @@ use url::Url;
 use super::result::Result;
 
 /// The `init` command implementation
-pub fn run(_args: &clap::ArgMatches) -> Result<()> {
+pub(super) async fn run(_args: &clap::ArgMatches) -> Result<()> {
     Err(anyhow::anyhow!("init command not implemented").into())
 }
 
 /// Create the `init` DIPs CLI configuration bootstrap command
-pub(super) fn init_cmd() -> Command {
+pub(super) fn cmd() -> Command {
     command!("init")
         .about("Bootstrap the DIPs Admin CLI configuration file")
         .args(&[
