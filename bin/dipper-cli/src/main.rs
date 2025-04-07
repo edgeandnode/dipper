@@ -24,30 +24,8 @@ pub async fn main() {
     }
 
     // Parse and run
-    let arg_matches = cmd::cli().get_matches();
-
-    match arg_matches.subcommand() {
-        Some(("init", matches)) => {
-            if let Err(err) = cmd::init::run(matches) {
-                eprintln!("{err}");
-                std::process::exit(err.code());
-            }
-        }
-        Some(("indexings", matches)) => {
-            if let Err(err) = cmd::indexings::run(matches).await {
-                eprintln!("{err}");
-                std::process::exit(err.code());
-            }
-        }
-        Some(("agreements", matches)) => {
-            if let Err(err) = cmd::agreements::run(matches).await {
-                eprintln!("{err}");
-                std::process::exit(err.code());
-            }
-        }
-        _ => {
-            eprintln!("No command specified");
-            std::process::exit(1);
-        }
+    if let Err(err) = cmd::run().await {
+        eprintln!("{err}");
+        std::process::exit(err.code());
     }
 }

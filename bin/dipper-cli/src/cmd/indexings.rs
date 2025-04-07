@@ -10,7 +10,7 @@ use super::{common, result::Result};
 use crate::{client, client::IndexingRequestsRpcClient, config::Config, signer};
 
 /// The `indexings` command implementation
-pub(crate) async fn run(matches: &clap::ArgMatches) -> Result<()> {
+pub(super) async fn run(matches: &clap::ArgMatches) -> Result<()> {
     match matches.subcommand() {
         Some(("list", matches)) => {
             let conf = common::load_conf(matches)?;
@@ -189,7 +189,7 @@ pub async fn cancel(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
 }
 
 /// Create the `indexings` DIPs indexing requests admin command
-pub(super) fn indexings_cmd() -> Command {
+pub(super) fn cmd() -> Command {
     command!("indexings")
         .about("Manage indexings")
         .args(
