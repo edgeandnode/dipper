@@ -18,26 +18,16 @@ use crate::{client, config::Config, signer};
 pub async fn run(matches: &clap::ArgMatches) -> Result<()> {
     match matches.subcommand() {
         Some(("list", matches)) => {
-            let conf = common::load_conf(matches)
-                .map_err(|err| anyhow::anyhow!("Failed to load configuration: {err}"))?;
+            let conf = common::load_conf(matches)?;
             tracing::debug!("Configuration loaded: {:?}", conf);
 
-            if let Err(err) = list(conf, matches).await {
-                return Err(anyhow::anyhow!("Failed to list agreements: {err}").into());
-            }
-
-            Ok(())
+            list(conf, matches).await
         }
         Some(("cancel", matches)) => {
-            let conf = common::load_conf(matches)
-                .map_err(|err| anyhow::anyhow!("Failed to load configuration: {err}"))?;
+            let conf = common::load_conf(matches)?;
             tracing::debug!("Configuration loaded: {:?}", conf);
 
-            if let Err(err) = cancel(conf, matches).await {
-                return Err(anyhow::anyhow!("Failed to cancel agreement: {err}").into());
-            }
-
-            Ok(())
+            cancel(conf, matches).await
         }
         _ => Err(anyhow::anyhow!("No agreements command specified").into()),
     }
