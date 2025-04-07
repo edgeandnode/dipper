@@ -1,6 +1,5 @@
 use std::str::FromStr;
 
-use anyhow::anyhow;
 use clap::{Command, arg, command, value_parser};
 use dipper_core::ids::IndexingRequestId;
 use dipper_rpc::admin::indexing_requests::{CancelIndexingRequest, NewIndexingRequest};
@@ -14,48 +13,28 @@ use crate::{client, client::IndexingRequestsRpcClient, config::Config, signer};
 pub(crate) async fn run(matches: &clap::ArgMatches) -> Result<()> {
     match matches.subcommand() {
         Some(("list", matches)) => {
-            let conf = common::load_conf(matches)
-                .map_err(|err| anyhow::anyhow!("Failed to load configuration: {err}"))?;
+            let conf = common::load_conf(matches)?;
             tracing::debug!("Configuration loaded: {:?}", conf);
 
-            if let Err(err) = list(conf).await {
-                return Err(anyhow::anyhow!("Failed to list indexings: {err}").into());
-            }
-
-            Ok(())
+            list(conf).await
         }
         Some(("status", matches)) => {
-            let conf = common::load_conf(matches)
-                .map_err(|err| anyhow::anyhow!("Failed to load configuration: {err}"))?;
+            let conf = common::load_conf(matches)?;
             tracing::debug!("Configuration loaded: {:?}", conf);
 
-            if let Err(err) = status(conf, matches).await {
-                return Err(anyhow::anyhow!("Failed to get indexing request status: {err}").into());
-            }
-
-            Ok(())
+            status(conf, matches).await
         }
         Some(("register", matches)) => {
-            let conf = common::load_conf(matches)
-                .map_err(|err| anyhow::anyhow!("Failed to load configuration: {err}"))?;
+            let conf = common::load_conf(matches)?;
             tracing::debug!("Configuration loaded: {:?}", conf);
 
-            if let Err(err) = register(conf, matches).await {
-                return Err(anyhow::anyhow!("Failed to register indexing request: {err}").into());
-            }
-
-            Ok(())
+            register(conf, matches).await
         }
         Some(("cancel", matches)) => {
-            let conf = common::load_conf(matches)
-                .map_err(|err| anyhow::anyhow!("Failed to load configuration: {err}"))?;
+            let conf = common::load_conf(matches)?;
             tracing::debug!("Configuration loaded: {:?}", conf);
 
-            if let Err(err) = cancel(conf, matches).await {
-                return Err(anyhow::anyhow!("Failed to cancel indexing request: {err}").into());
-            }
-
-            Ok(())
+            cancel(conf, matches).await
         }
         _ => Err(anyhow::anyhow!("No indexings command specified").into()),
     }
@@ -154,7 +133,7 @@ pub async fn register(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
 
     let request_chain_id = matches
         .get_one::<ChainId>("CHAIN_ID")
-        .ok_or_else(|| anyhow!("No chain ID provided"))?;
+        .ok_or_else(|| anyhow::anyhow!("No chain ID provided"))?;
 
     let req = signed_message::sign(
         &signer,

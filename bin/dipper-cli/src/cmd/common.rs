@@ -63,12 +63,12 @@ pub fn load_conf(args: &ArgMatches) -> anyhow::Result<Config> {
     if let Some(env_file) = args.get_one::<PathBuf>("env-file") {
         if let Err(err) = dotenvy::from_path(env_file) {
             return Err(anyhow::anyhow!(
-                "Failed to load the env file '{}': {}",
+                "Failed to load the envfile '{}': {}",
                 env_file.display(),
                 err
             ));
         } else {
-            tracing::debug!("Loaded env file '{}'", env_file.display());
+            tracing::debug!("Loaded envfile '{}'", env_file.display());
         }
     }
 
