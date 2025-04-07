@@ -34,14 +34,24 @@ The Dipper Admin CLI supports multiple authentication mechanisms to securely man
 
 ### Authentication Mechanisms
 
-The CLI provides multiple ways to handle authentication, each with its own use cases and security considerations.
+The CLI provides multiple ways to handle authentication and configuration, each with its own use cases and security considerations.
 
 #### Environment Variables
 
-All environment variables used by the CLI are prefixed with `DIPS_`. The main authentication-related environment variables are:
+All environment variables used by the CLI are prefixed with `DIPS_`. The main configuration-related environment variables are:
 
 - `DIPS_SERVER_URL`: The URL of the DIPs gateway server
 - `DIPS_SIGNING_KEY`: The secret key used to sign requests (in hex format)
+
+Environment variables take precedence over command-line arguments and can be used to avoid repeating common configuration:
+
+```bash
+# Set the server URL in the environment
+export DIPS_SERVER_URL=https://admin.dips.example.com
+
+# Run a command without specifying the server URL
+dipper-cli init keygen --output .env.unencrypted
+```
 
 #### .env File
 
@@ -81,25 +91,79 @@ This approach is useful for:
 - CI/CD pipelines
 - Scripts where you need direct access to the secret value
 
-#### Using `op` Injection with .env Files
+#### Using `op inject` with Template Files
 
 For more complex configurations, you can use 1Password's environment variable injection feature:
 
-1. Create a template `.env` file with 1Password references:
+1. Create a template `.env.template` file with 1Password references:
 ```bash
+# .env.template
 DIPS_SERVER_URL=https://admin.dips.example.com
-DIPS_SIGNING_KEY=op://mainnet/dips/signing-key-1
+DIPS_SIGNING_KEY={{ op://mainnet/dips/signing-key-1 }}
 ```
 
-2. Use `op run` to inject the secrets:
+2. Use `op inject` to inject the secrets:
 ```bash
-op run --env-file=.env dipper-cli <command>
+op inject --in-file .env.template --out-file .env.injected -- dipper-cli --env-file .env.injected <command>
 ```
 
 This approach is beneficial when:
 - Managing multiple secrets
 - Working with configuration files
 - Sharing configuration templates without exposing secrets
+
+## Initialization
+
+The `init` command helps you bootstrap your DIPs Admin CLI configuration. It provides two subcommands for different use cases:
+
+### Generating Keys
+
+The `init keygen` command generates a new key pair for signing requests:
+
+```bash
+# Generate a new key pair and display it
+dipper-cli init keygen 
+
+# Generate a new key pair and save it to a .env file
+dipper-cli init keygen --server-url https://admin.dips.example.com --output .env.unencrypted
+```
+
+This command will:
+1. Generate a new random key pair
+2. Display the public and private keys
+3. Optionally save the configuration to a file if `--output` is specified
+
+> [!IMPORTANT]
+> When saving to a file, the command will display a security warning about storing private keys in environment files. 
+> Consider using a secure credential manager instead.
+
+### Creating 1Password Templates
+
+The `init placeholder` command helps you set up configuration with 1Password integration:
+
+```bash
+# Create a template .env.template file with 1Password references
+dipper-cli init placeholder op://mainnet/dips/signing-key-1 --server-url https://admin.dips.example.com --output .env.template
+```
+
+This command will:
+1. Create a template configuration file with 1Password references
+2. Show instructions for using `op inject` to inject secrets at runtime
+3. Save the template to the specified output file (defaults to `.env.template`)
+
+The generated template will contain the 1Password reference wrapped in double curly braces, which is the format required by `op inject`:
+
+```bash
+# .env.template
+DIPS_SERVER_URL=https://admin.dips.example.com
+DIPS_SIGNING_KEY={{ op://mainnet/dips/signing-key-1 }}
+```
+
+To use the generated template:
+```bash
+# Inject secrets and run a command
+op inject --in-file .env.template --out-file .env.injected -- dipper-cli --env-file .env.injected <command>
+```
 
 ## Development
 
