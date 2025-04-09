@@ -4,6 +4,7 @@ from typing import Optional
 
 from faker import Faker
 from faker.providers import BaseProvider, geo, internet
+from faker_airtravel import AirTravelProvider
 
 from iisa.typing import (
     BASE58_ALPHABET,
@@ -86,4 +87,5 @@ def init_faker_instance(faker: Faker):
     """
     faker.add_provider(geo)
     faker.add_provider(internet)
+    faker.add_provider(AirTravelProvider)
     faker.add_provider(CustomProvider)
