@@ -68,9 +68,21 @@ pub struct HttpIisaClient {
 #[derive(Serialize)]          // Allows this struct to be converted to JSON
 struct SelectionRequest {
     deployment_id: String,    // The ID of the deployment to select indexers for
-    candidates: Vec<String>,  // List of candidate indexer ID's to select indexers from
-    #[serde(skip_serializing_if = "Option::is_none")]  // Only include num_candidates if it's not None
-    num_candidates: Option<usize>,  // Optional number of indexers to select
+
+    #[serde(skip_serializing_if = "Option::is_none")] // Only include existing_indexers if it's not None
+    existing_indexers: Option<Vec<String>>, // List of existing indexer ID's assigned to this deployment
+
+    #[serde(skip_serializing_if = "Option::is_none")] // Only include candidates if it's not None
+    candidates: Option<Vec<String>>,  // Pre-filtered list of candidate indexers to select from
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_agreements: Option<HashMap<String, Vec<String>>>, // Dict of pending indexing agreements from the DB
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    indexer_base_price_dict: Option<HashMap<String, HashMap<String, f64>>>, // Dict of indexer base prices, per network, from the DB
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    indexer_entity_price_dict: Option<HashMap<String, f64>>, // Dict of indexer entity prices from the DB
 }
 
 // Define struct `SingleSelectionResponse` for passing JSON response from select-one endpoint from IISA service
@@ -140,13 +152,20 @@ impl CandidateSelection for HttpIisaClient {
     async fn select_one(
         &self,
         deployment_id: DeploymentId,
-        candidates: Vec<Indexer>,
+        candidates: Option<Vec<Indexer>>,
+        existing_indexers: Option<Vec<Indexer>>,
+        pending_agreements: Option<HashMap<String, Vec<String>>>,
+        indexer_base_price_dict: Option<HashMap<String, HashMap<String, f64>>>,
+        indexer_entity_price_dict: Option<HashMap<String, f64>>,
     ) -> Result<Option<Indexer>, SelectionError> {
-
-        // Create a selection request
+        // Create a selection request with all parameters
         let request = SelectionRequest {
             deployment_id: deployment_id.to_string(),
-            candidates: candidates.iter().map(|i| format!("{:#x}", i.id)).collect(),
+            candidates: candidates.map(|c| c.iter().map(|i| format!("{:#x}", i.id)).collect()),
+            existing_indexers: existing_indexers.map(|e| e.iter().map(|i| format!("{:#x}", i.id)).collect()),
+            pending_agreements,
+            indexer_base_price_dict,
+            indexer_entity_price_dict,
             num_candidates: None,
         };
 
@@ -182,7 +201,7 @@ impl CandidateSelection for HttpIisaClient {
         }
     }
 
-    // Define the `select` method for the `HttpIisaClient` struct
+    // Define the `select` (many) method for the `HttpIisaClient` struct
     async fn select(
         &self,
         deployment_id: DeploymentId,
