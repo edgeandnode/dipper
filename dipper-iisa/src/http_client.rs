@@ -1,10 +1,45 @@
 /*
- * HTTP Client for IISA
+ * HTTP Client for IISA (Indexing Indexer Selection Algorithm)
  * 
  * This file implements a Rust HTTP client for communicating with the IISA docker container.
+ * The client provides an interface for passing necessary inputs:
+ * 
+ * - 1. Subgraph deployment ID that we need to (re)assign indexers to.
+ *     - e.g. QmABC
+ * - 2. List of existing indexers assigned to this subgraph deployment.
+ *     - e.g. [0x123, 0x456, 0x789]
+ * - 3. List of pre-filtered indexers eligible for selection - refered to as candidates.
+ *     - Candidates are indexers that are:
+ *         - Serving >0 subgraph(s) on the network where this subgraph is deployed.
+ *         - Not blocked from receiving indexing agreements. TODO: Track blocked indexers in the DB.
+ *         - Have not declined indexing agreements on this subgraph deployment. TODO: Within last x days.
+ *     - e.g. [0x123, 0x456, 0x789, 0x321, 0x654, 0x987]
+ * - 4. Pending agreements dict from the database.
+ *     - We need pending agreements seperate from candidates, because we might otherwise drop all agreements for an indexer that has a pending agreement.
+ *     - e.g. {"0x123": ["QmDEF"], "0x456": ["QmGHI"]}
+ * - 5. Indexer base pricing dict from the database.
+ *     - Indexers will elect to use different base prices per epoch for different networks to absorb archive node costs variations
+ *     - e.g. {"0x123": {"mainnet": 100.0, "arbitrum": 200.0}, "0x456": {"bsc": 100.0, "matic": 100.0}}
+ * - 6. Indexer entity pricing dict from the database.
+ *     - Indexers will use the same entity price per epoch for all networks.
+ *     - e.g. {"0x123": 100, "0x456": 200, "0x789": 300}
+ * 
+ * The IISA container handles indexer performance metric calculations, weighting, and selection algorithm.
+ * - Fetching performance data from BigQuery
+ * - Calculating indexer scoring metrics:
+ *     - Stake to fees ratio score,
+ *     - Base price score,
+ *     - Query response latency score,
+ *     - Uptime score,
+ *     - Success rate score,
+ *     - Price per entity score,
+ *     - Sync speed score.
+ * - Applying weights to the above metrics to create an overall score for each candidate.
+ * - Running the selection algorithm to determine the best indexers for the deployment.
  * 
  * This client implements the `CandidateSelection` interface, allowing other Rust code to 
- * interact with the IISA Docker container without needing to understand HTTP communication.
+ * interact with the IISA Docker container without needing to understand the complexity
+ * of the selection process.
  */
 
 
