@@ -30,7 +30,7 @@ thegraph-graphql-http = { version = "0.3.0", features = ["reqwest"] }
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
-tonic = { version = "0.12.3", default-features = false, features = ["server"] }
+tonic = { version = "0.13.0", default-features = false, features = ["server"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 url.workspace = true
