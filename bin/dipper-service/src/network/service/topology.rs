@@ -275,7 +275,7 @@ impl Extend<indexer_subgraphs::types::Subgraph> for Snapshot {
                         id: deployment_id,
                         subgraph: deployment_subgraph_id,
                         version: deployment_version_num,
-                        indexings: Default::default(),
+                        indexers: Default::default(),
                     });
 
                 for allocation in sub_version.subgraph_deployment.allocations {
@@ -303,20 +303,20 @@ impl Extend<indexer_subgraphs::types::Subgraph> for Snapshot {
                     self.indexers
                         .entry(indexer_id)
                         .and_modify(|indexer| {
-                            indexer.indexings.insert(deployment_id);
+                            indexer.deployments.insert(deployment_id);
                         })
                         .or_insert_with(|| Indexer {
                             id: indexer_id,
                             url: indexer_url,
-                            indexings: BTreeSet::from([deployment_id]),
+                            deployments: BTreeSet::from([deployment_id]),
                             operators: Default::default(),
                         });
 
-                    // Add the indexer to the deployment indexings
+                    // Add the indexer to the deployment indexers
                     self.deployments
                         .entry(deployment_id)
                         .and_modify(|deployment| {
-                            deployment.indexings.insert(indexer_id);
+                            deployment.indexers.insert(indexer_id);
                         });
 
                     // Add the allocation to the network snapshot table
@@ -384,7 +384,7 @@ pub struct Indexer {
     /// The deployments that the indexer has allocations for and is indexing
     ///
     /// This set contains the IDs of all deployments the indexer is currently indexing.
-    pub indexings: BTreeSet<DeploymentId>,
+    pub deployments: BTreeSet<DeploymentId>,
     /// Associated indexer operator account addresses
     ///
     /// These are Ethereum addresses that have permission to operate on behalf of the indexer.
@@ -449,7 +449,7 @@ pub struct Deployment {
     /// The indexers that are indexing the deployment
     ///
     /// The indexers are stored in a BTreeSet to ensure that they are unique.
-    pub indexings: BTreeSet<IndexerId>,
+    pub indexers: BTreeSet<IndexerId>,
 }
 
 /// An allocation in the network.

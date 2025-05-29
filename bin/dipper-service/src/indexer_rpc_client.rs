@@ -2,7 +2,7 @@
 //!
 //! The indexer client is responsible for communicating directly with the indexers.
 
-use std::{str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use dipper_core::ids::IndexingAgreementId;
@@ -117,10 +117,11 @@ impl IndexerClient for DipsIndexerClient {
 
         // Build the SubmitAgreementProposalRequest RPC request message
         // For now, the MVP, we are using version 1
-        let request = tonic::Request::new(rpc::SubmitAgreementProposalRequest {
+        let mut request = tonic::Request::new(rpc::SubmitAgreementProposalRequest {
             version: 1, // MVP version
             signed_voucher: sol_signed_voucher_bytes,
         });
+        request.set_timeout(Duration::from_secs(60));
 
         // Send the proposal request to the indexer
         let mut client = self.get_client(indexer)?;
@@ -164,10 +165,11 @@ impl IndexerClient for DipsIndexerClient {
         .abi_encode();
 
         // Build the CancelAgreementRequest RPC request message
-        let request = tonic::Request::new(rpc::CancelAgreementRequest {
+        let mut request = tonic::Request::new(rpc::CancelAgreementRequest {
             version: 1,
             signed_cancellation: sol_signed_cancellation_request_bytes,
         });
+        request.set_timeout(Duration::from_secs(60));
 
         // Send the cancellation request to the indexer
         let mut client = self.get_client(indexer)?;

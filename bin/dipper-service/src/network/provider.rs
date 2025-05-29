@@ -68,7 +68,7 @@ impl NetworkProvider for NetworkProviderService {
             // Filter out indexers that are not in the allowlist
             .filter(|indexer| self.allowlist.is_empty() || self.allowlist.contains(&indexer.id))
             // Filter out indexers that are already indexing the deployment
-            .filter(|indexer| !indexer.indexings.contains(deployment_id))
+            .filter(|indexer| !indexer.deployments.contains(deployment_id))
             .map(|indexer| Indexer {
                 id: indexer.id,
                 url: indexer.url.clone(),

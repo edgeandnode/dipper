@@ -195,7 +195,7 @@ cargo run --bin dipper-cli <command> [options]
 
 # Examples:
 cargo run --bin dipper-cli init --server-url https://admin.dips.example.com
-cargo run --bin dipper-cli --env-file .env indexings list
+cargo run --bin dipper-cli --env-file .env requests list
 ```
 
 ### Debugging the CLI

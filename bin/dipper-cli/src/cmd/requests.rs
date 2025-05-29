@@ -9,7 +9,7 @@ use uuid::Uuid;
 use super::{common, result::Result};
 use crate::{client, client::IndexingRequestsRpcClient, config::Config, signer};
 
-/// The `indexings` command implementation
+/// The `requests` command implementation
 pub(super) async fn run(matches: &clap::ArgMatches) -> Result<()> {
     match matches.subcommand() {
         Some(("list", matches)) => {
@@ -36,11 +36,11 @@ pub(super) async fn run(matches: &clap::ArgMatches) -> Result<()> {
 
             cancel(conf, matches).await
         }
-        _ => Err(anyhow::anyhow!("No indexings command specified").into()),
+        _ => Err(anyhow::anyhow!("No requests command specified").into()),
     }
 }
 
-/// The `indexings list` command
+/// The `requests list` command
 ///
 /// This function lists all registered indexing requests.
 ///
@@ -63,7 +63,7 @@ pub async fn list(conf: Config) -> Result<()> {
     Ok(())
 }
 
-/// The `indexings status` command
+/// The `requests status` command
 pub async fn status(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
     let rpc_client = client::new(&conf.server_url);
 
@@ -113,7 +113,7 @@ pub async fn status(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
     }
 }
 
-/// The `indexings register` command
+/// The `requests register` command
 pub async fn register(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
     let rpc_client = client::new(&conf.server_url);
     let signer = signer::new_private_key_eip712_signer(&conf.signing_key);
@@ -121,12 +121,16 @@ pub async fn register(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
 
     let request_deployment_id = match matches.get_one::<SubgraphIdOrDeploymentId>("SUBGRAPH") {
         // ID is a Deployment ID
-        Some(SubgraphIdOrDeploymentId::DeploymentId(id)) => id,
+        Some(SubgraphIdOrDeploymentId::DeploymentId(id)) => {
+            println!("Creating indexing request for deployment ID: {:?}", id);
+            id
+        }
 
         // ID is a Subgraph ID
         // TODO(post-mvp): Add support for querying by Subgraph ID
         Some(SubgraphIdOrDeploymentId::SubgraphId(id)) => {
-            return Err(anyhow::anyhow!("Invalid subgraph ID: `{id}`").into());
+            println!("Creating indexing request for subgraph ID: {:?}", id);
+            return Err(anyhow::anyhow!("Indexing by subgraph ID is not supported yet: `{id}`").into());
         }
         None => unreachable!("No ID provided"),
     };
@@ -149,12 +153,12 @@ pub async fn register(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
         |err| anyhow::anyhow!("Failed to register new indexing request for deployment '{request_deployment_id}' : {err}"),
     )?;
 
-    println!("{}", res);
+    println!("Created indexing request with ID: {}", res);
 
     Ok(())
 }
 
-/// The `indexings cancel` command
+/// The `requests cancel` command
 pub async fn cancel(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
     let rpc_client = client::new(&conf.server_url);
     let signer = signer::new_private_key_eip712_signer(&conf.signing_key);
@@ -163,6 +167,7 @@ pub async fn cancel(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
     match matches.get_one::<IndexingRequestSelector>("INDEXING_ID") {
         // ID is an UUIDv7
         Some(IndexingRequestSelector::IndexingRequestId(id)) => {
+            println!("Cancelling indexing request with ID: {}", id);
             let req = signed_message::sign(
                 &signer,
                 &signer_eip712_domain,
@@ -176,7 +181,7 @@ pub async fn cancel(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
                 .map_err(|err| {
                     anyhow::anyhow!("Failed to cancel indexing request '{id}' : {err}")
                 })?;
-
+            println!("Cancelled indexing request with ID: {}", id);
             Ok(())
         }
         // ID is a Subgraph ID or Deployment ID
@@ -188,10 +193,10 @@ pub async fn cancel(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
     }
 }
 
-/// Create the `indexings` DIPs indexing requests admin command
+/// Create the `requests` DIPs indexing requests admin command
 pub(super) fn cmd() -> Command {
-    command!("indexings")
-        .about("Manage indexings")
+    command!("requests")
+        .about("Manage indexing requests")
         .args(
             // Common arg options to be used by all subcommands
             &[
