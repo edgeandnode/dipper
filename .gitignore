@@ -22,3 +22,9 @@ wheels/
 
 # pytest
 .pytest_cache/
+
+# mypy
+.mypy_cache/
+
+# ruff
+.ruff_cache/
