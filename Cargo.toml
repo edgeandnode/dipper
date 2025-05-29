@@ -8,8 +8,6 @@ members = [
     "dipper-pgmq",
     "dipper-pgregistry",
     "dipper-rpc",
-    "integration-tests",
-    "xtask"
 ]
 
 [workspace.dependencies]
