@@ -1,5 +1,5 @@
 ## Rust builder
-FROM rust:1.86.0-slim-bookworm AS rust-builder
+FROM rust:1.87.0-slim-bookworm AS rust-builder
 
 RUN --mount=type=cache,target=/var/cache/apt \
     apt-get update \
