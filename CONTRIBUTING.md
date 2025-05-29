@@ -19,6 +19,10 @@ Before you can contribute to this project, you need to install and set up the fo
   instructions in the [official uv documentation](https://docs.astral.sh/uv/). After installation, you can verify it by
   running `uv --version` in your terminal.
 
+- **Just**: Install `just`, a command runner that simplifies project workflows. You can find the installation
+  instructions in the [official just documentation](https://github.com/casey/just). After installation, you can verify it by
+  running `just --version` in your terminal.
+
 - **Mozilla SOPS**: Install SOPS for managing encrypted environment variables. You can find the installation
   instructions in the [official SOPS documentation](https://github.com/mozilla/sops#readme).
   After installation, you can verify it by running `sops --version` in your terminal.
@@ -32,6 +36,8 @@ Before you can contribute to this project, you need to install and set up the fo
 
 Please ensure you have all these prerequisites in place before you start contributing to the project.
 
+> [!TIP]
+> You can run `just --list` to see all available development tasks.
 
 <!-- TODO: ### Project structure -->
 
@@ -46,7 +52,13 @@ Code formatting is automatically enforced using `rustfmt`.
 > Automatic imports formatting require the use of `nightly` Rust toolchain.
 
 ```shell
-cargo +nightly fmt --all
+just fmt
+```
+
+To check Rust code formatting without making changes, you can use:
+
+```shell
+just fmt-check
 ```
 
 #### Linting
@@ -56,7 +68,7 @@ Code linting is automatically enforced using `clippy`.
 In the CI pipeline, we use the following command to run the linter:
 
 ```shell
-cargo clippy -- -D warnings --force-warn deprecated --force-warn dead-code
+just check
 ```
 
 #### Testing
@@ -65,22 +77,16 @@ cargo clippy -- -D warnings --force-warn deprecated --force-warn dead-code
 > Tests that require access to secrets should be run using the encrypted `.env` file. 
 > Refer to the [CI Secrets](#running-the-tests) section for more information.
 
-To run the project **unit tests** using `cargo`, you can use the following command:
+To run the project **unit tests**, you can use the following command:
 
 ```shell
-uv run --frozen cargo test 'tests::' -- --skip 'tests::it_'
+just test-unit
 ```
 
-To run the project **integration tests (in-tree)** using `cargo`, you can use the following command:
+To run the project **integration tests**, you can use the following command:
 
 ```shell
-uv run --frozen cargo test 'tests::it_'
-```
-
-To run the project **integration tests (public API)** using `cargo`, you can use the following command:
-
-```shell
-uv run --frozen cargo test --test '*'
+just test-it
 ```
 
 ### Python workflow
@@ -90,27 +96,21 @@ uv run --frozen cargo test --test '*'
 To format the Python code using `ruff format`, you can use the following command:
 
 ```shell
-uv run --frozen ruff format dipper-iisa-python
-```
-
-#### Linting
-
-To lint the Python code using `ruff`, you can use the following command:
-
-```shell
-uv run --frozen ruff check dipper-iisa-python
-```
-
-To run static type checking using `mypy`, you can use the following command:
-
-```shell
-uv run --frozen mypy dipper-iisa-python
+just fmt-python
 ```
 
 To check formatting using `ruff format`, you can use the following command:
 
 ```shell
-uv run --frozen ruff format --check dipper-iisa-python
+just fmt-check-python
+```
+
+#### Linting
+
+To lint the Python code using `ruff` and `mypy`, you can use the following command:
+
+```shell
+just check-python
 ```
 
 #### Testing
@@ -122,7 +122,7 @@ uv run --frozen ruff format --check dipper-iisa-python
 To run the Python tests, you can use the following command:
 
 ```shell
-uv run --frozen pytest -v dipper-iisa-python
+just test-python
 ```
 
 ### CI Secrets
@@ -159,7 +159,7 @@ For example, to **_execute the project integration tests_** with the decrypted e
 following command:
 
 ```shell
-sops exec-env .env "cargo test --test '*'"
+sops exec-env .env "just test-it"
 ```
 
 The command above assumes that a valid `keys.txt` file is present in the user's configuration directory.
@@ -169,7 +169,7 @@ environment variable or passing the Age private key content directly to the `sop
 the `SOPS_AGE_KEY` environment variable.
 
 ```shell
-SOPS_AGE_KEY_FILE=/path/to/keys.txt sops exec-env .env cargo test --test '*'
+SOPS_AGE_KEY_FILE=/path/to/keys.txt sops exec-env .env "just test-it"
 ```
 
 #### Adding new contributors public keys
