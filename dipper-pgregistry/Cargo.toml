@@ -22,6 +22,7 @@ url.workspace = true
 [dev-dependencies]
 dipper-core = { path = "../dipper-core" }
 fake = { workspace = true, features = ["url"] }
-test-with = { version = "0.14.4", default-features = false }
+pgtemp = "0.6.0"
 thegraph-core = { workspace = true, features = ["fake"] }
+tokio = { workspace = true, features = ["macros", "test-util"] }
 uuid.workspace = true

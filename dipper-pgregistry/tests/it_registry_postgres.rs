@@ -6,7 +6,8 @@ use dipper_pgregistry::{
     IndexingRequestStatus, PgRegistry,
 };
 use fake::{Fake, Faker};
-use sqlx::{Pool, Postgres};
+use pgtemp::PgTempDB;
+use sqlx::{Executor as _, Pool, Postgres};
 use thegraph_core::{
     DeploymentId, IndexerId,
     alloy::primitives::{ChainId, address},
@@ -17,15 +18,37 @@ use thegraph_core::{
 use url::Url;
 use uuid::uuid;
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test]
-async fn register_new_indexing_request(db: Pool<Postgres>) -> sqlx::Result<()> {
+/// Initialize a temporary database for integration testing.
+///
+/// This function creates a temporary database and runs the migrations.
+/// It returns the database connection pool and the temporary database guard.
+async fn temp_registry_db() -> (Pool<Postgres>, PgTempDB) {
+    let temp_db = PgTempDB::new();
+    let db = Pool::connect(&temp_db.connection_uri())
+        .await
+        .expect("Failed to connect to temporary database");
+    dipper_pgregistry::run_db_migrations(&db)
+        .await
+        .expect("Failed to run DB migrations");
+    (db, temp_db)
+}
+
+/// Execute SQL fixture statements
+async fn run_fixture(db: &Pool<Postgres>, sql: &str) -> Result<(), sqlx::Error> {
+    let mut conn = db.acquire().await?;
+    conn.execute(sql).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn register_new_indexing_request() {
     //* Given
     // Indexing request
     let requested_by = FakeAlloy.fake();
     let deployment_id = deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv");
     let deployment_chain_id = Faker.fake::<ChainId>();
 
+    let (db, _temp_db) = temp_registry_db().await;
     let registry = PgRegistry::new(db);
 
     //* When
@@ -35,14 +58,15 @@ async fn register_new_indexing_request(db: Pool<Postgres>) -> sqlx::Result<()> {
 
     //* Then
     let _indexing_request_id = res.expect("Failed to register new indexing request");
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test(fixtures("0001_indexing_requests"))]
-async fn get_all_indexing_requests(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn get_all_indexing_requests() {
     //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0001_indexing_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
     let registry = PgRegistry::new(db);
 
     //* When
@@ -51,17 +75,18 @@ async fn get_all_indexing_requests(db: Pool<Postgres>) -> sqlx::Result<()> {
     //* Then
     let indexing_requests = indexing_requests.expect("Failed to get all indexing requests");
     assert_eq!(indexing_requests.len(), 3);
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test(fixtures("0001_indexing_requests"))]
-async fn indexing_request_get_by_id(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn indexing_request_get_by_id() {
     //* Given
     // Indexing request #1: OPEN
     let indexing_request_id = uuid!("019300ce-4751-780e-b58c-bf696b67eb23").into();
 
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0001_indexing_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
     let registry = PgRegistry::new(db);
 
     //* When
@@ -83,17 +108,18 @@ async fn indexing_request_get_by_id(db: Pool<Postgres>) -> sqlx::Result<()> {
         indexing_request.deployment_id,
         deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv")
     );
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test(fixtures("0001_indexing_requests"))]
-async fn indexing_request_get_by_id_not_found(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn indexing_request_get_by_id_not_found() {
     //* Given
     // Non-existent indexing request
     let indexing_request_id = uuid!("01930119-9a0e-7ea2-8dad-691515451655").into();
 
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0001_indexing_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
     let registry = PgRegistry::new(db);
 
     //* When
@@ -104,17 +130,18 @@ async fn indexing_request_get_by_id_not_found(db: Pool<Postgres>) -> sqlx::Resul
 
     //* Then
     assert!(indexing_request.is_none());
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test(fixtures("0001_indexing_requests"))]
-async fn indexing_request_get_by_id_unknown_status(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn indexing_request_get_by_id_unknown_status() {
     //* Given
     // Indexing request #3: Random state (should map to UNKNOWN)
     let indexing_request_id = uuid!("01930108-5942-7515-bd5e-2cba9c7027b7").into();
 
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0001_indexing_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
     let registry = PgRegistry::new(db);
 
     //* When
@@ -136,17 +163,18 @@ async fn indexing_request_get_by_id_unknown_status(db: Pool<Postgres>) -> sqlx::
         indexing_request.deployment_id,
         deployment_id!("QmZ5EcVesbdDidvgdMtd4h5xugVkEQWBgJ84CEouZrHGEq")
     );
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test(fixtures("0001_indexing_requests"))]
-async fn indexing_request_mark_open_as_canceled(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn indexing_request_mark_open_as_canceled() {
     //* Given
     // Indexing request #1: OPEN
     let indexing_request_id = uuid!("019300ce-4751-780e-b58c-bf696b67eb23").into();
 
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0001_indexing_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
     let registry = PgRegistry::new(db);
 
     //* When
@@ -165,17 +193,18 @@ async fn indexing_request_mark_open_as_canceled(db: Pool<Postgres>) -> sqlx::Res
 
     assert_eq!(indexing_request.id, indexing_request_id);
     assert_eq!(indexing_request.status, IndexingRequestStatus::Canceled);
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test(fixtures("0001_indexing_requests"))]
-async fn indexing_request_mark_canceled_as_canceled(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn indexing_request_mark_canceled_as_canceled() {
     //* Given
     // Indexing request #2: CANCELED
     let indexing_request_id = uuid!("01930105-d664-79ad-8535-5b82b0ad1aab").into();
 
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0001_indexing_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
     let registry = PgRegistry::new(db);
 
     //* When
@@ -187,17 +216,18 @@ async fn indexing_request_mark_canceled_as_canceled(db: Pool<Postgres>) -> sqlx:
     // Assert a `NoRecordsUpdated` error is returned
     let err = res.expect_err("Expected error when marking CANCELED indexing request as CANCELED");
     assert!(matches!(err, Error::NoRecordsUpdated));
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test(fixtures("0001_indexing_requests"))]
-async fn indexing_request_mark_unknown_as_canceled(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn indexing_request_mark_unknown_as_canceled() {
     //* Given
     // Indexing request #3: Random state (should map to UNKNOWN)
     let indexing_request_id = uuid!("01930108-5942-7515-bd5e-2cba9c7027b7").into();
 
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0001_indexing_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
     let registry = PgRegistry::new(db);
 
     //* When
@@ -209,17 +239,18 @@ async fn indexing_request_mark_unknown_as_canceled(db: Pool<Postgres>) -> sqlx::
     // Assert a `NoRecordsUpdated` error is returned
     let err = res.expect_err("Expected error when marking CANCELED indexing request as CANCELED");
     assert!(matches!(err, Error::NoRecordsUpdated));
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test(fixtures("0001_indexing_requests"))]
-async fn indexing_request_mark_non_existent_as_canceled(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn indexing_request_mark_non_existent_as_canceled() {
     //* Given
     // Non-existent indexing request
     let indexing_request_id = uuid!("0193010f-e202-7c8f-b41c-505c01b5d5dd").into();
 
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0001_indexing_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
     let registry = PgRegistry::new(db);
 
     //* When
@@ -232,15 +263,10 @@ async fn indexing_request_mark_non_existent_as_canceled(db: Pool<Postgres>) -> s
     let err =
         res.expect_err("Expected error when marking non-existent indexing request as CANCELED");
     assert!(matches!(err, Error::NoRecordsUpdated));
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test]
-async fn register_new_indexing_agreement_no_indexing_request(
-    db: Pool<Postgres>,
-) -> sqlx::Result<()> {
+#[tokio::test]
+async fn register_new_indexing_agreement_no_indexing_request() {
     //* Given
     // Indexing agreement
     let indexing_request_id = IndexingRequestId::new(); // Random ID
@@ -250,6 +276,7 @@ async fn register_new_indexing_agreement_no_indexing_request(
 
     let agreement_voucher = Faker.fake::<IndexingAgreementVoucher>();
 
+    let (db, _temp_db) = temp_registry_db().await;
     let registry = PgRegistry::new(db);
 
     //* When
@@ -265,13 +292,10 @@ async fn register_new_indexing_agreement_no_indexing_request(
 
     //* Then
     let _error = res.expect_err("Expected error when registering agreement");
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test]
-async fn register_new_indexing_agreement(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn register_new_indexing_agreement() {
     //* Given
     // Indexing request
     let requested_by = address!("8f8c426f956876325b1e037c6eae9b189952994c");
@@ -285,6 +309,7 @@ async fn register_new_indexing_agreement(db: Pool<Postgres>) -> sqlx::Result<()>
     // Indexing agreement voucher
     let agreement_voucher = Faker.fake::<IndexingAgreementVoucher>();
 
+    let (db, _temp_db) = temp_registry_db().await;
     let registry = PgRegistry::new(db);
 
     // Register a new indexing request
@@ -306,14 +331,12 @@ async fn register_new_indexing_agreement(db: Pool<Postgres>) -> sqlx::Result<()>
 
     //* Then
     let _indexing_agreement_id = res.expect("Failed to register new indexing agreement");
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
 #[sqlx::test]
-async fn register_new_and_get_indexing_agreement_by_id(db: Pool<Postgres>) -> sqlx::Result<()> {
+async fn register_new_and_get_indexing_agreement_by_id() {
     //* Given
+    let (db, _temp_db) = temp_registry_db().await;
     let registry = PgRegistry::new(db);
 
     // Indexing request
@@ -364,14 +387,15 @@ async fn register_new_and_get_indexing_agreement_by_id(db: Pool<Postgres>) -> sq
         indexing_agreement.voucher.metadata.subgraph_deployment_id,
         deployment_id
     );
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test(fixtures("0002_indexing_agreements"))]
-async fn get_indexing_agreements_by_indexing_request_id(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn get_indexing_agreements_by_indexing_request_id() {
     //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0002_indexing_agreements.sql"))
+        .await
+        .expect("Failed to run fixture");
     let registry = PgRegistry::new(db);
 
     let indexing_request_id = uuid!("019300ce-4751-780e-b58c-bf696b67eb23").into();
@@ -401,16 +425,15 @@ async fn get_indexing_agreements_by_indexing_request_id(db: Pool<Postgres>) -> s
         }),
         "Expected all agreements to be in CREATED or ACCEPTED state"
     );
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test(fixtures("0002_indexing_agreements"))]
-async fn get_rejected_indexing_agreements_by_indexing_request_id(
-    db: Pool<Postgres>,
-) -> sqlx::Result<()> {
+#[tokio::test]
+async fn get_rejected_indexing_agreements_by_indexing_request_id() {
     //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0002_indexing_agreements.sql"))
+        .await
+        .expect("Failed to run fixture");
     let registry = PgRegistry::new(db);
 
     let indexing_request_id = uuid!("019300ce-4751-780e-b58c-bf696b67eb23").into();
@@ -440,15 +463,10 @@ async fn get_rejected_indexing_agreements_by_indexing_request_id(
         }),
         "Expected all agreements to be in REJECTED state"
     );
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test]
-async fn register_new_indexing_receipt_no_indexing_agreement(
-    db: Pool<Postgres>,
-) -> sqlx::Result<()> {
+#[tokio::test]
+async fn register_new_indexing_receipt_no_indexing_agreement() {
     //* Given
     // Indexing agreement
     let indexing_agreement_id = Faker.fake::<IndexingAgreementId>();
@@ -457,6 +475,7 @@ async fn register_new_indexing_receipt_no_indexing_agreement(
     let reported_work = Faker.fake::<IndexingReceiptReportedWork>();
     let amount = FakeAlloy.fake();
 
+    let (db, _temp_db) = temp_registry_db().await;
     let registry = PgRegistry::new(db);
 
     //* When
@@ -472,13 +491,10 @@ async fn register_new_indexing_receipt_no_indexing_agreement(
 
     //* Then
     let _error = res.expect_err("Expected error when registering receipt");
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test]
-async fn register_new_indexing_receipt(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn register_new_indexing_receipt() {
     //* Given
     // Indexing request
     let requested_by = address!("8f8c426f956876325b1e037c6eae9b189952994c");
@@ -495,6 +511,7 @@ async fn register_new_indexing_receipt(db: Pool<Postgres>) -> sqlx::Result<()> {
     let reported_work = Faker.fake::<IndexingReceiptReportedWork>();
     let amount = FakeAlloy.fake();
 
+    let (db, _temp_db) = temp_registry_db().await;
     let registry = PgRegistry::new(db);
 
     // Register a new indexing request
@@ -528,6 +545,4 @@ async fn register_new_indexing_receipt(db: Pool<Postgres>) -> sqlx::Result<()> {
 
     //* Then
     let _indexing_receipt_id = res.expect("Failed to register new indexing receipt");
-
-    Ok(())
 }
