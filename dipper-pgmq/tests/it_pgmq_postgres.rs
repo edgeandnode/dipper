@@ -2,7 +2,23 @@ use std::time::Duration;
 
 use dipper_pgmq::{JobGuard, PgQueue, Queue};
 use fake::{Dummy, Fake, Faker};
+use pgtemp::PgTempDB;
 use sqlx::{Pool, Postgres};
+
+/// Initialize a temporary database for integration testing.
+///
+/// This function creates a temporary database and runs the migrations.
+/// It returns the database connection pool and the temporary database guard.
+async fn temp_pgmq_db() -> (Pool<Postgres>, PgTempDB) {
+    let temp_db = PgTempDB::new();
+    let db = Pool::connect(&temp_db.connection_uri())
+        .await
+        .expect("Failed to connect to temporary database");
+    dipper_pgmq::run_db_migrations(&db)
+        .await
+        .expect("Failed to run DB migrations");
+    (db, temp_db)
+}
 
 /// A test message for integration testing.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -18,10 +34,10 @@ impl Dummy<Faker> for TestMsg {
     }
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test]
-async fn push_job(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn push_job() {
     //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
 
     let msg = Faker.fake::<TestMsg>();
@@ -45,14 +61,12 @@ async fn push_job(db: Pool<Postgres>) -> sqlx::Result<()> {
     let job: JobGuard<TestMsg> = jobs.expect("Failed to get job from queue");
     assert_eq!(job.id(), &job_id);
     assert_eq!(job.message().data, msg.data);
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test]
-async fn push_job_pull_multiple_times(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn push_job_pull_multiple_times() {
     //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
 
     let msg = Faker.fake::<TestMsg>();
@@ -82,14 +96,12 @@ async fn push_job_pull_multiple_times(db: Pool<Postgres>) -> sqlx::Result<()> {
     let job1: JobGuard<TestMsg> = jobs1.expect("Failed to get job from queue");
     assert_eq!(job1.id(), &job_id);
     assert_eq!(job1.message().data, msg.data);
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test]
-async fn push_job_scheduled(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn push_job_scheduled() {
     //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
 
     let msg = Faker.fake::<TestMsg>();
@@ -120,14 +132,12 @@ async fn push_job_scheduled(db: Pool<Postgres>) -> sqlx::Result<()> {
     let job: JobGuard<TestMsg> = jobs.expect("Failed to get job from queue");
     assert_eq!(job.id(), &job_id);
     assert_eq!(job.message().data, msg.data);
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test]
-async fn push_job_scheduled_pull_too_early(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn push_job_scheduled_pull_too_early() {
     //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
 
     let msg = Faker.fake::<TestMsg>();
@@ -149,14 +159,12 @@ async fn push_job_scheduled_pull_too_early(db: Pool<Postgres>) -> sqlx::Result<(
     //* Then
     // Assert no jobs are pulled, as the job is scheduled for the future
     assert!(jobs.is_none());
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test]
-async fn push_job_scheduled_past(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn push_job_scheduled_past() {
     //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
 
     let msg = Faker.fake::<TestMsg>();
@@ -182,14 +190,12 @@ async fn push_job_scheduled_past(db: Pool<Postgres>) -> sqlx::Result<()> {
     let job: JobGuard<TestMsg> = jobs.expect("Failed to get job from queue");
     assert_eq!(job.id(), &job_id);
     assert_eq!(job.message().data, msg.data);
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test]
-async fn push_job_and_clear_queue(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn push_job_and_clear_queue() {
     //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
 
     let msg = Faker.fake::<TestMsg>();
@@ -214,14 +220,12 @@ async fn push_job_and_clear_queue(db: Pool<Postgres>) -> sqlx::Result<()> {
     //* Then
     // Assert no jobs are pulled, as the queue was cleared
     assert!(jobs.is_none());
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test]
-async fn push_pop_and_remove(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn push_pop_and_remove() {
     //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
 
     let msg = Faker.fake::<TestMsg>();
@@ -252,14 +256,12 @@ async fn push_pop_and_remove(db: Pool<Postgres>) -> sqlx::Result<()> {
     //* Then
     // Assert no jobs are pulled, as the job was removed
     assert!(job.is_none());
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test]
-async fn push_pop_mark_as_failed(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn push_pop_mark_as_failed() {
     //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
 
     let msg = Faker.fake::<TestMsg>();
@@ -294,14 +296,12 @@ async fn push_pop_mark_as_failed(db: Pool<Postgres>) -> sqlx::Result<()> {
     let job: JobGuard<TestMsg> = jobs.expect("Failed to get job from queue");
     assert_eq!(job.id(), &job_id);
     assert_eq!(job.message().data, msg.data);
-
-    Ok(())
 }
 
-#[test_with::env(DATABASE_URL)]
-#[sqlx::test]
-async fn push_job_mark_as_failed_and_reschedule(db: Pool<Postgres>) -> sqlx::Result<()> {
+#[tokio::test]
+async fn push_job_mark_as_failed_and_reschedule() {
     //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
 
     let msg = Faker.fake::<TestMsg>();
@@ -350,6 +350,4 @@ async fn push_job_mark_as_failed_and_reschedule(db: Pool<Postgres>) -> sqlx::Res
     let job: JobGuard<TestMsg> = jobs2.expect("Failed to get job from queue");
     assert_eq!(job.id(), &job_id);
     assert_eq!(job.message().data, msg.data);
-
-    Ok(())
 }

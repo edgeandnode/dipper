@@ -16,5 +16,5 @@ uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 fake.workspace = true
-test-with = "0.14.7"
+pgtemp = "0.6.0"
 tokio = { workspace = true, features = ["macros", "test-util"] }
