@@ -72,7 +72,7 @@ jobs:
           PYTHON_LIB_DIR: ${{ steps.python.outputs.PYTHON_LIB_DIR }}
         with:
           env_file: .env
-          run: uv run --frozen cargo test 'tests::' -- --skip 'tests::it_'
+          run: uv run --frozen cargo test --all-features 'tests::' -- --skip 'tests::it_'
 
       - name: Install integration tests dependencies
         run: |
@@ -89,7 +89,7 @@ jobs:
           PYTHON_LIB_DIR: ${{ steps.python.outputs.PYTHON_LIB_DIR }}
         with:
           env_file: .env
-          run: uv run --frozen cargo test 'tests::it_'
+          run: uv run --frozen cargo test --all-features 'tests::it_'
 
       - name: Integration tests (public api)
         uses: LNSD/sops-exec-action@6da1fbca63459d9796097496d5f5e6233555b31a # v1
@@ -98,7 +98,7 @@ jobs:
           PYTHON_LIB_DIR: ${{ steps.python.outputs.PYTHON_LIB_DIR }}
         with:
           env_file: .env
-          run: uv run --frozen cargo test --test '*'
+          run: uv run --frozen cargo test --all-features --test '*'
 
   format-rust:
     runs-on: ubuntu-latest
