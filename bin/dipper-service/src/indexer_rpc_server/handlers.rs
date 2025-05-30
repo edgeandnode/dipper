@@ -7,7 +7,7 @@ use thegraph_core::{
     AllocationId, IndexerId, ProofOfIndexing,
     alloy::{
         dyn_abi::SolType,
-        primitives::{PrimitiveSignature as Signature, U256},
+        primitives::{Signature, U256},
     },
     signed_message::SignedMessage,
 };
@@ -77,7 +77,7 @@ where
 
         // Deserialize the solidity Signed Cancellation Request struct
         let (sol_cancellation_req, signature) =
-            match sol::SignedCancellationRequest::abi_decode(&signed_cancellation, true) {
+            match sol::SignedCancellationRequest::abi_decode(&signed_cancellation) {
                 Ok(sol::SignedCancellationRequest { request, signature }) => (request, signature),
                 Err(err) => return Err(Status::invalid_argument(format!("bad request: {err}"))),
             };
@@ -174,7 +174,7 @@ where
 
         // Deserialize the solidity Signed Collection Request struct
         let (sol_collection_req, signature) =
-            match sol::SignedCollectionRequest::abi_decode(&signed_collection, true) {
+            match sol::SignedCollectionRequest::abi_decode(&signed_collection) {
                 Ok(sol::SignedCollectionRequest { request, signature }) => (request, signature),
                 Err(err) => return Err(Status::invalid_argument(format!("bad request: {err}"))),
             };
