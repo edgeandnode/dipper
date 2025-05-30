@@ -26,7 +26,7 @@ snmalloc-rs = "0.3.6"
 sqlx.workspace = true
 tap_graph = "0.3.3"
 thegraph-core = { workspace = true, features = ["alloy-signer-local", "serde", "signed-message"] }
-thegraph-graphql-http = { version = "0.3.0", features = ["reqwest"] }
+thegraph-graphql-http = { version = "0.4.0", features = ["reqwest"] }
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
