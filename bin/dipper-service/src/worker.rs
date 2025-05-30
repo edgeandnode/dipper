@@ -2,6 +2,7 @@ mod api;
 mod context;
 mod handlers;
 mod messages;
+pub mod queue;
 mod result;
 pub mod service;
 
@@ -9,25 +10,28 @@ pub use api::WorkerQueue;
 use async_trait::async_trait;
 pub use context::Ctx;
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
-use dipper_pgmq::{JobId, PgQueue, Queue};
 use handlers::{
     FindIndexerForIndexingRequest, ProcessIndexingAgreementCancellation,
     ProcessIndexingRequestCancellation, ProcessNewIndexingRequest,
     SendIndexingAgreementCancellation, SendIndexingAgreementProposal,
 };
-use messages::Message;
 use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 use url::Url;
+
+use self::{
+    messages::Message,
+    queue::{JobId, Queue as _, QueueImpl},
+};
 
 /// The worker that processes messages from the queue.
 #[derive(Clone)]
 pub struct Worker {
-    queue: PgQueue,
+    queue: QueueImpl,
 }
 
 impl Worker {
     /// Create a new instance of the worker
-    pub fn new(queue: PgQueue) -> Self {
+    pub fn new(queue: QueueImpl) -> Self {
         Self { queue }
     }
 }

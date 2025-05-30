@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use dipper_pgmq::{JobGuard, PgQueue, Queue};
+use dipper_pgmq::{JobGuard, PgQueue};
 use fake::{Dummy, Fake, Faker};
 use pgtemp::PgTempDB;
 use sqlx::{Pool, Postgres};
@@ -208,9 +208,7 @@ async fn push_job_and_clear_queue() {
         .expect("Failed to push message to queue");
 
     // Clear all jobs from the queue
-    <PgQueue as Queue<TestMsg>>::clear(&queue)
-        .await
-        .expect("Failed to clear queue");
+    queue.clear().await.expect("Failed to clear queue");
 
     let jobs: Option<JobGuard<TestMsg>> = queue
         .pop()

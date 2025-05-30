@@ -3,7 +3,6 @@ use std::{collections::BTreeMap, env, path::PathBuf, sync::Arc};
 use async_signal::{Signal, Signals};
 use dipper_core::state::FromState;
 use dipper_iisa as iisa;
-use dipper_pgmq::PgQueue;
 use futures_lite::StreamExt;
 use thegraph_core::alloy::{primitives::ChainId, signers::local::PrivateKeySigner};
 use tokio::task::JoinSet;
@@ -13,7 +12,7 @@ use self::{
     context::{CtxBuilder, DEFAULT_MAX_CANDIDATES},
     registry::RegistryProvider,
     signing::{eip712::Eip712Signer, tap::ReceiptSigner},
-    worker::Worker,
+    worker::{Worker, queue::QueueImpl},
 };
 
 mod admin_rpc_server;
@@ -85,7 +84,7 @@ pub async fn main() -> anyhow::Result<()> {
     tracing::info!("applied DB migrations");
 
     //- The worker and worker queue component
-    let queue = PgQueue::with_max_attempts(db_conn.clone(), 3);
+    let queue = QueueImpl::new(db_conn.clone());
     let worker = Worker::new(queue.clone());
 
     //- The registry component

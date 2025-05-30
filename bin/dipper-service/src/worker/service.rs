@@ -2,7 +2,6 @@ use std::{future::Future, time::Duration};
 
 use dipper_core::state::FromState;
 use dipper_iisa::CandidateSelection;
-use dipper_pgmq::Queue;
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
@@ -14,6 +13,7 @@ use super::{
         SendIndexingAgreementCancellationCtx, SendIndexingAgreementProposalCtx,
     },
     messages::Message,
+    queue::Queue,
     result::JobResult,
 };
 use crate::{
