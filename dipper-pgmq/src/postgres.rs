@@ -27,33 +27,28 @@ where
 }
 
 /// Push a job into the queue
-pub async fn push<'q, E, M>(executor: E, job: M, max_attempts: i32) -> anyhow::Result<JobId>
+pub async fn push<'q, E, T>(executor: E, desc: T, max_attempts: i32) -> anyhow::Result<JobId>
 where
     E: sqlx::Executor<'q, Database = sqlx::Postgres>,
-    M: serde::Serialize,
+    T: serde::Serialize,
 {
     let id = Uuid::now_v7();
-    let message = serde_json::to_value(&job)?;
+    let desc = serde_json::to_value(&desc)?;
 
-    sqlx::query!(
+    sqlx::query(
         r#"INSERT INTO pgmq_queue (
                 id,
-                created_at,
-                updated_at,
-                scheduled_for,
                 status,
                 retry_max,
-                retry_count,
-                message
+                descriptor
             ) VALUES (
-                $1, timezone('UTC', now()), timezone('UTC', now()),
-                timezone('UTC', now()), $2, $3, 0::int, $4
+                $1, $2, $3, $4
             )"#,
-        id,
-        PgJobStatus::default() as i32,
-        max_attempts,
-        message,
     )
+    .bind(id)
+    .bind(PgJobStatus::default())
+    .bind(max_attempts)
+    .bind(desc)
     .execute(executor)
     .await?;
 
@@ -61,56 +56,51 @@ where
 }
 
 /// Push a scheduled job into the queue
-pub async fn push_scheduled<'q, E, M>(
+pub async fn push_scheduled<'q, E, T>(
     executor: E,
-    job: M,
-    scheduled_for: OffsetDateTime,
+    desc: T,
     max_attempts: i32,
+    scheduled_for: OffsetDateTime,
 ) -> anyhow::Result<JobId>
 where
     E: sqlx::Executor<'q, Database = sqlx::Postgres>,
-    M: serde::Serialize,
+    T: serde::Serialize,
 {
-    let id = Uuid::now_v7();
-    let message = serde_json::to_value(&job)?;
+    let id = JobId::from_uuid(Uuid::now_v7());
+    let desc = serde_json::to_value(&desc)?;
 
-    sqlx::query!(
+    sqlx::query(
         r#"INSERT INTO pgmq_queue (
                 id,
-                created_at,
-                updated_at,
                 scheduled_for,
                 status,
                 retry_max,
-                retry_count,
-                message
+                descriptor
             ) VALUES (
-                $1, timezone('UTC', now()), timezone('UTC', now()),
-                $2, $3, $4, 0::int, $5
+                $1, $2, $3, $4, $5
             )"#,
-        id,
-        scheduled_for,
-        PgJobStatus::default() as i32,
-        max_attempts,
-        message,
     )
+    .bind(id)
+    .bind(scheduled_for)
+    .bind(PgJobStatus::default())
+    .bind(max_attempts)
+    .bind(desc)
     .execute(executor)
     .await?;
 
-    Ok(JobId::from_uuid(id))
+    Ok(id)
 }
 
 /// Pop a job from the queue
-pub async fn pop<'q, E, M>(executor: E) -> anyhow::Result<Option<JobGuard<'q, M>>>
+pub async fn pop<'q, E, T>(executor: E) -> anyhow::Result<Option<JobGuard<'q, T>>>
 where
     E: sqlx::Acquire<'q, Database = sqlx::Postgres>,
-    M: serde::de::DeserializeOwned + Send + 'static,
-    Job<M>: TryFrom<PgJob>,
+    T: for<'de> serde::Deserialize<'de>,
+    Job<T>: TryFrom<PgJob>,
 {
     let mut tx = executor.begin().await?;
 
-    let res = sqlx::query_as!(
-        PgJob,
+    let res = sqlx::query_as::<_, PgJob>(
         r#"UPDATE pgmq_queue
             SET
                 updated_at = timezone('UTC', now()),
@@ -124,9 +114,9 @@ where
                 LIMIT 1
             )
             RETURNING *"#,
-        PgJobStatus::Running as i32,
-        PgJobStatus::Queued as i32,
     )
+    .bind(PgJobStatus::Running)
+    .bind(PgJobStatus::Queued)
     .fetch_optional(&mut *tx)
     .await?
     .and_then(|pg_job| pg_job.try_into().ok())
@@ -140,7 +130,7 @@ pub async fn clear<'q, E>(executor: E) -> anyhow::Result<()>
 where
     E: sqlx::Executor<'q, Database = sqlx::Postgres>,
 {
-    sqlx::query!("DELETE FROM pgmq_queue")
+    sqlx::query("DELETE FROM pgmq_queue")
         .execute(executor)
         .await?;
     Ok(())
@@ -151,7 +141,8 @@ pub async fn remove<'q, E>(executor: E, id: &JobId) -> anyhow::Result<()>
 where
     E: sqlx::Executor<'q, Database = sqlx::Postgres>,
 {
-    sqlx::query!("DELETE FROM pgmq_queue WHERE id = $1", id.as_ref())
+    sqlx::query("DELETE FROM pgmq_queue WHERE id = $1")
+        .bind(id)
         .execute(executor)
         .await?;
 
@@ -175,23 +166,23 @@ where
     // If the number of failed attempts is greater than the maximum number of attempts,
     // mark the job as failed and do not reschedule it
     // Otherwise, reschedule the job for the next execution date
-    sqlx::query!(
+    sqlx::query(
         r#"UPDATE pgmq_queue
            SET
                updated_at = timezone('UTC', now()),
                retry_count = retry_count + 1,
                status = (CASE
-                   WHEN retry_count + 1 >= retry_max THEN $2::int ELSE $3::int
+                   WHEN retry_count + 1 >= retry_max THEN $2 ELSE $3
                END),
                scheduled_for = (CASE
                    WHEN retry_count + 1 < retry_max THEN $4 ELSE scheduled_for
                END)
            WHERE id = $1"#,
-        id.as_ref(),
-        PgJobStatus::Failed as i32,
-        PgJobStatus::Queued as i32,
-        scheduled_for,
     )
+    .bind(id)
+    .bind(PgJobStatus::Failed)
+    .bind(PgJobStatus::Queued)
+    .bind(scheduled_for)
     .execute(executor)
     .await?;
 
@@ -201,7 +192,7 @@ where
 #[derive(sqlx::FromRow)]
 pub struct PgJob {
     /// The job ID.
-    id: Uuid,
+    id: JobId,
     /// The job creation timestamp.
     created_at: OffsetDateTime,
     /// The job last update timestamp.
@@ -216,8 +207,8 @@ pub struct PgJob {
     /// The number of execution attempts.
     retry_count: i32,
 
-    /// The job message (serialized).
-    message: JsonValue,
+    /// The job descriptor (serialized).
+    descriptor: JsonValue,
 }
 
 impl<M> TryFrom<PgJob> for Job<M>
@@ -228,8 +219,8 @@ where
 
     fn try_from(value: PgJob) -> Result<Self, Self::Error> {
         Ok(Self {
-            id: JobId::from_uuid(value.id),
-            message: serde_json::from_value(value.message)
+            id: value.id,
+            desc: serde_json::from_value(value.descriptor)
                 .context("Failed job JSON message deserialization")?,
         })
     }
@@ -238,7 +229,7 @@ where
 /// The job status.
 ///
 /// We use a postgres `INT` representation as an optimization.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Default, sqlx::Type)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
 #[repr(i32)]
 enum PgJobStatus {
     /// The job is queued.
@@ -262,5 +253,29 @@ impl From<i32> for PgJobStatus {
             0 => Self::Queued,
             1_i32..=i32::MAX => Self::Failed,
         }
+    }
+}
+
+impl sqlx::Type<Postgres> for PgJobStatus {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        sqlx::postgres::PgTypeInfo::with_name("INT")
+    }
+}
+
+impl sqlx::Encode<'_, Postgres> for PgJobStatus {
+    fn encode_by_ref(
+        &self,
+        buf: &mut <Postgres as sqlx::Database>::ArgumentBuffer<'_>,
+    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+        sqlx::Encode::<Postgres>::encode_by_ref(&(*self as i32), buf)
+    }
+}
+
+impl sqlx::Decode<'_, Postgres> for PgJobStatus {
+    fn decode(
+        value: <Postgres as sqlx::Database>::ValueRef<'_>,
+    ) -> Result<Self, sqlx::error::BoxDynError> {
+        let value: i32 = sqlx::Decode::<Postgres>::decode(value)?;
+        Ok(value.into())
     }
 }
