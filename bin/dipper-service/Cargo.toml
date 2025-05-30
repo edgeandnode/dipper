@@ -24,13 +24,13 @@ serde_json.workspace = true
 serde_with.workspace = true
 snmalloc-rs = "0.3.6"
 sqlx.workspace = true
-tap_graph = { git = "https://github.com/semiotic-ai/timeline-aggregation-protocol", rev = "da84dfc" }
+tap_graph = "0.3.3"
 thegraph-core = { workspace = true, features = ["alloy-signer-local", "serde", "signed-message"] }
 thegraph-graphql-http = { version = "0.3.0", features = ["reqwest"] }
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
-tonic = { version = "0.12.3", default-features = false, features = ["server"] }
+tonic = { version = "0.13", default-features = false, features = ["server"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 url.workspace = true
