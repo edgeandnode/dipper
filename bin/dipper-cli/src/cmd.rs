@@ -1,7 +1,7 @@
 mod agreements;
 mod common;
-mod requests;
 mod init;
+mod requests;
 mod result;
 
 use self::result::Result;

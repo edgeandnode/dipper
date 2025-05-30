@@ -130,7 +130,9 @@ pub async fn register(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
         // TODO(post-mvp): Add support for querying by Subgraph ID
         Some(SubgraphIdOrDeploymentId::SubgraphId(id)) => {
             println!("Creating indexing request for subgraph ID: {:?}", id);
-            return Err(anyhow::anyhow!("Indexing by subgraph ID is not supported yet: `{id}`").into());
+            return Err(
+                anyhow::anyhow!("Indexing by subgraph ID is not supported yet: `{id}`").into(),
+            );
         }
         None => unreachable!("No ID provided"),
     };
