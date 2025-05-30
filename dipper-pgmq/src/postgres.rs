@@ -2,7 +2,11 @@
 
 use anyhow::Context;
 use async_trait::async_trait;
-use sqlx::{Pool, Postgres, types::JsonValue};
+use sqlx::{
+    Acquire, Pool, Postgres,
+    migrate::{Migrate, MigrateError},
+    types::JsonValue,
+};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -49,11 +53,45 @@ where
     Job<M>: TryFrom<PgJob>,
 {
     async fn push(&self, job: M) -> anyhow::Result<JobId> {
-        let id = Uuid::now_v7();
-        let message = serde_json::to_value(&job)?;
+        push(&self.pool, job, self.max_attempts).await
+    }
 
-        sqlx::query!(
-            r#"INSERT INTO pgmq_queue (
+    async fn push_scheduled(&self, msg: M, scheduled_for: OffsetDateTime) -> anyhow::Result<JobId> {
+        push_scheduled(&self.pool, msg, scheduled_for, self.max_attempts).await
+    }
+
+    async fn pop(&self) -> anyhow::Result<Option<JobGuard<'_, M>>> {
+        pop(&self.pool).await
+    }
+
+    async fn clear(&self) -> anyhow::Result<()> {
+        clear(&self.pool).await
+    }
+}
+
+/// Run the DB migrations.
+///
+/// It is used to ensure that the database is up to date with the latest migrations.
+pub async fn run_db_migrations<'a, A>(conn: A) -> Result<(), MigrateError>
+where
+    A: Acquire<'a>,
+    <A::Connection as std::ops::Deref>::Target: Migrate,
+{
+    sqlx::migrate!("./migrations").run(conn).await?;
+    Ok(())
+}
+
+/// Push a job into the queue
+pub async fn push<'q, E, M>(executor: E, job: M, max_attempts: i32) -> anyhow::Result<JobId>
+where
+    E: sqlx::Executor<'q, Database = sqlx::Postgres>,
+    M: serde::Serialize + Send + 'static,
+{
+    let id = Uuid::now_v7();
+    let message = serde_json::to_value(&job)?;
+
+    sqlx::query!(
+        r#"INSERT INTO pgmq_queue (
                 id,
                 created_at,
                 updated_at,
@@ -66,23 +104,33 @@ where
                 $1, timezone('UTC', now()), timezone('UTC', now()),
                 timezone('UTC', now()), $2, $3, 0::int, $4
             )"#,
-            id,
-            PgJobStatus::default() as i32,
-            self.max_attempts,
-            message,
-        )
-        .execute(&self.pool)
-        .await?;
+        id,
+        PgJobStatus::default() as i32,
+        max_attempts,
+        message,
+    )
+    .execute(executor)
+    .await?;
 
-        Ok(JobId::from_uuid(id))
-    }
+    Ok(JobId::from_uuid(id))
+}
 
-    async fn push_scheduled(&self, msg: M, scheduled_for: OffsetDateTime) -> anyhow::Result<JobId> {
-        let id = Uuid::now_v7();
-        let message = serde_json::to_value(&msg)?;
+/// Push a scheduled job into the queue
+pub async fn push_scheduled<'q, E, M>(
+    executor: E,
+    job: M,
+    scheduled_for: OffsetDateTime,
+    max_attempts: i32,
+) -> anyhow::Result<JobId>
+where
+    E: sqlx::Executor<'q, Database = sqlx::Postgres>,
+    M: serde::Serialize + Send + 'static,
+{
+    let id = Uuid::now_v7();
+    let message = serde_json::to_value(&job)?;
 
-        sqlx::query!(
-            r#"INSERT INTO pgmq_queue (
+    sqlx::query!(
+        r#"INSERT INTO pgmq_queue (
                 id,
                 created_at,
                 updated_at,
@@ -95,25 +143,30 @@ where
                 $1, timezone('UTC', now()), timezone('UTC', now()),
                 $2, $3, $4, 0::int, $5
             )"#,
-            id,
-            scheduled_for,
-            PgJobStatus::default() as i32,
-            self.max_attempts,
-            message,
-        )
-        .execute(&self.pool)
-        .await?;
+        id,
+        scheduled_for,
+        PgJobStatus::default() as i32,
+        max_attempts,
+        message,
+    )
+    .execute(executor)
+    .await?;
 
-        Ok(JobId::from_uuid(id))
-    }
+    Ok(JobId::from_uuid(id))
+}
 
-    async fn pop(&self) -> anyhow::Result<Option<JobGuard<'_, M>>> {
-        let mut tx = self.pool.begin().await?;
+/// Pop a job from the queue
+pub async fn pop<'q, E, M>(executor: E) -> anyhow::Result<Option<JobGuard<'q, M>>>
+where
+    E: sqlx::Acquire<'q, Database = sqlx::Postgres>,
+    M: serde::Serialize + Send + 'static,
+    Job<M>: TryFrom<PgJob>,
+{
+    let mut tx = executor.begin().await?;
 
-        // Get one job from the queue
-        let res = sqlx::query_as!(
-            PgJob,
-            r#"UPDATE pgmq_queue
+    let res = sqlx::query_as!(
+        PgJob,
+        r#"UPDATE pgmq_queue
             SET
                 updated_at = timezone('UTC', now()),
                 status = $1
@@ -126,27 +179,30 @@ where
                 LIMIT 1
             )
             RETURNING *"#,
-            PgJobStatus::Running as i32,
-            PgJobStatus::Queued as i32,
-        )
-        .fetch_optional(&mut *tx)
-        .await?
-        .and_then(|pg_job| pg_job.try_into().ok())
-        .map(|job| JobGuard::new(tx, job));
+        PgJobStatus::Running as i32,
+        PgJobStatus::Queued as i32,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .and_then(|pg_job| pg_job.try_into().ok())
+    .map(|job| JobGuard::new(tx, job));
 
-        Ok(res)
-    }
-
-    async fn clear(&self) -> anyhow::Result<()> {
-        sqlx::query!("DELETE FROM pgmq_queue")
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
-    }
+    Ok(res)
 }
 
-pub(crate) async fn remove<'q, E>(executor: E, id: &JobId) -> anyhow::Result<()>
+/// Clear the queue
+pub async fn clear<'q, E>(executor: E) -> anyhow::Result<()>
+where
+    E: sqlx::Executor<'q, Database = sqlx::Postgres>,
+{
+    sqlx::query!("DELETE FROM pgmq_queue")
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+/// Remove a job from the queue
+pub async fn remove<'q, E>(executor: E, id: &JobId) -> anyhow::Result<()>
 where
     E: sqlx::Executor<'q, Database = sqlx::Postgres>,
 {
@@ -157,9 +213,10 @@ where
     Ok(())
 }
 
+/// Mark a job as failed
 // TODO(post-mvp): Return the updated job status and failed attempts, so the caller can check if the
 //  job was marked as failed
-pub(crate) async fn mark_as_failed<'q, E>(
+pub async fn mark_as_failed<'q, E>(
     executor: E,
     id: &JobId,
     scheduled_for: Option<OffsetDateTime>,
@@ -197,7 +254,7 @@ where
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
-struct PgJob {
+pub struct PgJob {
     /// The job ID.
     id: Uuid,
     /// The job creation timestamp.
