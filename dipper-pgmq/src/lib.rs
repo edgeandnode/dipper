@@ -7,5 +7,5 @@ mod queue;
 
 pub use id::JobId;
 pub use job::JobGuard;
-pub use postgres::{PgQueue, run_db_migrations};
-pub use queue::Queue;
+pub use postgres::run_db_migrations;
+pub use queue::PgQueue;

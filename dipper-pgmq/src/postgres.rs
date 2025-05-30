@@ -1,9 +1,8 @@
-//! PostgreSQL-backed message queue implementation.
+//! PostgreSQL message queue queries
 
-use anyhow::Context;
-use async_trait::async_trait;
+use anyhow::Context as _;
 use sqlx::{
-    Acquire, Pool, Postgres,
+    Acquire, Postgres,
     migrate::{Migrate, MigrateError},
     types::JsonValue,
 };
@@ -13,61 +12,7 @@ use uuid::Uuid;
 use super::{
     id::JobId,
     job::{Job, JobGuard},
-    queue::Queue,
 };
-
-/// The default maximum number of attempts before a job is considered as failed.
-const DEFAULT_MAX_ATTEMPTS: i32 = 3;
-
-/// A PostgreSQL message queue
-#[derive(Debug, Clone)]
-pub struct PgQueue {
-    /// The DB connection pool.
-    pool: Pool<Postgres>,
-    /// The maximum number of attempts before a job is considered failed
-    max_attempts: i32,
-}
-
-impl PgQueue {
-    /// Creates a new PostgreSQL message queue.
-    pub fn new(pool: Pool<Postgres>) -> Self {
-        Self {
-            pool,
-            max_attempts: DEFAULT_MAX_ATTEMPTS,
-        }
-    }
-
-    /// Creates a new PostgreSQL message queue with a custom maximum number of attempts.
-    pub fn with_max_attempts(pool: Pool<Postgres>, max_attempts: u32) -> Self {
-        Self {
-            pool,
-            max_attempts: max_attempts.try_into().unwrap_or(i32::MAX),
-        }
-    }
-}
-
-#[async_trait]
-impl<M> Queue<M> for PgQueue
-where
-    M: serde::Serialize + Send + 'static,
-    Job<M>: TryFrom<PgJob>,
-{
-    async fn push(&self, job: M) -> anyhow::Result<JobId> {
-        push(&self.pool, job, self.max_attempts).await
-    }
-
-    async fn push_scheduled(&self, msg: M, scheduled_for: OffsetDateTime) -> anyhow::Result<JobId> {
-        push_scheduled(&self.pool, msg, scheduled_for, self.max_attempts).await
-    }
-
-    async fn pop(&self) -> anyhow::Result<Option<JobGuard<'_, M>>> {
-        pop(&self.pool).await
-    }
-
-    async fn clear(&self) -> anyhow::Result<()> {
-        clear(&self.pool).await
-    }
-}
 
 /// Run the DB migrations.
 ///
@@ -85,7 +30,7 @@ where
 pub async fn push<'q, E, M>(executor: E, job: M, max_attempts: i32) -> anyhow::Result<JobId>
 where
     E: sqlx::Executor<'q, Database = sqlx::Postgres>,
-    M: serde::Serialize + Send + 'static,
+    M: serde::Serialize,
 {
     let id = Uuid::now_v7();
     let message = serde_json::to_value(&job)?;
@@ -124,7 +69,7 @@ pub async fn push_scheduled<'q, E, M>(
 ) -> anyhow::Result<JobId>
 where
     E: sqlx::Executor<'q, Database = sqlx::Postgres>,
-    M: serde::Serialize + Send + 'static,
+    M: serde::Serialize,
 {
     let id = Uuid::now_v7();
     let message = serde_json::to_value(&job)?;
@@ -159,7 +104,7 @@ where
 pub async fn pop<'q, E, M>(executor: E) -> anyhow::Result<Option<JobGuard<'q, M>>>
 where
     E: sqlx::Acquire<'q, Database = sqlx::Postgres>,
-    M: serde::Serialize + Send + 'static,
+    M: serde::de::DeserializeOwned + Send + 'static,
     Job<M>: TryFrom<PgJob>,
 {
     let mut tx = executor.begin().await?;
@@ -253,7 +198,7 @@ where
     Ok(())
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(sqlx::FromRow)]
 pub struct PgJob {
     /// The job ID.
     id: Uuid,

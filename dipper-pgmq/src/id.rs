@@ -1,10 +1,9 @@
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// A job ID
 ///
 /// This is a unique identifier for a job in the queue.
-#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 #[repr(transparent)]
 pub struct JobId(Uuid);
 
