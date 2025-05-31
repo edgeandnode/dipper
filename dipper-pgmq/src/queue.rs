@@ -39,30 +39,35 @@ impl PgQueue {
 
 impl PgQueue {
     /// Pushes a job into the queue
-    pub async fn push<M>(&self, job: M) -> anyhow::Result<JobId>
+    pub async fn push<J, T>(&self, job: J) -> anyhow::Result<JobId>
     where
-        M: serde::Serialize,
+        J: Into<JobBuilder<T>>,
+        T: serde::Serialize,
     {
-        postgres::push(&self.pool, job, self.max_attempts).await
-    }
+        let JobBuilder {
+            desc,
+            max_attempts,
+            scheduled_for,
+        } = job.into();
 
-    /// Pushes a job into the queue with a scheduled time
-    pub async fn push_scheduled<M>(
-        &self,
-        msg: M,
-        scheduled_for: OffsetDateTime,
-    ) -> anyhow::Result<JobId>
-    where
-        M: serde::Serialize,
-    {
-        postgres::push_scheduled(&self.pool, msg, scheduled_for, self.max_attempts).await
+        if let Some(scheduled_for) = scheduled_for {
+            postgres::push_scheduled(
+                &self.pool,
+                desc,
+                max_attempts.unwrap_or(self.max_attempts),
+                scheduled_for,
+            )
+            .await
+        } else {
+            postgres::push(&self.pool, desc, max_attempts.unwrap_or(self.max_attempts)).await
+        }
     }
 
     /// Pulls a job from the queue
-    pub async fn pop<M>(&self) -> anyhow::Result<Option<JobGuard<'_, M>>>
+    pub async fn pop<T>(&self) -> anyhow::Result<Option<JobGuard<'_, T>>>
     where
-        M: serde::de::DeserializeOwned + Send + 'static,
-        Job<M>: TryFrom<postgres::PgJob>,
+        T: for<'de> serde::Deserialize<'de>,
+        Job<T>: TryFrom<postgres::PgJob>,
     {
         postgres::pop(&self.pool).await
     }
@@ -70,5 +75,45 @@ impl PgQueue {
     /// Clears the queue
     pub async fn clear(&self) -> anyhow::Result<()> {
         postgres::clear(&self.pool).await
+    }
+}
+
+pub struct JobBuilder<T> {
+    /// The job descriptor
+    desc: T,
+    /// The maximum number of attempts before a job is considered failed
+    max_attempts: Option<i32>,
+    /// The scheduled time for the job
+    scheduled_for: Option<OffsetDateTime>,
+}
+
+impl<T> JobBuilder<T> {
+    /// Creates a new job input
+    pub fn new(desc: T) -> Self {
+        Self {
+            desc,
+            max_attempts: None,
+            scheduled_for: None,
+        }
+    }
+
+    /// Sets the maximum number of attempts before a job is considered failed
+    pub fn max_attempts(mut self, max_attempts: u32) -> Self {
+        self.max_attempts = Some(max_attempts.try_into().unwrap_or(i32::MAX));
+        self
+    }
+
+    /// Sets the scheduled time for the job
+    pub fn schedule_at(mut self, schedule: OffsetDateTime) -> Self {
+        self.scheduled_for = Some(schedule);
+        self
+    }
+}
+impl<T> From<T> for JobBuilder<T>
+where
+    T: serde::Serialize,
+{
+    fn from(desc: T) -> Self {
+        Self::new(desc)
     }
 }

@@ -1,29 +1,26 @@
-use super::{
-    id::JobId,
-    postgres::{mark_as_failed, remove},
-};
+use super::{id::JobId, postgres};
 
 /// A job in the queue
 #[derive(Debug, Clone)]
-pub struct Job<M> {
+pub struct Job<T> {
     /// The job ID
     pub id: JobId,
-    /// The job message
-    pub message: M,
+    /// The job descriptor
+    pub desc: T,
 }
 
 /// A guard for a job in the queue
 ///
 /// This struct is used to ensure that the transaction is committed when the job is removed, marked
 /// as failed, or rescheduled.
-pub struct JobGuard<'c, M> {
+pub struct JobGuard<'c, T> {
     tx: sqlx::Transaction<'c, sqlx::Postgres>,
-    job: Job<M>,
+    job: Job<T>,
 }
 
-impl<'c, M> JobGuard<'c, M> {
+impl<'c, T> JobGuard<'c, T> {
     /// Creates a new job guard
-    pub(crate) fn new(tx: sqlx::Transaction<'c, sqlx::Postgres>, job: Job<M>) -> Self {
+    pub(crate) fn new(tx: sqlx::Transaction<'c, sqlx::Postgres>, job: Job<T>) -> Self {
         Self { tx, job }
     }
 
@@ -32,23 +29,23 @@ impl<'c, M> JobGuard<'c, M> {
         &self.job.id
     }
 
-    /// The job message
-    pub fn message(&self) -> &M {
-        &self.job.message
+    /// The job descriptor
+    pub fn desc(&self) -> &T {
+        &self.job.desc
     }
 }
 
-impl<M> JobGuard<'_, M> {
+impl<T> JobGuard<'_, T> {
     /// Remove the job from the queue
     pub async fn remove(mut self) -> anyhow::Result<()> {
-        remove(self.tx.as_mut(), &self.job.id).await?;
+        postgres::remove(self.tx.as_mut(), &self.job.id).await?;
         self.tx.commit().await?;
         Ok(())
     }
 
     /// Mark the job as failed
     pub async fn mark_as_failed(mut self) -> anyhow::Result<()> {
-        mark_as_failed(self.tx.as_mut(), &self.job.id, None).await?;
+        postgres::mark_as_failed(self.tx.as_mut(), &self.job.id, None).await?;
         self.tx.commit().await?;
         Ok(())
     }
@@ -58,7 +55,7 @@ impl<M> JobGuard<'_, M> {
         mut self,
         schedule: time::OffsetDateTime,
     ) -> anyhow::Result<()> {
-        mark_as_failed(self.tx.as_mut(), &self.job.id, Some(schedule)).await?;
+        postgres::mark_as_failed(self.tx.as_mut(), &self.job.id, Some(schedule)).await?;
         self.tx.commit().await?;
         Ok(())
     }

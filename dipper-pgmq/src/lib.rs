@@ -8,4 +8,4 @@ mod queue;
 pub use id::JobId;
 pub use job::JobGuard;
 pub use postgres::run_db_migrations;
-pub use queue::PgQueue;
+pub use queue::{JobBuilder, PgQueue};

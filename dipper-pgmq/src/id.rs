@@ -1,3 +1,4 @@
+use sqlx::Postgres;
 use uuid::Uuid;
 
 /// A job ID
@@ -16,12 +17,6 @@ impl JobId {
     }
 }
 
-impl AsRef<Uuid> for JobId {
-    fn as_ref(&self) -> &Uuid {
-        &self.0
-    }
-}
-
 impl std::fmt::Display for JobId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.0, f)
@@ -31,5 +26,29 @@ impl std::fmt::Display for JobId {
 impl std::fmt::Debug for JobId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl sqlx::Type<Postgres> for JobId {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        sqlx::postgres::PgTypeInfo::with_name("UUID")
+    }
+}
+
+impl sqlx::Encode<'_, Postgres> for JobId {
+    fn encode_by_ref(
+        &self,
+        buf: &mut <Postgres as sqlx::Database>::ArgumentBuffer<'_>,
+    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+        sqlx::Encode::<Postgres>::encode_by_ref(&self.0, buf)
+    }
+}
+
+impl sqlx::Decode<'_, Postgres> for JobId {
+    fn decode(
+        value: <Postgres as sqlx::Database>::ValueRef<'_>,
+    ) -> Result<Self, sqlx::error::BoxDynError> {
+        let value: Uuid = sqlx::Decode::<Postgres>::decode(value)?;
+        Ok(Self(value))
     }
 }

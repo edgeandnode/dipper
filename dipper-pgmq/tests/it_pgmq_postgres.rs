@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use dipper_pgmq::{JobGuard, PgQueue};
+use dipper_pgmq::{JobBuilder, JobGuard, PgQueue};
 use fake::{Dummy, Fake, Faker};
 use pgtemp::PgTempDB;
 use sqlx::{Pool, Postgres};
@@ -35,7 +35,7 @@ impl Dummy<Faker> for TestMsg {
 }
 
 #[tokio::test]
-async fn push_job() {
+async fn push_and_pop_job() {
     //* Given
     let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
@@ -60,11 +60,11 @@ async fn push_job() {
     // Assert the message is the same as the one we pushed
     let job: JobGuard<TestMsg> = jobs.expect("Failed to get job from queue");
     assert_eq!(job.id(), &job_id);
-    assert_eq!(job.message().data, msg.data);
+    assert_eq!(job.desc().data, msg.data);
 }
 
 #[tokio::test]
-async fn push_job_pull_multiple_times() {
+async fn job_pulled_only_once() {
     //* Given
     let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
@@ -95,11 +95,11 @@ async fn push_job_pull_multiple_times() {
     // Assert the message is the same as the one we pushed
     let job1: JobGuard<TestMsg> = jobs1.expect("Failed to get job from queue");
     assert_eq!(job1.id(), &job_id);
-    assert_eq!(job1.message().data, msg.data);
+    assert_eq!(job1.desc().data, msg.data);
 }
 
 #[tokio::test]
-async fn push_job_scheduled() {
+async fn scheduled_job_becomes_available() {
     //* Given
     let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
@@ -111,7 +111,7 @@ async fn push_job_scheduled() {
     //* When
     // Push a message and schedule the job for the future (500 milliseconds from now)
     let job_id = queue
-        .push_scheduled(msg.clone(), msg_schedule)
+        .push(JobBuilder::new(msg.clone()).schedule_at(msg_schedule))
         .await
         .expect("Failed to push message to queue");
 
@@ -131,11 +131,11 @@ async fn push_job_scheduled() {
     // Assert the message is the same as the one we pushed
     let job: JobGuard<TestMsg> = jobs.expect("Failed to get job from queue");
     assert_eq!(job.id(), &job_id);
-    assert_eq!(job.message().data, msg.data);
+    assert_eq!(job.desc().data, msg.data);
 }
 
 #[tokio::test]
-async fn push_job_scheduled_pull_too_early() {
+async fn scheduled_job_not_available_early() {
     //* Given
     let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
@@ -146,7 +146,7 @@ async fn push_job_scheduled_pull_too_early() {
     //* When
     // Push a message and schedule the job for the future (1 minute from now)
     let _id = queue
-        .push_scheduled(msg.clone(), msg_schedule)
+        .push(JobBuilder::new(msg.clone()).schedule_at(msg_schedule))
         .await
         .expect("Failed to push message to queue");
 
@@ -162,7 +162,7 @@ async fn push_job_scheduled_pull_too_early() {
 }
 
 #[tokio::test]
-async fn push_job_scheduled_past() {
+async fn past_scheduled_job_immediately_available() {
     //* Given
     let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
@@ -173,7 +173,7 @@ async fn push_job_scheduled_past() {
     //* When
     // We push a message and schedule the job in the past (5 minutes ago)
     let job_id = queue
-        .push_scheduled(msg.clone(), msg_schedule)
+        .push(JobBuilder::new(msg.clone()).schedule_at(msg_schedule))
         .await
         .expect("Failed to push message to queue");
 
@@ -189,11 +189,11 @@ async fn push_job_scheduled_past() {
     // Assert the message is the same as the one we pushed
     let job: JobGuard<TestMsg> = jobs.expect("Failed to get job from queue");
     assert_eq!(job.id(), &job_id);
-    assert_eq!(job.message().data, msg.data);
+    assert_eq!(job.desc().data, msg.data);
 }
 
 #[tokio::test]
-async fn push_job_and_clear_queue() {
+async fn clear_queue_removes_all_jobs() {
     //* Given
     let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
@@ -221,7 +221,7 @@ async fn push_job_and_clear_queue() {
 }
 
 #[tokio::test]
-async fn push_pop_and_remove() {
+async fn remove_job_after_processing() {
     //* Given
     let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
@@ -257,7 +257,7 @@ async fn push_pop_and_remove() {
 }
 
 #[tokio::test]
-async fn push_pop_mark_as_failed() {
+async fn failed_job_gets_rescheduled() {
     //* Given
     let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
@@ -293,11 +293,11 @@ async fn push_pop_mark_as_failed() {
     // Assert the message is the same as the one we pushed
     let job: JobGuard<TestMsg> = jobs.expect("Failed to get job from queue");
     assert_eq!(job.id(), &job_id);
-    assert_eq!(job.message().data, msg.data);
+    assert_eq!(job.desc().data, msg.data);
 }
 
 #[tokio::test]
-async fn push_job_mark_as_failed_and_reschedule() {
+async fn failed_job_rescheduled_for_future() {
     //* Given
     let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db);
@@ -347,5 +347,103 @@ async fn push_job_mark_as_failed_and_reschedule() {
     // Assert the message is the same as the one we pushed
     let job: JobGuard<TestMsg> = jobs2.expect("Failed to get job from queue");
     assert_eq!(job.id(), &job_id);
-    assert_eq!(job.message().data, msg.data);
+    assert_eq!(job.desc().data, msg.data);
+}
+
+#[tokio::test]
+async fn custom_max_attempts_sets_retry_max() {
+    //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
+    let queue = PgQueue::new(db.clone());
+
+    let msg = Faker.fake::<TestMsg>();
+    let custom_max_attempts = 5u32;
+
+    //* When
+    // Push a job with custom max_attempts using JobBuilder
+    let job_id = queue
+        .push(JobBuilder::new(msg.clone()).max_attempts(custom_max_attempts))
+        .await
+        .expect("Failed to push message to queue");
+
+    //* Then
+    // Query the database directly to verify retry_max was set correctly
+    let (retry_max,): (i32,) = sqlx::query_as("SELECT retry_max FROM pgmq_queue WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&db)
+        .await
+        .expect("Failed to query retry_max from database");
+    assert_eq!(
+        retry_max, custom_max_attempts as i32,
+        "Custom max_attempts should be set"
+    );
+
+    // Also verify the job can be popped and has the correct data
+    let job: Option<JobGuard<TestMsg>> = queue
+        .pop()
+        .await
+        .expect("Failed to pull message from queue");
+
+    assert!(job.is_some());
+    let job = job.expect("Failed to get job from queue");
+    assert_eq!(job.id(), &job_id);
+    assert_eq!(job.desc().data, msg.data);
+}
+
+#[tokio::test]
+async fn default_max_attempts_value() {
+    //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
+    let queue = PgQueue::new(db.clone());
+
+    let msg = Faker.fake::<TestMsg>();
+
+    //* When
+    // Push a job without setting max_attempts (should use default)
+    let job_id = queue
+        .push(msg.clone())
+        .await
+        .expect("Failed to push message to queue");
+
+    //* Then
+    // Query the database directly to verify retry_max uses the default value (3)
+    let (retry_max,): (i32,) = sqlx::query_as("SELECT retry_max FROM pgmq_queue WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&db)
+        .await
+        .expect("Failed to query retry_max from database");
+    assert_eq!(retry_max, 3, "Default max_attempts should be 3"); // DEFAULT_MAX_ATTEMPTS is 3
+}
+
+#[tokio::test]
+async fn max_attempts_with_scheduled_job() {
+    //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
+    let queue = PgQueue::new(db.clone());
+
+    let msg = Faker.fake::<TestMsg>();
+    let custom_max_attempts = 7u32;
+    let msg_schedule = time::OffsetDateTime::now_utc().saturating_add(time::Duration::minutes(1));
+
+    //* When
+    // Push a scheduled job with custom max_attempts
+    let job_id = queue
+        .push(
+            JobBuilder::new(msg.clone())
+                .max_attempts(custom_max_attempts)
+                .schedule_at(msg_schedule),
+        )
+        .await
+        .expect("Failed to push scheduled message to queue");
+
+    //* Then
+    // Query the database directly to verify retry_max was set correctly for scheduled job
+    let row: (i32,) = sqlx::query_as("SELECT retry_max FROM pgmq_queue WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&db)
+        .await
+        .expect("Failed to query retry_max from database");
+
+    let actual_retry_max = row.0;
+    assert_eq!(actual_retry_max, custom_max_attempts as i32);
 }

@@ -88,7 +88,7 @@ where
                     // Process the tasks sequentially
                     let _span = tracing::debug_span!("process_task", task = %task.id());
 
-                    match process_task(&state, task.message()).await {
+                    match process_task(&state, task.desc()).await {
                         Ok(JobResult::Ok(_)) => {
                             if let Err(err) = task.remove().await {
                             tracing::debug!("failed to remove task: {}", err);
