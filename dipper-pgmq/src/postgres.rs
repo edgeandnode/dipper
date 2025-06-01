@@ -174,6 +174,18 @@ where
     Ok(())
 }
 
+/// Send a job available notification to the `pgmq_jobs_available` channel
+pub async fn send_job_available_notification<'q, E>(executor: E, id: &JobId) -> anyhow::Result<()>
+where
+    E: sqlx::Executor<'q, Database = Postgres>,
+{
+    sqlx::query("SELECT pg_notify('pgmq_jobs_available', $1::text)")
+        .bind(id)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
 #[derive(sqlx::FromRow)]
 pub struct PgJob<T> {
     /// The job ID.

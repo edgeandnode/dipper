@@ -351,23 +351,23 @@ async fn failed_job_rescheduled_for_future() {
 }
 
 #[tokio::test]
-async fn custom_max_attempts_sets_max_attempts() {
+async fn custom_max_retries_sets_max_attempts() {
     //* Given
     let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db.clone());
 
     let msg = Faker.fake::<TestMsg>();
-    let custom_max_attempts = 5u32;
+    let custom_max_retries = 4u32; // 4 retries = 5 total attempts
 
     //* When
-    // Push a job with custom max_attempts using JobBuilder
+    // Push a job with custom max_retries using JobBuilder
     let job_id = queue
-        .push(JobBuilder::new(msg.clone()).max_attempts(custom_max_attempts))
+        .push(JobBuilder::new(msg.clone()).max_retries(custom_max_retries))
         .await
         .expect("Failed to push message to queue");
 
     //* Then
-    // Query the database directly to verify max_attempts was set correctly
+    // Query the database directly to verify max_attempts was set correctly (retries + 1)
     let (max_attempts,): (i32,) =
         sqlx::query_as("SELECT max_attempts FROM pgmq_queue WHERE id = $1")
             .bind(job_id)
@@ -375,8 +375,9 @@ async fn custom_max_attempts_sets_max_attempts() {
             .await
             .expect("Failed to query max_attempts from database");
     assert_eq!(
-        max_attempts, custom_max_attempts as i32,
-        "Custom max_attempts should be set"
+        max_attempts,
+        (custom_max_retries + 1) as i32,
+        "max_attempts should be retries + 1"
     );
 
     // Also verify the job can be popped and has the correct data
@@ -418,28 +419,28 @@ async fn default_max_attempts_value() {
 }
 
 #[tokio::test]
-async fn max_attempts_with_scheduled_job() {
+async fn max_retries_with_scheduled_job() {
     //* Given
     let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db.clone());
 
     let msg = Faker.fake::<TestMsg>();
-    let custom_max_attempts = 7u32;
+    let custom_max_retries = 6u32; // 6 retries = 7 total attempts
     let msg_schedule = time::OffsetDateTime::now_utc().saturating_add(time::Duration::minutes(1));
 
     //* When
-    // Push a scheduled job with custom max_attempts
+    // Push a scheduled job with custom max_retries
     let job_id = queue
         .push(
             JobBuilder::new(msg.clone())
-                .max_attempts(custom_max_attempts)
+                .max_retries(custom_max_retries)
                 .schedule_at(msg_schedule),
         )
         .await
         .expect("Failed to push scheduled message to queue");
 
     //* Then
-    // Query the database directly to verify max_attempts was set correctly for scheduled job
+    // Query the database directly to verify max_attempts was set correctly for scheduled job (retries + 1)
     let row: (i32,) = sqlx::query_as("SELECT max_attempts FROM pgmq_queue WHERE id = $1")
         .bind(job_id)
         .fetch_one(&db)
@@ -447,5 +448,5 @@ async fn max_attempts_with_scheduled_job() {
         .expect("Failed to query max_attempts from database");
 
     let actual_max_attempts = row.0;
-    assert_eq!(actual_max_attempts, custom_max_attempts as i32);
+    assert_eq!(actual_max_attempts, (custom_max_retries + 1) as i32);
 }

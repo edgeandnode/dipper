@@ -26,7 +26,7 @@ pub struct QueueImpl {
 impl QueueImpl {
     pub fn new(db_conn: PgPool) -> Self {
         Self {
-            inner: PgQueue::with_max_attempts(db_conn, 3),
+            inner: PgQueue::with_max_retries(db_conn, 2),
         }
     }
 }
