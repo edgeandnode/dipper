@@ -14,7 +14,10 @@ use crate::{
         IndexingRequestRegistry,
     },
     signing::eip712::PrivateKeyEip712Signer,
-    worker::{WorkerQueue, result::JobResult},
+    worker::{
+        WorkerQueue,
+        result::{JobError, JobResult},
+    },
 };
 
 pub struct Ctx<R, N, W, I> {
@@ -48,7 +51,7 @@ pub async fn handle<R, N, W, I>(
         deployment_id,
         deployment_chain_id,
     }: &Message,
-) -> anyhow::Result<JobResult<()>>
+) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
     N: NetworkProvider,
@@ -60,14 +63,16 @@ where
     let already_indexing = ctx
         .registry
         .get_active_indexing_agreements_by_indexing_request_id(indexing_request_id)
-        .await?
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?
         .into_iter()
         .map(|agreement| agreement.indexer.id)
         .collect::<Vec<_>>();
     let rejected_or_canceled = ctx
         .registry
         .get_rejected_indexing_agreements_by_indexing_request_id(indexing_request_id)
-        .await?
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?
         .into_iter()
         .map(|agreement| agreement.indexer.id)
         .collect::<Vec<_>>();
@@ -89,25 +94,30 @@ where
             indexing_request_id=%indexing_request_id,
             "No indexers available to fulfill the indexing request"
         );
-        return Ok(JobResult::Ok(()));
+        return Ok(());
     }
 
-    let Some(candidate) = ctx.iisa.select_one(*deployment_id, indexers).await? else {
+    let Some(candidate) = ctx
+        .iisa
+        .select_one(*deployment_id, indexers)
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?
+    else {
         tracing::warn!(
             indexing_request_id=%indexing_request_id,
             "No candidates selected to fulfill the indexing request"
         );
-        return Ok(JobResult::Ok(()));
+        return Ok(());
     };
 
     let voucher_metadata = {
         let prices = ctx
             .chain_price
             .get(deployment_chain_id)
-            .ok_or(anyhow::anyhow!(
+            .ok_or(JobError::Fatal(anyhow::anyhow!(
                 "Chain prices not found for chain_id: {}",
                 deployment_chain_id
-            ))?;
+            )))?;
         IndexingAgreementVoucherMetadata {
             base_price_per_epoch: prices.base_price_per_epoch,
             price_per_entity: prices.price_per_entity,
@@ -140,7 +150,8 @@ where
             candidate.url.clone(),
             voucher,
         )
-        .await?;
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
 
     // Send indexing agreement proposal to the selected indexer
     if let Err(err) = ctx
@@ -155,8 +166,8 @@ where
         .await
     {
         tracing::error!(error=%err, "Failed to queue task: 'send_indexing_agreement_proposal'");
-        return Err(err);
+        return Err(JobError::Fatal(err));
     }
 
-    Ok(JobResult::Ok(()))
+    Ok(())
 }

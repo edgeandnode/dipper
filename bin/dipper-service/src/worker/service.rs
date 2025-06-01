@@ -14,7 +14,7 @@ use super::{
     },
     messages::Message,
     queue::Queue,
-    result::JobResult,
+    result::{JobError, JobResult},
 };
 use crate::{
     indexer_rpc_client::IndexerClient,
@@ -22,8 +22,8 @@ use crate::{
     registry::{AgreementRegistry, IndexingRequestRegistry, ReceiptRegistry},
 };
 
-/// Default period to pull tasks from the queue.
-const DEFAULT_TASK_PULL_PERIOD: Duration = Duration::from_millis(200);
+/// Default period to poll the queue for new jobs
+const DEFAULT_QUEUE_POLL_PERIOD: Duration = Duration::from_secs(1);
 
 /// The worker service handle.
 #[derive(Clone)]
@@ -46,9 +46,9 @@ impl Handle {
     }
 }
 
-/// Create a new worker and a future that processes tasks from the queue.
+/// Create a new worker and a future that processes jobs from the queue.
 ///
-/// The worker pulls tasks from the queue and processes them concurrently every 10 seconds.
+/// The worker pulls jobs from the queue and processes them concurrently every 1 second.
 pub fn new<S, Q, R, N, W, C, I>(
     queue: Q,
     state: S,
@@ -75,58 +75,64 @@ where
         let state = state;
 
         let mut stop_rx = rx_stop;
+        let mut listener = queue.subscribe().await?;
         loop {
             tokio::select! { biased;
                 _ = stop_rx.recv() => {
-                    break;
+                    return Ok(());
                 }
-                _ = tokio::time::sleep(DEFAULT_TASK_PULL_PERIOD) => {
-                    let Ok(Some(task)) = queue.pop().await else {
-                        continue
-                    };
+                res = listener.wait_for_notification() => {
+                    if let Err(err) = res {
+                        tracing::error!(error=?err, "Failed to wait for job available notification");
+                        panic!("An unexpected error occurred while waiting for job available notification");
+                    }
+                }
+                _ = tokio::time::sleep(DEFAULT_QUEUE_POLL_PERIOD) => {}
+            }
 
-                    // Process the tasks sequentially
-                    let _span = tracing::debug_span!("process_task", task = %task.id());
+            // Process the job
+            let job = match queue.pop().await {
+                Ok(Some(job)) => job,
+                Ok(None) => continue,
+                Err(err) => {
+                    tracing::debug!(error=?err, "Failed to get next job from queue");
+                    continue;
+                }
+            };
 
-                    match process_task(&state, task.desc()).await {
-                        Ok(JobResult::Ok(_)) => {
-                            if let Err(err) = task.remove().await {
-                            tracing::debug!("failed to remove task: {}", err);
-                            }
-                        }
-                        Ok(JobResult::Retry(duration, err)) => {
-                            tracing::debug!(error=?err, "Rescheduling task after failure");
+            let _span = tracing::debug_span!("process_job", job = %job.id());
+            match process_job(&state, job.desc()).await {
+                Ok(..) => {
+                    if let Err(err) = job.remove().await {
+                        tracing::debug!(error=?err, "Failed to remove job from queue");
+                    }
+                }
+                Err(JobError::Retryable(err, delay)) => {
+                    tracing::debug!(error=?err, "Rescheduling job after failure");
 
-                            // Retry the task after the specified duration
-                            let scheduled_for = OffsetDateTime::now_utc() + duration;
-                            if let Err(err) = task.mark_as_failed_and_reschedule(scheduled_for).await {
-                                tracing::debug!(error=?err, "failed to mark job as failed");
-                            }
-                        }
-                        Err(err) => {
-                            tracing::debug!(error=?err, "Failed to process task");
+                    // Retry the job after the specified duration
+                    let scheduled_for = OffsetDateTime::now_utc() + delay;
+                    if let Err(err) = job.mark_as_failed_and_reschedule(scheduled_for).await {
+                        tracing::error!(error=?err, "Failed to reschedule job");
+                    }
+                }
+                Err(JobError::Fatal(err)) => {
+                    tracing::debug!(error=?err, "Failed to process job");
 
-                            // Remove the task from the queue as it failed and
-                            // should not be retried
-                            if let Err(err) = task.remove().await {
-                                tracing::debug!(error=?err, "failed to remove job from queue");
-                            }
-                        }
+                    // Remove the job from the queue as it failed and
+                    // should not be retried
+                    if let Err(err) = job.remove().await {
+                        tracing::error!(error=?err, "Failed to remove job from queue");
                     }
                 }
             }
         }
-
-        Ok(())
     };
 
     (handle, fut)
 }
 
-async fn process_task<S, W, N, R, C, I>(
-    state: &S,
-    message: &Message,
-) -> anyhow::Result<JobResult<()>>
+async fn process_job<S, W, N, R, C, I>(state: &S, message: &Message) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry + ReceiptRegistry,
     N: NetworkProvider,
@@ -146,7 +152,7 @@ where
         ($state:expr, $message:expr, {$($msg_pat:path => $handler_fn:path),* $(,)?}) => {
             match $message {
                 $(
-                    $msg_pat(msg) => $handler_fn(FromState::from_state($state), msg).await.map_err(Into::into),
+                    $msg_pat(msg) => $handler_fn(FromState::from_state($state), msg).await,
                 )*
             }
         };

@@ -1,6 +1,5 @@
 use async_trait::async_trait;
-use dipper_pgmq::PgQueue;
-pub use dipper_pgmq::{JobGuard, JobId};
+pub use dipper_pgmq::{JobGuard, JobId, PgQueue, PgQueueListener};
 use sqlx::PgPool;
 
 /// A message queue.
@@ -16,6 +15,9 @@ where
 
     /// Pulls a job from the queue
     async fn pop(&self) -> anyhow::Result<Option<JobGuard<'_, M>>>;
+
+    /// Subscribes to the `pgmq_jobs_available` channel
+    async fn subscribe(&self) -> anyhow::Result<QueueImplListener>;
 }
 
 #[derive(Clone)]
@@ -42,5 +44,19 @@ where
 
     async fn pop(&self) -> anyhow::Result<Option<JobGuard<'_, M>>> {
         self.inner.pop().await
+    }
+
+    async fn subscribe(&self) -> anyhow::Result<QueueImplListener> {
+        self.inner.subscribe().await.map(QueueImplListener)
+    }
+}
+
+/// A listener for the queue job available notification
+pub struct QueueImplListener(PgQueueListener);
+
+impl QueueImplListener {
+    /// Waits for a new job available notification
+    pub async fn wait_for_notification(&mut self) -> anyhow::Result<()> {
+        self.0.wait_for_notification().await
     }
 }
