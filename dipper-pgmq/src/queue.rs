@@ -66,10 +66,17 @@ impl PgQueue {
     /// Pulls a job from the queue
     pub async fn pop<T>(&self) -> anyhow::Result<Option<JobGuard<'_, T>>>
     where
-        T: for<'de> serde::Deserialize<'de>,
-        Job<T>: TryFrom<postgres::PgJob>,
+        T: for<'de> serde::Deserialize<'de> + Send + Unpin + 'static,
     {
-        postgres::pop(&self.pool).await
+        let mut tx = self.pool.begin().await?;
+        let res = postgres::pop(tx.as_mut()).await?.map(|job| {
+            let job = Job {
+                id: job.id,
+                desc: job.descriptor.0,
+            };
+            JobGuard::new(tx, job)
+        });
+        Ok(res)
     }
 
     /// Clears the queue
