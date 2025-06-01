@@ -2,7 +2,10 @@ use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 
 use crate::{
     registry::{AgreementRegistry, IndexingRequestRegistry},
-    worker::{WorkerQueue, result::JobResult},
+    worker::{
+        WorkerQueue,
+        result::{JobError, JobResult},
+    },
 };
 
 pub struct Ctx<R, W> {
@@ -29,7 +32,7 @@ pub async fn handle_indexer_cancellation<R, W>(
         indexing_request_id,
         agreement_id,
     }: &Message,
-) -> anyhow::Result<JobResult<()>>
+) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
     W: WorkerQueue,
@@ -44,10 +47,11 @@ where
     let Some(agreement) = ctx
         .registry
         .get_indexing_agreement_by_id(agreement_id)
-        .await?
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?
     else {
         tracing::error!(%indexing_request_id, %agreement_id, "Indexing agreement not found");
-        return Ok(JobResult::Ok(()));
+        return Ok(());
     };
 
     // Mark the agreement as canceled by the indexer
@@ -61,21 +65,22 @@ where
                 error=?err,
                 "Failed to mark indexing agreement as CANCELED_BY_INDEXER"
             );
-            err
+            JobError::Fatal(err.into())
         })?;
 
     // Get the indexing request associated with the agreement
     let Some(indexing_request) = ctx
         .registry
         .get_indexing_request_by_id(&agreement.indexing_request_id)
-        .await?
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?
     else {
         tracing::error!(
             %indexing_request_id,
             %agreement_id,
             "Indexing request not found"
         );
-        return Ok(JobResult::Ok(()));
+        return Ok(());
     };
 
     // Request a new indexer to fulfill the indexing request
@@ -93,10 +98,10 @@ where
                 error=?err,
                 "Failed to queue task: 'find_indexer_for_indexing_request'"
             );
-            err
+            JobError::Fatal(err)
         })?;
 
-    Ok(JobResult::Ok(()))
+    Ok(())
 }
 
 pub async fn handle_requester_cancellation<R, W>(
@@ -105,7 +110,7 @@ pub async fn handle_requester_cancellation<R, W>(
         indexing_request_id,
         agreement_id,
     }: &Message,
-) -> anyhow::Result<JobResult<()>>
+) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
     W: WorkerQueue,
@@ -120,14 +125,15 @@ where
     let Some(agreement) = ctx
         .registry
         .get_indexing_agreement_by_id(agreement_id)
-        .await?
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?
     else {
         tracing::error!(
             %indexing_request_id,
             %agreement_id,
             "Indexing agreement not found"
         );
-        return Ok(JobResult::Ok(()));
+        return Ok(());
     };
 
     ctx.registry
@@ -140,7 +146,7 @@ where
                 error=?err,
                 "Failed to mark indexing agreement as CANCELED_BY_REQUESTER"
             );
-            err
+            JobError::Fatal(err.into())
         })?;
 
     // Send the indexing agreement cancellation notification to the indexer
@@ -158,21 +164,22 @@ where
                 error=?err,
                 "Failed to queue task: 'send_indexing_agreement_cancellation'"
             );
-            err
+            JobError::Fatal(err)
         })?;
 
     // Get the indexing request associated with the agreement
     let Some(indexing_request) = ctx
         .registry
         .get_indexing_request_by_id(indexing_request_id)
-        .await?
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?
     else {
         tracing::error!(
             %indexing_request_id,
             %agreement_id,
             "Indexing request not found"
         );
-        return Ok(JobResult::Ok(()));
+        return Ok(());
     };
 
     // Try to find a new indexer for the indexing request
@@ -190,8 +197,8 @@ where
                 error=?err,
                 "Failed to queue task: 'find_indexer_for_indexing_request'"
             );
-            err
+            JobError::Fatal(err)
         })?;
 
-    Ok(JobResult::Ok(()))
+    Ok(())
 }

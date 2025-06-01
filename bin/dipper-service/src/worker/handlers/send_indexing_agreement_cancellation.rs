@@ -7,7 +7,7 @@ use url::Url;
 use crate::{
     indexer_rpc_client::IndexerClient,
     registry::{AgreementRegistry, IndexingAgreementStatus},
-    worker::result::JobResult,
+    worker::result::{JobError, JobResult},
 };
 
 pub struct Ctx<R, C> {
@@ -39,7 +39,7 @@ pub async fn handle<R, C>(
         indexing_request_id,
         agreement_id,
     }: &Message,
-) -> anyhow::Result<JobResult<()>>
+) -> JobResult<()>
 where
     R: AgreementRegistry,
     C: IndexerClient,
@@ -55,7 +55,8 @@ where
     let agreement = ctx
         .registry
         .get_indexing_agreement_by_id(agreement_id)
-        .await?;
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
     match agreement {
         None => {
             tracing::error!(
@@ -63,7 +64,7 @@ where
                 %agreement_id,
                 "Indexing agreement not found"
             );
-            return Ok(JobResult::Ok(()));
+            return Ok(());
         }
         Some(agreement) => {
             // In debug builds, log an error if the agreement is not in the expected state
@@ -78,7 +79,7 @@ where
                     "Invalid agreement status: '{}'. Not sending cancellation notification",
                     agreement.status,
                 );
-                return Ok(JobResult::Ok(()));
+                return Ok(());
             }
         }
     }
@@ -102,7 +103,7 @@ where
             error=?err,
             "Failed to send indexing agreement cancellation. Trying again in 20 seconds"
         );
-        return Ok(JobResult::Retry(Duration::from_secs(20), err.into()));
+        return Err(JobError::Retryable(err.into(), Duration::from_secs(20)));
     };
 
     tracing::debug!(
@@ -112,5 +113,5 @@ where
         "Indexing agreement cancellation accepted by indexer"
     );
 
-    Ok(JobResult::Ok(()))
+    Ok(())
 }

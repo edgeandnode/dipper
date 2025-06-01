@@ -10,7 +10,10 @@ use crate::{
         AgreementRegistry, IndexingAgreementStatus, IndexingAgreementVoucher,
         IndexingAgreementVoucherMetadata, IndexingRequestRegistry,
     },
-    worker::{WorkerQueue, result::JobResult},
+    worker::{
+        WorkerQueue,
+        result::{JobError, JobResult},
+    },
 };
 
 pub struct Ctx<R, N, W, C> {
@@ -49,7 +52,7 @@ pub async fn handle<R, N, W, C>(
         deployment_id,
         deployment_chain_id,
     }: &Message,
-) -> anyhow::Result<JobResult<()>>
+) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
     N: NetworkProvider,
@@ -69,7 +72,8 @@ where
     let agreement = match ctx
         .registry
         .get_indexing_agreement_by_id(agreement_id)
-        .await?
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?
     {
         None => {
             tracing::error!(
@@ -77,7 +81,7 @@ where
                 agreement_id=%agreement_id,
                 "Indexing agreement not found"
             );
-            return Ok(JobResult::Ok(()));
+            return Ok(());
         }
         Some(agreement) => match agreement.status {
             IndexingAgreementStatus::Created => agreement,
@@ -87,7 +91,7 @@ where
                     agreement_id=%agreement_id,
                     "Not sending agreement proposal. Agreement already accepted/rejected"
                 );
-                return Ok(JobResult::Ok(()));
+                return Ok(());
             }
             status => {
                 tracing::error!(
@@ -95,7 +99,7 @@ where
                     agreement_id=%agreement_id,
                     "Not sending agreement proposal. Invalid agreement status: {status}",
                 );
-                return Ok(JobResult::Ok(()));
+                return Ok(());
             }
         },
     };
@@ -142,7 +146,8 @@ where
                 );
                 ctx.registry
                     .mark_indexing_agreement_as_accepted(agreement_id, current_epoch)
-                    .await?;
+                    .await
+                    .map_err(|err| JobError::Fatal(err.into()))?;
             }
             AgreementProposalResponse::Rejected => {
                 tracing::debug!(
@@ -154,7 +159,8 @@ where
                 );
                 ctx.registry
                     .mark_indexing_agreement_as_rejected(agreement_id)
-                    .await?;
+                    .await
+                    .map_err(|err| JobError::Fatal(err.into()))?;
 
                 // Request a new indexer to fulfill the indexing request
                 tracing::trace!(
@@ -171,7 +177,7 @@ where
                     .await
                 {
                     tracing::error!(error=%err, "Failed to queue task: 'find_indexer_for_indexing_request'");
-                    return Err(err);
+                    return Err(JobError::Fatal(err));
                 };
             }
         },
@@ -184,9 +190,10 @@ where
             );
             ctx.registry
                 .mark_indexing_agreement_as_delivery_failed(agreement_id)
-                .await?;
+                .await
+                .map_err(|err| JobError::Fatal(err.into()))?;
         }
     }
 
-    Ok(JobResult::Ok(()))
+    Ok(())
 }

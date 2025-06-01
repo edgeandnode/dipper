@@ -2,7 +2,10 @@ use dipper_core::ids::IndexingRequestId;
 
 use crate::{
     registry::{AgreementRegistry, IndexingRequestRegistry},
-    worker::{WorkerQueue, result::JobResult},
+    worker::{
+        WorkerQueue,
+        result::{JobError, JobResult},
+    },
 };
 
 pub struct Ctx<R, W> {
@@ -26,7 +29,7 @@ pub async fn handle<R, W>(
     Message {
         indexing_request_id,
     }: &Message,
-) -> anyhow::Result<JobResult<()>>
+) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
     W: WorkerQueue,
@@ -35,7 +38,8 @@ where
     let agreements = ctx
         .registry
         .get_active_indexing_agreements_by_indexing_request_id(indexing_request_id)
-        .await?;
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
 
     tracing::trace!(
         indexing_request_id=%indexing_request_id,
@@ -54,7 +58,7 @@ where
                     agreement_id=%agreement.id,
                     error=?err, "Failed to mark indexing agreement as CANCELED_BY_REQUESTER"
                 );
-                err
+                JobError::Fatal(err.into())
             })?;
     }
 
@@ -70,9 +74,9 @@ where
             .await
         {
             tracing::error!(error=?err, "Failed to queue task: 'send_indexing_agreement_cancellation'");
-            return Err(err);
+            return Err(JobError::Fatal(err));
         }
     }
 
-    Ok(JobResult::Ok(()))
+    Ok(())
 }

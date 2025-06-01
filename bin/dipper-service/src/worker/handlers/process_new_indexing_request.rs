@@ -12,7 +12,10 @@ use crate::{
         IndexingRequestRegistry,
     },
     signing::eip712::PrivateKeyEip712Signer,
-    worker::{WorkerQueue, result::JobResult},
+    worker::{
+        WorkerQueue,
+        result::{JobError, JobResult},
+    },
 };
 
 pub struct Ctx<R, N, W, I> {
@@ -47,7 +50,7 @@ pub async fn handle<R, N, W, I>(
         deployment_chain_id,
         num_candidates,
     }: &Message,
-) -> anyhow::Result<JobResult<()>>
+) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
     N: NetworkProvider,
@@ -70,19 +73,20 @@ where
             indexing_request_id=%indexing_request_id,
             "No indexers available to fulfill the indexing request"
         );
-        return Ok(JobResult::Ok(()));
+        return Ok(());
     }
 
     let candidates = ctx
         .iisa
         .select(*deployment_id, indexers, *num_candidates)
-        .await?;
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
     if candidates.is_empty() {
         tracing::error!(
             indexing_request_id=%indexing_request_id,
             "No candidates selected to fulfill the indexing request"
         );
-        return Ok(JobResult::Ok(()));
+        return Ok(());
     }
 
     // Create indexing agreements for the selected indexers and register them in the registry
@@ -97,7 +101,9 @@ where
                         chain_id=%deployment_chain_id,
                         "Chain prices not found"
                     );
-                    return Err(anyhow::anyhow!("Chain prices not found for chain_id"));
+                    return Err(JobError::Fatal(anyhow::anyhow!(
+                        "Chain prices not found for chain_id"
+                    )));
                 }
             };
 
@@ -132,7 +138,8 @@ where
                 candidate.url.clone(),
                 voucher,
             )
-            .await?;
+            .await
+            .map_err(|err| JobError::Fatal(err.into()))?;
 
         if let Err(err) = ctx
             .queue
@@ -146,9 +153,9 @@ where
             .await
         {
             tracing::error!(error=?err, "Failed to queue task: 'send_indexing_agreement_proposal'");
-            return Err(err);
+            return Err(JobError::Fatal(err));
         }
     }
 
-    Ok(JobResult::Ok(()))
+    Ok(())
 }
