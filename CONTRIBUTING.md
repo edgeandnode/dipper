@@ -125,6 +125,67 @@ To run the Python tests, you can use the following command:
 just test-python
 ```
 
+### Git hooks
+
+This project uses [pre-commit](https://pre-commit.com/) to automatically run code formatting checks before commits are made. Git hooks help ensure code quality and consistency by automatically running the formatting tools whenever you commit changes.
+
+> [!NOTE]
+> Git hooks are **optional** and **opt-in**. You can contribute to the project without installing them, but they provide a convenient way to automatically format your code before commits.
+
+#### Prerequisites
+
+Before setting up Git hooks, you need to install `pre-commit`. You can install it using your preferred package manager:
+
+```shell
+# Using pip
+pip install pre-commit
+
+# Using pacman (Arch Linux)
+pacman -S pre-commit
+
+# Using apt (Ubuntu/Debian)
+apt-get install pre-commit
+
+# Using Homebrew (macOS)
+brew install pre-commit
+```
+
+#### Installing Git hooks
+
+To install the pre-commit hooks for this project, run:
+
+```shell
+just install-git-hooks
+```
+
+This command will:
+1. Check if `pre-commit` is installed on your system
+2. Install the pre-commit hooks defined in [`.github/pre-commit-config.yaml`](.github/pre-commit-config.yaml)
+
+#### Removing Git hooks
+
+If you need to remove the Git hooks, you can run:
+
+```shell
+just remove-git-hooks
+```
+
+#### Running hooks manually
+
+You can also run the pre-commit hooks manually without making a commit:
+
+```shell
+# Run all hooks on all files
+pre-commit run --all-files --config .github/pre-commit-config.yaml
+
+# Run specific hook
+pre-commit run format --config .github/pre-commit-config.yaml
+pre-commit run format-py --config .github/pre-commit-config.yaml
+```
+
+> [!TIP]
+> If you need to commit changes without running the hooks (not recommended), you can use `git commit --no-verify`.
+
 ### CI Secrets
 
 In this project, we handle secrets through an encrypted `.env` file. This file holds various environment variables,
