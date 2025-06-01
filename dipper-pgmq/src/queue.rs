@@ -3,7 +3,7 @@ use time::OffsetDateTime;
 
 use super::{
     id::JobId,
-    job::{Job, JobGuard},
+    job::{JobGuard, JobInner},
     postgres,
 };
 
@@ -69,10 +69,15 @@ impl PgQueue {
         T: for<'de> serde::Deserialize<'de> + Send + Unpin + 'static,
     {
         let mut tx = self.pool.begin().await?;
+
         let res = postgres::pop(tx.as_mut()).await?.map(|job| {
-            let job = Job {
+            let job = JobInner {
                 id: job.id,
+                created_at: job.created_at,
+                updated_at: job.updated_at,
                 desc: job.descriptor.0,
+                max_attempts: job.max_attempts as u32,
+                failed_attempts: job.attempt_count as u32,
             };
             JobGuard::new(tx, job)
         });

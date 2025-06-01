@@ -7,8 +7,8 @@ CREATE TABLE pgmq_queue
     scheduled_for   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     status          INT NOT NULL DEFAULT 0, -- The job status. See `PgJobStatus` for details
-    retry_max       INT NOT NULL DEFAULT 3, -- The retry limit (zero means no retry)
-    retry_count     INT NOT NULL DEFAULT 0, -- The number of times the job has been retried
+    max_attempts    INT NOT NULL DEFAULT 3, -- The maximum number of total attempts (including initial attempt)
+    attempt_count   INT NOT NULL DEFAULT 0, -- The number of attempts made so far
 
     descriptor      JSON NOT NULL -- The job descriptor (serialized)
 );
