@@ -34,7 +34,7 @@ where
         r#"INSERT INTO pgmq_queue (
                 id,
                 status,
-                retry_max,
+                max_attempts,
                 descriptor
             ) VALUES (
                 $1, $2, $3, $4
@@ -67,7 +67,7 @@ where
                 id,
                 scheduled_for,
                 status,
-                retry_max,
+                max_attempts,
                 descriptor
             ) VALUES (
                 $1, $2, $3, $4, $5
@@ -149,19 +149,19 @@ where
     let scheduled_for = scheduled_for.unwrap_or_else(OffsetDateTime::now_utc);
 
     // Update the job status and increment the number of failed attempts
-    // If the number of failed attempts is greater than the maximum number of attempts,
+    // If the number of failed attempts is greater than or equal to the maximum number of attempts,
     // mark the job as failed and do not reschedule it
     // Otherwise, reschedule the job for the next execution date
     sqlx::query(
         r#"UPDATE pgmq_queue
            SET
                updated_at = timezone('UTC', now()),
-               retry_count = retry_count + 1,
+               attempt_count = attempt_count + 1,
                status = (CASE
-                   WHEN retry_count + 1 >= retry_max THEN $2 ELSE $3
+                   WHEN attempt_count + 1 >= max_attempts THEN $2 ELSE $3
                END),
                scheduled_for = (CASE
-                   WHEN retry_count + 1 < retry_max THEN $4 ELSE scheduled_for
+                   WHEN attempt_count + 1 < max_attempts THEN $4 ELSE scheduled_for
                END)
            WHERE id = $1"#,
     )
@@ -183,15 +183,10 @@ pub struct PgJob<T> {
     /// The job last update timestamp.
     pub(crate) updated_at: OffsetDateTime,
 
-    /// The job scheduled execution date.
-    scheduled_for: OffsetDateTime,
-    /// The job status (queued, running, failed).
-    status: PgJobStatus,
-
     /// The maximum number of execution attempts.
-    pub(crate) retry_max: i32,
-    /// The number of execution attempts.
-    pub(crate) retry_count: i32,
+    pub(crate) max_attempts: i32,
+    /// The number of execution attempts made so far.
+    pub(crate) attempt_count: i32,
 
     /// The job descriptor (serialized).
     pub(crate) descriptor: Json<T>,

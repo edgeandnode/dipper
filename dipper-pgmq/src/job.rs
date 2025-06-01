@@ -1,13 +1,6 @@
-use super::{id::JobId, postgres};
+use time::OffsetDateTime;
 
-/// A job in the queue
-#[derive(Debug, Clone)]
-pub struct Job<T> {
-    /// The job ID
-    pub id: JobId,
-    /// The job descriptor
-    pub desc: T,
-}
+use super::{id::JobId, postgres};
 
 /// A guard for a job in the queue
 ///
@@ -15,26 +8,50 @@ pub struct Job<T> {
 /// as failed, or rescheduled.
 pub struct JobGuard<'c, T> {
     tx: sqlx::Transaction<'c, sqlx::Postgres>,
-    job: Job<T>,
+    job: JobInner<T>,
 }
 
 impl<'c, T> JobGuard<'c, T> {
     /// Creates a new job guard
-    pub(crate) fn new(tx: sqlx::Transaction<'c, sqlx::Postgres>, job: Job<T>) -> Self {
+    pub(crate) fn new(tx: sqlx::Transaction<'c, sqlx::Postgres>, job: JobInner<T>) -> Self {
         Self { tx, job }
     }
+}
 
+/// Job data accessors
+impl<T> JobGuard<'_, T> {
     /// The job ID
     pub fn id(&self) -> &JobId {
         &self.job.id
+    }
+
+    /// The job creation timestamp
+    pub fn created_at(&self) -> &OffsetDateTime {
+        &self.job.created_at
+    }
+
+    /// The job last update timestamp
+    pub fn updated_at(&self) -> &OffsetDateTime {
+        &self.job.updated_at
     }
 
     /// The job descriptor
     pub fn desc(&self) -> &T {
         &self.job.desc
     }
+
+    /// The number of failed attempts
+    pub fn failed_attempts(&self) -> u32 {
+        self.job.failed_attempts
+    }
+
+    /// The maximum number of attempts before a job is considered failed
+    pub fn max_attempts(&self) -> u32 {
+        self.job.max_attempts
+    }
 }
 
+/// Job actions
 impl<T> JobGuard<'_, T> {
     /// Remove the job from the queue
     pub async fn remove(mut self) -> anyhow::Result<()> {
@@ -59,4 +76,24 @@ impl<T> JobGuard<'_, T> {
         self.tx.commit().await?;
         Ok(())
     }
+}
+
+/// A job in the queue
+#[derive(Debug, Clone)]
+pub(crate) struct JobInner<T> {
+    /// The job ID
+    pub id: JobId,
+
+    /// The job creation timestamp
+    pub created_at: OffsetDateTime,
+    /// The job last update timestamp
+    pub updated_at: OffsetDateTime,
+
+    /// The job descriptor
+    pub desc: T,
+
+    /// The maximum number of attempts before a job is considered failed
+    pub max_attempts: u32,
+    /// The number of failed attempts
+    pub failed_attempts: u32,
 }

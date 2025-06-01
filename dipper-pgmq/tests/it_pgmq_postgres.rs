@@ -351,7 +351,7 @@ async fn failed_job_rescheduled_for_future() {
 }
 
 #[tokio::test]
-async fn custom_max_attempts_sets_retry_max() {
+async fn custom_max_attempts_sets_max_attempts() {
     //* Given
     let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db.clone());
@@ -367,14 +367,15 @@ async fn custom_max_attempts_sets_retry_max() {
         .expect("Failed to push message to queue");
 
     //* Then
-    // Query the database directly to verify retry_max was set correctly
-    let (retry_max,): (i32,) = sqlx::query_as("SELECT retry_max FROM pgmq_queue WHERE id = $1")
-        .bind(job_id)
-        .fetch_one(&db)
-        .await
-        .expect("Failed to query retry_max from database");
+    // Query the database directly to verify max_attempts was set correctly
+    let (max_attempts,): (i32,) =
+        sqlx::query_as("SELECT max_attempts FROM pgmq_queue WHERE id = $1")
+            .bind(job_id)
+            .fetch_one(&db)
+            .await
+            .expect("Failed to query max_attempts from database");
     assert_eq!(
-        retry_max, custom_max_attempts as i32,
+        max_attempts, custom_max_attempts as i32,
         "Custom max_attempts should be set"
     );
 
@@ -406,13 +407,14 @@ async fn default_max_attempts_value() {
         .expect("Failed to push message to queue");
 
     //* Then
-    // Query the database directly to verify retry_max uses the default value (3)
-    let (retry_max,): (i32,) = sqlx::query_as("SELECT retry_max FROM pgmq_queue WHERE id = $1")
-        .bind(job_id)
-        .fetch_one(&db)
-        .await
-        .expect("Failed to query retry_max from database");
-    assert_eq!(retry_max, 3, "Default max_attempts should be 3"); // DEFAULT_MAX_ATTEMPTS is 3
+    // Query the database directly to verify max_attempts uses the default value (3)
+    let (max_attempts,): (i32,) =
+        sqlx::query_as("SELECT max_attempts FROM pgmq_queue WHERE id = $1")
+            .bind(job_id)
+            .fetch_one(&db)
+            .await
+            .expect("Failed to query max_attempts from database");
+    assert_eq!(max_attempts, 3, "Default max_attempts should be 3"); // DEFAULT_MAX_ATTEMPTS is 3
 }
 
 #[tokio::test]
@@ -437,13 +439,13 @@ async fn max_attempts_with_scheduled_job() {
         .expect("Failed to push scheduled message to queue");
 
     //* Then
-    // Query the database directly to verify retry_max was set correctly for scheduled job
-    let row: (i32,) = sqlx::query_as("SELECT retry_max FROM pgmq_queue WHERE id = $1")
+    // Query the database directly to verify max_attempts was set correctly for scheduled job
+    let row: (i32,) = sqlx::query_as("SELECT max_attempts FROM pgmq_queue WHERE id = $1")
         .bind(job_id)
         .fetch_one(&db)
         .await
-        .expect("Failed to query retry_max from database");
+        .expect("Failed to query max_attempts from database");
 
-    let actual_retry_max = row.0;
-    assert_eq!(actual_retry_max, custom_max_attempts as i32);
+    let actual_max_attempts = row.0;
+    assert_eq!(actual_max_attempts, custom_max_attempts as i32);
 }
