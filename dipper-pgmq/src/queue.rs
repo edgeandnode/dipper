@@ -1,6 +1,7 @@
 use sqlx::{Pool, Postgres};
 use time::OffsetDateTime;
 
+pub use super::listener::PgQueueListener;
 use super::{
     id::JobId,
     job::{JobGuard, JobInner},
@@ -28,17 +29,25 @@ impl PgQueue {
         }
     }
 
-    /// Creates a new PostgreSQL message queue with a custom maximum number of attempts.
-    pub fn with_max_attempts(pool: Pool<Postgres>, max_attempts: u32) -> Self {
-        Self {
-            pool,
-            max_attempts: max_attempts.try_into().unwrap_or(i32::MAX),
-        }
+    /// Creates a new PostgreSQL message queue with a custom maximum number of retries.
+    ///
+    /// The number of retries specifies how many times a job will be retried after the initial attempt fails.
+    /// For example:
+    /// - `max_retries = 0`: Job runs once, no retries (total attempts = 1)
+    /// - `max_retries = 1`: Job runs once, then retried once if it fails (total attempts = 2)
+    /// - `max_retries = 2`: Job runs once, then retried up to 2 times if it fails (total attempts = 3)
+    pub fn with_max_retries(pool: Pool<Postgres>, value: u32) -> Self {
+        let max_attempts = value.saturating_add(1).try_into().unwrap_or(i32::MAX);
+        Self { pool, max_attempts }
     }
 }
 
 impl PgQueue {
     /// Pushes a job into the queue
+    ///
+    /// If the job is scheduled for immediate execution, the job will be available for processing
+    /// immediately and a job available notification will be sent over the `pgmq_jobs_available`
+    /// channel.
     pub async fn push<J, T>(&self, job: J) -> anyhow::Result<JobId>
     where
         J: Into<JobBuilder<T>>,
@@ -50,16 +59,20 @@ impl PgQueue {
             scheduled_for,
         } = job.into();
 
-        if let Some(scheduled_for) = scheduled_for {
-            postgres::push_scheduled(
-                &self.pool,
-                desc,
-                max_attempts.unwrap_or(self.max_attempts),
-                scheduled_for,
-            )
-            .await
-        } else {
-            postgres::push(&self.pool, desc, max_attempts.unwrap_or(self.max_attempts)).await
+        let max_attempts = max_attempts.unwrap_or(self.max_attempts);
+        match scheduled_for {
+            None => {
+                // Push the job and send the notification in a single transaction
+                let mut tx = self.pool.begin().await?;
+                let id = postgres::push(&mut *tx, desc, max_attempts).await?;
+                postgres::send_job_available_notification(&mut *tx, &id).await?;
+                tx.commit().await?;
+                Ok(id)
+            }
+
+            Some(scheduled_for) => {
+                postgres::push_scheduled(&self.pool, desc, max_attempts, scheduled_for).await
+            }
         }
     }
 
@@ -82,6 +95,11 @@ impl PgQueue {
             JobGuard::new(tx, job)
         });
         Ok(res)
+    }
+
+    /// Subscribes to the `pgmq_jobs_available` channel
+    pub async fn subscribe(&self) -> anyhow::Result<PgQueueListener> {
+        PgQueueListener::new(self.pool.clone()).await
     }
 
     /// Clears the queue
@@ -109,9 +127,15 @@ impl<T> JobBuilder<T> {
         }
     }
 
-    /// Sets the maximum number of attempts before a job is considered failed
-    pub fn max_attempts(mut self, max_attempts: u32) -> Self {
-        self.max_attempts = Some(max_attempts.try_into().unwrap_or(i32::MAX));
+    /// Sets the maximum number of retries before a job is considered failed.
+    ///
+    /// The number of retries specifies how many times a job will be retried after the initial attempt fails.
+    /// For example:
+    /// - `max_retries = 0`: Job runs once, no retries (total attempts = 1)
+    /// - `max_retries = 1`: Job runs once, then retried once if it fails (total attempts = 2)
+    /// - `max_retries = 2`: Job runs once, then retried up to 2 times if it fails (total attempts = 3)
+    pub fn max_retries(mut self, value: u32) -> Self {
+        self.max_attempts = Some(value.saturating_add(1).try_into().unwrap_or(i32::MAX));
         self
     }
 
@@ -121,6 +145,7 @@ impl<T> JobBuilder<T> {
         self
     }
 }
+
 impl<T> From<T> for JobBuilder<T>
 where
     T: serde::Serialize,
