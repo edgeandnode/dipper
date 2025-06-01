@@ -2175,7 +2175,6 @@ dependencies = [
  "fake",
  "pgtemp",
  "serde",
- "serde_json",
  "sqlx",
  "time",
  "tokio",

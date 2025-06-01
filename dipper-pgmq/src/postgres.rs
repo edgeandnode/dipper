@@ -1,25 +1,21 @@
 //! PostgreSQL message queue queries
 
-use anyhow::Context as _;
 use sqlx::{
-    Acquire, Postgres,
+    Postgres,
     migrate::{Migrate, MigrateError},
-    types::JsonValue,
+    types::Json,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::{
-    id::JobId,
-    job::{Job, JobGuard},
-};
+use super::id::JobId;
 
 /// Run the DB migrations.
 ///
 /// It is used to ensure that the database is up to date with the latest migrations.
 pub async fn run_db_migrations<'a, A>(conn: A) -> Result<(), MigrateError>
 where
-    A: Acquire<'a>,
+    A: sqlx::Acquire<'a>,
     <A::Connection as std::ops::Deref>::Target: Migrate,
 {
     sqlx::migrate!("./migrations").run(conn).await?;
@@ -29,11 +25,10 @@ where
 /// Push a job into the queue
 pub async fn push<'q, E, T>(executor: E, desc: T, max_attempts: i32) -> anyhow::Result<JobId>
 where
-    E: sqlx::Executor<'q, Database = sqlx::Postgres>,
+    E: sqlx::Executor<'q, Database = Postgres>,
     T: serde::Serialize,
 {
     let id = Uuid::now_v7();
-    let desc = serde_json::to_value(&desc)?;
 
     sqlx::query(
         r#"INSERT INTO pgmq_queue (
@@ -48,7 +43,7 @@ where
     .bind(id)
     .bind(PgJobStatus::default())
     .bind(max_attempts)
-    .bind(desc)
+    .bind(Json(desc))
     .execute(executor)
     .await?;
 
@@ -63,12 +58,10 @@ pub async fn push_scheduled<'q, E, T>(
     scheduled_for: OffsetDateTime,
 ) -> anyhow::Result<JobId>
 where
-    E: sqlx::Executor<'q, Database = sqlx::Postgres>,
+    E: sqlx::Executor<'q, Database = Postgres>,
     T: serde::Serialize,
 {
     let id = JobId::from_uuid(Uuid::now_v7());
-    let desc = serde_json::to_value(&desc)?;
-
     sqlx::query(
         r#"INSERT INTO pgmq_queue (
                 id,
@@ -84,7 +77,7 @@ where
     .bind(scheduled_for)
     .bind(PgJobStatus::default())
     .bind(max_attempts)
-    .bind(desc)
+    .bind(Json(desc))
     .execute(executor)
     .await?;
 
@@ -92,15 +85,12 @@ where
 }
 
 /// Pop a job from the queue
-pub async fn pop<'q, E, T>(executor: E) -> anyhow::Result<Option<JobGuard<'q, T>>>
+pub async fn pop<'q, E, T>(executor: E) -> anyhow::Result<Option<PgJob<T>>>
 where
-    E: sqlx::Acquire<'q, Database = sqlx::Postgres>,
-    T: for<'de> serde::Deserialize<'de>,
-    Job<T>: TryFrom<PgJob>,
+    E: sqlx::Executor<'q, Database = Postgres>,
+    T: for<'de> serde::Deserialize<'de> + Send + Unpin + 'static,
 {
-    let mut tx = executor.begin().await?;
-
-    let res = sqlx::query_as::<_, PgJob>(
+    let res = sqlx::query_as(
         r#"UPDATE pgmq_queue
             SET
                 updated_at = timezone('UTC', now()),
@@ -117,18 +107,15 @@ where
     )
     .bind(PgJobStatus::Running)
     .bind(PgJobStatus::Queued)
-    .fetch_optional(&mut *tx)
-    .await?
-    .and_then(|pg_job| pg_job.try_into().ok())
-    .map(|job| JobGuard::new(tx, job));
-
+    .fetch_optional(executor)
+    .await?;
     Ok(res)
 }
 
 /// Clear the queue
 pub async fn clear<'q, E>(executor: E) -> anyhow::Result<()>
 where
-    E: sqlx::Executor<'q, Database = sqlx::Postgres>,
+    E: sqlx::Executor<'q, Database = Postgres>,
 {
     sqlx::query("DELETE FROM pgmq_queue")
         .execute(executor)
@@ -139,13 +126,12 @@ where
 /// Remove a job from the queue
 pub async fn remove<'q, E>(executor: E, id: &JobId) -> anyhow::Result<()>
 where
-    E: sqlx::Executor<'q, Database = sqlx::Postgres>,
+    E: sqlx::Executor<'q, Database = Postgres>,
 {
     sqlx::query("DELETE FROM pgmq_queue WHERE id = $1")
         .bind(id)
         .execute(executor)
         .await?;
-
     Ok(())
 }
 
@@ -185,45 +171,30 @@ where
     .bind(scheduled_for)
     .execute(executor)
     .await?;
-
     Ok(())
 }
 
 #[derive(sqlx::FromRow)]
-pub struct PgJob {
+pub struct PgJob<T> {
     /// The job ID.
-    id: JobId,
+    pub(crate) id: JobId,
     /// The job creation timestamp.
-    created_at: OffsetDateTime,
+    pub(crate) created_at: OffsetDateTime,
     /// The job last update timestamp.
-    updated_at: OffsetDateTime,
+    pub(crate) updated_at: OffsetDateTime,
+
     /// The job scheduled execution date.
     scheduled_for: OffsetDateTime,
-
     /// The job status (queued, running, failed).
     status: PgJobStatus,
+
     /// The maximum number of execution attempts.
-    retry_max: i32,
+    pub(crate) retry_max: i32,
     /// The number of execution attempts.
-    retry_count: i32,
+    pub(crate) retry_count: i32,
 
     /// The job descriptor (serialized).
-    descriptor: JsonValue,
-}
-
-impl<M> TryFrom<PgJob> for Job<M>
-where
-    M: for<'de> serde::Deserialize<'de>,
-{
-    type Error = anyhow::Error;
-
-    fn try_from(value: PgJob) -> Result<Self, Self::Error> {
-        Ok(Self {
-            id: value.id,
-            desc: serde_json::from_value(value.descriptor)
-                .context("Failed job JSON message deserialization")?,
-        })
-    }
+    pub(crate) descriptor: Json<T>,
 }
 
 /// The job status.

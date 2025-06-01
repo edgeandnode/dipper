@@ -34,7 +34,7 @@ impl QueueImpl {
 #[async_trait]
 impl<M> Queue<M> for QueueImpl
 where
-    M: serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+    M: serde::Serialize + serde::de::DeserializeOwned + Send + Unpin + 'static,
 {
     async fn push(&self, msg: M) -> anyhow::Result<JobId> {
         self.inner.push(msg).await
