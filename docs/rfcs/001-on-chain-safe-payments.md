@@ -49,7 +49,7 @@ Replace the TAP-based payment system with an on-chain SAFE-based approach that:
 
 #### 2. Payment Processing
 - Move from synchronous TAP signing to asynchronous on-chain SAFE transactions
-- Implement retry logic with exponential backoff for failed payments
+- Implement retry logic for failed payments
 - Atomic status updates for receipt state management
 
 #### 3. Status Tracking
