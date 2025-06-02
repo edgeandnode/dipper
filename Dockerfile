@@ -23,7 +23,7 @@ WORKDIR /src
 COPY ./ ./
 
 # Set build environment variables
-#  - Copy packages from the global cache into the site-packages directory
+# - Copy packages from the global cache into the site-packages directory
 ENV UV_LINK_MODE=copy
 # - Set the C/C++ compiler to clang
 ENV CC=clang CXX=clang++
@@ -31,7 +31,7 @@ ENV CC=clang CXX=clang++
 ENV RUSTFLAGS="-C link-arg=-fuse-ld=lld"
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv run cargo build --bin dipper-service --release
+    uv run --frozen cargo build --bin dipper-service --release
 
 ## Python builder
 # Package the python code (sdist)

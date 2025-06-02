@@ -1,7 +1,7 @@
 // Set the `cargo:rustc-link-search` variable to the path of the Python library.
 //
 //  1. If the `PYTHON_LIB_DIR` environment variable is set, use it.
-//  2. Otherwise, use the `uv tool run find_libpython` command to find the path.
+//  2. Otherwise, use the `uv run find_libpython` command to find the path.
 //
 // If neither of these options work, do not set the variable.
 fn main() {
@@ -11,17 +11,18 @@ fn main() {
 
         Some(path)
     } else {
-        // Run the `uv tool run find_libpython` command to find the path to the Python library.
+        // Run the `uv run find_libpython` command to find the path to the Python library.
+        // This uses the locked version from the project's dev dependencies.
         // See: https://pypi.org/project/find-libpython/
         let output = std::process::Command::new("uv")
-            .arg("tool")
             .arg("run")
+            .arg("--frozen")
             .arg("find_libpython")
             .output();
 
         match output {
             Ok(output) if output.status.success() => {
-                // Parse the output of the `uv tool run find_libpython` command into a path.
+                // Parse the output of the `uv run find_libpython` command into a path.
                 let path = String::from_utf8(output.stdout).expect("invalid UTF-8 output from uv");
 
                 // Get the parent directory of the Python library path.
@@ -35,7 +36,7 @@ fn main() {
             }
             _ => {
                 println!(
-                    "cargo:warning=Failed to determine libpython path using `uv tool run find_libpython`"
+                    "cargo:warning=Failed to determine libpython path using `uv run find_libpython`"
                 );
                 None
             }

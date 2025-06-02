@@ -46,10 +46,10 @@ jobs:
         id: python
         run: |
           # Install Python dependencies
-          uv sync --frozen --no-dev --no-install-project
+          uv sync --frozen --no-install-project
 
           # Set PYTHON_LIB_DIR output param to the directory containing the libpython shared library
-          echo "PYTHON_LIB_DIR=$(dirname `uv tool run find_libpython`)" >> $GITHUB_OUTPUT
+          echo "PYTHON_LIB_DIR=$(dirname `uv run --frozen find_libpython`)" >> $GITHUB_OUTPUT
 
       ## Check
       - run: cargo clippy -- -D warnings --force-warn deprecated --force-warn dead-code
