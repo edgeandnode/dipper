@@ -60,29 +60,35 @@ create-migrations-links:
     # The project root directory
     ROOT_DIR="$(pwd)"
 
-    TARGET_DIR="${ROOT_DIR}/migrations"
+    TARGET_DIRS=(
+        "${ROOT_DIR}/migrations"
+        "${ROOT_DIR}/bin/dipper-service/migrations"
+    )
     SRC_DIRS=(
         "${ROOT_DIR}/dipper-pgmq/migrations"
         "${ROOT_DIR}/dipper-pgregistry/migrations"
     )
 
-    # Check if the target directory exists
-    if [ ! -d "$TARGET_DIR" ]; then
-        mkdir -p "$TARGET_DIR"
-    fi
-
-    # Create symbolic links from the source directories
-    for SRC_DIR in "${SRC_DIRS[@]}"; do
-        # If the source directory does not exist (or it's empty), skip it
-        if [ ! -d "$SRC_DIR" ] || [ -z "$(ls -A "$SRC_DIR" 2>/dev/null || true)" ]; then
-            continue
+    # Create symbolic links for each target directory
+    for TARGET_DIR in "${TARGET_DIRS[@]}"; do
+        # Check if the target directory exists
+        if [ ! -d "$TARGET_DIR" ]; then
+            mkdir -p "$TARGET_DIR"
         fi
 
-        # Create symbolic links relative to the target directory
-        ln --symbolic --relative --force "$SRC_DIR"/* "$TARGET_DIR"/
-    done
+        # Create symbolic links from the source directories
+        for SRC_DIR in "${SRC_DIRS[@]}"; do
+            # If the source directory does not exist (or it's empty), skip it
+            if [ ! -d "$SRC_DIR" ] || [ -z "$(ls -A "$SRC_DIR" 2>/dev/null || true)" ]; then
+                continue
+            fi
 
-    echo "Symbolic links created in '$TARGET_DIR'"
+            # Create symbolic links relative to the target directory
+            ln --symbolic --relative --force "$SRC_DIR"/* "$TARGET_DIR"/
+        done
+
+        echo "Symbolic links created in '$TARGET_DIR'"
+    done
 
 # Install Git hooks
 install-git-hooks:
