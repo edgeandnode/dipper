@@ -1,6 +1,6 @@
 ---
 title: RFC-001 - On-Chain SAFE-based Payments
-name: RFC-001 - On-Chain SAFE-based Payments
+name: On-Chain SAFE-based Payments
 slug: 001-on-chain-safe-payments
 status: draft
 tags: ["dipper-service"]
