@@ -14,15 +14,6 @@ This RFC proposes migrating the dipper service from the current TAP (Timeline Ag
 
 ## Background
 
-The current dipper service uses TAP-based payments where indexers report work and immediately receive signed TAP receipts. This approach has several limitations:
-
-1. **Synchronous Processing**: Payment creation is synchronous, causing potential delays in the work reporting workflow
-2. **Limited Transparency**: TAP receipts provide limited visibility into actual payment execution 
-3. **No On-Chain Verification**: The current system doesn't provide on-chain proof of payment
-4. **Reliability Concerns**: Failed payments require manual intervention and retry mechanisms
-
-### TAP Allocation Requirements Problem
-
 The decision to migrate from TAP was specifically motivated by significant allocation requirements that make TAP impractical for the dipper service's payment amounts. As identified during development:
 
 > "There's gonna be a rather big problem with using TAP for indexing fees in the MVP. We're thinking of paying monthly amounts between 5 and 100 dollars, and that means exponential rebates will require indexers to allocate between 50 and 1000 dollars to be able to collect these payments."
