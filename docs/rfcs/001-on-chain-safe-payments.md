@@ -105,6 +105,105 @@ stateDiagram-v2
     end note
 ```
 
+### Indexer Workflow
+
+This section describes the complete workflow from the indexer's perspective, illustrating how indexers interact with the new SAFE-based payment system.
+
+#### Step 1: Collect Payment Request
+The indexer sends a `collect_payment` request to the dipper service, reporting the amount of work performed. This request includes:
+- **Agreement ID**: The indexing agreement identifier for which work is being reported
+- **Allocation ID**: The Graph protocol allocation ID that the indexer used for indexing
+- **Entity Count**: The absolute number of subgraph entities stored (not incremental since last collection)
+- **Proof of Indexing (POI)**: Cryptographic proof that the indexer correctly indexed the deployment
+- **Signature**: EIP-712 signature from the indexer's operator wallet to authenticate the request
+
+#### Step 2: Dipper Processing and Response
+Upon receiving the collect payment request, the dipper service:
+1. **Performs validation checks** on the submitted work and ensures the indexer is eligible for payment
+2. **Calculates the payment amount** based on the fee calculation formula: `(epochs_elapsed * base_price_per_epoch) + (entity_count * price_per_entity)`
+3. **Creates a receipt record** in the registry with `PENDING` status, storing all payment details
+4. **Submits a pay-on-chain job** to the worker queue for asynchronous processing
+5. **Responds immediately** to the indexer with the unique Receipt ID
+
+This immediate response ensures that the indexer's workflow is not blocked by the time required for on-chain payment processing.
+
+#### Step 3: Asynchronous Payment Processing
+While the indexer continues its operations, the dipper service processes payments asynchronously:
+1. **Worker picks up the job** from the queue and begins payment processing
+2. **SAFE transaction is created** and submitted to the blockchain
+3. **Receipt status is updated** to `SUBMITTED` with the transaction hash once the payment is broadcast
+4. **Transaction confirmation is monitored** until sufficient confirmations are received
+5. **Receipt status is updated** to `COMPLETED` when the payment is fully confirmed on-chain
+
+If any step fails, the worker implements retry logic or marks the payment as `FAILED` with appropriate error information.
+
+#### Step 4: Status Polling and Verification
+The indexer can poll the payment status at any time using the `get_receipt_by_id` RPC endpoint:
+1. **Poll with Receipt ID** to retrieve current payment status and details
+2. **Receive status updates** including current FSM state (`PENDING`, `SUBMITTED`, `COMPLETED`, `FAILED`)
+3. **Access transaction hash** when the payment reaches `SUBMITTED` or `COMPLETED` status
+4. **Verify payment on-chain** using the provided transaction hash for full transparency
+
+This polling mechanism allows indexers to:
+- Track payment progress in real-time
+- Verify payments independently on the blockchain
+- Integrate payment status into their own monitoring and accounting systems
+- Handle any failed payments appropriately
+
+#### Sequence Diagram
+
+The following sequence diagram illustrates the complete payment workflow:
+
+```mermaid
+sequenceDiagram
+    participant I as Indexer
+    participant D as Dipper Service
+    participant R as Registry
+    participant W as Worker Queue
+    participant S as SAFE Client
+    participant B as Blockchain
+
+    Note over I,B: Step 1: Collect Payment Request
+    I->>D: collect_payment(agreement_id, allocation_id, entity_count, poi, signature)
+    
+    Note over I,B: Step 2: Dipper Processing and Response
+    D->>D: Validate work and calculate payment amount
+    D->>R: create_receipt_record(PENDING status)
+    R-->>D: Receipt ID
+    D->>W: queue_pay_on_chain_job(Receipt ID, amount, recipient)
+    D->>I: CollectPaymentResponse(Receipt ID)
+    
+    Note over I,B: Step 3: Asynchronous Payment Processing
+    W->>W: Pick up payment job
+    W->>R: update_receipt_status(Receipt ID, SUBMITTED)
+    W->>S: create_payment(recipient, amount)
+    S->>B: Submit SAFE transaction
+    B-->>S: Transaction hash
+    S-->>W: Transaction hash
+    W->>R: update_receipt_status(Receipt ID, SUBMITTED, tx_hash)
+    
+    Note over B: Transaction confirmation...
+    
+    W->>B: Check transaction confirmation
+    B-->>W: Confirmed
+    W->>R: update_receipt_status(Receipt ID, COMPLETED)
+    
+    Note over I,B: Step 4: Status Polling and Verification
+    I->>D: get_receipt_by_id(Receipt ID)
+    D->>R: get_receipt_by_id(Receipt ID)
+    R-->>D: Receipt with status and tx_hash
+    D->>I: ReceiptStatusResponse(COMPLETED, tx_hash, timestamps)
+    
+    I->>B: Verify transaction on-chain (optional)
+    B-->>I: Transaction details confirmed
+```
+
+#### Benefits for Indexers
+- **Non-blocking workflow**: Work reporting is not delayed by payment processing time
+- **Full transparency**: Complete visibility into payment status and on-chain verification
+- **Reliable tracking**: Persistent status that can be queried at any time
+- **Verifiable payments**: On-chain transaction hashes provide cryptographic proof of payment
+
 ## Proposed Implementation
 
 ### Database Schema Changes
@@ -129,7 +228,7 @@ The existing indexing receipts table needs to be extended to support the new pay
 Add a new payment message type to the existing worker message system alongside current indexing and agreement messages.
 
 **Message structure requirements:**
-- Include receipt identifier to identify which receipt to process
+- Include Receipt ID to identify which receipt to process
 - Include payment amount for the payment value
 - Include recipient address for the payment destination
 - Follow existing worker message serialization patterns
@@ -151,10 +250,10 @@ Create new payment handler following existing handler patterns:
 Update the payment collection response structure:
 
 **Changes required:**
-- Replace TAP receipt bytes field with receipt identifier field
+- Replace TAP receipt bytes field with Receipt ID field
 - Return the Receipt ID in the report work request response
 - Maintain existing version and status fields for compatibility
-- Ensure receipt identifiers are unique and suitable for polling
+- Ensure Receipt IDs are unique and suitable for polling
 
 #### Update Existing Handlers
 The payment collection handler needs major refactoring:
@@ -167,7 +266,7 @@ Add new receipt status method to the existing GRPC service:
 
 **Request structure:**
 - Version field for API versioning
-- Receipt identifier field to identify the receipt to query
+- Receipt ID field to identify the receipt to query
 
 **Response structure:**
 - Version field for API versioning  
@@ -218,7 +317,7 @@ Extend the existing receipt registry interface with new methods:
 
 **New method requirements:**
 - Update receipt payment status: Atomic status updates with optional transaction hash
-- Get receipt by identifier: Retrieve receipt with current payment status for polling
+- Get receipt by Receipt ID: Retrieve receipt with current payment status for polling
 - Get pending receipts: Query for receipts in PENDING state (admin functionality)
 - Get failed receipts: Query for receipts in FAILED state (admin functionality)
 
