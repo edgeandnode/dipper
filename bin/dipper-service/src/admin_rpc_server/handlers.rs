@@ -6,7 +6,7 @@ use jsonrpsee::RpcModule;
 
 use crate::{
     registry::{AgreementRegistry, IndexingRequestRegistry},
-    worker::WorkerQueue,
+    worker::service::WorkerQueue,
 };
 
 mod indexing_agreements;

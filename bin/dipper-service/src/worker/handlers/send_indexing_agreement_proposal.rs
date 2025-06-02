@@ -11,8 +11,8 @@ use crate::{
         IndexingAgreementVoucherMetadata, IndexingRequestRegistry,
     },
     worker::{
-        WorkerQueue,
         result::{JobError, JobResult},
+        service::WorkerQueue,
     },
 };
 

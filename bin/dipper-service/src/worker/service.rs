@@ -5,10 +5,11 @@ use dipper_iisa::CandidateSelection;
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
+pub use super::service_queue::{WorkerQueue, WorkerQueueHandle};
 use super::{
-    WorkerQueue, handlers,
+    context::{Ctx, InnerCtx},
     handlers::{
-        FindIndexerForIndexingRequestCtx, ProcessIndexingAgreementCancellationCtx,
+        self, FindIndexerForIndexingRequestCtx, ProcessIndexingAgreementCancellationCtx,
         ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
         SendIndexingAgreementCancellationCtx, SendIndexingAgreementProposalCtx,
     },
@@ -25,54 +26,46 @@ use crate::{
 /// Default period to poll the queue for new jobs
 const DEFAULT_QUEUE_POLL_PERIOD: Duration = Duration::from_secs(1);
 
-/// The worker service handle.
-#[derive(Clone)]
-pub struct Handle {
-    /// A channel to stop the worker
-    tx_stop: mpsc::Sender<()>,
-}
-
-impl Handle {
-    /// Stop the worker.
-    pub async fn stop(self) {
-        if self.tx_stop.is_closed() {
-            return;
-        }
-
-        let _ = self.tx_stop.send(()).await;
-
-        // Wait for the channel to close
-        self.tx_stop.closed().await;
-    }
-}
-
 /// Create a new worker and a future that processes jobs from the queue.
 ///
 /// The worker pulls jobs from the queue and processes them concurrently every 1 second.
-pub fn new<S, Q, R, N, W, C, I>(
-    queue: Q,
-    state: S,
-) -> (Handle, impl Future<Output = anyhow::Result<()>>)
+pub fn new<S, Q, R, N, C, I>(state: S) -> (Handle<Q>, impl Future<Output = anyhow::Result<()>>)
 where
     Q: Queue<Message> + Clone + Send + Sync,
     R: IndexingRequestRegistry + AgreementRegistry + ReceiptRegistry + Clone + Send + Sync,
     N: NetworkProvider + Clone + Send + Sync,
-    W: WorkerQueue + Clone + Send + Sync,
     C: IndexerClient + Clone + Send + Sync,
     I: CandidateSelection + Clone + Send + Sync,
-    ProcessNewIndexingRequestCtx<R, N, W, I>: FromState<S>,
-    ProcessIndexingRequestCancellationCtx<R, W>: FromState<S>,
-    FindIndexerForIndexingRequestCtx<R, N, W, I>: FromState<S>,
-    SendIndexingAgreementProposalCtx<R, N, W, C>: FromState<S>,
-    SendIndexingAgreementCancellationCtx<R, C>: FromState<S>,
-    ProcessIndexingAgreementCancellationCtx<R, W>: FromState<S>,
+    S: Into<Ctx<Q, R, N, C, I>>,
 {
+    let Ctx {
+        queue,
+        signer,
+        agreement_conf,
+        pricing_table,
+        registry,
+        network,
+        client,
+        iisa,
+    } = state.into();
+
     let (tx_stop, rx_stop) = mpsc::channel(1);
 
-    let handle = Handle { tx_stop };
-
+    let handle = Handle {
+        tx_stop,
+        worker_queue_handle: WorkerQueueHandle::new(queue.clone()),
+    };
     let fut = async move {
-        let state = state;
+        let state = InnerCtx {
+            signer,
+            agreement_conf,
+            pricing_table,
+            registry,
+            network,
+            client,
+            iisa,
+            worker: WorkerQueueHandle::new(queue.clone()),
+        };
 
         let mut stop_rx = rx_stop;
         let mut listener = queue.subscribe().await?;
@@ -167,4 +160,33 @@ where
         Message::ProcessIndexingAgreementIndexerCancellation => handlers::process_indexing_agreement_indexer_cancellation,
         Message::ProcessIndexingAgreementRequesterCancellation => handlers::process_indexing_agreement_requester_cancellation,
     })
+}
+
+/// The worker service handle
+#[derive(Clone)]
+pub struct Handle<Q> {
+    /// A channel to stop the worker
+    tx_stop: mpsc::Sender<()>,
+
+    /// A handle to the worker's queue
+    worker_queue_handle: WorkerQueueHandle<Q>,
+}
+
+impl<Q> Handle<Q> {
+    /// Get a handle to the worker's queue
+    pub fn queue(&self) -> &WorkerQueueHandle<Q> {
+        &self.worker_queue_handle
+    }
+
+    /// Stop the worker.
+    pub async fn stop(self) {
+        if self.tx_stop.is_closed() {
+            return;
+        }
+
+        let _ = self.tx_stop.send(()).await;
+
+        // Wait for the channel to close
+        self.tx_stop.closed().await;
+    }
 }

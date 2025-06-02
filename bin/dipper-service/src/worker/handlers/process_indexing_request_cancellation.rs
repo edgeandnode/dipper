@@ -3,8 +3,8 @@ use dipper_core::ids::IndexingRequestId;
 use crate::{
     registry::{AgreementRegistry, IndexingRequestRegistry},
     worker::{
-        WorkerQueue,
         result::{JobError, JobResult},
+        service::WorkerQueue,
     },
 };
 

@@ -18,7 +18,7 @@ use crate::{
         IndexingRequestStatus as IndexingRequestRecordStatus,
     },
     signing::eip712::PrivateKeyEip712Signer,
-    worker::WorkerQueue,
+    worker::service::WorkerQueue,
 };
 
 /// The substate for the [`IndexingRequestsRpc`] handler

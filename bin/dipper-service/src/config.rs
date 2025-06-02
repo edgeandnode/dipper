@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
+    sync::Arc,
     time::Duration,
 };
 
@@ -16,6 +17,28 @@ use thegraph_core::{
     },
 };
 use url::Url;
+
+/// The maximum number of candidates to select.
+pub const DEFAULT_MAX_CANDIDATES: usize = 3;
+
+/// Load the configuration from a JSON file.
+pub fn load_from_file(path: &Path) -> Result<Config, Error> {
+    let config_content = std::fs::read_to_string(path)?;
+    let config = serde_json::from_str(&config_content)?;
+    Ok(config)
+}
+
+/// An error that can occur when loading the configuration.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// An error occurred while reading the configuration file.
+    #[error("failed to read configuration file: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// An error occurred while deserializing the configuration.
+    #[error("failed to deserialize configuration: {0}")]
+    Deserialize(#[from] serde_json::Error),
+}
 
 /// The configuration for the DIPs service
 #[derive(custom_debug::CustomDebug, serde::Deserialize)]
@@ -165,20 +188,98 @@ pub struct TapSignerConfig {
     pub verifier: Address,
 }
 
-/// An error that can occur when loading the configuration.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// An error occurred while reading the configuration file.
-    #[error("failed to read configuration file: {0}")]
-    Io(#[from] std::io::Error),
-
-    /// An error occurred while deserializing the configuration.
-    #[error("failed to deserialize configuration: {0}")]
-    Deserialize(#[from] serde_json::Error),
+/// The _indexing agreement_ configuration.
+///
+/// It holds the configuration for the _indexing agreements_, e.g., the service address, the
+/// maximum amount that can be collected for the subgraph initial sync, the maximum amount
+/// collectable per epoch, etc.
+#[derive(Debug)]
+pub struct IndexingAgreementConfig {
+    /// The _indexing agreement_'s service address.
+    pub service: Address,
+    /// The _indexing agreement_'s maximum amount that can be collected for the subgraph initial
+    /// sync.
+    pub max_initial_amount: U256,
+    /// The _indexing agreement_'s maximum amount collectable per epoch.
+    pub max_ongoing_amount_per_epoch: U256,
+    /// The _indexing agreement_'s maximum epochs per collection.
+    pub max_epochs_per_collection: u32,
+    /// The _indexing agreement_'s minimum epochs per collection.
+    pub min_epochs_per_collection: u32,
+    /// The _indexing agreement_'s duration in epochs.
+    pub duration_epochs: Option<u32>,
 }
-/// Load the configuration from a JSON file.
-pub fn load_from_file(path: &Path) -> Result<Config, Error> {
-    let config_content = std::fs::read_to_string(path)?;
-    let config = serde_json::from_str(&config_content)?;
-    Ok(config)
+
+/// The _indexing agreement_'s per-chain prices.
+#[derive(Debug)]
+pub struct IndexingAgreementChainPrices {
+    /// The price per block in wei GRT.
+    pub base_price_per_epoch: U256,
+    /// The price per entity in wei GRT per epoch.
+    pub price_per_entity: U256,
+}
+
+impl IndexingAgreementConfig {
+    /// Get the _indexing agreement_'s service address.
+    pub fn service(&self) -> Address {
+        self.service
+    }
+
+    /// Get the _indexing agreement_'s maximum amount that can be collected for the subgraph initial
+    /// sync.
+    pub fn max_initial_amount(&self) -> U256 {
+        self.max_initial_amount
+    }
+
+    /// Get the _indexing agreement_'s maximum amount collectable per epoch.
+    pub fn max_ongoing_amount_per_epoch(&self) -> U256 {
+        self.max_ongoing_amount_per_epoch
+    }
+
+    /// Get the _indexing agreement_'s maximum epochs per collection.
+    pub fn max_epochs_per_collection(&self) -> u32 {
+        self.max_epochs_per_collection
+    }
+
+    /// Get the _indexing agreement_'s minimum epochs per collection.
+    pub fn min_epochs_per_collection(&self) -> u32 {
+        self.min_epochs_per_collection
+    }
+
+    /// Get the _indexing agreement_'s duration in epochs.
+    pub fn duration_epochs(&self) -> u32 {
+        self.duration_epochs.unwrap_or(u32::MAX)
+    }
+}
+
+impl From<DipsAgreementConfig>
+    for (
+        Arc<IndexingAgreementConfig>,
+        Arc<BTreeMap<ChainId, IndexingAgreementChainPrices>>,
+    )
+{
+    fn from(value: DipsAgreementConfig) -> Self {
+        let config = IndexingAgreementConfig {
+            service: value.service,
+            max_initial_amount: value.max_initial_amount,
+            max_ongoing_amount_per_epoch: value.max_ongoing_amount_per_epoch,
+            max_epochs_per_collection: value.max_epochs_per_collection,
+            min_epochs_per_collection: value.min_epochs_per_collection,
+            duration_epochs: value.duration_epochs,
+        };
+        let prices = value
+            .pricing_table
+            .into_iter()
+            .map(|(chain_id, prices)| {
+                (
+                    chain_id,
+                    IndexingAgreementChainPrices {
+                        base_price_per_epoch: prices.base_price_per_epoch,
+                        price_per_entity: prices.price_per_entity,
+                    },
+                )
+            })
+            .collect();
+        (Arc::new(config), Arc::new(prices))
+    }
 }

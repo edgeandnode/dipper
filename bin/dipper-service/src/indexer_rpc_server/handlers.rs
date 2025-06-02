@@ -17,7 +17,7 @@ use crate::{
     network::NetworkProvider,
     registry::{AgreementRegistry, IndexingAgreementStatus, ReceiptRegistry, ReportedWork},
     signing::{eip712::PrivateKeyEip712Signer, tap::ReceiptSigner},
-    worker::WorkerQueue,
+    worker::service::WorkerQueue,
 };
 
 /// The context shared across all requests.

@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use super::handlers::{IndexingAgreementsCtx, IndexingRequestsCtx, rpc_handlers};
 use crate::{
     registry::{AgreementRegistry, IndexingRequestRegistry},
-    worker::WorkerQueue,
+    worker::service::WorkerQueue,
 };
 
 /// RPC server configuration.

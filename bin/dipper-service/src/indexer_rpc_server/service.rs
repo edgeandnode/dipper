@@ -9,7 +9,7 @@ use super::handlers::{Ctx, RpcServiceImpl};
 use crate::{
     network::NetworkProvider,
     registry::{AgreementRegistry, ReceiptRegistry},
-    worker::WorkerQueue,
+    worker::service::WorkerQueue,
 };
 
 /// RPC server configuration.
