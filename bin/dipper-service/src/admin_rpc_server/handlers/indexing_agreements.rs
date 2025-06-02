@@ -21,7 +21,7 @@ use crate::{
         IndexingAgreementStatus as IndexingAgreementRecordStatus,
     },
     signing::eip712::PrivateKeyEip712Signer,
-    worker::WorkerQueue,
+    worker::service::WorkerQueue,
 };
 
 /// The substate for the [`IndexingAgreementsRpc`] handler

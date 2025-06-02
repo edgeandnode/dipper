@@ -1,23 +1,21 @@
-use std::{collections::BTreeMap, env, path::PathBuf, sync::Arc};
+use std::{env, path::PathBuf, sync::Arc};
 
 use async_signal::{Signal, Signals};
-use dipper_core::state::FromState;
 use dipper_iisa as iisa;
 use futures_lite::StreamExt;
-use thegraph_core::alloy::{primitives::ChainId, signers::local::PrivateKeySigner};
+use thegraph_core::alloy::signers::local::PrivateKeySigner;
 use tokio::task::JoinSet;
 use tracing_subscriber::EnvFilter;
 
 use self::{
-    context::{CtxBuilder, DEFAULT_MAX_CANDIDATES},
+    config::DEFAULT_MAX_CANDIDATES,
     registry::RegistryProvider,
     signing::{eip712::Eip712Signer, tap::ReceiptSigner},
-    worker::{Worker, queue::QueueImpl},
+    worker::queue::QueueImpl,
 };
 
 mod admin_rpc_server;
 mod config;
-mod context;
 mod db;
 mod indexer_rpc_client;
 mod indexer_rpc_server;
@@ -45,6 +43,9 @@ pub async fn main() -> anyhow::Result<()> {
         .expect("Invalid path");
     let conf = config::load_from_file(&conf_path).expect("Failed to load config");
     tracing::debug!(conf=?conf, "configuration loaded");
+
+    // TODO: Decouple the config file format from the internal representation
+    let (agreement_conf, pricing_table) = conf.dips.into();
 
     // Initialize the different components
     //- The signer component
@@ -83,9 +84,8 @@ pub async fn main() -> anyhow::Result<()> {
     db::run_migrations(&db_conn).await?;
     tracing::info!("applied DB migrations");
 
-    //- The worker and worker queue component
+    //- The message queue component
     let queue = QueueImpl::new(db_conn.clone());
-    let worker = Worker::new(queue.clone());
 
     //- The registry component
     let registry = RegistryProvider::new(db_conn.clone());
@@ -146,23 +146,21 @@ pub async fn main() -> anyhow::Result<()> {
     tracing::info!("initialized IISA service");
 
     // Application services
-    let context = CtxBuilder::new()
-        .with_signer(signer)
-        .with_tap_signer(tap_signer)
-        .with_agreement_config(conf.dips)
-        .with_worker(worker)
-        .with_network_provider(network_provider)
-        .with_registry(registry)
-        .with_indexer_client(indexer_client)
-        .with_iisa(iisa_handle.clone())
-        .with_admin_allowlist(conf.admin_rpc.allowlist)
-        .with_network_allowlist(conf.indexer_rpc.allowlist)
-        .with_max_candidates(DEFAULT_MAX_CANDIDATES)
-        .build();
 
     //- The worker service
-    let (worker_handle, worker_service) =
-        worker::service::new(queue, FromState::from_state(&context));
+    let (worker_handle, worker_service) = {
+        let ctx = worker::Ctx {
+            queue,
+            signer: signer.clone(),
+            agreement_conf,
+            pricing_table,
+            registry: registry.clone(),
+            network: network_provider.clone(),
+            client: indexer_client,
+            iisa: iisa_handle.clone(),
+        };
+        worker::service::new(ctx)
+    };
     tracing::info!("initialized Worker service");
 
     //- The admin RPC service
@@ -171,7 +169,15 @@ pub async fn main() -> anyhow::Result<()> {
             listen_addr: conf.admin_rpc.listen_addr,
         };
 
-        admin_rpc_server::service::new(config, FromState::from_state(&context))
+        let ctx = admin_rpc_server::Ctx {
+            signer: signer.clone(),
+            admin_allowlist: Arc::new(conf.admin_rpc.allowlist),
+            max_candidates: DEFAULT_MAX_CANDIDATES,
+            registry: registry.clone(),
+            worker: worker_handle.queue().clone(),
+        };
+
+        admin_rpc_server::service::new(config, ctx)
     };
     tracing::info!("initialized Admin RPC service");
 
@@ -181,12 +187,21 @@ pub async fn main() -> anyhow::Result<()> {
             listen_addr: conf.indexer_rpc.listen_addr,
         };
 
-        indexer_rpc_server::service::new(config, context.clone())
+        let ctx = indexer_rpc_server::Ctx {
+            signer,
+            tap_signer,
+            allowlist: Arc::new(conf.indexer_rpc.allowlist),
+            registry,
+            network: network_provider,
+            worker: worker_handle.queue().clone(),
+        };
+
+        indexer_rpc_server::service::new(config, ctx)
     };
-    tracing::info!("initialized Admin RPC service");
+    tracing::info!("initialized Indexer RPC service");
 
     // Construct the task tree
-    let mut task_tree: JoinSet<anyhow::Result<()>> = JoinSet::new();
+    let mut task_tree = JoinSet::new();
 
     let network_epoch_task_handle = task_tree.spawn(network_epoch_service);
     tracing::debug!(task_id=%network_epoch_task_handle.id(), "Graph network epoch service started");
@@ -299,36 +314,4 @@ async fn signal_task() -> Result<AppSignal, SignalHandlerError> {
 
     // Fallthrough
     Ok(AppSignal::Shutdown)
-}
-
-impl From<config::DipsAgreementConfig>
-    for (
-        context::IndexingAgreementConfig,
-        BTreeMap<ChainId, context::IndexingAgreementChainPrices>,
-    )
-{
-    fn from(value: config::DipsAgreementConfig) -> Self {
-        let config = context::IndexingAgreementConfig {
-            service: value.service,
-            max_initial_amount: value.max_initial_amount,
-            max_ongoing_amount_per_epoch: value.max_ongoing_amount_per_epoch,
-            max_epochs_per_collection: value.max_epochs_per_collection,
-            min_epochs_per_collection: value.min_epochs_per_collection,
-            duration_epochs: value.duration_epochs,
-        };
-        let prices = value
-            .pricing_table
-            .into_iter()
-            .map(|(chain_id, prices)| {
-                (
-                    chain_id,
-                    context::IndexingAgreementChainPrices {
-                        base_price_per_epoch: prices.base_price_per_epoch,
-                        price_per_entity: prices.price_per_entity,
-                    },
-                )
-            })
-            .collect();
-        (config, prices)
-    }
 }

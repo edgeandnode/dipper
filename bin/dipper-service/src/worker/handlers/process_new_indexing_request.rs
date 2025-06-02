@@ -5,7 +5,7 @@ use dipper_iisa::{CandidateSelection, Indexer as IndexerCandidate};
 use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 
 use crate::{
-    context::{IndexingAgreementChainPrices, IndexingAgreementConfig},
+    config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
     network::NetworkProvider,
     registry::{
         AgreementRegistry, IndexingAgreementVoucher, IndexingAgreementVoucherMetadata,
@@ -13,8 +13,8 @@ use crate::{
     },
     signing::eip712::PrivateKeyEip712Signer,
     worker::{
-        WorkerQueue,
         result::{JobError, JobResult},
+        service::WorkerQueue,
     },
 };
 
