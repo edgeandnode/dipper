@@ -176,10 +176,12 @@ The following sequence diagram illustrates the complete payment workflow:
 ```mermaid
 sequenceDiagram
     participant I as Indexer
-    participant D as Dipper Service
-    participant R as Registry
-    participant W as Worker Queue
-    participant S as SAFE Client
+    box rgb(240, 248, 255) Dipper Components
+        participant D as Dipper Service
+        participant R as Registry
+        participant W as Worker Queue
+        participant S as SAFE Client
+    end
     participant B as Blockchain
 
     Note over I,B: Step 1: Collect Payment Request
