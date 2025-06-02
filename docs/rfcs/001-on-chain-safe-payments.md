@@ -177,9 +177,9 @@ The following sequence diagram illustrates the complete payment workflow:
 sequenceDiagram
     participant I as Indexer
     box rgb(240, 248, 255) Dipper Components
-        participant D as Dipper Service
+        participant D as Indexer RPC Server
         participant R as Registry
-        participant W as Worker Queue
+        participant W as Worker
         participant S as SAFE Client
     end
     participant B as Blockchain
