@@ -28,7 +28,7 @@ pub async fn connect(conf: &DbConfig) -> anyhow::Result<Pool<Postgres>> {
 
 /// Run migrations
 pub async fn run_migrations(pool: &Pool<Postgres>) -> anyhow::Result<()> {
-    sqlx::migrate!("../../migrations")
+    sqlx::migrate!("./migrations")
         .run(pool)
         .await
         .context("failed to run DB migrations")?;
