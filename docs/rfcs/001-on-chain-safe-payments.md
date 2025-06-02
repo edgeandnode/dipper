@@ -176,7 +176,7 @@ The following sequence diagram illustrates the complete payment workflow:
 ```mermaid
 sequenceDiagram
     participant I as Indexer
-    box rgb(240, 248, 255) Dipper Components
+    box rgb(240, 248, 255) dipper-service
         participant D as Indexer RPC Server
         participant R as Registry
         participant W as Worker
