@@ -21,6 +21,34 @@ The current dipper service uses TAP-based payments where indexers report work an
 3. **No On-Chain Verification**: The current system doesn't provide on-chain proof of payment
 4. **Reliability Concerns**: Failed payments require manual intervention and retry mechanisms
 
+### TAP Allocation Requirements Problem
+
+The decision to migrate from TAP was specifically motivated by significant allocation requirements that make TAP impractical for the dipper service's payment amounts. As identified during development:
+
+> "There's gonna be a rather big problem with using TAP for indexing fees in the MVP. We're thinking of paying monthly amounts between 5 and 100 dollars, and that means exponential rebates will require indexers to allocate between 50 and 1000 dollars to be able to collect these payments."
+
+This introduces several critical challenges:
+
+1. **High Capital Requirements**: Indexers need to allocate $50-$1000 per subgraph for relatively small payments ($5-$100)
+2. **Complex Allocation Management**: Variable allocation amounts create complexity in indexer agent configuration
+3. **Allocation Calculation Difficulty**: Determining appropriate allocation amounts depends on chain pricing and expected query volumes
+4. **Capital Efficiency**: Indexers must keep high amounts of stake free specifically for DIPs, reducing overall capital efficiency
+5. **Missing Infrastructure**: TAP escrow management functionality is not yet implemented
+
+### Alternative Approaches Considered
+
+During the design process, three main approaches were evaluated:
+
+**Option A: Continue with TAP** - Rejected due to the allocation requirements and complexity issues outlined above.
+
+**Option B: Dummy Subgraph with Staking.collect** - Using a new allocation to a dummy subgraph at collection time and paying using `Staking.collect` (similar to StreamingFast's substreams approach). This was considered but adds unnecessary complexity around dummy subgraph management.
+
+**Option C: Direct SAFE-based Payments** - Have a dedicated account for the dipper that transfers GRT directly to indexers using a SAFE multisig for batching and security. This approach includes a 1% burn mechanism to maintain protocol tax compliance.
+
+This RFC implements **Option C** as it provides the best balance of simplicity, capital efficiency, and protocol compliance.
+
+### Current TAP Workflow
+
 The dipper service currently implements the following payment workflow:
 - Indexer reports work via GRPC `collect_payment` endpoint
 - Service validates the work and calculates fees
