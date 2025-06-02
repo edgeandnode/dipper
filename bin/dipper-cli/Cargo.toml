@@ -16,7 +16,7 @@ jsonrpsee = { workspace = true, features = ["http-client"] }
 serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
-serde-envfile = { git = "https://github.com/LNSD/serde-envfile.git", rev = "006e135", version = "0.2.0", features = ["preserve_order"] }
+serde-envfile = { version = "0.3.0", features = ["preserve_order"] }
 snmalloc-rs = "0.3.6"
 thegraph-core = { workspace = true, features = ["alloy-signer-local", "signed-message"] }
 thiserror.workspace = true
