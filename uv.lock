@@ -24,6 +24,15 @@ wheels = [
 ]
 
 [[package]]
+name = "find-libpython"
+version = "0.4.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/16/19/edd1da36c129fea75b82c3c079fc8ba72de945515364d660962e5c922ae3/find_libpython-0.4.1.tar.gz", hash = "sha256:7e6edbbaaa8648c8c7c13c54b127653c83cfb01a853db7e5b1ee2e97c10b2353", size = 9005, upload-time = "2025-05-31T21:32:51.512Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/02/6f/a3248471536a785379969642604fe7ff576520a8b4d4f820ecfd45639f35/find_libpython-0.4.1-py3-none-any.whl", hash = "sha256:22e522957e05f293c3403d0122c77d18007c5196f61054905c480e01b75fa236", size = 8751, upload-time = "2025-05-31T21:32:50.171Z" },
+]
+
+[[package]]
 name = "iisa"
 version = "0.1.0"
 source = { editable = "." }
@@ -31,6 +40,7 @@ source = { editable = "." }
 [package.dev-dependencies]
 dev = [
     { name = "faker" },
+    { name = "find-libpython" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
@@ -41,6 +51,7 @@ dev = [
 [package.metadata.requires-dev]
 dev = [
     { name = "faker", specifier = ">=37,<37.4" },
+    { name = "find-libpython", specifier = ">=0.4,<0.5" },
     { name = "mypy", specifier = ">=1.11.2,<2.0" },
     { name = "pytest", specifier = ">=8.3.2,<9.0" },
     { name = "ruff", specifier = ">=0.11,<0.12" },

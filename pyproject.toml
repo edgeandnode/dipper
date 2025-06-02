@@ -8,6 +8,7 @@ dependencies = []
 [tool.uv]
 dev-dependencies = [
     "faker>=37,<37.4",
+    "find-libpython>=0.4,<0.5",
     "mypy>=1.11.2,<2.0",
     "pytest>=8.3.2,<9.0",
     "ruff>=0.11,<0.12",
@@ -55,4 +56,3 @@ exclude = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["dipper-iisa-python/src/iisa"]
-
