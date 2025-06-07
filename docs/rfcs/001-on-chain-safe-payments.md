@@ -259,39 +259,26 @@ Add new receipt status method to the existing GRPC service:
 
 ### _Safe_ Client Implementation
 
-Create new _Safe_ client module using the dipper's EOA as a Safe Module approach:
+The _Safe_ client will be implemented as a native dipper Rust component using the dipper's EOA as a Safe Module for direct transaction execution via `execTransactionFromModule` contract calls.
 
-**_Safe_ Module Architecture:**
-The _Safe_ transaction implementation will use the dipper's EOA (Externally Owned Account) as a Safe Module, allowing direct execution via `execTransactionFromModule` contract calls rather than relying on the Safe Transaction Service. This approach provides several benefits:
-- Direct transaction execution without dependency on Safe Transaction Service
-- The Safe can be owned by multiple signers who can revoke the dipper EOA by disabling the module if needed
-- Enables testing on networks like Arbitrum Sepolia where the Safe Transaction Service is not available
-- Provides better control and flexibility over transaction execution
+**Architecture Overview:**
+- **Safe Module Pattern**: Uses dipper's EOA as Safe Module rather than relying on Safe Transaction Service
+- **Direct Execution**: Enables immediate transaction execution with multi-signer oversight
+- **Network Compatibility**: Works on all networks including test networks without Safe Transaction Service
+- **Revocation Control**: Safe owners can disable the dipper EOA module if needed
 
-**_Safe_ Client interface requirements:**
-- Submit payment method accepting recipient address and amount
-- Return transaction hash on successful submission
-- Proper error handling distinguishing retryable vs fatal errors
-- Async implementation compatible with existing worker system
-- Batch payment with tax burn in a single transaction (1% burn mechanism for protocol tax compliance)
-- Execute transactions via `execTransactionFromModule` calls
+**Core Functionality:**
+- **Payment Submission**: Accept recipient address and amount, return transaction hash on success
+- **Batch Transactions**: Combine payment transfer with 1% tax burn in single transaction
+- **Error Handling**: Distinguish between retryable and fatal errors for proper retry logic
+- **Async Operations**: Full compatibility with existing worker system architecture
 
-**_Safe_ Client implementation needs:**
-- _Safe_ contract address configuration
-- RPC client for blockchain interaction
-- Private key signer for transaction signing (dipper's EOA)
-- Gas estimation and management functionality
-- Multi-call transaction support to batch payment transfer with tax burn
-- Safe Module integration for direct transaction execution
-
-**Implementation Technology Stack:**
-- **Rust Component**: The _Safe_ client MUST be implemented as a native dipper Rust component, following existing dipper service architectural patterns
-- **Alloy Library Integration**: The implementation MUST use the `alloy` library for:
-  - Importing the Safe smart contract ABI definitions
-  - Blockchain client interactions and RPC communication
-  - Transaction construction and signing
-  - Contract method calls and event parsing
-- **Alloy Client Usage**: All blockchain interactions MUST utilize alloy's client infrastructure for consistent error handling and connection management
+**Technical Implementation:**
+- **Rust Component**: Native dipper service component following existing architectural patterns
+- **Alloy Integration**: Use `alloy` library for Safe contract ABI, blockchain clients, transaction construction, and event parsing
+- **Configuration**: Safe contract address, RPC endpoint, private key signer, gas parameters, and chain ID
+- **Security**: Secure private key management and atomic transaction execution
+- **Monitoring**: Gas estimation, transaction tracking, and structured error reporting
 
 ### Configuration Changes
 
