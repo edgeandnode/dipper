@@ -10,7 +10,7 @@ contributors: ["Lorenzo Delgado <lorenzo@edgeandnode.com>"]
 
 ## Abstract
 
-This RFC proposes migrating the dipper service from the current TAP (Timeline Aggregation Protocol) based payment mechanism to an On-Chain SAFE-based payment system. The new system will replace immediate TAP receipt responses with Receipt IDs, implement asynchronous on-chain payment processing through worker tasks, and provide indexers with a polling mechanism to track payment status. This change addresses the limitations of the current synchronous payment model and provides better reliability, transparency, and on-chain verifiability for payment processing.
+This RFC proposes migrating the dipper service from the current TAP (Timeline Aggregation Protocol) based payment mechanism to an On-Chain _Safe_-based payment system. The new system will replace immediate TAP receipt responses with Receipt IDs, implement asynchronous on-chain payment processing through worker tasks, and provide indexers with a polling mechanism to track payment status. This change addresses the limitations of the current synchronous payment model and provides better reliability, transparency, and on-chain verifiability for payment processing.
 
 ## Background
 
@@ -34,7 +34,7 @@ During the design process, three main approaches were evaluated:
 
 **Option B: Dummy Subgraph with Staking.collect** - Using a new allocation to a dummy subgraph at collection time and paying using `Staking.collect` (similar to StreamingFast's substreams approach). This was considered but adds unnecessary complexity around dummy subgraph management.
 
-**Option C: Direct SAFE-based Payments** - Have a dedicated account for the dipper that transfers GRT directly to indexers using a SAFE multisig for batching and security. This approach includes a 1% burn mechanism to maintain protocol tax compliance.
+**Option C: Direct _Safe_-based Payments** - Have a dedicated account for the dipper that transfers GRT directly to indexers using a _Safe_ multisig for security. This approach includes a 1% burn mechanism to maintain protocol tax compliance.
 
 This RFC implements **Option C** as it provides the best balance of simplicity, capital efficiency, and protocol compliance.
 
@@ -46,18 +46,18 @@ The dipper service currently implements the following payment workflow:
 - TAP receipt is created and signed using `ReceiptSigner`
 - Receipt is immediately returned to the indexer as serialized bytes
 
-This RFC addresses the need for a more robust, transparent, and verifiable payment system that leverages on-chain SAFE transactions.
+This RFC addresses the need for a more robust, transparent, and verifiable payment system that leverages on-chain _Safe_ transactions.
 
 ## Design
 
 ### Overview
 
-Replace the TAP-based payment system with an on-chain SAFE-based approach that:
+Replace the TAP-based payment system with an on-chain _Safe_-based approach that:
 
 1. **Returns Receipt IDs** instead of TAP receipts for immediate response
 2. **Implements asynchronous payment processing** using the existing worker system
 3. **Provides status polling** for indexers to track payment progress
-4. **Uses SAFE multisig contracts** for secure on-chain payment execution
+4. **Uses _Safe_ multisig contracts** for secure on-chain payment execution
 5. **Maintains payment state** through a finite state machine
 
 ### Key Changes
@@ -67,12 +67,12 @@ Replace the TAP-based payment system with an on-chain SAFE-based approach that:
 - **Proposed**: `report_work` → `validate` → `create_receipt_record` → `queue_PAY_ON_CHAIN_job` → `return_receipt_ID`
 
 #### 2. Payment Processing
-- Move from synchronous TAP signing to asynchronous on-chain SAFE transactions
+- Move from synchronous TAP signing to asynchronous on-chain _Safe_ transactions
 - Implement retry logic for failed payments
 - Atomic status updates for receipt state management
 
 #### 3. Status Tracking
-- Introduce Receipt State Machine: `PENDING` → `SUBMITTED` → `COMPLETED` / `FAILED`
+- Introduce Receipt State Machine: `PENDING` → `SUBMITTED` / `FAILED`
 - Provide GRPC polling endpoint for indexers to check payment status
 
 ### Finite State Machine (FSM)
@@ -80,13 +80,11 @@ Replace the TAP-based payment system with an on-chain SAFE-based approach that:
 The receipt payment status will follow a well-defined finite state machine:
 
 - **PENDING**: Payment not yet attempted or currently retrying
-- **SUBMITTED**: Payment submitted to blockchain, transaction hash available
-- **COMPLETED**: Payment confirmed on-chain with sufficient confirmations
+- **SUBMITTED**: Payment successfully submitted and processed on-chain. The sequencer has confirmed the transaction has been included in the block and the transaction hash is available
 - **FAILED**: Payment failed in a fatal, non-recoverable way
 
 State transitions:
-- `PENDING` → `SUBMITTED` (when payment is submitted to blockchain)
-- `SUBMITTED` → `COMPLETED` (when transaction is confirmed)
+- `PENDING` → `SUBMITTED` (when payment is successfully submitted to blockchain)
 - `PENDING` → `FAILED` (when fatal error occurs)
 - `SUBMITTED` → `FAILED` (when transaction fails permanently)
 
@@ -94,39 +92,13 @@ State transitions:
 stateDiagram-v2
     [*] --> PENDING : Receipt created
     
-    PENDING --> SUBMITTED : Payment submitted\nto blockchain
-    PENDING --> FAILED : Fatal error\noccurs
-    
-    SUBMITTED --> COMPLETED : Transaction\nconfirmed
-    SUBMITTED --> FAILED : Transaction\nfails permanently
-    
-    COMPLETED --> [*]
-    FAILED --> [*]
-    
-    note right of PENDING
-        Initial state when receipt
-        is created or retrying
-    end note
-    
-    note right of SUBMITTED
-        Transaction hash available,
-        waiting for confirmation
-    end note
-    
-    note right of COMPLETED
-        Payment confirmed on-chain
-        with sufficient confirmations
-    end note
-    
-    note right of FAILED
-        Payment failed in a fatal,
-        non-recoverable way
-    end note
+    PENDING --> SUBMITTED : Payment successfully submitted to blockchain
+    PENDING --> FAILED : Fatal error occurs
 ```
 
 ### Indexer Workflow
 
-This section describes the complete workflow from the indexer's perspective, illustrating how indexers interact with the new SAFE-based payment system.
+This section describes the complete workflow from the indexer's perspective, illustrating how indexers interact with the new _Safe_-based payment system.
 
 #### Step 1: Collect Payment Request
 The indexer sends a `collect_payment` request to the dipper service, reporting the amount of work performed. This request includes:
@@ -139,7 +111,7 @@ The indexer sends a `collect_payment` request to the dipper service, reporting t
 #### Step 2: Dipper Processing and Response
 Upon receiving the collect payment request, the dipper service:
 1. **Performs validation checks** on the submitted work and ensures the indexer is eligible for payment
-2. **Calculates the payment amount** based on the fee calculation formula: `(epochs_elapsed * base_price_per_epoch) + (entity_count * price_per_entity)`
+2. **Calculates the payment amount** based on the fee calculation formula: `epochs_elapsed * (base_price_per_epoch + entity_count * price_per_entity)`
 3. **Creates a receipt record** in the registry with `PENDING` status, storing all payment details
 4. **Submits a pay-on-chain job** to the worker queue for asynchronous processing
 5. **Responds immediately** to the indexer with the unique Receipt ID
@@ -149,18 +121,16 @@ This immediate response ensures that the indexer's workflow is not blocked by th
 #### Step 3: Asynchronous Payment Processing
 While the indexer continues its operations, the dipper service processes payments asynchronously:
 1. **Worker picks up the job** from the queue and begins payment processing
-2. **SAFE transaction is created** and submitted to the blockchain
-3. **Receipt status is updated** to `SUBMITTED` with the transaction hash once the payment is broadcast
-4. **Transaction confirmation is monitored** until sufficient confirmations are received
-5. **Receipt status is updated** to `COMPLETED` when the payment is fully confirmed on-chain
+2. **_Safe_ transaction is created** and submitted to the blockchain
+3. **Receipt status is updated** to `SUBMITTED` with the transaction hash when the payment is successfully processed on-chain
 
 If any step fails, the worker implements retry logic or marks the payment as `FAILED` with appropriate error information.
 
 #### Step 4: Status Polling and Verification
 The indexer can poll the payment status at any time using the `get_receipt_by_id` RPC endpoint:
 1. **Poll with Receipt ID** to retrieve current payment status and details
-2. **Receive status updates** including current FSM state (`PENDING`, `SUBMITTED`, `COMPLETED`, `FAILED`)
-3. **Access transaction hash** when the payment reaches `SUBMITTED` or `COMPLETED` status
+2. **Receive status updates** including current FSM state (`PENDING`, `SUBMITTED`, `FAILED`)
+3. **Access transaction hash** when the payment reaches `SUBMITTED` status
 4. **Verify payment on-chain** using the provided transaction hash for full transparency
 
 This polling mechanism allows indexers to:
@@ -196,24 +166,17 @@ sequenceDiagram
     
     Note over I,B: Step 3: Asynchronous Payment Processing
     W->>W: Pick up payment job
-    W->>R: update_receipt_status(Receipt ID, SUBMITTED)
     W->>S: create_payment(recipient, amount)
     S->>B: Submit SAFE transaction
     B-->>S: Transaction hash
     S-->>W: Transaction hash
     W->>R: update_receipt_status(Receipt ID, SUBMITTED, tx_hash)
     
-    Note over B: Transaction confirmation...
-    
-    W->>B: Check transaction confirmation
-    B-->>W: Confirmed
-    W->>R: update_receipt_status(Receipt ID, COMPLETED)
-    
     Note over I,B: Step 4: Status Polling and Verification
     I->>D: get_receipt_by_id(Receipt ID)
     D->>R: get_receipt_by_id(Receipt ID)
     R-->>D: Receipt with status and tx_hash
-    D->>I: ReceiptStatusResponse(COMPLETED, tx_hash, timestamps)
+    D->>I: ReceiptStatusResponse(SUBMITTED, tx_hash, timestamps)
     
     I->>B: Verify transaction on-chain (optional)
     B-->>I: Transaction details confirmed
@@ -232,7 +195,7 @@ sequenceDiagram
 The existing indexing receipts table needs to be extended to support the new payment status tracking:
 
 **Required new columns:**
-- Payment status field: FSM state tracking (PENDING, SUBMITTED, COMPLETED, FAILED)
+- Payment status field: FSM state tracking (PENDING, SUBMITTED, FAILED)
 - Transaction hash field: On-chain transaction identifier when payment is submitted
 - Payment submitted timestamp: When the payment was submitted to blockchain
 - Payment completed timestamp: When the payment was confirmed on-chain
@@ -258,9 +221,8 @@ Add a new payment message type to the existing worker message system alongside c
 Create new payment handler following existing handler patterns:
 
 **Handler functionality:**
-- Update receipt status to SUBMITTED before attempting payment
-- Execute SAFE transaction through SAFE client
-- Handle successful payments by updating status to COMPLETED with transaction hash
+- Execute _Safe_ transaction through _Safe_ client
+- Handle successful payments by updating status to SUBMITTED with transaction hash
 - Implement retry logic for transient failures
 - Mark permanently failed payments as FAILED status
 - Ensure all status updates are atomic to prevent race conditions
@@ -291,28 +253,38 @@ Add new receipt status method to the existing GRPC service:
 
 **Response structure:**
 - Version field for API versioning  
-- Status enum field (PENDING, SUBMITTED, COMPLETED, FAILED)
-- Optional transaction hash field populated when status is SUBMITTED/COMPLETED
+- Status enum field (PENDING, SUBMITTED, FAILED)
+- Optional transaction hash field populated when status is SUBMITTED
 - Optional payment submitted timestamp field
 - Optional payment completed timestamp field  
 - Optional error message field populated when status is FAILED
 
-### SAFE Client Implementation
+### _Safe_ Client Implementation
 
-Create new SAFE client module with trait-based architecture:
+Create new _Safe_ client module using the dipper's EOA as a Safe Module approach:
 
-**SAFE Client interface requirements:**
+**_Safe_ Module Architecture:**
+The _Safe_ transaction implementation will use the dipper's EOA (Externally Owned Account) as a Safe Module, allowing direct execution via `execTransactionFromModule` contract calls rather than relying on the Safe Transaction Service. This approach provides several benefits:
+- Direct transaction execution without dependency on Safe Transaction Service
+- The Safe can be owned by multiple signers who can revoke the dipper EOA by disabling the module if needed
+- Enables testing on networks like Arbitrum Sepolia where the Safe Transaction Service is not available
+- Provides better control and flexibility over transaction execution
+
+**_Safe_ Client interface requirements:**
 - Submit payment method accepting recipient address and amount
 - Return transaction hash on successful submission
 - Proper error handling distinguishing retryable vs fatal errors
 - Async implementation compatible with existing worker system
+- Batch payment with tax burn in a single transaction (1% burn mechanism for protocol tax compliance)
+- Execute transactions via `execTransactionFromModule` calls
 
-**SAFE Client implementation needs:**
-- SAFE contract address configuration
+**_Safe_ Client implementation needs:**
+- _Safe_ contract address configuration
 - RPC client for blockchain interaction
-- Private key signer for transaction signing
+- Private key signer for transaction signing (dipper's EOA)
 - Gas estimation and management functionality
-- Transaction confirmation tracking
+- Multi-call transaction support to batch payment transfer with tax burn
+- Safe Module integration for direct transaction execution
 
 ### Configuration Changes
 
@@ -323,9 +295,9 @@ Create new SAFE client module with trait-based architecture:
 - TAP signer initialization code
 - TAP signer from indexer RPC server context
 
-#### Add SAFE Configuration
-**New SAFE client configuration requirements:**
-- SAFE contract address for payment operations
+#### Add _Safe_ Configuration
+**New _Safe_ client configuration requirements:**
+- _Safe_ contract address for payment operations
 - RPC endpoint URL for blockchain connectivity
 - Private key configuration for transaction signing
 - Gas limit and pricing parameters
@@ -343,7 +315,7 @@ Extend the existing receipt registry interface with new methods:
 - Get failed receipts: Query for receipts in FAILED state (admin functionality)
 
 **New data structures:**
-- Payment status enumeration with PENDING, SUBMITTED, COMPLETED, FAILED states
+- Payment status enumeration with PENDING, SUBMITTED, FAILED states
 - Receipt with status structure combining receipt data with payment status
 - Proper error handling for all registry operations
 
@@ -376,7 +348,7 @@ Remove TAP-related components:
 
 ### 3. Implementation Phases
 1. Database schema changes and new registry methods
-2. SAFE client implementation and worker handler
+2. _Safe_ client implementation and worker handler
 3. GRPC interface updates and polling endpoint
 4. Remove TAP components
 5. Integration and testing
@@ -418,9 +390,7 @@ Remove TAP-related components:
 ## Open Questions
 
 1. **Gas Fee Management**: How should gas fees be handled? Fixed allocation or dynamic estimation?
-2. **Transaction Batching**: Should multiple payments be batched into single SAFE transactions?
-3. **Confirmation Requirements**: How many confirmations should be required before marking payments as completed?
-4. **Error Recovery**: What should happen to receipts that fail repeatedly?
+2. **Error Recovery**: What should happen to receipts that fail repeatedly?
 
 ## Success Criteria
 
@@ -438,7 +408,6 @@ Remove TAP-related components:
 ### Transaction Security
 - All payment amounts and recipient addresses MUST be validated
 - Proper gas estimation and limits MUST be implemented
-- Transaction confirmation requirements MUST be enforced
 - Payment data MUST be validated against expected ranges and formats
 
 ### State Consistency
