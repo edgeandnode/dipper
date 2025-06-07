@@ -256,7 +256,6 @@ Add new receipt status method to the existing GRPC service:
 - Status enum field (PENDING, SUBMITTED, FAILED)
 - Optional transaction hash field populated when status is SUBMITTED
 - Optional payment submitted timestamp field
-- Optional payment completed timestamp field  
 - Optional error message field populated when status is FAILED
 
 ### _Safe_ Client Implementation
