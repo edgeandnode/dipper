@@ -284,6 +284,15 @@ The _Safe_ transaction implementation will use the dipper's EOA (Externally Owne
 - Multi-call transaction support to batch payment transfer with tax burn
 - Safe Module integration for direct transaction execution
 
+**Implementation Technology Stack:**
+- **Rust Component**: The _Safe_ client MUST be implemented as a native dipper Rust component, following existing dipper service architectural patterns
+- **Alloy Library Integration**: The implementation MUST use the `alloy` library for:
+  - Importing the Safe smart contract ABI definitions
+  - Blockchain client interactions and RPC communication
+  - Transaction construction and signing
+  - Contract method calls and event parsing
+- **Alloy Client Usage**: All blockchain interactions MUST utilize alloy's client infrastructure for consistent error handling and connection management
+
 ### Configuration Changes
 
 #### Remove TAP Configuration
