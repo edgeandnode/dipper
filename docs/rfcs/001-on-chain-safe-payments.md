@@ -198,7 +198,6 @@ The existing indexing receipts table needs to be extended to support the new pay
 - Payment status field: FSM state tracking (PENDING, SUBMITTED, FAILED)
 - Transaction hash field: On-chain transaction identifier when payment is submitted
 - Payment submitted timestamp: When the payment was submitted to blockchain
-- Payment completed timestamp: When the payment was confirmed on-chain
 - Payment error field: Error message for failed payments
 - Retry count field: Number of retry attempts for tracking
 
