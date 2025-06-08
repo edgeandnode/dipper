@@ -21,6 +21,7 @@ mod indexer_rpc_client;
 mod indexer_rpc_server;
 mod network;
 mod registry;
+mod safe_client;
 mod signing;
 mod worker;
 
