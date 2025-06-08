@@ -356,17 +356,13 @@ where
         };
 
         // Fee calculation:
-        // total = (epochs_elapsed * base_price_per_epoch) + (entity_count * price_per_entity)
+        // total = epochs_elapsed * (base_price_per_epoch + entity_count * price_per_entity)
         let fee = {
-            let mut total = U256::ZERO;
-            total = total.saturating_add(
-                U256::from(payment_epochs_elapsed)
-                    .saturating_mul(U256::from(agreement.voucher.metadata.base_price_per_epoch)),
-            );
-            total = total.saturating_add(
-                U256::from(entity_count)
-                    .saturating_mul(U256::from(agreement.voucher.metadata.price_per_entity)),
-            );
+            let mut total = U256::from(entity_count)
+                .saturating_mul(U256::from(agreement.voucher.metadata.price_per_entity));
+            total =
+                total.saturating_add(U256::from(agreement.voucher.metadata.base_price_per_epoch));
+            total = total.saturating_mul(U256::from(payment_epochs_elapsed));
             total
         };
 
