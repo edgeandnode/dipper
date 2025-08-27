@@ -35,7 +35,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 ## Python builder
 # Package the python code (sdist)
-FROM python:3.13.5-bookworm AS python-builder
+FROM python:3.13.7-bookworm AS python-builder
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -46,7 +46,7 @@ COPY ./ ./
 RUN uv build --sdist
 
 ## Final image
-FROM python:3.13.5-slim-bookworm
+FROM python:3.13.7-slim-bookworm
 
 # Set uv environment variables
 #  - Use the system python
