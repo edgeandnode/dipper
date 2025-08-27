@@ -7,7 +7,7 @@ use thegraph_core::IndexerId;
 use super::import_iisa_module;
 
 /// Import the `iisa.select_one` function.
-fn import_select_one_function(py: Python) -> PyResult<&Bound<PyAny>> {
+fn import_select_one_function(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static SELECT_ONE_FUNCTION: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
     SELECT_ONE_FUNCTION
         .get_or_try_init(py, || {
@@ -21,7 +21,7 @@ fn import_select_one_function(py: Python) -> PyResult<&Bound<PyAny>> {
 }
 
 /// Import the select_many function.
-fn import_select_many_function(py: Python) -> PyResult<&Bound<PyAny>> {
+fn import_select_many_function(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static SELECT_MANY_FUNCTION: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
     SELECT_MANY_FUNCTION
         .get_or_try_init(py, || {
