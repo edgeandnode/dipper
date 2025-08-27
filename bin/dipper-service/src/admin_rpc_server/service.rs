@@ -1,7 +1,7 @@
 use std::{future::Future, net::SocketAddr};
 
 use dipper_core::state::FromState;
-use jsonrpsee::server::Server;
+use jsonrpsee::server::{Server, ServerConfig};
 use tokio::sync::mpsc;
 
 use super::handlers::{IndexingAgreementsCtx, IndexingRequestsCtx, rpc_handlers};
@@ -53,10 +53,14 @@ where
         tracing::info!(listen_addr=%conf.listen_addr, "Starting admin RPC server");
 
         // Start the RPC server
-        let server = Server::builder()
+        let config = ServerConfig::builder()
             .http_only()
             .max_request_body_size(1024 * 1024) // 1 MB
             .set_tcp_no_delay(true)
+            .build();
+
+        let server = Server::builder()
+            .set_config(config)
             .build(conf.listen_addr)
             .await?;
 
