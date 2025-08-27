@@ -9,7 +9,7 @@ use pyo3::{
 };
 
 /// Import the Python `logging` module.
-fn import_logging(py: Python) -> PyResult<&Bound<PyModule>> {
+fn import_logging(py: Python<'_>) -> PyResult<&Bound<'_, PyModule>> {
     static MODULE: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
     MODULE
         .get_or_try_init(py, || py.import("logging").map(Bound::unbind))

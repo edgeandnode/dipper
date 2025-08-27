@@ -8,7 +8,7 @@ pub use select::{select_many, select_one};
 /// Import the `iisa` python module.
 ///
 /// Internally caches the module object to avoid repeated imports.
-fn import_iisa_module(py: Python) -> PyResult<&Bound<PyModule>> {
+fn import_iisa_module(py: Python<'_>) -> PyResult<&Bound<'_, PyModule>> {
     static IISA_MODULE: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
     IISA_MODULE
         .get_or_try_init(py, || py.import("iisa").map(Bound::unbind))
