@@ -8,7 +8,7 @@ dependencies = []
 [tool.uv]
 dev-dependencies = [
     "faker>=37,<37.9",
-    "find-libpython>=0.4,<0.5",
+    "find-libpython>=0.5,<0.6",
     "mypy>=1.11.2,<2.0",
     "pytest>=8.3.2,<9.0",
     "ruff>=0.11,<0.12",
