@@ -1,6 +1,5 @@
 ## Rust builder
-# Compile the Rust code and link against the uv installed libpython
-# The libpython3-dev package version must match the final image's python version
+# Compile the Rust code
 FROM rust:1.89.0-slim-bookworm AS rust-builder
 
 RUN --mount=type=cache,target=/var/cache/apt \
@@ -16,61 +15,28 @@ RUN --mount=type=cache,target=/var/cache/apt \
       protobuf-compiler \
   && rm -rf /var/lib/apt/lists/*
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
 WORKDIR /src
 COPY ./ ./
 
 # Set build environment variables
-# - Copy packages from the global cache into the site-packages directory
-ENV UV_LINK_MODE=copy
 # - Set the C/C++ compiler to clang
 ENV CC=clang CXX=clang++
 # - Set the Rust flags to use lld as the linker
 ENV RUSTFLAGS="-C link-arg=-fuse-ld=lld"
 
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv run --frozen cargo build --bin dipper-service --release
-
-## Python builder
-# Package the python code (sdist)
-FROM python:3.13.7-bookworm AS python-builder
-
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
-WORKDIR /src
-COPY ./ ./
-
-RUN uv build --sdist
+RUN cargo build --bin dipper-service --release
 
 ## Final image
-FROM python:3.13.7-slim-bookworm
+FROM debian:bookworm-slim
 
-# Set uv environment variables
-#  - Use the system python
-ENV UV_SYSTEM_PYTHON=1
-#  - Don't create a virtual environment (.venv) when syncing
-ENV UV_PROJECT_ENVIRONMENT=""
-#  - Copy packages from the global cache into the site-packages directory
-ENV UV_LINK_MODE=copy
-#  - Compile Python files to bytecode after installation
-ENV UV_COMPILE_BYTECODE=1
+RUN --mount=type=cache,target=/var/cache/apt \
+  apt-get update \
+  && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      libssl3 \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# Install python dependencies
-RUN --mount=from=ghcr.io/astral-sh/uv,source=/uv,target=/usr/local/bin/uv \
-    --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    --mount=type=bind,source=uv.lock,target=uv.lock \
-    uv sync --frozen --no-install-project --no-dev
-
-# Install the iisa package
-RUN --mount=from=ghcr.io/astral-sh/uv,source=/uv,target=/usr/local/bin/uv \
-    --mount=from=python-builder,source=/src/dist,target=/src/dist \
-    uv pip install --system /src/dist/*.tar.gz
 
 # Install the dipper-service binary
 COPY --from=rust-builder /src/target/release/dipper-service /usr/local/bin/dipper-service
