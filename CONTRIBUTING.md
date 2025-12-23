@@ -15,10 +15,6 @@ Before you can contribute to this project, you need to install and set up the fo
 - **Rust**: Install Rust through `rustup`, which you can get from the [official Rust website](https://rustup.rs/).
   After installation, you can verify it by running `cargo --version` in your terminal.
 
-- **uv**: Install Astral's `uv`, an extremely fast Python package and project manager. You can find the installation
-  instructions in the [official uv documentation](https://docs.astral.sh/uv/). After installation, you can verify it by
-  running `uv --version` in your terminal.
-
 - **Just**: Install `just`, a command runner that simplifies project workflows. You can find the installation
   instructions in the [official just documentation](https://github.com/casey/just). After installation, you can verify it by
   running `just --version` in your terminal.
@@ -89,42 +85,6 @@ To run the project **integration tests**, you can use the following command:
 just test-it
 ```
 
-### Python workflow
-
-#### Formatting
-
-To format the Python code using `ruff format`, you can use the following command:
-
-```shell
-just fmt-python
-```
-
-To check formatting using `ruff format`, you can use the following command:
-
-```shell
-just fmt-check-python
-```
-
-#### Linting
-
-To lint the Python code using `ruff` and `mypy`, you can use the following command:
-
-```shell
-just check-python
-```
-
-#### Testing
-
-> [!TIP]
-> Tests that require access to secrets should be run using the encrypted `.env` file.
-> Refer to the [CI Secrets](#running-the-tests) section for more information.
-
-To run the Python tests, you can use the following command:
-
-```shell
-just test-python
-```
-
 ### Git hooks
 
 This project uses [pre-commit](https://pre-commit.com/) to automatically run code formatting checks before commits are made. Git hooks help ensure code quality and consistency by automatically running the formatting tools whenever you commit changes.
@@ -180,7 +140,6 @@ pre-commit run --all-files --config .github/pre-commit-config.yaml
 
 # Run specific hook
 pre-commit run format --config .github/pre-commit-config.yaml
-pre-commit run format-py --config .github/pre-commit-config.yaml
 ```
 
 > [!TIP]

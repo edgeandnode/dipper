@@ -1,7 +1,7 @@
 use std::{env, path::PathBuf, sync::Arc};
 
 use async_signal::{Signal, Signals};
-use dipper_iisa as iisa;
+use dipper_iisa::{self as iisa};
 use futures_lite::StreamExt;
 use thegraph_core::alloy::signers::local::PrivateKeySigner;
 use tokio::task::JoinSet;
@@ -141,9 +141,9 @@ pub async fn main() -> anyhow::Result<()> {
         conf.indexer_rpc.allowlist.clone(),
     );
 
-    //- The IISA service
-    let (iisa_handle, iisa_service) = iisa::service::new();
-    tracing::info!("initialized IISA service");
+    //- The IISA HTTP client
+    let iisa_client = iisa::HttpIisaClient::new(conf.iisa.endpoint.to_string());
+    tracing::info!(endpoint=%conf.iisa.endpoint, "initialized IISA HTTP client");
 
     // Application services
 
@@ -157,7 +157,7 @@ pub async fn main() -> anyhow::Result<()> {
             registry: registry.clone(),
             network: network_provider.clone(),
             client: indexer_client,
-            iisa: iisa_handle.clone(),
+            iisa: iisa_client.clone(),
         };
         worker::service::new(ctx)
     };
@@ -209,9 +209,6 @@ pub async fn main() -> anyhow::Result<()> {
     let network_topology_task_handle = task_tree.spawn(network_topology_service);
     tracing::debug!(task_id=%network_topology_task_handle.id(), "Graph network topology service started");
 
-    let iisa_task_handle = task_tree.spawn_blocking(iisa_service);
-    tracing::debug!(task_id=%iisa_task_handle.id(), "IISA service started");
-
     let worker_task_handle = task_tree.spawn(worker_service);
     tracing::debug!(task_id=%worker_task_handle.id(), "Worker service started");
 
@@ -247,10 +244,6 @@ pub async fn main() -> anyhow::Result<()> {
         tracing::trace!("stopping Worker service");
         worker_handle.stop().await;
         tracing::trace!("stopped Worker service");
-
-        tracing::trace!("stopping IISA service");
-        iisa_handle.stop().await;
-        tracing::trace!("stopped IISA service");
 
         tracing::trace!("stopping Graph network service");
         network_epoch_handle.stop().await;

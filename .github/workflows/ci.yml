@@ -36,25 +36,8 @@ jobs:
         with:
           sweep-cache: true
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
-        with:
-          enable-cache: true
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Python and install dependencies
-        id: python
-        run: |
-          # Install Python dependencies
-          uv sync --frozen --no-install-project
-
-          # Set PYTHON_LIB_DIR output param to the directory containing the libpython shared library
-          echo "PYTHON_LIB_DIR=$(dirname `uv run --frozen find_libpython`)" >> $GITHUB_OUTPUT
-
       ## Check
       - run: cargo clippy -- -D warnings --force-warn deprecated --force-warn dead-code
-        env:
-            PYTHON_LIB_DIR: ${{ steps.python.outputs.PYTHON_LIB_DIR }}
 
       ## Test
       # Install sops (needed for decrypting tests .env file)
@@ -69,10 +52,9 @@ jobs:
         uses: LNSD/sops-exec-action@6da1fbca63459d9796097496d5f5e6233555b31a # v1
         env:
           SOPS_AGE_KEY: ${{ secrets.IT_TESTS_AGE_KEY }}
-          PYTHON_LIB_DIR: ${{ steps.python.outputs.PYTHON_LIB_DIR }}
         with:
           env_file: .env
-          run: uv run --frozen cargo test --all-features 'tests::' -- --skip 'tests::it_'
+          run: cargo test --all-features 'tests::' -- --skip 'tests::it_'
 
       - name: Install integration tests dependencies
         run: |
@@ -86,19 +68,17 @@ jobs:
         uses: LNSD/sops-exec-action@6da1fbca63459d9796097496d5f5e6233555b31a # v1
         env:
           SOPS_AGE_KEY: ${{ secrets.IT_TESTS_AGE_KEY }}
-          PYTHON_LIB_DIR: ${{ steps.python.outputs.PYTHON_LIB_DIR }}
         with:
           env_file: .env
-          run: uv run --frozen cargo test --all-features 'tests::it_'
+          run: cargo test --all-features 'tests::it_'
 
       - name: Integration tests (public api)
         uses: LNSD/sops-exec-action@6da1fbca63459d9796097496d5f5e6233555b31a # v1
         env:
           SOPS_AGE_KEY: ${{ secrets.IT_TESTS_AGE_KEY }}
-          PYTHON_LIB_DIR: ${{ steps.python.outputs.PYTHON_LIB_DIR }}
         with:
           env_file: .env
-          run: uv run --frozen cargo test --all-features --test '*'
+          run: cargo test --all-features --test '*'
 
   format-rust:
     runs-on: ubuntu-latest
@@ -113,53 +93,3 @@ jobs:
           cache: false
 
       - run: cargo +nightly fmt --all -- --check
-
-  test-python:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
-
-    - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
-      with:
-        enable-cache: true
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Set up Python and install dependencies
-      run: uv sync --frozen --dev
-
-    ## Check
-    - name: Check Python code (ruff)
-      run: uv run --frozen ruff check
-
-    - name: Run mypy static type checker
-      run: uv run --frozen mypy
-
-    ## Test
-    # Install sops (needed for decrypting tests .env file)
-    - name: Setup sops
-      uses: nhedger/setup-sops@187c90dbb4e28c3225263886266a5b92baa7e5a1 # v2
-
-    # Install age (needed for decrypting tests .env file)
-    - name: Setup age
-      uses: alessiodionisi/setup-age-action@82b9aea163ade7fe23441552a514cf666b214077 # v1.3.0
-
-    - name: Run Python tests
-      uses: LNSD/sops-exec-action@6da1fbca63459d9796097496d5f5e6233555b31a # v1
-      env:
-        SOPS_AGE_KEY: ${{ secrets.IT_TESTS_AGE_KEY }}
-      with:
-        env_file: .env
-        run: uv run --frozen pytest -v
-
-  format-python:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
-
-    - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
-      with:
-        enable-cache: true
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Check Python code formatting (ruff)
-      run: uv run --frozen ruff format --check

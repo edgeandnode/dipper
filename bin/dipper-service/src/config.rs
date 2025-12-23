@@ -57,6 +57,17 @@ pub struct Config {
     pub signer: SignerConfig,
     /// The TAP signer configuration
     pub tap_signer: TapSignerConfig,
+    /// The IISA (Indexing Indexer Selection Algorithm) service configuration
+    pub iisa: IisaConfig,
+}
+
+/// The IISA (Indexing Indexer Selection Algorithm) service configuration
+#[serde_as]
+#[derive(Debug, serde::Deserialize)]
+pub struct IisaConfig {
+    /// The IISA service endpoint URL (e.g., "http://iisa-service:8080")
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub endpoint: Url,
 }
 
 #[serde_as]
