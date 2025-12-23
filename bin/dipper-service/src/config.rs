@@ -58,8 +58,7 @@ pub struct Config {
     /// The TAP signer configuration
     pub tap_signer: TapSignerConfig,
     /// The IISA (Indexer Selection Algorithm) service configuration
-    #[serde(default)]
-    pub iisa: Option<IisaConfig>,
+    pub iisa: IisaConfig,
 }
 
 /// The IISA (Indexer Selection Algorithm) service configuration
