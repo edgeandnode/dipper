@@ -93,12 +93,10 @@ impl HttpIisaClient {
     pub async fn health_check(&self) -> Result<bool, SelectionError> {
         let url = format!("{}health", self.endpoint);
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| SelectionError::Error(anyhow::anyhow!("Health check failed: {}", e)))?;
+        let response =
+            self.client.get(&url).send().await.map_err(|e| {
+                SelectionError::Error(anyhow::anyhow!("Health check failed: {}", e))
+            })?;
 
         Ok(response.status().is_success())
     }
@@ -149,10 +147,9 @@ impl CandidateSelection for HttpIisaClient {
             return Err(SelectionError::IisaServiceUnavailable);
         }
 
-        let result: SingleSelectionResponse = response
-            .json()
-            .await
-            .map_err(|e| SelectionError::Error(anyhow::anyhow!("Failed to parse response: {}", e)))?;
+        let result: SingleSelectionResponse = response.json().await.map_err(|e| {
+            SelectionError::Error(anyhow::anyhow!("Failed to parse response: {}", e))
+        })?;
 
         // Find the selected indexer in the original candidates list
         if let Some(id_str) = result.indexer_id {
@@ -202,10 +199,9 @@ impl CandidateSelection for HttpIisaClient {
             return Err(SelectionError::IisaServiceUnavailable);
         }
 
-        let result: MultiSelectionResponse = response
-            .json()
-            .await
-            .map_err(|e| SelectionError::Error(anyhow::anyhow!("Failed to parse response: {}", e)))?;
+        let result: MultiSelectionResponse = response.json().await.map_err(|e| {
+            SelectionError::Error(anyhow::anyhow!("Failed to parse response: {}", e))
+        })?;
 
         // Find selected indexers in the original candidates list
         let mut selected = Vec::with_capacity(result.indexer_ids.len());
