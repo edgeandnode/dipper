@@ -57,11 +57,11 @@ pub struct Config {
     pub signer: SignerConfig,
     /// The TAP signer configuration
     pub tap_signer: TapSignerConfig,
-    /// The IISA (Indexer Selection Algorithm) service configuration
+    /// The IISA (Indexing Indexer Selection Algorithm) service configuration
     pub iisa: IisaConfig,
 }
 
-/// The IISA (Indexer Selection Algorithm) service configuration
+/// The IISA (Indexing Indexer Selection Algorithm) service configuration
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
 pub struct IisaConfig {
