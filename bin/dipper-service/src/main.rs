@@ -1,9 +1,10 @@
 use std::{env, path::PathBuf, sync::Arc};
 
 use async_signal::{Signal, Signals};
-use dipper_iisa as iisa;
+use async_trait::async_trait;
+use dipper_iisa::{self as iisa, CandidateSelection, Indexer, SelectionError};
 use futures_lite::StreamExt;
-use thegraph_core::alloy::signers::local::PrivateKeySigner;
+use thegraph_core::{DeploymentId, alloy::signers::local::PrivateKeySigner};
 use tokio::task::JoinSet;
 use tracing_subscriber::EnvFilter;
 
@@ -23,6 +24,54 @@ mod network;
 mod registry;
 mod signing;
 mod worker;
+
+/// Wrapper for IISA service that can use either embedded Python or HTTP client.
+#[derive(Clone)]
+enum IisaService {
+    /// Embedded Python IISA service
+    Embedded(iisa::service::Handle),
+    /// HTTP client to containerized IISA service
+    Http(iisa::HttpIisaClient),
+}
+
+impl IisaService {
+    /// Stop the service (only relevant for embedded service).
+    async fn stop(&self) {
+        if let IisaService::Embedded(handle) = self {
+            handle.stop().await;
+        }
+    }
+}
+
+#[async_trait]
+impl CandidateSelection for IisaService {
+    async fn select_one(
+        &self,
+        deployment_id: DeploymentId,
+        candidates: Vec<Indexer>,
+    ) -> Result<Option<Indexer>, SelectionError> {
+        match self {
+            IisaService::Embedded(handle) => handle.select_one(deployment_id, candidates).await,
+            IisaService::Http(client) => client.select_one(deployment_id, candidates).await,
+        }
+    }
+
+    async fn select(
+        &self,
+        deployment_id: DeploymentId,
+        candidates: Vec<Indexer>,
+        num_candidates: usize,
+    ) -> Result<Vec<Indexer>, SelectionError> {
+        match self {
+            IisaService::Embedded(handle) => {
+                handle.select(deployment_id, candidates, num_candidates).await
+            }
+            IisaService::Http(client) => {
+                client.select(deployment_id, candidates, num_candidates).await
+            }
+        }
+    }
+}
 
 #[global_allocator]
 static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
@@ -142,7 +191,24 @@ pub async fn main() -> anyhow::Result<()> {
     );
 
     //- The IISA service
-    let (iisa_handle, iisa_service) = iisa::service::new();
+    // Use HTTP client if configured, otherwise fall back to embedded Python service
+    let (iisa_handle, iisa_service_task): (
+        IisaService,
+        Option<Box<dyn FnOnce() -> anyhow::Result<()> + Send>>,
+    ) = if let Some(iisa_config) = &conf.iisa {
+        // Use HTTP client for containerized IISA service
+        let client = iisa::HttpIisaClient::new(iisa_config.endpoint.to_string());
+        tracing::info!(endpoint=%iisa_config.endpoint, "using HTTP IISA client");
+        (IisaService::Http(client), None)
+    } else {
+        // Use embedded Python IISA service
+        let (handle, service) = iisa::service::new();
+        tracing::info!("using embedded IISA service");
+        (
+            IisaService::Embedded(handle),
+            Some(Box::new(service) as Box<dyn FnOnce() -> anyhow::Result<()> + Send>),
+        )
+    };
     tracing::info!("initialized IISA service");
 
     // Application services
@@ -209,8 +275,11 @@ pub async fn main() -> anyhow::Result<()> {
     let network_topology_task_handle = task_tree.spawn(network_topology_service);
     tracing::debug!(task_id=%network_topology_task_handle.id(), "Graph network topology service started");
 
-    let iisa_task_handle = task_tree.spawn_blocking(iisa_service);
-    tracing::debug!(task_id=%iisa_task_handle.id(), "IISA service started");
+    // Only spawn IISA task if using embedded Python service
+    if let Some(iisa_task) = iisa_service_task {
+        let iisa_task_handle = task_tree.spawn_blocking(iisa_task);
+        tracing::debug!(task_id=%iisa_task_handle.id(), "IISA service started");
+    }
 
     let worker_task_handle = task_tree.spawn(worker_service);
     tracing::debug!(task_id=%worker_task_handle.id(), "Worker service started");

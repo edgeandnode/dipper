@@ -9,6 +9,9 @@ async-trait.workspace = true
 indoc = "2.0.5"
 log = "0.4.22"
 pyo3 = "0.25.0"
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 thegraph-core.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
