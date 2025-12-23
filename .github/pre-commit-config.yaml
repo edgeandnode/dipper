@@ -11,11 +11,3 @@ repos:
     stages: [pre-commit, pre-merge-commit, pre-push, manual]
     pass_filenames: false
     require_serial: true
-  - id: format-py
-    name: Format Python code
-    language: system
-    entry: just fmt-py
-    types_or: [python]
-    stages: [pre-commit, pre-merge-commit, pre-push, manual]
-    pass_filenames: false
-    require_serial: true
