@@ -313,10 +313,9 @@ mod tests {
         let indexer_id: IndexerId = "0x1234567890123456789012345678901234567890"
             .parse()
             .unwrap();
-        let deployment_id: DeploymentId =
-            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
-                .parse()
-                .unwrap();
+        let deployment_id: DeploymentId = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+            .parse()
+            .unwrap();
 
         let mut pending = HashMap::new();
         pending.insert(indexer_id, vec![deployment_id]);
