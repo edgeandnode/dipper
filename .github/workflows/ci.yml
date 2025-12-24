@@ -60,7 +60,7 @@ jobs:
           sweep-cache: true
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@50cee16bd6b97b2579572f83cfa1c0a721b1e336 # v2
         with:
           tool: cargo-nextest
 
