@@ -1,0 +1,12 @@
+# Nextest configuration
+# https://nexte.st/docs/configuration/
+
+[profile.default]
+# Default: no retries for most tests
+retries = 0
+
+# Retry tests that depend on external APIs (Graph Network gateway)
+# These can fail due to indexer availability or block sync lag
+[[profile.default.overrides]]
+filter = 'test(~it_subgraph_paginated_client) | test(~it_fetch_subgraph_topology_data) | test(~it_fetch_subgraph_epoch_data)'
+retries = 2
