@@ -16,7 +16,9 @@ env:
   RUSTFLAGS: '-C link-arg=-fuse-ld=lld'
 
 jobs:
-  test-rust:
+  # Clippy runs in parallel with tests to reduce wall-clock time
+  # NOTE: For faster builds, ubuntu-latest-4-cores or ubuntu-latest-8-cores are available
+  clippy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
@@ -36,10 +38,32 @@ jobs:
         with:
           sweep-cache: true
 
-      ## Check
       - run: cargo clippy -- -D warnings --force-warn deprecated --force-warn dead-code
 
-      ## Test
+  test-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
+
+      - name: Prepare build env
+        run: sudo apt-get install -y lld protobuf-compiler
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@1780873c7b576612439a134613cc4cc74ce5538c # v1
+        with:
+          cache: false
+          rustflags: ''
+
+      - name: Cache Rust build files
+        uses: leafwing-studios/cargo-cache@43ec9a5bad6e7f174e7fc65dcf533de75ff65881 # v2
+        with:
+          sweep-cache: true
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@50cee16bd6b97b2579572f83cfa1c0a721b1e336 # v2
+        with:
+          tool: cargo-nextest
+
       # Install sops (needed for decrypting tests .env file)
       - name: Setup sops
         uses: nhedger/setup-sops@187c90dbb4e28c3225263886266a5b92baa7e5a1 # v2
@@ -54,7 +78,7 @@ jobs:
           SOPS_AGE_KEY: ${{ secrets.IT_TESTS_AGE_KEY }}
         with:
           env_file: .env
-          run: cargo test --all-features 'tests::' -- --skip 'tests::it_'
+          run: cargo nextest run --all-features -E 'test(~tests::) - test(~tests::it_)'
 
       - name: Install integration tests dependencies
         run: |
@@ -70,7 +94,7 @@ jobs:
           SOPS_AGE_KEY: ${{ secrets.IT_TESTS_AGE_KEY }}
         with:
           env_file: .env
-          run: cargo test --all-features 'tests::it_'
+          run: cargo nextest run --all-features -E 'test(~tests::it_)'
 
       - name: Integration tests (public api)
         uses: LNSD/sops-exec-action@6da1fbca63459d9796097496d5f5e6233555b31a # v1
@@ -78,7 +102,7 @@ jobs:
           SOPS_AGE_KEY: ${{ secrets.IT_TESTS_AGE_KEY }}
         with:
           env_file: .env
-          run: cargo test --all-features --test '*'
+          run: cargo nextest run --all-features -E 'kind(test)'
 
   format-rust:
     runs-on: ubuntu-latest
