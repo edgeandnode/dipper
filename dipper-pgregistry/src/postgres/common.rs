@@ -2,7 +2,7 @@ use sqlx::{
     Postgres,
     encode::IsNull,
     error::BoxDynError,
-    postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef},
+    postgres::{PgArgumentBuffer, PgHasArrayType, PgTypeInfo, PgValueRef},
 };
 use thegraph_core::{
     AllocationId, DeploymentId, IndexerId, ProofOfIndexing,
@@ -168,6 +168,13 @@ impl<'r> sqlx::Decode<'r, Postgres> for PgIndexerId {
     fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
         let PgAddress(address) = sqlx::Decode::<Postgres>::decode(value)?;
         Ok(Self(IndexerId::new(address)))
+    }
+}
+
+impl PgHasArrayType for PgIndexerId {
+    fn array_type_info() -> PgTypeInfo {
+        // bytea[] type for arrays of 20-byte addresses
+        PgTypeInfo::with_name("_bytea")
     }
 }
 

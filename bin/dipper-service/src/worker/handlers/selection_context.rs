@@ -33,24 +33,22 @@ where
         .map(|a| a.indexer.id)
         .collect::<Vec<_>>();
 
-    // Build pending agreements map for each candidate
+    // Build pending agreements map for all candidates in a single batch query
     // This tells IISA what other work each candidate is currently handling
+    let candidate_ids: Vec<IndexerId> = candidates.iter().map(|c| c.id).collect();
+
+    let all_agreements = registry
+        .get_active_indexing_agreements_by_indexer_ids(&candidate_ids)
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
+
+    // Group agreements by indexer ID
     let mut pending_agreements: HashMap<IndexerId, Vec<DeploymentId>> = HashMap::new();
-    for candidate in candidates {
-        let agreements = registry
-            .get_indexing_agreements_by_indexer_id(&candidate.id)
-            .await
-            .map_err(|err| JobError::Fatal(err.into()))?;
-
-        let deployment_ids: Vec<DeploymentId> = agreements
-            .into_iter()
-            .filter(|a| is_active_agreement(&a.status))
-            .map(|a| a.voucher.metadata.subgraph_deployment_id)
-            .collect();
-
-        if !deployment_ids.is_empty() {
-            pending_agreements.insert(candidate.id, deployment_ids);
-        }
+    for agreement in all_agreements {
+        pending_agreements
+            .entry(agreement.indexer.id)
+            .or_default()
+            .push(agreement.voucher.metadata.subgraph_deployment_id);
     }
 
     Ok(SelectionContext {
