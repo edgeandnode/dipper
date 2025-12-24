@@ -6,6 +6,7 @@ use jsonrpsee::core::Serialize;
 use serde::Deserialize;
 use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 
+use super::selection_context::gather_selection_context;
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
     network::NetworkProvider,
@@ -97,9 +98,12 @@ where
         return Ok(());
     }
 
+    // Gather load balancing context for IISA
+    let context = gather_selection_context(&ctx.registry, deployment_id, &indexers).await?;
+
     let Some(candidate) = ctx
         .iisa
-        .select_one(*deployment_id, indexers)
+        .select_one(*deployment_id, indexers, &context)
         .await
         .map_err(|err| JobError::Fatal(err.into()))?
     else {

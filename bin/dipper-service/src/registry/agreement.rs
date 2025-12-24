@@ -44,6 +44,15 @@ pub trait AgreementRegistry {
         indexer_id: &IndexerId,
     ) -> RegistryResult<Vec<IndexingAgreement>>;
 
+    /// Get all active agreements for multiple indexers in a single query.
+    ///
+    /// Returns agreements that are in `Created` or `Accepted` status for any of the
+    /// provided indexer IDs. This is more efficient than querying each indexer separately.
+    async fn get_active_indexing_agreements_by_indexer_ids(
+        &self,
+        indexer_ids: &[IndexerId],
+    ) -> RegistryResult<Vec<IndexingAgreement>>;
+
     /// Get all agreements by associated indexing request ID.
     async fn get_indexing_agreements_by_indexing_request_id(
         &self,

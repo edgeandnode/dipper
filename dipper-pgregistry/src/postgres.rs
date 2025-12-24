@@ -358,6 +358,47 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
+    /// Get all active agreements for multiple indexers in a single query.
+    ///
+    /// Returns agreements that are in `CREATED` or `ACCEPTED` status for any of the
+    /// provided indexer IDs. This is more efficient than querying each indexer separately.
+    pub async fn get_active_indexing_agreements_by_indexer_ids(
+        &self,
+        indexer_ids: &[IndexerId],
+    ) -> Result<Vec<IndexingAgreement>, Error> {
+        if indexer_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let pg_indexer_ids: Vec<PgIndexerId> =
+            indexer_ids.iter().map(|id| PgIndexerId(*id)).collect();
+
+        sqlx::query_as(
+            r#"
+            SELECT
+                id,
+                created_at,
+                updated_at,
+                status,
+                accepted_at_epoch,
+                indexing_request_id,
+                deployment_id,
+                accepted_at_epoch,
+                indexer_id,
+                indexer_url,
+                voucher
+            FROM dipper_reg_indexing_agreements
+            WHERE indexer_id = ANY($1) AND status IN ($2, $3)
+            "#,
+        )
+        .bind(&pg_indexer_ids[..])
+        .bind(IndexingAgreementStatus::Created)
+        .bind(IndexingAgreementStatus::Accepted)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
     pub async fn get_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,

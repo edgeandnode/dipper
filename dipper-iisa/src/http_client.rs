@@ -16,7 +16,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use thegraph_core::{DeploymentId, IndexerId};
 
-use crate::api::{CandidateSelection, Indexer, SelectionError};
+use crate::api::{CandidateSelection, Indexer, SelectionContext, SelectionError};
 
 /// HTTP client for the IISA container service.
 #[derive(Clone)]
@@ -108,6 +108,47 @@ impl HttpIisaClient {
             url: indexer.url.to_string(),
         }
     }
+
+    /// Format existing indexers from context for the HTTP request.
+    ///
+    /// Returns `None` if the list is empty to skip serialization.
+    fn format_existing_indexers(context: &SelectionContext) -> Option<Vec<String>> {
+        if context.existing_indexers.is_empty() {
+            None
+        } else {
+            Some(
+                context
+                    .existing_indexers
+                    .iter()
+                    .map(|id| format!("{:#x}", id))
+                    .collect(),
+            )
+        }
+    }
+
+    /// Format pending agreements from context for the HTTP request.
+    ///
+    /// Returns `None` if the map is empty to skip serialization.
+    fn format_pending_agreements(
+        context: &SelectionContext,
+    ) -> Option<HashMap<String, Vec<String>>> {
+        if context.pending_agreements.is_empty() {
+            None
+        } else {
+            Some(
+                context
+                    .pending_agreements
+                    .iter()
+                    .map(|(indexer_id, deployment_ids)| {
+                        (
+                            format!("{:#x}", indexer_id),
+                            deployment_ids.iter().map(|d| d.to_string()).collect(),
+                        )
+                    })
+                    .collect(),
+            )
+        }
+    }
 }
 
 #[async_trait]
@@ -116,6 +157,7 @@ impl CandidateSelection for HttpIisaClient {
         &self,
         deployment_id: DeploymentId,
         candidates: Vec<Indexer>,
+        context: &SelectionContext,
     ) -> Result<Option<Indexer>, SelectionError> {
         if candidates.is_empty() {
             return Ok(None);
@@ -124,8 +166,8 @@ impl CandidateSelection for HttpIisaClient {
         let request = SelectionRequest {
             deployment_id: deployment_id.to_string(),
             candidates: Some(candidates.iter().map(Self::to_candidate).collect()),
-            existing_indexers: None,
-            pending_agreements: None,
+            existing_indexers: Self::format_existing_indexers(context),
+            pending_agreements: Self::format_pending_agreements(context),
             num_candidates: None,
         };
 
@@ -168,6 +210,7 @@ impl CandidateSelection for HttpIisaClient {
         deployment_id: DeploymentId,
         candidates: Vec<Indexer>,
         num_candidates: usize,
+        context: &SelectionContext,
     ) -> Result<Vec<Indexer>, SelectionError> {
         if candidates.is_empty() || num_candidates == 0 {
             return Ok(Vec::new());
@@ -176,8 +219,8 @@ impl CandidateSelection for HttpIisaClient {
         let request = SelectionRequest {
             deployment_id: deployment_id.to_string(),
             candidates: Some(candidates.iter().map(Self::to_candidate).collect()),
-            existing_indexers: None,
-            pending_agreements: None,
+            existing_indexers: Self::format_existing_indexers(context),
+            pending_agreements: Self::format_pending_agreements(context),
             num_candidates: Some(num_candidates),
         };
 
@@ -234,5 +277,65 @@ mod tests {
 
         let client = HttpIisaClient::new("http://localhost:8080/".to_string());
         assert_eq!(client.endpoint, "http://localhost:8080/");
+    }
+
+    #[test]
+    fn test_format_existing_indexers_empty() {
+        let context = SelectionContext::default();
+        assert_eq!(HttpIisaClient::format_existing_indexers(&context), None);
+    }
+
+    #[test]
+    fn test_format_existing_indexers_with_data() {
+        let indexer_id: IndexerId = "0x1234567890123456789012345678901234567890"
+            .parse()
+            .unwrap();
+        let context = SelectionContext {
+            existing_indexers: vec![indexer_id],
+            pending_agreements: HashMap::new(),
+        };
+
+        let result = HttpIisaClient::format_existing_indexers(&context);
+        assert!(result.is_some());
+        let indexers = result.unwrap();
+        assert_eq!(indexers.len(), 1);
+        assert_eq!(indexers[0], "0x1234567890123456789012345678901234567890");
+    }
+
+    #[test]
+    fn test_format_pending_agreements_empty() {
+        let context = SelectionContext::default();
+        assert_eq!(HttpIisaClient::format_pending_agreements(&context), None);
+    }
+
+    #[test]
+    fn test_format_pending_agreements_with_data() {
+        let indexer_id: IndexerId = "0x1234567890123456789012345678901234567890"
+            .parse()
+            .unwrap();
+        let deployment_id: DeploymentId = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+            .parse()
+            .unwrap();
+
+        let mut pending = HashMap::new();
+        pending.insert(indexer_id, vec![deployment_id]);
+
+        let context = SelectionContext {
+            existing_indexers: vec![],
+            pending_agreements: pending,
+        };
+
+        let result = HttpIisaClient::format_pending_agreements(&context);
+        assert!(result.is_some());
+        let agreements = result.unwrap();
+        assert_eq!(agreements.len(), 1);
+        assert!(agreements.contains_key("0x1234567890123456789012345678901234567890"));
+    }
+
+    #[test]
+    fn test_selection_context_default() {
+        let context = SelectionContext::default();
+        assert!(context.existing_indexers.is_empty());
+        assert!(context.pending_agreements.is_empty());
     }
 }

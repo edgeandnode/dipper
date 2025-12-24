@@ -4,6 +4,7 @@ use dipper_core::ids::IndexingRequestId;
 use dipper_iisa::{CandidateSelection, Indexer as IndexerCandidate};
 use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 
+use super::selection_context::gather_selection_context;
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
     network::NetworkProvider,
@@ -57,7 +58,7 @@ where
     W: WorkerQueue,
     I: CandidateSelection,
 {
-    // Get the indexers that are not indexing the deployment amd treat it as the raw candidate list
+    // Get the indexers that are not indexing the deployment and treat it as the raw candidate list
     // and pass it to the IISA to get the final list of candidates
     let indexers = ctx
         .network
@@ -76,9 +77,12 @@ where
         return Ok(());
     }
 
+    // Gather load balancing context for IISA
+    let context = gather_selection_context(&ctx.registry, deployment_id, &indexers).await?;
+
     let candidates = ctx
         .iisa
-        .select(*deployment_id, indexers, *num_candidates)
+        .select(*deployment_id, indexers, *num_candidates, &context)
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
     if candidates.is_empty() {

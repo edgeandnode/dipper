@@ -146,6 +146,20 @@ impl AgreementRegistry for RegistryProvider {
             .collect())
     }
 
+    async fn get_active_indexing_agreements_by_indexer_ids(
+        &self,
+        indexer_ids: &[IndexerId],
+    ) -> RegistryResult<Vec<IndexingAgreement>> {
+        Ok(self
+            .inner
+            .get_active_indexing_agreements_by_indexer_ids(indexer_ids)
+            .await?
+            .into_iter()
+            .map(IndexingAgreement::try_from)
+            .filter_map(Result::ok)
+            .collect())
+    }
+
     async fn get_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
