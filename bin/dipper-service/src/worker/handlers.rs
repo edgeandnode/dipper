@@ -2,6 +2,7 @@ mod find_indexer_for_indexing_request;
 mod process_indexing_agreement_cancellation;
 mod process_indexing_request_cancellation;
 mod process_new_indexing_request;
+mod selection_context;
 mod send_indexing_agreement_cancellation;
 mod send_indexing_agreement_proposal;
 
