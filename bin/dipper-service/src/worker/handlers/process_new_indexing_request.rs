@@ -1,15 +1,18 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use dipper_core::ids::IndexingRequestId;
-use dipper_iisa::{CandidateSelection, Indexer as IndexerCandidate};
-use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
+use dipper_iisa::{CandidateSelection, Indexer as IndexerCandidate, SelectionContext};
+use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::ChainId};
 
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
     network::NetworkProvider,
     registry::{
-        AgreementRegistry, IndexingAgreementVoucher, IndexingAgreementVoucherMetadata,
-        IndexingRequestRegistry,
+        AgreementRegistry, IndexingAgreementStatus, IndexingAgreementVoucher,
+        IndexingAgreementVoucherMetadata, IndexingRequestRegistry,
     },
     signing::eip712::PrivateKeyEip712Signer,
     worker::{
@@ -57,7 +60,7 @@ where
     W: WorkerQueue,
     I: CandidateSelection,
 {
-    // Get the indexers that are not indexing the deployment amd treat it as the raw candidate list
+    // Get the indexers that are not indexing the deployment and treat it as the raw candidate list
     // and pass it to the IISA to get the final list of candidates
     let indexers = ctx
         .network
@@ -76,9 +79,12 @@ where
         return Ok(());
     }
 
+    // Gather load balancing context for IISA
+    let context = gather_selection_context(&ctx.registry, deployment_id, &indexers).await?;
+
     let candidates = ctx
         .iisa
-        .select(*deployment_id, indexers, *num_candidates)
+        .select(*deployment_id, indexers, *num_candidates, &context)
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
     if candidates.is_empty() {
@@ -158,4 +164,64 @@ where
     }
 
     Ok(())
+}
+
+/// Gather load balancing context for IISA selection.
+///
+/// This function queries the registry to build context about:
+/// - Which indexers already have active agreements for this deployment
+/// - What other deployments each candidate indexer is currently working on
+async fn gather_selection_context<R>(
+    registry: &R,
+    deployment_id: &DeploymentId,
+    candidates: &[IndexerCandidate],
+) -> JobResult<SelectionContext>
+where
+    R: AgreementRegistry,
+{
+    // Get indexers that already have active agreements for this deployment
+    let existing_indexers = registry
+        .get_indexing_agreements_by_deployment_id(deployment_id)
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?
+        .into_iter()
+        .filter(|a| is_active_agreement(&a.status))
+        .map(|a| a.indexer.id)
+        .collect::<Vec<_>>();
+
+    // Build pending agreements map for each candidate
+    // This tells IISA what other work each candidate is currently handling
+    let mut pending_agreements: HashMap<IndexerId, Vec<DeploymentId>> = HashMap::new();
+    for candidate in candidates {
+        let agreements = registry
+            .get_indexing_agreements_by_indexer_id(&candidate.id)
+            .await
+            .map_err(|err| JobError::Fatal(err.into()))?;
+
+        let deployment_ids: Vec<DeploymentId> = agreements
+            .into_iter()
+            .filter(|a| is_active_agreement(&a.status))
+            .map(|a| a.voucher.metadata.subgraph_deployment_id)
+            .collect();
+
+        if !deployment_ids.is_empty() {
+            pending_agreements.insert(candidate.id, deployment_ids);
+        }
+    }
+
+    Ok(SelectionContext {
+        existing_indexers,
+        pending_agreements,
+    })
+}
+
+/// Check if an agreement status represents an active agreement.
+///
+/// Active agreements are those that are either pending acceptance (Created)
+/// or currently in effect (Accepted).
+fn is_active_agreement(status: &IndexingAgreementStatus) -> bool {
+    matches!(
+        status,
+        IndexingAgreementStatus::Created | IndexingAgreementStatus::Accepted { .. }
+    )
 }
