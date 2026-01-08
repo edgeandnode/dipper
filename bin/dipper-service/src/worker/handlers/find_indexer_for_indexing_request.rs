@@ -103,22 +103,27 @@ where
     // Gather load balancing context for IISA
     let context = gather_selection_context(&ctx.registry, deployment_id, &indexers).await?;
 
+    // Check if we're in fallback-eligible state (job has been retrying for 6+ hours)
+    // This allows us to avoid cloning indexers on the happy path
+    let fallback_eligible = job_meta.age_exceeds(IISA_FALLBACK_THRESHOLD);
+
     // Try IISA selection, with random fallback if IISA has been unavailable for too long
-    let candidate = match ctx
-        .iisa
-        .select_one(*deployment_id, indexers.clone(), &context)
-        .await
-    {
-        Ok(Some(candidate)) => candidate,
-        Ok(None) => {
-            tracing::warn!(
-                indexing_request_id=%indexing_request_id,
-                "No candidates selected to fulfill the indexing request"
-            );
-            return Ok(());
-        }
-        Err(SelectionError::IisaServiceUnavailable) => {
-            if job_meta.age_exceeds(IISA_FALLBACK_THRESHOLD) {
+    let candidate = if fallback_eligible {
+        // Clone indexers only when fallback might be needed
+        match ctx
+            .iisa
+            .select_one(*deployment_id, indexers.clone(), &context)
+            .await
+        {
+            Ok(Some(candidate)) => candidate,
+            Ok(None) => {
+                tracing::warn!(
+                    indexing_request_id=%indexing_request_id,
+                    "No candidates selected to fulfill the indexing request"
+                );
+                return Ok(());
+            }
+            Err(SelectionError::IisaServiceUnavailable) => {
                 // IISA unavailable for 6+ hours, fall back to random selection
                 tracing::warn!(
                     indexing_request_id=%indexing_request_id,
@@ -135,15 +140,36 @@ where
                         return Ok(());
                     }
                 }
-            } else {
-                tracing::warn!("IISA service unavailable, will retry");
+            }
+            Err(SelectionError::Error(e)) => return Err(JobError::Fatal(e)),
+        }
+    } else {
+        // Normal path: no clone needed since we won't fall back to random
+        match ctx
+            .iisa
+            .select_one(*deployment_id, indexers, &context)
+            .await
+        {
+            Ok(Some(candidate)) => candidate,
+            Ok(None) => {
+                tracing::warn!(
+                    indexing_request_id=%indexing_request_id,
+                    "No candidates selected to fulfill the indexing request"
+                );
+                return Ok(());
+            }
+            Err(SelectionError::IisaServiceUnavailable) => {
+                tracing::warn!(
+                    indexing_request_id=%indexing_request_id,
+                    "IISA service unavailable, will retry"
+                );
                 return Err(JobError::Retryable(
                     SelectionError::IisaServiceUnavailable.into(),
                     Duration::from_secs(5),
                 ));
             }
+            Err(SelectionError::Error(e)) => return Err(JobError::Fatal(e)),
         }
-        Err(SelectionError::Error(e)) => return Err(JobError::Fatal(e)),
     };
 
     let voucher_metadata = {
