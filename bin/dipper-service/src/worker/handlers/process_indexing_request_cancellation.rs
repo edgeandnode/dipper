@@ -3,7 +3,7 @@ use dipper_core::ids::IndexingRequestId;
 use crate::{
     registry::{AgreementRegistry, IndexingRequestRegistry},
     worker::{
-        result::{JobError, JobResult},
+        result::{JobError, JobMeta, JobResult},
         service::WorkerQueue,
     },
 };
@@ -29,6 +29,7 @@ pub async fn handle<R, W>(
     Message {
         indexing_request_id,
     }: &Message,
+    _job_meta: JobMeta,
 ) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry,

@@ -142,8 +142,12 @@ pub async fn main() -> anyhow::Result<()> {
     );
 
     //- The IISA HTTP client
+    // Verify IISA is reachable before accepting traffic (deployment ordering)
     let iisa_client = iisa::HttpIisaClient::new(conf.iisa.endpoint.to_string());
-    tracing::info!(endpoint=%conf.iisa.endpoint, "initialized IISA HTTP client");
+    if !iisa_client.health_check().await.unwrap_or(false) {
+        anyhow::bail!("IISA service is not reachable at {}", conf.iisa.endpoint);
+    }
+    tracing::info!(endpoint=%conf.iisa.endpoint, "IISA service is healthy");
 
     // Application services
 

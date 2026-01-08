@@ -1,8 +1,9 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use dipper_core::ids::IndexingRequestId;
-use dipper_iisa::{CandidateSelection, Indexer as IndexerCandidate};
+use dipper_iisa::{CandidateSelection, Indexer as IndexerCandidate, SelectionError};
 use jsonrpsee::core::Serialize;
+use rand::seq::IndexedRandom;
 use serde::Deserialize;
 use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 
@@ -16,7 +17,7 @@ use crate::{
     },
     signing::eip712::PrivateKeyEip712Signer,
     worker::{
-        result::{JobError, JobResult},
+        result::{JobError, JobMeta, JobResult},
         service::WorkerQueue,
     },
 };
@@ -45,6 +46,9 @@ pub struct Message {
     pub deployment_chain_id: ChainId,
 }
 
+/// Duration after which random fallback is used if IISA remains unavailable
+const FALLBACK_THRESHOLD: time::Duration = time::Duration::hours(6);
+
 pub async fn handle<R, N, W, I>(
     ctx: Ctx<R, N, W, I>,
     Message {
@@ -52,6 +56,7 @@ pub async fn handle<R, N, W, I>(
         deployment_id,
         deployment_chain_id,
     }: &Message,
+    job_meta: JobMeta,
 ) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
@@ -101,17 +106,47 @@ where
     // Gather load balancing context for IISA
     let context = gather_selection_context(&ctx.registry, deployment_id, &indexers).await?;
 
-    let Some(candidate) = ctx
+    // Try IISA selection, with random fallback if IISA has been unavailable for too long
+    let candidate = match ctx
         .iisa
-        .select_one(*deployment_id, indexers, &context)
+        .select_one(*deployment_id, indexers.clone(), &context)
         .await
-        .map_err(|err| JobError::Fatal(err.into()))?
-    else {
-        tracing::warn!(
-            indexing_request_id=%indexing_request_id,
-            "No candidates selected to fulfill the indexing request"
-        );
-        return Ok(());
+    {
+        Ok(Some(candidate)) => candidate,
+        Ok(None) => {
+            tracing::warn!(
+                indexing_request_id=%indexing_request_id,
+                "No candidates selected to fulfill the indexing request"
+            );
+            return Ok(());
+        }
+        Err(SelectionError::IisaServiceUnavailable) => {
+            if job_meta.age_exceeds(FALLBACK_THRESHOLD) {
+                // IISA unavailable for 6+ hours, fall back to random selection
+                tracing::warn!(
+                    indexing_request_id=%indexing_request_id,
+                    age_hours=%((time::OffsetDateTime::now_utc() - job_meta.created_at).whole_hours()),
+                    "IISA unavailable for 6+ hours, using random selection fallback"
+                );
+                match indexers.choose(&mut rand::rng()).cloned() {
+                    Some(candidate) => candidate,
+                    None => {
+                        tracing::warn!(
+                            indexing_request_id=%indexing_request_id,
+                            "No candidates available for random fallback"
+                        );
+                        return Ok(());
+                    }
+                }
+            } else {
+                tracing::warn!("IISA service unavailable, will retry");
+                return Err(JobError::Retryable(
+                    SelectionError::IisaServiceUnavailable.into(),
+                    Duration::from_secs(5),
+                ));
+            }
+        }
+        Err(SelectionError::Error(e)) => return Err(JobError::Fatal(e)),
     };
 
     let voucher_metadata = {
