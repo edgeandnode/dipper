@@ -79,7 +79,10 @@ pub struct IisaConfig {
     #[serde_as(as = "serde_with::DurationSeconds")]
     pub connect_timeout: Duration,
 
-    /// Maximum retry attempts for transient failures (default: 3)
+    /// Maximum retry attempts for transient failures (default: 3).
+    ///
+    /// This is the number of *additional* attempts after the initial request fails.
+    /// For example, `max_retries = 3` means up to 4 total attempts (1 initial + 3 retries).
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
 }

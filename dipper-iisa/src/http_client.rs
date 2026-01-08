@@ -26,7 +26,10 @@ pub struct HttpClientConfig {
     pub request_timeout: Duration,
     /// Timeout for TCP connection establishment
     pub connect_timeout: Duration,
-    /// Maximum number of retry attempts for transient failures
+    /// Maximum number of retry attempts for transient failures.
+    ///
+    /// This is the number of *additional* attempts after the initial request fails.
+    /// For example, `max_retries = 3` means up to 4 total attempts (1 initial + 3 retries).
     pub max_retries: u32,
 }
 
