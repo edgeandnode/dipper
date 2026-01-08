@@ -24,6 +24,12 @@ impl JobMeta {
     }
 }
 
+/// Duration after which random fallback is used if IISA remains unavailable.
+///
+/// When IISA selection fails with `IisaServiceUnavailable`, jobs will retry with
+/// exponential backoff. After this threshold, handlers fall back to random selection.
+pub const IISA_FALLBACK_THRESHOLD: time::Duration = time::Duration::hours(6);
+
 /// The error type for job processing.
 #[derive(Debug, thiserror::Error)]
 pub enum JobError {

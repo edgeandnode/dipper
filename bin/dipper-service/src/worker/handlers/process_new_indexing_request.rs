@@ -15,7 +15,7 @@ use crate::{
     },
     signing::eip712::PrivateKeyEip712Signer,
     worker::{
-        result::{JobError, JobMeta, JobResult},
+        result::{JobError, JobMeta, JobResult, IISA_FALLBACK_THRESHOLD},
         service::WorkerQueue,
     },
 };
@@ -43,9 +43,6 @@ pub struct Message {
     /// The maximum number of indexers to select
     pub num_candidates: usize,
 }
-
-/// Duration after which random fallback is used if IISA remains unavailable
-const FALLBACK_THRESHOLD: time::Duration = time::Duration::hours(6);
 
 pub async fn handle<R, N, W, I>(
     ctx: Ctx<R, N, W, I>,
@@ -93,7 +90,7 @@ where
     {
         Ok(candidates) => candidates,
         Err(SelectionError::IisaServiceUnavailable) => {
-            if job_meta.age_exceeds(FALLBACK_THRESHOLD) {
+            if job_meta.age_exceeds(IISA_FALLBACK_THRESHOLD) {
                 // IISA unavailable for 6+ hours, fall back to random selection
                 tracing::warn!(
                     indexing_request_id=%indexing_request_id,
