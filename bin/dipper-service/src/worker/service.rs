@@ -15,7 +15,7 @@ use super::{
     },
     messages::Message,
     queue::Queue,
-    result::{JobError, JobMeta, JobResult},
+    result::{JobError, JobMeta, JobResult, calculate_backoff_delay},
 };
 use crate::{
     indexer_rpc_client::IndexerClient,
@@ -106,15 +106,7 @@ where
                 }
                 Err(JobError::Retryable(err, base_delay)) => {
                     let attempt = job.failed_attempts();
-
-                    // Calculate delay with exponential backoff
-                    // First 5 attempts: exponential (5s, 10s, 20s, 40s, 80s)
-                    // After 5 attempts: fixed 5 minute intervals
-                    let delay = if attempt < 5 {
-                        base_delay.saturating_mul(2u32.pow(attempt))
-                    } else {
-                        Duration::from_secs(300) // 5 minutes
-                    };
+                    let delay = calculate_backoff_delay(base_delay, attempt);
 
                     tracing::debug!(
                         error=?err,
