@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dipper
+  labels:
+    app: dipper
+spec:
+  type: ClusterIP
+  selector:
+    app: dipper
+  ports:
+    - name: admin-rpc
+      port: 8545
+      targetPort: admin-rpc
+      protocol: TCP
+    - name: indexer-rpc
+      port: 50051
+      targetPort: indexer-rpc
+      protocol: TCP

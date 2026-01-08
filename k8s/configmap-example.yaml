@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dipper-config
+  labels:
+    app: dipper
+data:
+  config.json: |
+    {
+      "dips": {
+        "service": "0x0000000000000000000000000000000000000000",
+        "max_initial_amount": "0",
+        "max_ongoing_amount_per_epoch": "0",
+        "max_epochs_per_collection": 1,
+        "min_epochs_per_collection": 1,
+        "duration_epochs": null,
+        "pricing_table": {}
+      },
+      "admin_rpc": {
+        "listen_addr": "0.0.0.0:8545",
+        "allowlist": []
+      },
+      "indexer_rpc": {
+        "listen_addr": "0.0.0.0:50051",
+        "allowlist": []
+      },
+      "db": {
+        "url": "postgres://localhost:5432/dipper",
+        "username": "dipper",
+        "password": "REPLACE_ME",
+        "max_connections": 10
+      },
+      "network": {
+        "gateway_url": "https://gateway.thegraph.com",
+        "api_key": "REPLACE_ME",
+        "deployment_id": "REPLACE_ME",
+        "update_interval": 60
+      },
+      "signer": {
+        "secret_key": "REPLACE_ME",
+        "chain_id": 42161
+      },
+      "tap_signer": {
+        "secret_key": "REPLACE_ME",
+        "chain_id": 42161,
+        "verifier": "0x0000000000000000000000000000000000000000"
+      },
+      "iisa": {
+        "endpoint": "http://iisa:8080",
+        "request_timeout": 30,
+        "connect_timeout": 10,
+        "max_retries": 3
+      }
+    }
