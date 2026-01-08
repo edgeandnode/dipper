@@ -143,9 +143,25 @@ pub async fn main() -> anyhow::Result<()> {
 
     //- The IISA HTTP client
     // Verify IISA is reachable before accepting traffic (deployment ordering)
+    // Retry a few times to handle momentary network issues during startup
     let iisa_client = iisa::HttpIisaClient::new(conf.iisa.endpoint.to_string());
-    if !iisa_client.health_check().await.unwrap_or(false) {
-        anyhow::bail!("IISA service is not reachable at {}", conf.iisa.endpoint);
+    let mut iisa_healthy = false;
+    for attempt in 1..=3 {
+        if iisa_client.health_check().await.unwrap_or(false) {
+            iisa_healthy = true;
+            break;
+        }
+        if attempt < 3 {
+            tracing::warn!(
+                endpoint=%conf.iisa.endpoint,
+                attempt=%attempt,
+                "IISA health check failed, retrying in 2s"
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    }
+    if !iisa_healthy {
+        anyhow::bail!("IISA service is not reachable at {} after 3 attempts", conf.iisa.endpoint);
     }
     tracing::info!(endpoint=%conf.iisa.endpoint, "IISA service is healthy");
 

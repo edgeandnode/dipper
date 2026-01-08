@@ -12,7 +12,8 @@ pub type JobResult<T, E = JobError> = Result<T, E>;
 pub struct JobMeta {
     /// When the job was first created
     pub created_at: OffsetDateTime,
-    /// Number of failed attempts so far
+    /// Number of failed attempts so far (available for handler use)
+    #[allow(dead_code)]
     pub failed_attempts: u32,
 }
 
