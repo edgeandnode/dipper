@@ -97,7 +97,14 @@ struct MultiSelectionResponse {
     indexer_ids: Vec<String>,
 }
 
-/// Check if an HTTP error is retryable (network/timeout issues).
+/// Check if an HTTP error is retryable.
+///
+/// Retries on:
+/// - `is_timeout()`: Request timed out waiting for response
+/// - `is_connect()`: Failed to establish TCP connection
+/// - `is_request()`: Request building/sending failed. While these are often deterministic
+///   (e.g., serialization errors), we include them defensively to handle transient cases
+///   like system resource pressure. These errors are rare in practice.
 fn is_retryable_error(err: &reqwest::Error) -> bool {
     err.is_timeout() || err.is_connect() || err.is_request()
 }
