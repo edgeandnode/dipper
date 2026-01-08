@@ -17,7 +17,7 @@ use crate::{
     },
     signing::eip712::PrivateKeyEip712Signer,
     worker::{
-        result::{JobError, JobMeta, JobResult, IISA_FALLBACK_THRESHOLD},
+        result::{IISA_FALLBACK_THRESHOLD, JobError, JobMeta, JobResult},
         service::WorkerQueue,
     },
 };

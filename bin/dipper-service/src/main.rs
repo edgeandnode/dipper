@@ -161,7 +161,10 @@ pub async fn main() -> anyhow::Result<()> {
         }
     }
     if !iisa_healthy {
-        anyhow::bail!("IISA service is not reachable at {} after 3 attempts", conf.iisa.endpoint);
+        anyhow::bail!(
+            "IISA service is not reachable at {} after 3 attempts",
+            conf.iisa.endpoint
+        );
     }
     tracing::info!(endpoint=%conf.iisa.endpoint, "IISA service is healthy");
 

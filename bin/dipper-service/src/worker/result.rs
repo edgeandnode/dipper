@@ -89,7 +89,9 @@ mod tests {
     fn test_job_meta_age_exceeds_false_just_under_threshold() {
         // Just under the threshold should return false
         let job_meta = JobMeta {
-            created_at: OffsetDateTime::now_utc() - time::Duration::hours(5) - time::Duration::minutes(59),
+            created_at: OffsetDateTime::now_utc()
+                - time::Duration::hours(5)
+                - time::Duration::minutes(59),
             failed_attempts: 0,
         };
 
