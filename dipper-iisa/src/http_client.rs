@@ -268,6 +268,11 @@ impl CandidateSelection for HttpIisaClient {
 
 #[cfg(test)]
 mod tests {
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+
     use super::*;
 
     #[test]
@@ -337,5 +342,50 @@ mod tests {
         let context = SelectionContext::default();
         assert!(context.existing_indexers.is_empty());
         assert!(context.pending_agreements.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_health_check_returns_true_when_healthy() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        let client = HttpIisaClient::new(mock_server.uri());
+        let result = client.health_check().await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_health_check_returns_false_when_unhealthy() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&mock_server)
+            .await;
+
+        let client = HttpIisaClient::new(mock_server.uri());
+        let result = client.health_check().await;
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_health_check_returns_error_when_connection_fails() {
+        // Use an endpoint that will refuse connections
+        let client = HttpIisaClient::new("http://127.0.0.1:1".to_string());
+        let result = client.health_check().await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, SelectionError::Error(_)));
     }
 }

@@ -1,7 +1,8 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use dipper_core::ids::IndexingRequestId;
-use dipper_iisa::{CandidateSelection, Indexer as IndexerCandidate};
+use dipper_iisa::{CandidateSelection, Indexer as IndexerCandidate, SelectionError};
+use rand::seq::IndexedRandom;
 use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 
 use super::selection_context::gather_selection_context;
@@ -14,7 +15,7 @@ use crate::{
     },
     signing::eip712::PrivateKeyEip712Signer,
     worker::{
-        result::{JobError, JobResult},
+        result::{IISA_FALLBACK_THRESHOLD, JobError, JobMeta, JobResult},
         service::WorkerQueue,
     },
 };
@@ -51,6 +52,7 @@ pub async fn handle<R, N, W, I>(
         deployment_chain_id,
         num_candidates,
     }: &Message,
+    job_meta: JobMeta,
 ) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
@@ -80,11 +82,55 @@ where
     // Gather load balancing context for IISA
     let context = gather_selection_context(&ctx.registry, deployment_id, &indexers).await?;
 
-    let candidates = ctx
-        .iisa
-        .select(*deployment_id, indexers, *num_candidates, &context)
-        .await
-        .map_err(|err| JobError::Fatal(err.into()))?;
+    // Check if we're in fallback-eligible state (job has been retrying for 6+ hours)
+    // This allows us to avoid cloning indexers on the happy path
+    let fallback_eligible = job_meta.age_exceeds(IISA_FALLBACK_THRESHOLD);
+
+    // Try IISA selection, with random fallback if IISA has been unavailable for too long
+    let candidates = if fallback_eligible {
+        // Clone indexers only when fallback might be needed
+        match ctx
+            .iisa
+            .select(*deployment_id, indexers.clone(), *num_candidates, &context)
+            .await
+        {
+            Ok(candidates) => candidates,
+            Err(SelectionError::IisaServiceUnavailable) => {
+                // IISA unavailable for 6+ hours, fall back to random selection
+                tracing::warn!(
+                    indexing_request_id=%indexing_request_id,
+                    age_hours=%((time::OffsetDateTime::now_utc() - job_meta.created_at).whole_hours()),
+                    "IISA unavailable for 6+ hours, using random selection fallback"
+                );
+                let mut rng = rand::rng();
+                indexers
+                    .choose_multiple(&mut rng, *num_candidates)
+                    .cloned()
+                    .collect()
+            }
+            Err(SelectionError::Error(e)) => return Err(JobError::Fatal(e)),
+        }
+    } else {
+        // Normal path: no clone needed since we won't fall back to random
+        match ctx
+            .iisa
+            .select(*deployment_id, indexers, *num_candidates, &context)
+            .await
+        {
+            Ok(candidates) => candidates,
+            Err(SelectionError::IisaServiceUnavailable) => {
+                tracing::warn!(
+                    indexing_request_id=%indexing_request_id,
+                    "IISA service unavailable, will retry"
+                );
+                return Err(JobError::Retryable(
+                    SelectionError::IisaServiceUnavailable.into(),
+                    Duration::from_secs(5),
+                ));
+            }
+            Err(SelectionError::Error(e)) => return Err(JobError::Fatal(e)),
+        }
+    };
     if candidates.is_empty() {
         tracing::error!(
             indexing_request_id=%indexing_request_id,

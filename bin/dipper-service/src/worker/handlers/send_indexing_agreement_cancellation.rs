@@ -7,7 +7,7 @@ use url::Url;
 use crate::{
     indexer_rpc_client::IndexerClient,
     registry::{AgreementRegistry, IndexingAgreementStatus},
-    worker::result::{JobError, JobResult},
+    worker::result::{JobError, JobMeta, JobResult},
 };
 
 pub struct Ctx<R, C> {
@@ -39,6 +39,7 @@ pub async fn handle<R, C>(
         indexing_request_id,
         agreement_id,
     }: &Message,
+    _job_meta: JobMeta,
 ) -> JobResult<()>
 where
     R: AgreementRegistry,

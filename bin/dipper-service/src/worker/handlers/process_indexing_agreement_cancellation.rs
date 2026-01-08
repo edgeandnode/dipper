@@ -3,7 +3,7 @@ use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use crate::{
     registry::{AgreementRegistry, IndexingRequestRegistry},
     worker::{
-        result::{JobError, JobResult},
+        result::{JobError, JobMeta, JobResult},
         service::WorkerQueue,
     },
 };
@@ -32,6 +32,7 @@ pub async fn handle_indexer_cancellation<R, W>(
         indexing_request_id,
         agreement_id,
     }: &Message,
+    _job_meta: JobMeta,
 ) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
@@ -110,6 +111,7 @@ pub async fn handle_requester_cancellation<R, W>(
         indexing_request_id,
         agreement_id,
     }: &Message,
+    _job_meta: JobMeta,
 ) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry,

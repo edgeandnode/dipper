@@ -11,7 +11,7 @@ use crate::{
         IndexingAgreementVoucherMetadata, IndexingRequestRegistry,
     },
     worker::{
-        result::{JobError, JobResult},
+        result::{JobError, JobMeta, JobResult},
         service::WorkerQueue,
     },
 };
@@ -52,6 +52,7 @@ pub async fn handle<R, N, W, C>(
         deployment_id,
         deployment_chain_id,
     }: &Message,
+    _job_meta: JobMeta,
 ) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry,

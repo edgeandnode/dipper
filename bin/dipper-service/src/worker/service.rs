@@ -15,7 +15,7 @@ use super::{
     },
     messages::Message,
     queue::Queue,
-    result::{JobError, JobResult},
+    result::{JobError, JobMeta, JobResult, calculate_backoff_delay},
 };
 use crate::{
     indexer_rpc_client::IndexerClient,
@@ -94,16 +94,27 @@ where
             };
 
             let _span = tracing::debug_span!("process_job", job = %job.id());
-            match process_job(&state, job.desc()).await {
+            let job_meta = JobMeta {
+                created_at: *job.created_at(),
+                failed_attempts: job.failed_attempts(),
+            };
+            match process_job(&state, job.desc(), job_meta).await {
                 Ok(..) => {
                     if let Err(err) = job.remove().await {
                         tracing::debug!(error=?err, "Failed to remove job from queue");
                     }
                 }
-                Err(JobError::Retryable(err, delay)) => {
-                    tracing::debug!(error=?err, "Rescheduling job after failure");
+                Err(JobError::Retryable(err, base_delay)) => {
+                    let attempt = job.failed_attempts();
+                    let delay = calculate_backoff_delay(base_delay, attempt);
 
-                    // Retry the job after the specified duration
+                    tracing::debug!(
+                        error=?err,
+                        attempt=%attempt,
+                        delay_secs=%delay.as_secs(),
+                        "Rescheduling job after failure with backoff"
+                    );
+
                     let scheduled_for = OffsetDateTime::now_utc() + delay;
                     if let Err(err) = job.mark_as_failed_and_reschedule(scheduled_for).await {
                         tracing::error!(error=?err, "Failed to reschedule job");
@@ -125,7 +136,11 @@ where
     (handle, fut)
 }
 
-async fn process_job<S, W, N, R, C, I>(state: &S, message: &Message) -> JobResult<()>
+async fn process_job<S, W, N, R, C, I>(
+    state: &S,
+    message: &Message,
+    job_meta: JobMeta,
+) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry + ReceiptRegistry,
     N: NetworkProvider,
@@ -140,18 +155,18 @@ where
     ProcessIndexingAgreementCancellationCtx<R, W>: FromState<S>,
 {
     /// Dispatch a message to the appropriate message handler, based on the message type, with
-    /// the given state.
+    /// the given state and job metadata.
     macro_rules! _dispatch {
-        ($state:expr, $message:expr, {$($msg_pat:path => $handler_fn:path),* $(,)?}) => {
+        ($state:expr, $message:expr, $job_meta:expr, {$($msg_pat:path => $handler_fn:path),* $(,)?}) => {
             match $message {
                 $(
-                    $msg_pat(msg) => $handler_fn(FromState::from_state($state), msg).await,
+                    $msg_pat(msg) => $handler_fn(FromState::from_state($state), msg, $job_meta).await,
                 )*
             }
         };
     }
 
-    _dispatch!(state, message, {
+    _dispatch!(state, message, job_meta, {
         Message::ProcessNewIndexingRequest => handlers::process_new_indexing_request,
         Message::ProcessIndexingRequestCancellation => handlers::process_indexing_request_cancellation,
         Message::FindIndexerForIndexingRequest => handlers::find_indexer_for_indexing_request,
