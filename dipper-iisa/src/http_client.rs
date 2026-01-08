@@ -575,7 +575,7 @@ mod tests {
                 } else {
                     // Third call succeeds
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                        "indexer_id": null
+                        "indexer_id": "0x1234567890123456789012345678901234567890"
                     }))
                 }
             })
@@ -589,20 +589,27 @@ mod tests {
         };
         let client = HttpIisaClient::with_config(mock_server.uri(), config);
 
+        let indexer = Indexer {
+            id: "0x1234567890123456789012345678901234567890"
+                .parse()
+                .unwrap(),
+            url: "http://indexer.example.com".parse().unwrap(),
+        };
+
         let result = client
             .select_one(
                 "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
                     .parse()
                     .unwrap(),
-                vec![],
+                vec![indexer],
                 &SelectionContext::default(),
             )
             .await;
 
-        // Should succeed after retries (empty candidates returns None early)
+        // Should succeed after 2 retries (3 total calls)
         assert!(result.is_ok());
-        // With empty candidates, it returns early without making HTTP calls
-        // So we need a test with actual candidates
+        assert!(result.unwrap().is_some());
+        assert_eq!(call_count.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
