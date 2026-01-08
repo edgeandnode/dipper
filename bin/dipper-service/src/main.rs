@@ -144,7 +144,13 @@ pub async fn main() -> anyhow::Result<()> {
     //- The IISA HTTP client
     // Verify IISA is reachable before accepting traffic (deployment ordering)
     // Retry a few times to handle momentary network issues during startup
-    let iisa_client = iisa::HttpIisaClient::new(conf.iisa.endpoint.to_string());
+    let iisa_config = iisa::HttpClientConfig {
+        request_timeout: conf.iisa.request_timeout,
+        connect_timeout: conf.iisa.connect_timeout,
+        max_retries: conf.iisa.max_retries,
+    };
+    let iisa_client =
+        iisa::HttpIisaClient::with_config(conf.iisa.endpoint.to_string(), iisa_config);
     let mut iisa_healthy = false;
     for attempt in 1..=3 {
         if iisa_client.health_check().await.unwrap_or(false) {

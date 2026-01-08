@@ -68,6 +68,35 @@ pub struct IisaConfig {
     /// The IISA service endpoint URL (e.g., "http://iisa-service:8080")
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub endpoint: Url,
+
+    /// Request timeout in seconds (default: 30)
+    #[serde(default = "default_request_timeout")]
+    #[serde_as(as = "serde_with::DurationSeconds")]
+    pub request_timeout: Duration,
+
+    /// Connection timeout in seconds (default: 10)
+    #[serde(default = "default_connect_timeout")]
+    #[serde_as(as = "serde_with::DurationSeconds")]
+    pub connect_timeout: Duration,
+
+    /// Maximum retry attempts for transient failures (default: 3).
+    ///
+    /// This is the number of *additional* attempts after the initial request fails.
+    /// For example, `max_retries = 3` means up to 4 total attempts (1 initial + 3 retries).
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+}
+
+fn default_request_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
+fn default_connect_timeout() -> Duration {
+    Duration::from_secs(10)
+}
+
+fn default_max_retries() -> u32 {
+    3
 }
 
 #[serde_as]

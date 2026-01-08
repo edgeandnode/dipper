@@ -2159,6 +2159,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "fake",
+ "rand 0.9.2",
  "reqwest 0.12.24",
  "serde",
  "serde_json",
