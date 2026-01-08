@@ -708,4 +708,87 @@ mod tests {
             SelectionError::IisaServiceUnavailable
         ));
     }
+
+    #[tokio::test]
+    async fn test_timeout_returns_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/select-one"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({
+                        "indexer_id": "0x1234567890123456789012345678901234567890"
+                    }))
+                    .set_delay(Duration::from_secs(2)), // Delay longer than timeout
+            )
+            .mount(&mock_server)
+            .await;
+
+        let config = HttpClientConfig {
+            request_timeout: Duration::from_millis(100), // Very short timeout
+            connect_timeout: Duration::from_secs(2),
+            max_retries: 0, // No retries to speed up test
+        };
+        let client = HttpIisaClient::with_config(mock_server.uri(), config);
+
+        let indexer = Indexer {
+            id: "0x1234567890123456789012345678901234567890"
+                .parse()
+                .unwrap(),
+            url: "http://indexer.example.com".parse().unwrap(),
+        };
+
+        let result = client
+            .select_one(
+                "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+                    .parse()
+                    .unwrap(),
+                vec![indexer],
+                &SelectionContext::default(),
+            )
+            .await;
+
+        // Should fail due to timeout
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_malformed_json_response_returns_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/select-one"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not valid json {{{"))
+            .mount(&mock_server)
+            .await;
+
+        let config = HttpClientConfig {
+            request_timeout: Duration::from_secs(5),
+            connect_timeout: Duration::from_secs(2),
+            max_retries: 0,
+        };
+        let client = HttpIisaClient::with_config(mock_server.uri(), config);
+
+        let indexer = Indexer {
+            id: "0x1234567890123456789012345678901234567890"
+                .parse()
+                .unwrap(),
+            url: "http://indexer.example.com".parse().unwrap(),
+        };
+
+        let result = client
+            .select_one(
+                "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+                    .parse()
+                    .unwrap(),
+                vec![indexer],
+                &SelectionContext::default(),
+            )
+            .await;
+
+        // Should fail due to JSON parse error
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), SelectionError::Error(_)));
+    }
 }
