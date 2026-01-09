@@ -4,21 +4,23 @@ Kubernetes manifests for deploying the dipper service.
 
 ## Prerequisites
 
-- IISA service must be deployed and healthy before dipper starts
 - PostgreSQL database accessible from the cluster
 - Configuration secrets managed separately
+- IISA service recommended (dipper falls back to random selection if unavailable)
 
 ## Files
 
-- `deployment.yaml` - Dipper deployment with health probes
+- `deployment.yaml` - Dipper deployment with health probes and security context
 - `service.yaml` - ClusterIP service exposing Admin RPC (8545) and Indexer RPC (50051)
 - `configmap-example.yaml` - Example ConfigMap showing config.json structure (do not apply directly)
 
-## Deployment Order
+## Deployment
 
-1. Deploy IISA service (see subgraph-dips-indexer-selection repo)
-2. Create `dipper-config` ConfigMap with actual values
-3. Apply dipper manifests
+1. Create `dipper-config` ConfigMap with actual values
+2. Apply dipper manifests
+3. Deploy IISA service when ready (see subgraph-dips-indexer-selection repo)
+
+Dipper can start without IISA - it gracefully degrades to random indexer selection until IISA becomes available.
 
 ## Configuration
 

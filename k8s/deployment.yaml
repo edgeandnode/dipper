@@ -14,8 +14,14 @@ spec:
       labels:
         app: dipper
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
       containers:
         - name: dipper
+          # TODO: Pin to specific version tag for production
           image: ghcr.io/edgeandnode/dipper-service:latest
           args:
             - /config/config.json
@@ -26,6 +32,12 @@ spec:
             - name: indexer-rpc
               containerPort: 50051
               protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           livenessProbe:
             tcpSocket:
               port: admin-rpc
@@ -36,7 +48,7 @@ spec:
           readinessProbe:
             tcpSocket:
               port: admin-rpc
-            initialDelaySeconds: 10
+            initialDelaySeconds: 15
             periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 3
