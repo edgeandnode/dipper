@@ -24,11 +24,11 @@ pub struct SelectionContext {
     /// Used to avoid selecting indexers that are already working on the same deployment.
     pub existing_indexers: Vec<IndexerId>,
 
-    /// For each indexer, the deployments they have pending/active agreements for.
+    /// For each deployment, the indexers that have pending/active agreements for it.
     ///
-    /// Used to balance load across indexers by considering their current workload.
-    /// Key: Indexer ID, Value: List of deployment IDs they are working on.
-    pub pending_agreements: HashMap<IndexerId, Vec<DeploymentId>>,
+    /// Used to exclude indexers with pending work from new assignments.
+    /// Key: Deployment ID, Value: List of indexer IDs working on that deployment.
+    pub pending_agreements: HashMap<DeploymentId, Vec<IndexerId>>,
 }
 
 /// The `SelectionError` enum represents the errors that can occur during the candidate selection

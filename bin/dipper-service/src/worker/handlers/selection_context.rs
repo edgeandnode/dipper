@@ -34,7 +34,7 @@ where
         .collect::<Vec<_>>();
 
     // Build pending agreements map for all candidates in a single batch query
-    // This tells IISA what other work each candidate is currently handling
+    // This tells IISA which indexers are working on each deployment
     let candidate_ids: Vec<IndexerId> = candidates.iter().map(|c| c.id).collect();
 
     let all_agreements = registry
@@ -42,13 +42,13 @@ where
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
-    // Group agreements by indexer ID
-    let mut pending_agreements: HashMap<IndexerId, Vec<DeploymentId>> = HashMap::new();
+    // Group agreements by deployment ID (IISA expects deployment -> indexers)
+    let mut pending_agreements: HashMap<DeploymentId, Vec<IndexerId>> = HashMap::new();
     for agreement in all_agreements {
         pending_agreements
-            .entry(agreement.indexer.id)
+            .entry(agreement.voucher.metadata.subgraph_deployment_id)
             .or_default()
-            .push(agreement.voucher.metadata.subgraph_deployment_id);
+            .push(agreement.indexer.id);
     }
 
     Ok(SelectionContext {

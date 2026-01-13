@@ -74,7 +74,7 @@ struct SelectionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     existing_indexers: Option<Vec<String>>,
 
-    /// Pending agreements: indexer ID -> list of deployment IDs
+    /// Pending agreements: deployment ID -> list of indexer IDs
     #[serde(skip_serializing_if = "Option::is_none")]
     pending_agreements: Option<HashMap<String, Vec<String>>>,
 
@@ -290,10 +290,10 @@ impl HttpIisaClient {
                 context
                     .pending_agreements
                     .iter()
-                    .map(|(indexer_id, deployment_ids)| {
+                    .map(|(deployment_id, indexer_ids)| {
                         (
-                            format!("{:#x}", indexer_id),
-                            deployment_ids.iter().map(|d| d.to_string()).collect(),
+                            deployment_id.to_string(),
+                            indexer_ids.iter().map(|id| format!("{:#x}", id)).collect(),
                         )
                     })
                     .collect(),
@@ -503,7 +503,7 @@ mod tests {
             .unwrap();
 
         let mut pending = HashMap::new();
-        pending.insert(indexer_id, vec![deployment_id]);
+        pending.insert(deployment_id, vec![indexer_id]);
 
         let context = SelectionContext {
             existing_indexers: vec![],
@@ -514,7 +514,11 @@ mod tests {
         assert!(result.is_some());
         let agreements = result.unwrap();
         assert_eq!(agreements.len(), 1);
-        assert!(agreements.contains_key("0x1234567890123456789012345678901234567890"));
+        // Key should be deployment ID, value should be list of indexer IDs
+        assert!(agreements.contains_key("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"));
+        let indexers = agreements.get("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG").unwrap();
+        assert_eq!(indexers.len(), 1);
+        assert_eq!(indexers[0], "0x1234567890123456789012345678901234567890");
     }
 
     #[test]
