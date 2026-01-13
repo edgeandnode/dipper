@@ -384,7 +384,7 @@ impl PgRegistry {
             r#"
             SELECT
                 deployment_id,
-                array_agg(DISTINCT indexer_id) as indexer_ids
+                array_agg(indexer_id) as indexer_ids
             FROM dipper_reg_indexing_agreements
             WHERE indexer_id = ANY($1) AND status IN ($2, $3)
             GROUP BY deployment_id
