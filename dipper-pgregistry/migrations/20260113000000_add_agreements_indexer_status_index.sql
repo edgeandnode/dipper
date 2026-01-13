@@ -11,6 +11,7 @@ ON dipper_reg_indexing_agreements (deployment_id);
 
 -- Enforce that an indexer can only have one active agreement per deployment
 -- This prevents duplicate payments for the same work
+-- Status values: Created = -1, Accepted = 0
 CREATE UNIQUE INDEX idx_unique_active_agreement_per_indexer_deployment
 ON dipper_reg_indexing_agreements (indexer_id, deployment_id)
-WHERE status IN ('Created', 'Accepted');
+WHERE status IN (-1, 0);
