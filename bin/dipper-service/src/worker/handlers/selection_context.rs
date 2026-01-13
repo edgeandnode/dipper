@@ -1,7 +1,5 @@
 //! Shared utilities for gathering IISA selection context.
 
-use std::collections::HashMap;
-
 use dipper_iisa::{Indexer as IndexerCandidate, SelectionContext};
 use thegraph_core::{DeploymentId, IndexerId};
 
@@ -33,23 +31,14 @@ where
         .map(|a| a.indexer.id)
         .collect::<Vec<_>>();
 
-    // Build pending agreements map for all candidates in a single batch query
-    // This tells IISA which indexers are working on each deployment
+    // Get pending agreements using database-side aggregation
+    // This returns deployment -> [indexers] directly, avoiding full object transfer
     let candidate_ids: Vec<IndexerId> = candidates.iter().map(|c| c.id).collect();
 
-    let all_agreements = registry
-        .get_active_indexing_agreements_by_indexer_ids(&candidate_ids)
+    let pending_agreements = registry
+        .get_pending_agreement_indexers_by_deployment(&candidate_ids)
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
-
-    // Group agreements by deployment ID (IISA expects deployment -> indexers)
-    let mut pending_agreements: HashMap<DeploymentId, Vec<IndexerId>> = HashMap::new();
-    for agreement in all_agreements {
-        pending_agreements
-            .entry(agreement.voucher.metadata.subgraph_deployment_id)
-            .or_default()
-            .push(agreement.indexer.id);
-    }
 
     Ok(SelectionContext {
         existing_indexers,

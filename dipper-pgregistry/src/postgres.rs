@@ -1,5 +1,7 @@
 //! PostgreSQL implementation of the registry
 
+use std::collections::HashMap;
+
 use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
 use sqlx::{Pool, Postgres, types::Json};
 use thegraph_core::{
@@ -358,45 +360,48 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
-    /// Get all active agreements for multiple indexers in a single query.
+    /// Get aggregated deployment-to-indexers mapping for active agreements.
     ///
     /// Returns agreements that are in `CREATED` or `ACCEPTED` status for any of the
-    /// provided indexer IDs. This is more efficient than querying each indexer separately.
-    pub async fn get_active_indexing_agreements_by_indexer_ids(
+    /// provided indexer IDs, grouped by deployment. This performs database-side aggregation,
+    /// returning only the deployment IDs and their associated indexer IDs rather than
+    /// full agreement objects.
+    ///
+    /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
+    /// that have active agreements for that deployment.
+    pub async fn get_pending_agreement_indexers_by_deployment(
         &self,
         indexer_ids: &[IndexerId],
-    ) -> Result<Vec<IndexingAgreement>, Error> {
+    ) -> Result<HashMap<DeploymentId, Vec<IndexerId>>, Error> {
         if indexer_ids.is_empty() {
-            return Ok(Vec::new());
+            return Ok(HashMap::new());
         }
 
         let pg_indexer_ids: Vec<PgIndexerId> =
             indexer_ids.iter().map(|id| PgIndexerId(*id)).collect();
 
-        sqlx::query_as(
+        let rows: Vec<(PgDeploymentId, Vec<PgIndexerId>)> = sqlx::query_as(
             r#"
             SELECT
-                id,
-                created_at,
-                updated_at,
-                status,
-                accepted_at_epoch,
-                indexing_request_id,
                 deployment_id,
-                accepted_at_epoch,
-                indexer_id,
-                indexer_url,
-                voucher
+                array_agg(indexer_id) as indexer_ids
             FROM dipper_reg_indexing_agreements
             WHERE indexer_id = ANY($1) AND status IN ($2, $3)
+            GROUP BY deployment_id
             "#,
         )
         .bind(&pg_indexer_ids[..])
         .bind(IndexingAgreementStatus::Created)
         .bind(IndexingAgreementStatus::Accepted)
         .fetch_all(&self.pool)
-        .await
-        .map_err(Into::into)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(deployment, indexers)| {
+                (deployment.0, indexers.into_iter().map(|i| i.0).collect())
+            })
+            .collect())
     }
 
     pub async fn get_indexing_agreements_by_indexing_request_id(

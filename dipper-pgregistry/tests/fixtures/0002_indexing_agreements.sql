@@ -93,7 +93,7 @@ VALUES ('019300db-ffea-7e1f-95f2-2561bcfeecf3'::uuid,
             }
         }'::json);
 
--- Indexing agreement #3: ACCEPTED
+-- Indexing agreement #3: ACCEPTED (different indexer to comply with unique constraint)
 INSERT INTO dipper_reg_indexing_agreements (id,
                                             created_at,
                                             updated_at,
@@ -111,8 +111,8 @@ VALUES ('019300e1-0c52-72b0-ae96-5eed9a9bd77a'::uuid,
         '019300ce-4751-780e-b58c-bf696b67eb23'::uuid,
         'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
         123456, -- Example accepted_at_epoch value
-        '\xc509d8fdd5bd42d4915167b49375cc5680c3c604'::bytea,
-        'https://qyxrksoqsm.com/yrmgcijervj',
+        '\xd609e9fdd6ce53e5a26278c50486dd6791d4d705'::bytea,
+        'https://indexer2.example.com/graphql',
         '{
             "payer": "0x442a24985444cdc6a4db9503d354918d27b5ea97",
             "recipient": "0x442a24985444cdc6a4db9503d354918d27b5ea97",

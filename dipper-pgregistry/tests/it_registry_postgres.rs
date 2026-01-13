@@ -1,5 +1,7 @@
 #![cfg(feature = "fake")]
 
+use std::collections::HashSet;
+
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_pgregistry::{
     Error, IndexingAgreementStatus, IndexingAgreementVoucher, IndexingReceiptReportedWork,
@@ -466,100 +468,6 @@ async fn get_rejected_indexing_agreements_by_indexing_request_id() {
 }
 
 #[tokio::test]
-async fn get_active_indexing_agreements_by_indexer_ids_batch_query() {
-    //* Given
-    let (db, _temp_db) = temp_registry_db().await;
-    run_fixture(
-        &db,
-        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
-    )
-    .await
-    .expect("Failed to run fixture");
-    let registry = PgRegistry::new(db);
-
-    // Indexer IDs from the fixture
-    let indexer_a = indexer_id!("1111111111111111111111111111111111111111");
-    let indexer_b = indexer_id!("2222222222222222222222222222222222222222");
-    let indexer_c = indexer_id!("3333333333333333333333333333333333333333");
-    let indexer_unknown = indexer_id!("9999999999999999999999999999999999999999");
-
-    //* When
-    // Query for all three indexers plus one that doesn't exist
-    let agreements = registry
-        .get_active_indexing_agreements_by_indexer_ids(&[
-            indexer_a,
-            indexer_b,
-            indexer_c,
-            indexer_unknown,
-        ])
-        .await
-        .expect("Failed to get agreements by indexer IDs");
-
-    //* Then
-    // Should return 3 active agreements:
-    // - Indexer A: 2 (Created + Accepted), NOT the Rejected one
-    // - Indexer B: 1 (Created)
-    // - Indexer C: 0 (only has Expired)
-    // - Unknown: 0
-    assert_eq!(agreements.len(), 3);
-
-    // Verify all returned agreements are active (Created or Accepted)
-    assert!(
-        agreements.iter().all(|a| matches!(
-            a.status,
-            IndexingAgreementStatus::Created | IndexingAgreementStatus::Accepted
-        )),
-        "All agreements should be in Created or Accepted status"
-    );
-
-    // Count agreements per indexer
-    let indexer_a_count = agreements
-        .iter()
-        .filter(|a| a.indexer.id == indexer_a)
-        .count();
-    let indexer_b_count = agreements
-        .iter()
-        .filter(|a| a.indexer.id == indexer_b)
-        .count();
-    let indexer_c_count = agreements
-        .iter()
-        .filter(|a| a.indexer.id == indexer_c)
-        .count();
-
-    assert_eq!(
-        indexer_a_count, 2,
-        "Indexer A should have 2 active agreements"
-    );
-    assert_eq!(
-        indexer_b_count, 1,
-        "Indexer B should have 1 active agreement"
-    );
-    assert_eq!(
-        indexer_c_count, 0,
-        "Indexer C should have 0 active agreements"
-    );
-}
-
-#[tokio::test]
-async fn get_active_indexing_agreements_by_indexer_ids_empty_input() {
-    //* Given
-    let (db, _temp_db) = temp_registry_db().await;
-    let registry = PgRegistry::new(db);
-
-    //* When
-    let agreements = registry
-        .get_active_indexing_agreements_by_indexer_ids(&[])
-        .await
-        .expect("Failed to get agreements for empty input");
-
-    //* Then
-    assert!(
-        agreements.is_empty(),
-        "Empty input should return empty result"
-    );
-}
-
-#[tokio::test]
 async fn register_new_indexing_receipt_no_indexing_agreement() {
     //* Given
     // Indexing agreement
@@ -639,4 +547,111 @@ async fn register_new_indexing_receipt() {
 
     //* Then
     let _indexing_receipt_id = res.expect("Failed to register new indexing receipt");
+}
+
+#[tokio::test]
+async fn get_pending_agreement_indexers_by_deployment_aggregation() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    // Indexer IDs from the fixture
+    let indexer_a = indexer_id!("1111111111111111111111111111111111111111");
+    let indexer_b = indexer_id!("2222222222222222222222222222222222222222");
+    let indexer_c = indexer_id!("3333333333333333333333333333333333333333");
+
+    //* When
+    let result = registry
+        .get_pending_agreement_indexers_by_deployment(&[indexer_a, indexer_b, indexer_c])
+        .await
+        .expect("Failed to get aggregated agreements");
+
+    //* Then
+    // Should return 3 deployments (only those with active agreements):
+    // - QmAAAAAA...1a -> [Indexer A] (Created)
+    // - QmBBBBBB...2b -> [Indexer A] (Accepted)
+    // - QmDDDDDD...4d -> [Indexer B] (Created)
+    // Rejected and Expired agreements should NOT be included
+    assert_eq!(result.len(), 3);
+
+    // Verify specific deployments
+    let deployment_a: DeploymentId = "QmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1a"
+        .parse()
+        .unwrap();
+    let deployment_b: DeploymentId = "QmBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB2b"
+        .parse()
+        .unwrap();
+    let deployment_d: DeploymentId = "QmDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD4d"
+        .parse()
+        .unwrap();
+
+    assert!(result.contains_key(&deployment_a));
+    assert!(result.contains_key(&deployment_b));
+    assert!(result.contains_key(&deployment_d));
+
+    // Verify indexers per deployment (use HashSet for order-independent comparison)
+    let to_set = |v: &Vec<IndexerId>| v.iter().copied().collect::<HashSet<_>>();
+    assert_eq!(
+        to_set(result.get(&deployment_a).unwrap()),
+        HashSet::from([indexer_a])
+    );
+    assert_eq!(
+        to_set(result.get(&deployment_b).unwrap()),
+        HashSet::from([indexer_a])
+    );
+    assert_eq!(
+        to_set(result.get(&deployment_d).unwrap()),
+        HashSet::from([indexer_b])
+    );
+}
+
+#[tokio::test]
+async fn get_pending_agreement_indexers_by_deployment_empty_input() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_pending_agreement_indexers_by_deployment(&[])
+        .await
+        .expect("Failed to get agreements for empty input");
+
+    //* Then
+    assert!(result.is_empty(), "Empty input should return empty HashMap");
+}
+
+#[tokio::test]
+async fn get_pending_agreement_indexers_by_deployment_no_active_agreements() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    // Indexer C only has expired agreements
+    let indexer_c = indexer_id!("3333333333333333333333333333333333333333");
+
+    //* When
+    let result = registry
+        .get_pending_agreement_indexers_by_deployment(&[indexer_c])
+        .await
+        .expect("Failed to get agreements");
+
+    //* Then
+    // Indexer C has no active agreements, only expired
+    assert!(
+        result.is_empty(),
+        "Indexer with only expired agreements should return empty HashMap"
+    );
 }
