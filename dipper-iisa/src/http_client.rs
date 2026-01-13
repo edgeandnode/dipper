@@ -516,7 +516,9 @@ mod tests {
         assert_eq!(agreements.len(), 1);
         // Key should be deployment ID, value should be list of indexer IDs
         assert!(agreements.contains_key("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"));
-        let indexers = agreements.get("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG").unwrap();
+        let indexers = agreements
+            .get("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG")
+            .unwrap();
         assert_eq!(indexers.len(), 1);
         assert_eq!(indexers[0], "0x1234567890123456789012345678901234567890");
     }
