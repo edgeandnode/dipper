@@ -1,5 +1,7 @@
 //! PostgreSQL implementation of the registry
 
+use std::collections::HashMap;
+
 use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
 use sqlx::{Pool, Postgres, types::Json};
 use thegraph_core::{
@@ -370,9 +372,7 @@ impl PgRegistry {
     pub async fn get_pending_agreement_indexers_by_deployment(
         &self,
         indexer_ids: &[IndexerId],
-    ) -> Result<std::collections::HashMap<DeploymentId, Vec<IndexerId>>, Error> {
-        use std::collections::HashMap;
-
+    ) -> Result<HashMap<DeploymentId, Vec<IndexerId>>, Error> {
         if indexer_ids.is_empty() {
             return Ok(HashMap::new());
         }

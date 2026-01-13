@@ -1,5 +1,7 @@
 #![cfg(feature = "fake")]
 
+use std::collections::HashSet;
+
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_pgregistry::{
     Error, IndexingAgreementStatus, IndexingAgreementVoucher, IndexingReceiptReportedWork,
@@ -593,10 +595,20 @@ async fn get_pending_agreement_indexers_by_deployment_aggregation() {
     assert!(result.contains_key(&deployment_b));
     assert!(result.contains_key(&deployment_d));
 
-    // Verify indexers per deployment
-    assert_eq!(result.get(&deployment_a).unwrap(), &vec![indexer_a]);
-    assert_eq!(result.get(&deployment_b).unwrap(), &vec![indexer_a]);
-    assert_eq!(result.get(&deployment_d).unwrap(), &vec![indexer_b]);
+    // Verify indexers per deployment (use HashSet for order-independent comparison)
+    let to_set = |v: &Vec<IndexerId>| v.iter().copied().collect::<HashSet<_>>();
+    assert_eq!(
+        to_set(result.get(&deployment_a).unwrap()),
+        HashSet::from([indexer_a])
+    );
+    assert_eq!(
+        to_set(result.get(&deployment_b).unwrap()),
+        HashSet::from([indexer_a])
+    );
+    assert_eq!(
+        to_set(result.get(&deployment_d).unwrap()),
+        HashSet::from([indexer_b])
+    );
 }
 
 #[tokio::test]
