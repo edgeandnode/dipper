@@ -53,6 +53,19 @@ pub trait AgreementRegistry {
         indexer_ids: &[IndexerId],
     ) -> RegistryResult<Vec<IndexingAgreement>>;
 
+    /// Get aggregated deployment-to-indexers mapping for active agreements.
+    ///
+    /// This is an optimized version of `get_active_indexing_agreements_by_indexer_ids` that
+    /// performs database-side aggregation, returning only the deployment IDs and their
+    /// associated indexer IDs rather than full agreement objects.
+    ///
+    /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
+    /// that have active agreements for that deployment.
+    async fn get_pending_agreement_indexers_by_deployment(
+        &self,
+        indexer_ids: &[IndexerId],
+    ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>;
+
     /// Get all agreements by associated indexing request ID.
     async fn get_indexing_agreements_by_indexing_request_id(
         &self,
