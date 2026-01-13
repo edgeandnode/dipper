@@ -21,8 +21,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: dipper
-          # TODO: Pin to specific version tag for production
-          image: ghcr.io/edgeandnode/dipper-service:latest
+          image: ghcr.io/edgeandnode/dipper-service:v0.1.0 # x-release-please-version
           args:
             - /config/config.json
           ports:
