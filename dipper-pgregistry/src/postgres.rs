@@ -16,7 +16,6 @@ use self::common::{
 };
 use super::{
     IndexingReceiptReportedWork,
-    indexer_denylist::IndexerDenylistEntry,
     indexing_agreement::{IndexingAgreement, Status as IndexingAgreementStatus, Voucher},
     indexing_receipt::IndexingReceipt,
     indexing_request::{IndexingRequest, Status as IndexingRequestStatus},
@@ -728,63 +727,5 @@ impl PgRegistry {
         .await?;
 
         Ok(rows.into_iter().map(|(id,)| id.0).collect())
-    }
-
-    /// Get all denylist entries with full details.
-    pub async fn get_indexer_denylist_entries(&self) -> Result<Vec<IndexerDenylistEntry>, Error> {
-        sqlx::query_as(
-            r#"
-            SELECT indexer_id, created_at, reason
-            FROM dipper_indexer_denylist
-            ORDER BY created_at DESC
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(Into::into)
-    }
-
-    /// Add an indexer to the denylist.
-    ///
-    /// If the indexer is already denied, this will update the reason.
-    pub async fn add_to_indexer_denylist(
-        &self,
-        indexer_id: IndexerId,
-        reason: Option<&str>,
-    ) -> Result<(), Error> {
-        sqlx::query(
-            r#"
-            INSERT INTO dipper_indexer_denylist (indexer_id, reason)
-            VALUES ($1, $2)
-            ON CONFLICT (indexer_id) DO UPDATE SET reason = $2
-            "#,
-        )
-        .bind(PgIndexerId(indexer_id))
-        .bind(reason)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    /// Remove an indexer from the denylist.
-    ///
-    /// Returns an error if the indexer was not in the denylist.
-    pub async fn remove_from_indexer_denylist(&self, indexer_id: IndexerId) -> Result<(), Error> {
-        let result = sqlx::query(
-            r#"
-            DELETE FROM dipper_indexer_denylist
-            WHERE indexer_id = $1
-            "#,
-        )
-        .bind(PgIndexerId(indexer_id))
-        .execute(&self.pool)
-        .await?;
-
-        if result.rows_affected() == 0 {
-            return Err(Error::NoRecordsUpdated);
-        }
-
-        Ok(())
     }
 }

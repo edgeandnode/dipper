@@ -792,192 +792,51 @@ async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
 // =============================================================================
 
 #[tokio::test]
-async fn indexer_denylist_add_and_get() {
+async fn indexer_denylist_returns_denied_indexers() {
     //* Given
     let (db, _temp_db) = temp_registry_db().await;
-    let registry = PgRegistry::new(db);
-
-    let indexer_id = indexer_id!("1111111111111111111111111111111111111111");
-
-    //* When
-    registry
-        .add_to_indexer_denylist(indexer_id, Some("Test reason"))
-        .await
-        .expect("Failed to add indexer to denylist");
-
-    //* Then
-    let denylist = registry
-        .get_indexer_denylist()
-        .await
-        .expect("Failed to get denylist");
-    assert_eq!(denylist.len(), 1);
-    assert!(denylist.contains(&indexer_id));
-}
-
-#[tokio::test]
-async fn indexer_denylist_get_entries_with_details() {
-    //* Given
-    let (db, _temp_db) = temp_registry_db().await;
-    let registry = PgRegistry::new(db);
-
-    let indexer_id = indexer_id!("2222222222222222222222222222222222222222");
-    let reason = "Malicious behavior detected";
-
-    registry
-        .add_to_indexer_denylist(indexer_id, Some(reason))
-        .await
-        .expect("Failed to add indexer to denylist");
-
-    //* When
-    let entries = registry
-        .get_indexer_denylist_entries()
-        .await
-        .expect("Failed to get denylist entries");
-
-    //* Then
-    assert_eq!(entries.len(), 1);
-    let entry = &entries[0];
-    assert_eq!(entry.indexer_id, indexer_id);
-    assert_eq!(entry.reason.as_deref(), Some(reason));
-}
-
-#[tokio::test]
-async fn indexer_denylist_add_without_reason() {
-    //* Given
-    let (db, _temp_db) = temp_registry_db().await;
-    let registry = PgRegistry::new(db);
-
-    let indexer_id = indexer_id!("3333333333333333333333333333333333333333");
-
-    //* When
-    registry
-        .add_to_indexer_denylist(indexer_id, None)
-        .await
-        .expect("Failed to add indexer to denylist");
-
-    //* Then
-    let entries = registry
-        .get_indexer_denylist_entries()
-        .await
-        .expect("Failed to get denylist entries");
-    assert_eq!(entries.len(), 1);
-    assert!(entries[0].reason.is_none());
-}
-
-#[tokio::test]
-async fn indexer_denylist_remove() {
-    //* Given
-    let (db, _temp_db) = temp_registry_db().await;
-    let registry = PgRegistry::new(db);
-
-    let indexer_id = indexer_id!("4444444444444444444444444444444444444444");
-
-    registry
-        .add_to_indexer_denylist(indexer_id, Some("Temporary block"))
-        .await
-        .expect("Failed to add indexer to denylist");
-
-    // Verify indexer is in denylist
-    let denylist = registry
-        .get_indexer_denylist()
-        .await
-        .expect("Failed to get denylist");
-    assert!(denylist.contains(&indexer_id));
-
-    //* When
-    registry
-        .remove_from_indexer_denylist(indexer_id)
-        .await
-        .expect("Failed to remove indexer from denylist");
-
-    //* Then
-    let denylist = registry
-        .get_indexer_denylist()
-        .await
-        .expect("Failed to get denylist");
-    assert!(denylist.is_empty());
-}
-
-#[tokio::test]
-async fn indexer_denylist_remove_nonexistent_returns_error() {
-    //* Given
-    let (db, _temp_db) = temp_registry_db().await;
-    let registry = PgRegistry::new(db);
-
-    let indexer_id = indexer_id!("5555555555555555555555555555555555555555");
-
-    //* When
-    let result = registry.remove_from_indexer_denylist(indexer_id).await;
-
-    //* Then
-    let err = result.expect_err("Expected error when removing non-existent indexer");
-    assert!(matches!(err, Error::NoRecordsUpdated));
-}
-
-#[tokio::test]
-async fn indexer_denylist_add_duplicate_updates_reason() {
-    //* Given
-    let (db, _temp_db) = temp_registry_db().await;
-    let registry = PgRegistry::new(db);
-
-    let indexer_id = indexer_id!("6666666666666666666666666666666666666666");
-
-    registry
-        .add_to_indexer_denylist(indexer_id, Some("Original reason"))
-        .await
-        .expect("Failed to add indexer to denylist");
-
-    //* When
-    // Add again with a different reason - should update via upsert
-    registry
-        .add_to_indexer_denylist(indexer_id, Some("Updated reason"))
-        .await
-        .expect("Failed to update denylist entry");
-
-    //* Then
-    let entries = registry
-        .get_indexer_denylist_entries()
-        .await
-        .expect("Failed to get denylist entries");
-    assert_eq!(
-        entries.len(),
-        1,
-        "Should still have only one entry after upsert"
-    );
-    assert_eq!(entries[0].reason.as_deref(), Some("Updated reason"));
-}
-
-#[tokio::test]
-async fn indexer_denylist_multiple_indexers() {
-    //* Given
-    let (db, _temp_db) = temp_registry_db().await;
-    let registry = PgRegistry::new(db);
+    let registry = PgRegistry::new(db.clone());
 
     let indexer_a = indexer_id!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     let indexer_b = indexer_id!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-    let indexer_c = indexer_id!("cccccccccccccccccccccccccccccccccccccccc");
+
+    // Insert directly via SQL (simulating admin operations via kubectl)
+    sqlx::query("INSERT INTO dipper_indexer_denylist (indexer_id, reason) VALUES ($1, $2)")
+        .bind(indexer_a.as_slice())
+        .bind("Malicious behavior")
+        .execute(&db)
+        .await
+        .expect("Failed to insert indexer A");
+    sqlx::query("INSERT INTO dipper_indexer_denylist (indexer_id) VALUES ($1)")
+        .bind(indexer_b.as_slice())
+        .execute(&db)
+        .await
+        .expect("Failed to insert indexer B");
 
     //* When
-    registry
-        .add_to_indexer_denylist(indexer_a, Some("Reason A"))
-        .await
-        .expect("Failed to add A");
-    registry
-        .add_to_indexer_denylist(indexer_b, None)
-        .await
-        .expect("Failed to add B");
-    registry
-        .add_to_indexer_denylist(indexer_c, Some("Reason C"))
-        .await
-        .expect("Failed to add C");
-
-    //* Then
     let denylist = registry
         .get_indexer_denylist()
         .await
         .expect("Failed to get denylist");
-    assert_eq!(denylist.len(), 3);
+
+    //* Then
+    assert_eq!(denylist.len(), 2);
     assert!(denylist.contains(&indexer_a));
     assert!(denylist.contains(&indexer_b));
-    assert!(denylist.contains(&indexer_c));
+}
+
+#[tokio::test]
+async fn indexer_denylist_returns_empty_when_none_denied() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let denylist = registry
+        .get_indexer_denylist()
+        .await
+        .expect("Failed to get denylist");
+
+    //* Then
+    assert!(denylist.is_empty());
 }
