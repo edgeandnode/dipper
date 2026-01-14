@@ -655,3 +655,87 @@ async fn get_pending_agreement_indexers_by_deployment_no_active_agreements() {
         "Indexer with only expired agreements should return empty HashMap"
     );
 }
+
+// =============================================================================
+// get_declined_indexers_by_deployment tests
+// =============================================================================
+
+#[tokio::test]
+async fn get_declined_indexers_by_deployment_returns_rejected() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    //* When
+    // Use 30 days lookback (agreements were created "now")
+    let result = registry
+        .get_declined_indexers_by_deployment(30)
+        .await
+        .expect("Failed to get declined indexers");
+
+    //* Then
+    // Indexer A rejected agreement for deployment QmCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC3c
+    assert_eq!(result.len(), 1, "Should have 1 deployment with declined indexers");
+
+    let deployment_id: DeploymentId = "QmCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC3c"
+        .parse()
+        .unwrap();
+    let indexer_a = indexer_id!("1111111111111111111111111111111111111111");
+
+    let declined = result.get(&deployment_id).expect("Deployment not found");
+    assert_eq!(declined.len(), 1);
+    assert!(declined.contains(&indexer_a));
+}
+
+#[tokio::test]
+async fn get_declined_indexers_by_deployment_empty_when_no_declines() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    // Use fixture without any rejected/canceled agreements
+    run_fixture(&db, include_str!("fixtures/0001_indexing_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_declined_indexers_by_deployment(30)
+        .await
+        .expect("Failed to get declined indexers");
+
+    //* Then
+    assert!(result.is_empty(), "No declined agreements should return empty HashMap");
+}
+
+#[tokio::test]
+async fn get_declined_indexers_by_deployment_respects_lookback() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    //* When
+    // Use 0 days lookback - should exclude everything
+    let result = registry
+        .get_declined_indexers_by_deployment(0)
+        .await
+        .expect("Failed to get declined indexers");
+
+    //* Then
+    // With 0 days lookback, nothing should match (agreements were created "now", not in the future)
+    assert!(
+        result.is_empty(),
+        "0 day lookback should return empty HashMap"
+    );
+}

@@ -8,11 +8,18 @@ use crate::{
     worker::result::{JobError, JobResult},
 };
 
+/// Number of days to look back for declined indexers.
+///
+/// Indexers that declined an agreement within this period will be excluded
+/// from selection for that deployment.
+const DECLINED_INDEXER_LOOKBACK_DAYS: i32 = 30;
+
 /// Gather load balancing context for IISA selection.
 ///
 /// This function queries the registry to build context about:
 /// - Which indexers already have active agreements for this deployment
 /// - What other deployments each candidate indexer is currently working on
+/// - Which indexers have recently declined agreements (within 30 days)
 pub async fn gather_selection_context<R>(
     registry: &R,
     deployment_id: &DeploymentId,
@@ -40,9 +47,16 @@ where
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
+    // Get indexers that declined agreements within the lookback period
+    let declined_indexers = registry
+        .get_declined_indexers_by_deployment(DECLINED_INDEXER_LOOKBACK_DAYS)
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
+
     Ok(SelectionContext {
         existing_indexers,
         pending_agreements,
+        declined_indexers,
         ..Default::default()
     })
 }
