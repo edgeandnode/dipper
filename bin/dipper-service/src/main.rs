@@ -200,7 +200,7 @@ pub async fn main() -> anyhow::Result<()> {
 
         let ctx = admin_rpc_server::Ctx {
             signer: signer.clone(),
-            admin_allowlist: Arc::new(conf.admin_rpc.allowlist),
+            gateway_operator_allowlist: Arc::new(conf.admin_rpc.gateway_operator_allowlist),
             max_candidates: DEFAULT_MAX_CANDIDATES,
             registry: registry.clone(),
             worker: worker_handle.queue().clone(),

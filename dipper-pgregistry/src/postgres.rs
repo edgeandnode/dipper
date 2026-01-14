@@ -16,7 +16,7 @@ use self::common::{
 };
 use super::{
     IndexingReceiptReportedWork,
-    blocklist::BlocklistEntry,
+    indexer_denylist::IndexerDenylistEntry,
     indexing_agreement::{IndexingAgreement, Status as IndexingAgreementStatus, Voucher},
     indexing_receipt::IndexingReceipt,
     indexing_request::{IndexingRequest, Status as IndexingRequestStatus},
@@ -713,17 +713,15 @@ impl PgRegistry {
     }
 
     // =========================================================================
-    // Blocklist operations
+    // Indexer denylist operations
     // =========================================================================
 
-    /// Get all blocklisted indexer IDs.
-    ///
-    /// Returns the list of indexer IDs that have been administratively blocked.
-    pub async fn get_blocklist(&self) -> Result<Vec<IndexerId>, Error> {
+    /// Get all denied indexer IDs.
+    pub async fn get_indexer_denylist(&self) -> Result<Vec<IndexerId>, Error> {
         let rows: Vec<(PgIndexerId,)> = sqlx::query_as(
             r#"
             SELECT indexer_id
-            FROM dipper_blocklist
+            FROM dipper_indexer_denylist
             "#,
         )
         .fetch_all(&self.pool)
@@ -732,14 +730,12 @@ impl PgRegistry {
         Ok(rows.into_iter().map(|(id,)| id.0).collect())
     }
 
-    /// Get all blocklist entries with full details.
-    ///
-    /// Returns the complete blocklist entries including timestamps and reasons.
-    pub async fn get_blocklist_entries(&self) -> Result<Vec<BlocklistEntry>, Error> {
+    /// Get all denylist entries with full details.
+    pub async fn get_indexer_denylist_entries(&self) -> Result<Vec<IndexerDenylistEntry>, Error> {
         sqlx::query_as(
             r#"
             SELECT indexer_id, created_at, reason
-            FROM dipper_blocklist
+            FROM dipper_indexer_denylist
             ORDER BY created_at DESC
             "#,
         )
@@ -748,17 +744,17 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
-    /// Add an indexer to the blocklist.
+    /// Add an indexer to the denylist.
     ///
-    /// If the indexer is already blocklisted, this will update the reason.
-    pub async fn add_to_blocklist(
+    /// If the indexer is already denied, this will update the reason.
+    pub async fn add_to_indexer_denylist(
         &self,
         indexer_id: IndexerId,
         reason: Option<&str>,
     ) -> Result<(), Error> {
         sqlx::query(
             r#"
-            INSERT INTO dipper_blocklist (indexer_id, reason)
+            INSERT INTO dipper_indexer_denylist (indexer_id, reason)
             VALUES ($1, $2)
             ON CONFLICT (indexer_id) DO UPDATE SET reason = $2
             "#,
@@ -771,13 +767,13 @@ impl PgRegistry {
         Ok(())
     }
 
-    /// Remove an indexer from the blocklist.
+    /// Remove an indexer from the denylist.
     ///
-    /// Returns an error if the indexer was not in the blocklist.
-    pub async fn remove_from_blocklist(&self, indexer_id: IndexerId) -> Result<(), Error> {
+    /// Returns an error if the indexer was not in the denylist.
+    pub async fn remove_from_indexer_denylist(&self, indexer_id: IndexerId) -> Result<(), Error> {
         let result = sqlx::query(
             r#"
-            DELETE FROM dipper_blocklist
+            DELETE FROM dipper_indexer_denylist
             WHERE indexer_id = $1
             "#,
         )

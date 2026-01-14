@@ -1,5 +1,5 @@
 mod agreement;
-mod blocklist;
+mod indexer_denylist;
 mod indexing_request;
 mod receipt;
 mod result;
@@ -20,7 +20,7 @@ pub use self::{
         AgreementRegistry, IndexingAgreement, Status as IndexingAgreementStatus,
         Voucher as IndexingAgreementVoucher, VoucherMetadata as IndexingAgreementVoucherMetadata,
     },
-    blocklist::{BlocklistEntry, BlocklistRegistry},
+    indexer_denylist::{IndexerDenylistEntry, IndexerDenylistRegistry},
     indexing_request::{IndexingRequest, IndexingRequestRegistry, Status as IndexingRequestStatus},
     receipt::{IndexingReceipt, ReceiptRegistry, ReportedWork},
     result::{Error, Result},
@@ -315,29 +315,32 @@ impl ReceiptRegistry for RegistryProvider {
 }
 
 #[async_trait]
-impl BlocklistRegistry for RegistryProvider {
-    async fn get_blocklist(&self) -> RegistryResult<Vec<IndexerId>> {
-        self.inner.get_blocklist().await.map_err(Into::into)
+impl IndexerDenylistRegistry for RegistryProvider {
+    async fn get_indexer_denylist(&self) -> RegistryResult<Vec<IndexerId>> {
+        self.inner.get_indexer_denylist().await.map_err(Into::into)
     }
 
-    async fn get_blocklist_entries(&self) -> RegistryResult<Vec<BlocklistEntry>> {
-        self.inner.get_blocklist_entries().await.map_err(Into::into)
+    async fn get_indexer_denylist_entries(&self) -> RegistryResult<Vec<IndexerDenylistEntry>> {
+        self.inner
+            .get_indexer_denylist_entries()
+            .await
+            .map_err(Into::into)
     }
 
-    async fn add_to_blocklist(
+    async fn add_to_indexer_denylist(
         &self,
         indexer_id: IndexerId,
         reason: Option<&str>,
     ) -> RegistryResult<()> {
         self.inner
-            .add_to_blocklist(indexer_id, reason)
+            .add_to_indexer_denylist(indexer_id, reason)
             .await
             .map_err(Into::into)
     }
 
-    async fn remove_from_blocklist(&self, indexer_id: IndexerId) -> RegistryResult<()> {
+    async fn remove_from_indexer_denylist(&self, indexer_id: IndexerId) -> RegistryResult<()> {
         self.inner
-            .remove_from_blocklist(indexer_id)
+            .remove_from_indexer_denylist(indexer_id)
             .await
             .map_err(Into::into)
     }

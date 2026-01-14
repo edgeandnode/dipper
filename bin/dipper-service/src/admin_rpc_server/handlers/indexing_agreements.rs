@@ -29,7 +29,7 @@ use crate::{
 /// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
 pub struct Ctx<R, W> {
     pub signer: Arc<PrivateKeyEip712Signer>,
-    pub allowlist: Arc<BTreeSet<Address>>,
+    pub gateway_operator_allowlist: Arc<BTreeSet<Address>>,
     pub registry: R,
     pub worker: W,
 }
@@ -151,7 +151,7 @@ where
                 return Err(ErrorObject::borrowed(401, "Unauthorized", None));
             }
         };
-        if !self.allowlist.contains(&requested_by) {
+        if !self.gateway_operator_allowlist.contains(&requested_by) {
             return Err(ErrorObject::borrowed(403, "Forbidden", None));
         }
 

@@ -5,14 +5,14 @@ use sqlx::{
     migrate::{Migrate, MigrateError},
 };
 
-mod blocklist;
+mod indexer_denylist;
 mod indexing_agreement;
 mod indexing_receipt;
 mod indexing_request;
 mod postgres;
 mod result;
 
-pub use blocklist::BlocklistEntry;
+pub use indexer_denylist::IndexerDenylistEntry;
 pub use indexing_agreement::{
     Indexer as IndexingAgreementIndexer, IndexingAgreement, Status as IndexingAgreementStatus,
     Voucher as IndexingAgreementVoucher, VoucherMetadata as IndexingAgreementVoucherMetadata,

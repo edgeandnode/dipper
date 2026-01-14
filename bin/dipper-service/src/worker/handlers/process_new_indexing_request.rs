@@ -10,7 +10,7 @@ use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
     network::NetworkProvider,
     registry::{
-        AgreementRegistry, BlocklistRegistry, IndexingAgreementVoucher,
+        AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementVoucher,
         IndexingAgreementVoucherMetadata, IndexingRequestRegistry,
     },
     signing::eip712::PrivateKeyEip712Signer,
@@ -55,7 +55,7 @@ pub async fn handle<R, N, W, I>(
     job_meta: JobMeta,
 ) -> JobResult<()>
 where
-    R: IndexingRequestRegistry + AgreementRegistry + BlocklistRegistry,
+    R: IndexingRequestRegistry + AgreementRegistry + IndexerDenylistRegistry,
     N: NetworkProvider,
     W: WorkerQueue,
     I: CandidateSelection,
