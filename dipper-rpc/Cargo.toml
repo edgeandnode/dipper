@@ -5,12 +5,13 @@ edition = "2024"
 
 [features]
 # Enables the admin RPC functionality
-admin-rpc = ["dep:serde", "dep:serde_with", "dep:thegraph-core", "dep:time", "dep:jsonrpsee", "dep:dipper-core"]
+admin-rpc = ["dep:serde", "dep:serde_with", "dep:thegraph-core", "dep:time", "dep:jsonrpsee", "dep:dipper-core", "dep:dipper-pgregistry"]
 # Enables the indexer RPC functionality
 indexer-rpc = ["dep:indexer-dips", "indexer-dips/rpc"]
 
 [dependencies]
 dipper-core = { version = "0.1.0", path = "../dipper-core", features = ["serde"], optional = true }
+dipper-pgregistry = { version = "0.1.0", path = "../dipper-pgregistry", optional = true }
 indexer-dips = { git = "https://github.com/graphprotocol/indexer-rs.git", rev = "96634f4", default-features = false, optional = true }
 jsonrpsee = { workspace = true, features = ["client", "macros", "server"], optional = true }
 serde = { workspace = true, optional = true }

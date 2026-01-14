@@ -2210,6 +2210,7 @@ name = "dipper-rpc"
 version = "0.1.0"
 dependencies = [
  "dipper-core",
+ "dipper-pgregistry",
  "indexer-dips",
  "jsonrpsee",
  "serde",

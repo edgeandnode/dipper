@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use dipper_core::state::FromState;
 use thegraph_core::alloy::primitives::Address;
 
-use super::handlers::{IndexingAgreementsCtx, IndexingRequestsCtx};
+use super::handlers::{BlocklistCtx, IndexingAgreementsCtx, IndexingRequestsCtx};
 use crate::signing::eip712::PrivateKeyEip712Signer;
 
 /// The context shared across all requests.
@@ -52,6 +52,17 @@ where
             allowlist: ctx.admin_allowlist.clone(),
             registry: ctx.registry.clone(),
             worker: ctx.worker.clone(),
+        }
+    }
+}
+
+impl<R, W> FromState<Ctx<R, W>> for BlocklistCtx<R>
+where
+    R: Clone,
+{
+    fn from_state(ctx: &Ctx<R, W>) -> Self {
+        Self {
+            registry: ctx.registry.clone(),
         }
     }
 }

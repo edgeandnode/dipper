@@ -1,4 +1,5 @@
 mod agreement;
+mod blocklist;
 mod indexing_request;
 mod receipt;
 mod result;
@@ -19,6 +20,7 @@ pub use self::{
         AgreementRegistry, IndexingAgreement, Status as IndexingAgreementStatus,
         Voucher as IndexingAgreementVoucher, VoucherMetadata as IndexingAgreementVoucherMetadata,
     },
+    blocklist::{BlocklistEntry, BlocklistRegistry},
     indexing_request::{IndexingRequest, IndexingRequestRegistry, Status as IndexingRequestStatus},
     receipt::{IndexingReceipt, ReceiptRegistry, ReportedWork},
     result::{Error, Result},
@@ -309,5 +311,34 @@ impl ReceiptRegistry for RegistryProvider {
             .get_last_receipt_for_agreement_id(agreement_id)
             .await?
             .map(Into::into))
+    }
+}
+
+#[async_trait]
+impl BlocklistRegistry for RegistryProvider {
+    async fn get_blocklist(&self) -> RegistryResult<Vec<IndexerId>> {
+        self.inner.get_blocklist().await.map_err(Into::into)
+    }
+
+    async fn get_blocklist_entries(&self) -> RegistryResult<Vec<BlocklistEntry>> {
+        self.inner.get_blocklist_entries().await.map_err(Into::into)
+    }
+
+    async fn add_to_blocklist(
+        &self,
+        indexer_id: IndexerId,
+        reason: Option<&str>,
+    ) -> RegistryResult<()> {
+        self.inner
+            .add_to_blocklist(indexer_id, reason)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn remove_from_blocklist(&self, indexer_id: IndexerId) -> RegistryResult<()> {
+        self.inner
+            .remove_from_blocklist(indexer_id)
+            .await
+            .map_err(Into::into)
     }
 }

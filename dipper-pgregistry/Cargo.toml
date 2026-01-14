@@ -16,7 +16,7 @@ serde = { workspace = true, features = ["derive"] }
 sqlx = { workspace = true, features = ["runtime-tokio"] }
 thegraph-core = { workspace = true, features = ["serde"] }
 thiserror.workspace = true
-time.workspace = true
+time = { workspace = true, features = ["serde"] }
 url.workspace = true
 
 [dev-dependencies]

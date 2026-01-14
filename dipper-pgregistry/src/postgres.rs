@@ -16,13 +16,14 @@ use self::common::{
 };
 use super::{
     IndexingReceiptReportedWork,
+    blocklist::BlocklistEntry,
     indexing_agreement::{IndexingAgreement, Status as IndexingAgreementStatus, Voucher},
     indexing_receipt::IndexingReceipt,
     indexing_request::{IndexingRequest, Status as IndexingRequestStatus},
     result::Error,
 };
 
-mod common;
+pub(crate) mod common;
 mod indexing_agreement;
 mod indexing_receipt;
 mod indexing_request;
@@ -709,5 +710,85 @@ impl PgRegistry {
         .fetch_optional(&self.pool)
         .await
         .map_err(Into::into)
+    }
+
+    // =========================================================================
+    // Blocklist operations
+    // =========================================================================
+
+    /// Get all blocklisted indexer IDs.
+    ///
+    /// Returns the list of indexer IDs that have been administratively blocked.
+    pub async fn get_blocklist(&self) -> Result<Vec<IndexerId>, Error> {
+        let rows: Vec<(PgIndexerId,)> = sqlx::query_as(
+            r#"
+            SELECT indexer_id
+            FROM dipper_blocklist
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id.0).collect())
+    }
+
+    /// Get all blocklist entries with full details.
+    ///
+    /// Returns the complete blocklist entries including timestamps and reasons.
+    pub async fn get_blocklist_entries(&self) -> Result<Vec<BlocklistEntry>, Error> {
+        sqlx::query_as(
+            r#"
+            SELECT indexer_id, created_at, reason
+            FROM dipper_blocklist
+            ORDER BY created_at DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Add an indexer to the blocklist.
+    ///
+    /// If the indexer is already blocklisted, this will update the reason.
+    pub async fn add_to_blocklist(
+        &self,
+        indexer_id: IndexerId,
+        reason: Option<&str>,
+    ) -> Result<(), Error> {
+        sqlx::query(
+            r#"
+            INSERT INTO dipper_blocklist (indexer_id, reason)
+            VALUES ($1, $2)
+            ON CONFLICT (indexer_id) DO UPDATE SET reason = $2
+            "#,
+        )
+        .bind(PgIndexerId(indexer_id))
+        .bind(reason)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Remove an indexer from the blocklist.
+    ///
+    /// Returns an error if the indexer was not in the blocklist.
+    pub async fn remove_from_blocklist(&self, indexer_id: IndexerId) -> Result<(), Error> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM dipper_blocklist
+            WHERE indexer_id = $1
+            "#,
+        )
+        .bind(PgIndexerId(indexer_id))
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(Error::NoRecordsUpdated);
+        }
+
+        Ok(())
     }
 }
