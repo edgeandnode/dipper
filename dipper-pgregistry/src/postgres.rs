@@ -404,6 +404,43 @@ impl PgRegistry {
             .collect())
     }
 
+    /// Get declined indexers grouped by deployment within a lookback period.
+    ///
+    /// Returns indexers that have `Rejected` or `CanceledByIndexer` status within
+    /// the specified number of days, grouped by deployment. This is used to avoid
+    /// re-offering agreements to indexers that recently declined.
+    ///
+    /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
+    /// that declined agreements for that deployment.
+    pub async fn get_declined_indexers_by_deployment(
+        &self,
+        lookback_days: i32,
+    ) -> Result<HashMap<DeploymentId, Vec<IndexerId>>, Error> {
+        let rows: Vec<(PgDeploymentId, Vec<PgIndexerId>)> = sqlx::query_as(
+            r#"
+            SELECT
+                deployment_id,
+                array_agg(DISTINCT indexer_id) as indexer_ids
+            FROM dipper_reg_indexing_agreements
+            WHERE status IN ($1, $2)
+              AND updated_at >= timezone('UTC', now()) - make_interval(days => $3)
+            GROUP BY deployment_id
+            "#,
+        )
+        .bind(IndexingAgreementStatus::Rejected)
+        .bind(IndexingAgreementStatus::CanceledByIndexer)
+        .bind(lookback_days)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(deployment, indexers)| {
+                (deployment.0, indexers.into_iter().map(|i| i.0).collect())
+            })
+            .collect())
+    }
+
     pub async fn get_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,

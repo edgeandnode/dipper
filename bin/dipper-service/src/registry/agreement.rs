@@ -58,6 +58,19 @@ pub trait AgreementRegistry {
         indexer_ids: &[IndexerId],
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>;
 
+    /// Get declined indexers grouped by deployment within a lookback period.
+    ///
+    /// Returns indexers that have `Rejected` or `CanceledByIndexer` status within
+    /// the specified number of days, grouped by deployment. This is used to avoid
+    /// re-offering agreements to indexers that recently declined.
+    ///
+    /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
+    /// that declined agreements for that deployment.
+    async fn get_declined_indexers_by_deployment(
+        &self,
+        lookback_days: i32,
+    ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>;
+
     /// Get all agreements by associated indexing request ID.
     async fn get_indexing_agreements_by_indexing_request_id(
         &self,

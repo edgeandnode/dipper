@@ -156,6 +156,16 @@ impl AgreementRegistry for RegistryProvider {
             .await?)
     }
 
+    async fn get_declined_indexers_by_deployment(
+        &self,
+        lookback_days: i32,
+    ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>> {
+        Ok(self
+            .inner
+            .get_declined_indexers_by_deployment(lookback_days)
+            .await?)
+    }
+
     async fn get_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
