@@ -681,7 +681,11 @@ async fn get_declined_indexers_by_deployment_returns_rejected() {
 
     //* Then
     // Indexer A rejected agreement for deployment QmCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC3c
-    assert_eq!(result.len(), 1, "Should have 1 deployment with declined indexers");
+    assert_eq!(
+        result.len(),
+        1,
+        "Should have 1 deployment with declined indexers"
+    );
 
     let deployment_id: DeploymentId = "QmCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC3c"
         .parse()
@@ -710,7 +714,10 @@ async fn get_declined_indexers_by_deployment_empty_when_no_declines() {
         .expect("Failed to get declined indexers");
 
     //* Then
-    assert!(result.is_empty(), "No declined agreements should return empty HashMap");
+    assert!(
+        result.is_empty(),
+        "No declined agreements should return empty HashMap"
+    );
 }
 
 #[tokio::test]
