@@ -29,6 +29,18 @@ pub struct SelectionContext {
     /// Used to exclude indexers with pending work from new assignments.
     /// Key: Deployment ID, Value: List of indexer IDs working on that deployment.
     pub pending_agreements: HashMap<DeploymentId, Vec<IndexerId>>,
+
+    /// Indexer IDs that should be excluded from selection entirely.
+    ///
+    /// Used for indexers that have been flagged for poor performance, trust issues,
+    /// or other reasons that make them unsuitable for any deployment.
+    pub blocklist: Vec<IndexerId>,
+
+    /// For each deployment, indexers that have recently declined agreements.
+    ///
+    /// Used to avoid re-offering agreements to indexers that recently declined.
+    /// Key: Deployment ID, Value: List of indexer IDs that declined.
+    pub declined_indexers: HashMap<DeploymentId, Vec<IndexerId>>,
 }
 
 /// The `SelectionError` enum represents the errors that can occur during the candidate selection
