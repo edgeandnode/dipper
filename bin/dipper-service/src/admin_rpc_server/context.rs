@@ -3,17 +3,17 @@ use std::{collections::BTreeSet, sync::Arc};
 use dipper_core::state::FromState;
 use thegraph_core::alloy::primitives::Address;
 
-use super::handlers::{BlocklistCtx, IndexingAgreementsCtx, IndexingRequestsCtx};
+use super::handlers::{IndexingAgreementsCtx, IndexingRequestsCtx};
 use crate::signing::eip712::PrivateKeyEip712Signer;
 
-/// The context shared across all requests.
+/// Shared context for the gateway operator API.
 #[derive(Clone)]
 pub struct Ctx<R, W> {
-    /// The EIP-712 signer
+    /// EIP-712 signer for response authentication.
     pub signer: Arc<PrivateKeyEip712Signer>,
 
-    /// The allowlist of addresses that are allowed to make requests to the DIPs gateway Admin API
-    pub admin_allowlist: Arc<BTreeSet<Address>>,
+    /// Authorized gateway operator addresses (e.g., Graph Studio).
+    pub gateway_operator_allowlist: Arc<BTreeSet<Address>>,
 
     /// The maximum number of candidates to select
     pub max_candidates: usize,
@@ -33,7 +33,7 @@ where
     fn from_state(ctx: &Ctx<R, W>) -> Self {
         Self {
             signer: ctx.signer.clone(),
-            allowlist: ctx.admin_allowlist.clone(),
+            gateway_operator_allowlist: ctx.gateway_operator_allowlist.clone(),
             registry: ctx.registry.clone(),
             worker: ctx.worker.clone(),
             max_candidates: ctx.max_candidates,
@@ -49,20 +49,9 @@ where
     fn from_state(ctx: &Ctx<R, W>) -> Self {
         Self {
             signer: ctx.signer.clone(),
-            allowlist: ctx.admin_allowlist.clone(),
+            gateway_operator_allowlist: ctx.gateway_operator_allowlist.clone(),
             registry: ctx.registry.clone(),
             worker: ctx.worker.clone(),
-        }
-    }
-}
-
-impl<R, W> FromState<Ctx<R, W>> for BlocklistCtx<R>
-where
-    R: Clone,
-{
-    fn from_state(ctx: &Ctx<R, W>) -> Self {
-        Self {
-            registry: ctx.registry.clone(),
         }
     }
 }

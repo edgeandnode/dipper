@@ -4,9 +4,9 @@ use dipper_core::state::FromState;
 use jsonrpsee::server::{Server, ServerConfig};
 use tokio::sync::mpsc;
 
-use super::handlers::{BlocklistCtx, IndexingAgreementsCtx, IndexingRequestsCtx, rpc_handlers};
+use super::handlers::{IndexingAgreementsCtx, IndexingRequestsCtx, rpc_handlers};
 use crate::{
-    registry::{AgreementRegistry, BlocklistRegistry, IndexingRequestRegistry},
+    registry::{AgreementRegistry, IndexingRequestRegistry},
     worker::service::WorkerQueue,
 };
 
@@ -39,25 +39,18 @@ impl Handle {
     }
 }
 
-/// Create a new Admin RPC server service
+/// Create a new gateway operator API server.
 pub fn new<S, R, W>(conf: Config, ctx: S) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
-    R: IndexingRequestRegistry
-        + AgreementRegistry
-        + BlocklistRegistry
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    R: IndexingRequestRegistry + AgreementRegistry + Clone + Send + Sync + 'static,
     W: WorkerQueue + Clone + Send + Sync + 'static,
     IndexingRequestsCtx<R, W>: FromState<S>,
     IndexingAgreementsCtx<R, W>: FromState<S>,
-    BlocklistCtx<R>: FromState<S>,
 {
     let (tx_stop, mut rx_stop) = mpsc::channel(1);
 
     let fut = async move {
-        tracing::info!(listen_addr=%conf.listen_addr, "Starting admin RPC server");
+        tracing::info!(listen_addr=%conf.listen_addr, "Starting gateway operator API server");
 
         // Start the RPC server
         let config = ServerConfig::builder()
@@ -78,7 +71,7 @@ where
         tokio::select! {biased;
             _ = svc_handle.stopped() => {}
             _ = rx_stop.recv() => {
-                tracing::debug!("Stopping admin RPC server");
+                tracing::debug!("Stopping gateway operator API server");
 
                 // Notify the server and wait for it to stop
                 if handle.stop().is_ok() {
