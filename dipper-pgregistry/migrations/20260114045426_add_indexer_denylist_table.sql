@@ -7,3 +7,5 @@ CREATE TABLE dipper_indexer_denylist
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('UTC', now()),
     reason     TEXT
 );
+
+CREATE INDEX idx_indexer_denylist_created_at ON dipper_indexer_denylist (created_at DESC);

@@ -20,7 +20,7 @@ pub use self::{
         AgreementRegistry, IndexingAgreement, Status as IndexingAgreementStatus,
         Voucher as IndexingAgreementVoucher, VoucherMetadata as IndexingAgreementVoucherMetadata,
     },
-    indexer_denylist::{IndexerDenylistEntry, IndexerDenylistRegistry},
+    indexer_denylist::IndexerDenylistRegistry,
     indexing_request::{IndexingRequest, IndexingRequestRegistry, Status as IndexingRequestStatus},
     receipt::{IndexingReceipt, ReceiptRegistry, ReportedWork},
     result::{Error, Result},
@@ -318,30 +318,5 @@ impl ReceiptRegistry for RegistryProvider {
 impl IndexerDenylistRegistry for RegistryProvider {
     async fn get_indexer_denylist(&self) -> RegistryResult<Vec<IndexerId>> {
         self.inner.get_indexer_denylist().await.map_err(Into::into)
-    }
-
-    async fn get_indexer_denylist_entries(&self) -> RegistryResult<Vec<IndexerDenylistEntry>> {
-        self.inner
-            .get_indexer_denylist_entries()
-            .await
-            .map_err(Into::into)
-    }
-
-    async fn add_to_indexer_denylist(
-        &self,
-        indexer_id: IndexerId,
-        reason: Option<&str>,
-    ) -> RegistryResult<()> {
-        self.inner
-            .add_to_indexer_denylist(indexer_id, reason)
-            .await
-            .map_err(Into::into)
-    }
-
-    async fn remove_from_indexer_denylist(&self, indexer_id: IndexerId) -> RegistryResult<()> {
-        self.inner
-            .remove_from_indexer_denylist(indexer_id)
-            .await
-            .map_err(Into::into)
     }
 }
