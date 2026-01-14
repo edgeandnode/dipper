@@ -746,3 +746,43 @@ async fn get_declined_indexers_by_deployment_respects_lookback() {
         "0 day lookback should return empty HashMap"
     );
 }
+
+#[tokio::test]
+async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // Update the rejected agreement to be 31 days old
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET updated_at = timezone('UTC', now()) - interval '31 days'
+        WHERE status = 2  -- Rejected
+        "#,
+    )
+    .execute(&db)
+    .await
+    .expect("Failed to update agreement timestamp");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    // Use 30 days lookback - should NOT include the 31-day-old rejection
+    let result = registry
+        .get_declined_indexers_by_deployment(30)
+        .await
+        .expect("Failed to get declined indexers");
+
+    //* Then
+    // The rejected agreement is now 31 days old, outside the 30-day window
+    assert!(
+        result.is_empty(),
+        "Rejections older than lookback period should not be returned"
+    );
+}
