@@ -43,6 +43,7 @@ where
     Ok(SelectionContext {
         existing_indexers,
         pending_agreements,
+        ..Default::default()
     })
 }
 

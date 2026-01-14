@@ -81,6 +81,14 @@ struct SelectionRequest {
     /// Number of indexers to select (for select-many)
     #[serde(skip_serializing_if = "Option::is_none")]
     num_candidates: Option<usize>,
+
+    /// Indexer IDs to exclude from selection entirely
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blocklist: Option<Vec<String>>,
+
+    /// Declined indexers: deployment ID -> list of indexer IDs that recently declined
+    #[serde(skip_serializing_if = "Option::is_none")]
+    declined_indexers: Option<HashMap<String, Vec<String>>>,
 }
 
 /// Response from the /select-one endpoint.
@@ -300,6 +308,47 @@ impl HttpIisaClient {
             )
         }
     }
+
+    /// Format blocklist from context for the HTTP request.
+    ///
+    /// Returns `None` if the list is empty to skip serialization.
+    fn format_blocklist(context: &SelectionContext) -> Option<Vec<String>> {
+        if context.blocklist.is_empty() {
+            None
+        } else {
+            Some(
+                context
+                    .blocklist
+                    .iter()
+                    .map(|id| format!("{:#x}", id))
+                    .collect(),
+            )
+        }
+    }
+
+    /// Format declined indexers from context for the HTTP request.
+    ///
+    /// Returns `None` if the map is empty to skip serialization.
+    fn format_declined_indexers(
+        context: &SelectionContext,
+    ) -> Option<HashMap<String, Vec<String>>> {
+        if context.declined_indexers.is_empty() {
+            None
+        } else {
+            Some(
+                context
+                    .declined_indexers
+                    .iter()
+                    .map(|(deployment_id, indexer_ids)| {
+                        (
+                            deployment_id.to_string(),
+                            indexer_ids.iter().map(|id| format!("{:#x}", id)).collect(),
+                        )
+                    })
+                    .collect(),
+            )
+        }
+    }
 }
 
 #[async_trait]
@@ -320,6 +369,8 @@ impl CandidateSelection for HttpIisaClient {
             existing_indexers: Self::format_existing_indexers(context),
             pending_agreements: Self::format_pending_agreements(context),
             num_candidates: None,
+            blocklist: Self::format_blocklist(context),
+            declined_indexers: Self::format_declined_indexers(context),
         };
 
         let url = format!("{}select-one", self.endpoint);
@@ -354,6 +405,8 @@ impl CandidateSelection for HttpIisaClient {
             existing_indexers: Self::format_existing_indexers(context),
             pending_agreements: Self::format_pending_agreements(context),
             num_candidates: Some(num_candidates),
+            blocklist: Self::format_blocklist(context),
+            declined_indexers: Self::format_declined_indexers(context),
         };
 
         let url = format!("{}select-many", self.endpoint);
@@ -477,7 +530,7 @@ mod tests {
             .unwrap();
         let context = SelectionContext {
             existing_indexers: vec![indexer_id],
-            pending_agreements: HashMap::new(),
+            ..Default::default()
         };
 
         let result = HttpIisaClient::format_existing_indexers(&context);
@@ -506,8 +559,8 @@ mod tests {
         pending.insert(deployment_id, vec![indexer_id]);
 
         let context = SelectionContext {
-            existing_indexers: vec![],
             pending_agreements: pending,
+            ..Default::default()
         };
 
         let result = HttpIisaClient::format_pending_agreements(&context);
@@ -528,6 +581,66 @@ mod tests {
         let context = SelectionContext::default();
         assert!(context.existing_indexers.is_empty());
         assert!(context.pending_agreements.is_empty());
+        assert!(context.blocklist.is_empty());
+        assert!(context.declined_indexers.is_empty());
+    }
+
+    #[test]
+    fn test_format_blocklist_empty() {
+        let context = SelectionContext::default();
+        assert_eq!(HttpIisaClient::format_blocklist(&context), None);
+    }
+
+    #[test]
+    fn test_format_blocklist_with_data() {
+        let indexer_id: IndexerId = "0x1234567890123456789012345678901234567890"
+            .parse()
+            .unwrap();
+        let context = SelectionContext {
+            blocklist: vec![indexer_id],
+            ..Default::default()
+        };
+
+        let result = HttpIisaClient::format_blocklist(&context);
+        assert!(result.is_some());
+        let blocklist = result.unwrap();
+        assert_eq!(blocklist.len(), 1);
+        assert_eq!(blocklist[0], "0x1234567890123456789012345678901234567890");
+    }
+
+    #[test]
+    fn test_format_declined_indexers_empty() {
+        let context = SelectionContext::default();
+        assert_eq!(HttpIisaClient::format_declined_indexers(&context), None);
+    }
+
+    #[test]
+    fn test_format_declined_indexers_with_data() {
+        let indexer_id: IndexerId = "0x1234567890123456789012345678901234567890"
+            .parse()
+            .unwrap();
+        let deployment_id: DeploymentId = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+            .parse()
+            .unwrap();
+
+        let mut declined = HashMap::new();
+        declined.insert(deployment_id, vec![indexer_id]);
+
+        let context = SelectionContext {
+            declined_indexers: declined,
+            ..Default::default()
+        };
+
+        let result = HttpIisaClient::format_declined_indexers(&context);
+        assert!(result.is_some());
+        let declined_map = result.unwrap();
+        assert_eq!(declined_map.len(), 1);
+        assert!(declined_map.contains_key("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"));
+        let indexers = declined_map
+            .get("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG")
+            .unwrap();
+        assert_eq!(indexers.len(), 1);
+        assert_eq!(indexers[0], "0x1234567890123456789012345678901234567890");
     }
 
     #[tokio::test]
