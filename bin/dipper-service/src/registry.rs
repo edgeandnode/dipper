@@ -1,4 +1,5 @@
 mod agreement;
+mod indexer_denylist;
 mod indexing_request;
 mod receipt;
 mod result;
@@ -19,6 +20,7 @@ pub use self::{
         AgreementRegistry, IndexingAgreement, Status as IndexingAgreementStatus,
         Voucher as IndexingAgreementVoucher, VoucherMetadata as IndexingAgreementVoucherMetadata,
     },
+    indexer_denylist::IndexerDenylistRegistry,
     indexing_request::{IndexingRequest, IndexingRequestRegistry, Status as IndexingRequestStatus},
     receipt::{IndexingReceipt, ReceiptRegistry, ReportedWork},
     result::{Error, Result},
@@ -309,5 +311,12 @@ impl ReceiptRegistry for RegistryProvider {
             .get_last_receipt_for_agreement_id(agreement_id)
             .await?
             .map(Into::into))
+    }
+}
+
+#[async_trait]
+impl IndexerDenylistRegistry for RegistryProvider {
+    async fn get_indexer_denylist(&self) -> RegistryResult<Vec<IndexerId>> {
+        self.inner.get_indexer_denylist().await.map_err(Into::into)
     }
 }

@@ -786,3 +786,57 @@ async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
         "Rejections older than lookback period should not be returned"
     );
 }
+
+// =============================================================================
+// Indexer denylist tests
+// =============================================================================
+
+#[tokio::test]
+async fn indexer_denylist_returns_denied_indexers() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db.clone());
+
+    let indexer_a = indexer_id!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let indexer_b = indexer_id!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+    // Insert directly via SQL (simulating admin operations via kubectl)
+    sqlx::query("INSERT INTO dipper_indexer_denylist (indexer_id, reason) VALUES ($1, $2)")
+        .bind(indexer_a.as_slice())
+        .bind("Malicious behavior")
+        .execute(&db)
+        .await
+        .expect("Failed to insert indexer A");
+    sqlx::query("INSERT INTO dipper_indexer_denylist (indexer_id) VALUES ($1)")
+        .bind(indexer_b.as_slice())
+        .execute(&db)
+        .await
+        .expect("Failed to insert indexer B");
+
+    //* When
+    let denylist = registry
+        .get_indexer_denylist()
+        .await
+        .expect("Failed to get denylist");
+
+    //* Then
+    assert_eq!(denylist.len(), 2);
+    assert!(denylist.contains(&indexer_a));
+    assert!(denylist.contains(&indexer_b));
+}
+
+#[tokio::test]
+async fn indexer_denylist_returns_empty_when_none_denied() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let denylist = registry
+        .get_indexer_denylist()
+        .await
+        .expect("Failed to get denylist");
+
+    //* Then
+    assert!(denylist.is_empty());
+}

@@ -132,17 +132,17 @@ pub struct ChainPrices {
     pub price_per_entity: U256,
 }
 
-/// The Admin RPC server configuration
+/// Gateway operator API configuration. Authenticates via EIP-712 signatures.
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
 pub struct AdminRpcConfig {
-    /// The RPC server listen address
+    /// The RPC server listen address.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub listen_addr: std::net::SocketAddr,
 
-    /// The set of addresses that are allowed to access the RPC server
+    /// Authorized gateway operator addresses (e.g., Graph Studio).
     #[serde_as(as = "serde_with::SetLastValueWins<_>")]
-    pub allowlist: BTreeSet<Address>,
+    pub gateway_operator_allowlist: BTreeSet<Address>,
 }
 
 /// The Indexer RPC server configuration

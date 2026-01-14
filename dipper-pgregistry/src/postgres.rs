@@ -22,7 +22,7 @@ use super::{
     result::Error,
 };
 
-mod common;
+pub(crate) mod common;
 mod indexing_agreement;
 mod indexing_receipt;
 mod indexing_request;
@@ -709,5 +709,23 @@ impl PgRegistry {
         .fetch_optional(&self.pool)
         .await
         .map_err(Into::into)
+    }
+
+    // =========================================================================
+    // Indexer denylist operations
+    // =========================================================================
+
+    /// Get all denied indexer IDs.
+    pub async fn get_indexer_denylist(&self) -> Result<Vec<IndexerId>, Error> {
+        let rows: Vec<(PgIndexerId,)> = sqlx::query_as(
+            r#"
+            SELECT indexer_id
+            FROM dipper_indexer_denylist
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id.0).collect())
     }
 }

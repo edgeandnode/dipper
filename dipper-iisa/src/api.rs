@@ -34,7 +34,7 @@ pub struct SelectionContext {
     ///
     /// Used for indexers that have been flagged for poor performance, trust issues,
     /// or other reasons that make them unsuitable for any deployment.
-    pub blocklist: Vec<IndexerId>,
+    pub indexer_denylist: Vec<IndexerId>,
 
     /// For each deployment, indexers that have recently declined agreements.
     ///

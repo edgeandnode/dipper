@@ -39,7 +39,7 @@ impl Handle {
     }
 }
 
-/// Create a new Admin RPC server service
+/// Create a new gateway operator API server.
 pub fn new<S, R, W>(conf: Config, ctx: S) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
     R: IndexingRequestRegistry + AgreementRegistry + Clone + Send + Sync + 'static,
@@ -50,7 +50,7 @@ where
     let (tx_stop, mut rx_stop) = mpsc::channel(1);
 
     let fut = async move {
-        tracing::info!(listen_addr=%conf.listen_addr, "Starting admin RPC server");
+        tracing::info!(listen_addr=%conf.listen_addr, "Starting gateway operator API server");
 
         // Start the RPC server
         let config = ServerConfig::builder()
@@ -71,7 +71,7 @@ where
         tokio::select! {biased;
             _ = svc_handle.stopped() => {}
             _ = rx_stop.recv() => {
-                tracing::debug!("Stopping admin RPC server");
+                tracing::debug!("Stopping gateway operator API server");
 
                 // Notify the server and wait for it to stop
                 if handle.stop().is_ok() {

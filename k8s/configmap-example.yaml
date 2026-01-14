@@ -18,7 +18,7 @@ data:
       },
       "admin_rpc": {
         "listen_addr": "0.0.0.0:8545",
-        "allowlist": []
+        "gateway_operator_allowlist": []
       },
       "indexer_rpc": {
         "listen_addr": "0.0.0.0:50051",

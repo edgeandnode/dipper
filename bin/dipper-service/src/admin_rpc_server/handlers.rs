@@ -27,7 +27,6 @@ where
 {
     let indexing_requests = indexing_requests::RpcServerImpl::with_context(&ctx);
     let indexing_agreements = indexing_agreements::RpcServerImpl::with_context(&ctx);
-    // TODO(post-mvp): Register the indexing receipts RPC handlers
 
     let mut module = RpcModule::new(ctx);
     module

@@ -84,7 +84,7 @@ struct SelectionRequest {
 
     /// Indexer IDs to exclude from selection entirely
     #[serde(skip_serializing_if = "Option::is_none")]
-    blocklist: Option<Vec<String>>,
+    indexer_denylist: Option<Vec<String>>,
 
     /// Declined indexers: deployment ID -> list of indexer IDs that recently declined
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -309,16 +309,16 @@ impl HttpIisaClient {
         }
     }
 
-    /// Format blocklist from context for the HTTP request.
+    /// Format indexer denylist from context for the HTTP request.
     ///
     /// Returns `None` if the list is empty to skip serialization.
-    fn format_blocklist(context: &SelectionContext) -> Option<Vec<String>> {
-        if context.blocklist.is_empty() {
+    fn format_indexer_denylist(context: &SelectionContext) -> Option<Vec<String>> {
+        if context.indexer_denylist.is_empty() {
             None
         } else {
             Some(
                 context
-                    .blocklist
+                    .indexer_denylist
                     .iter()
                     .map(|id| format!("{:#x}", id))
                     .collect(),
@@ -369,7 +369,7 @@ impl CandidateSelection for HttpIisaClient {
             existing_indexers: Self::format_existing_indexers(context),
             pending_agreements: Self::format_pending_agreements(context),
             num_candidates: None,
-            blocklist: Self::format_blocklist(context),
+            indexer_denylist: Self::format_indexer_denylist(context),
             declined_indexers: Self::format_declined_indexers(context),
         };
 
@@ -405,7 +405,7 @@ impl CandidateSelection for HttpIisaClient {
             existing_indexers: Self::format_existing_indexers(context),
             pending_agreements: Self::format_pending_agreements(context),
             num_candidates: Some(num_candidates),
-            blocklist: Self::format_blocklist(context),
+            indexer_denylist: Self::format_indexer_denylist(context),
             declined_indexers: Self::format_declined_indexers(context),
         };
 
@@ -581,31 +581,31 @@ mod tests {
         let context = SelectionContext::default();
         assert!(context.existing_indexers.is_empty());
         assert!(context.pending_agreements.is_empty());
-        assert!(context.blocklist.is_empty());
+        assert!(context.indexer_denylist.is_empty());
         assert!(context.declined_indexers.is_empty());
     }
 
     #[test]
-    fn test_format_blocklist_empty() {
+    fn test_format_indexer_denylist_empty() {
         let context = SelectionContext::default();
-        assert_eq!(HttpIisaClient::format_blocklist(&context), None);
+        assert_eq!(HttpIisaClient::format_indexer_denylist(&context), None);
     }
 
     #[test]
-    fn test_format_blocklist_with_data() {
+    fn test_format_indexer_denylist_with_data() {
         let indexer_id: IndexerId = "0x1234567890123456789012345678901234567890"
             .parse()
             .unwrap();
         let context = SelectionContext {
-            blocklist: vec![indexer_id],
+            indexer_denylist: vec![indexer_id],
             ..Default::default()
         };
 
-        let result = HttpIisaClient::format_blocklist(&context);
+        let result = HttpIisaClient::format_indexer_denylist(&context);
         assert!(result.is_some());
-        let blocklist = result.unwrap();
-        assert_eq!(blocklist.len(), 1);
-        assert_eq!(blocklist[0], "0x1234567890123456789012345678901234567890");
+        let denylist = result.unwrap();
+        assert_eq!(denylist.len(), 1);
+        assert_eq!(denylist[0], "0x1234567890123456789012345678901234567890");
     }
 
     #[test]

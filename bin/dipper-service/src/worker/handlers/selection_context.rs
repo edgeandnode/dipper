@@ -4,7 +4,7 @@ use dipper_iisa::{Indexer as IndexerCandidate, SelectionContext};
 use thegraph_core::{DeploymentId, IndexerId};
 
 use crate::{
-    registry::{AgreementRegistry, IndexingAgreementStatus},
+    registry::{AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementStatus},
     worker::result::{JobError, JobResult},
 };
 
@@ -20,13 +20,14 @@ const DECLINED_INDEXER_LOOKBACK_DAYS: i32 = 30;
 /// - Which indexers already have active agreements for this deployment
 /// - What other deployments each candidate indexer is currently working on
 /// - Which indexers have recently declined agreements (within 30 days)
+/// - Which indexers are on the denylist and should be excluded entirely
 pub async fn gather_selection_context<R>(
     registry: &R,
     deployment_id: &DeploymentId,
     candidates: &[IndexerCandidate],
 ) -> JobResult<SelectionContext>
 where
-    R: AgreementRegistry,
+    R: AgreementRegistry + IndexerDenylistRegistry,
 {
     // Get indexers that already have active agreements for this deployment
     let existing_indexers = registry
@@ -53,11 +54,17 @@ where
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
+    // Get denied indexers that should be excluded from selection
+    let indexer_denylist = registry
+        .get_indexer_denylist()
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
+
     Ok(SelectionContext {
         existing_indexers,
         pending_agreements,
         declined_indexers,
-        ..Default::default()
+        indexer_denylist,
     })
 }
 
