@@ -20,7 +20,9 @@ use super::{
 use crate::{
     indexer_rpc_client::IndexerClient,
     network::NetworkProvider,
-    registry::{AgreementRegistry, IndexerDenylistRegistry, IndexingRequestRegistry, ReceiptRegistry},
+    registry::{
+        AgreementRegistry, IndexerDenylistRegistry, IndexingRequestRegistry, ReceiptRegistry,
+    },
 };
 
 /// Default period to poll the queue for new jobs

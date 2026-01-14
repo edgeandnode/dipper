@@ -1,7 +1,6 @@
 use dipper_core::state::FromState;
 use dipper_rpc::admin::{
-    indexing_agreements::IndexingAgreementsRpcServer,
-    indexing_requests::IndexingRequestsRpcServer,
+    indexing_agreements::IndexingAgreementsRpcServer, indexing_requests::IndexingRequestsRpcServer,
 };
 use jsonrpsee::RpcModule;
 
