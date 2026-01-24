@@ -715,12 +715,15 @@ impl PgRegistry {
     // Indexer denylist operations
     // =========================================================================
 
-    /// Get all denied indexer IDs.
+    /// Get all active (non-expired) denied indexer IDs.
+    ///
+    /// Entries with an expiration date in the past are excluded.
     pub async fn get_indexer_denylist(&self) -> Result<Vec<IndexerId>, Error> {
         let rows: Vec<(PgIndexerId,)> = sqlx::query_as(
             r#"
             SELECT indexer_id
             FROM dipper_indexer_denylist
+            WHERE expires_at IS NULL OR expires_at > timezone('UTC', now())
             "#,
         )
         .fetch_all(&self.pool)

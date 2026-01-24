@@ -801,14 +801,19 @@ async fn indexer_denylist_returns_denied_indexers() {
     let indexer_b = indexer_id!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
 
     // Insert directly via SQL (simulating admin operations via kubectl)
-    sqlx::query("INSERT INTO dipper_indexer_denylist (indexer_id, reason) VALUES ($1, $2)")
+    sqlx::query("INSERT INTO dipper_indexer_denylist (indexer_id, reason, created_by, expires_at) VALUES ($1, $2, $3, $4)")
         .bind(indexer_a.as_slice())
         .bind("Malicious behavior")
+        .bind("test@example.com")
+        .bind(time::OffsetDateTime::parse("3000-01-01T00:00:00Z", &time::format_description::well_known::Rfc3339).unwrap())
         .execute(&db)
         .await
         .expect("Failed to insert indexer A");
-    sqlx::query("INSERT INTO dipper_indexer_denylist (indexer_id) VALUES ($1)")
+    sqlx::query("INSERT INTO dipper_indexer_denylist (indexer_id, reason, created_by, expires_at) VALUES ($1, $2, $3, $4)")
         .bind(indexer_b.as_slice())
+        .bind("Poor performance")
+        .bind("test@example.com")
+        .bind(time::OffsetDateTime::parse("3000-01-01T00:00:00Z", &time::format_description::well_known::Rfc3339).unwrap())
         .execute(&db)
         .await
         .expect("Failed to insert indexer B");
@@ -839,4 +844,48 @@ async fn indexer_denylist_returns_empty_when_none_denied() {
 
     //* Then
     assert!(denylist.is_empty());
+}
+
+#[tokio::test]
+async fn indexer_denylist_excludes_expired_entries() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db.clone());
+
+    let active_indexer = indexer_id!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let expired_indexer = indexer_id!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+    // Insert an active denial (expires in year 3000)
+    sqlx::query("INSERT INTO dipper_indexer_denylist (indexer_id, reason, created_by, expires_at) VALUES ($1, $2, $3, $4)")
+        .bind(active_indexer.as_slice())
+        .bind("Active denial")
+        .bind("test@example.com")
+        .bind(time::OffsetDateTime::parse("3000-01-01T00:00:00Z", &time::format_description::well_known::Rfc3339).unwrap())
+        .execute(&db)
+        .await
+        .expect("Failed to insert active denial");
+
+    // Insert an expired denial (expired yesterday)
+    sqlx::query("INSERT INTO dipper_indexer_denylist (indexer_id, reason, created_by, expires_at) VALUES ($1, $2, $3, $4)")
+        .bind(expired_indexer.as_slice())
+        .bind("Expired denial")
+        .bind("test@example.com")
+        .bind(time::OffsetDateTime::now_utc() - time::Duration::days(1))
+        .execute(&db)
+        .await
+        .expect("Failed to insert expired denial");
+
+    //* When
+    let denylist = registry
+        .get_indexer_denylist()
+        .await
+        .expect("Failed to get denylist");
+
+    //* Then
+    assert_eq!(denylist.len(), 1, "Only active denial should be returned");
+    assert!(denylist.contains(&active_indexer));
+    assert!(
+        !denylist.contains(&expired_indexer),
+        "Expired denial should not be returned"
+    );
 }
