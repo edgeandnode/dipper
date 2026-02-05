@@ -2,16 +2,6 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use thegraph_core::{DeploymentId, IndexerId};
-use url::Url;
-
-/// An indexer
-#[derive(Debug, Clone)]
-pub struct Indexer {
-    /// The indexer ID
-    pub id: IndexerId,
-    /// The indexer URL
-    pub url: Url,
-}
 
 /// Context for load balancing during indexer selection.
 ///
@@ -21,7 +11,7 @@ pub struct Indexer {
 pub struct SelectionContext {
     /// Indexer IDs that already have active agreements for this deployment.
     ///
-    /// Used to avoid selecting indexers that are already working on the same deployment.
+    /// Used to inform the IISA about indexers that are already working on this deployment.
     pub existing_indexers: Vec<IndexerId>,
 
     /// For each deployment, the indexers that have pending/active agreements for it.
@@ -34,6 +24,7 @@ pub struct SelectionContext {
     ///
     /// Used for indexers that have been flagged for poor performance, trust issues,
     /// or other reasons that make them unsuitable for any deployment.
+    /// Mapped to `blocklist` in the IISA request.
     pub indexer_denylist: Vec<IndexerId>,
 
     /// For each deployment, indexers that have recently declined agreements.
@@ -59,34 +50,26 @@ pub enum SelectionError {
 }
 
 /// The `CandidateSelection` trait defines the interface for the Indexer Selection Algorithm
-/// service, which is responsible for selecting indexers from a provided list of candidates.
+/// service, which selects the optimal set of indexers for a deployment.
+///
+/// The IISA handles candidate filtering internally using its own scores data.
+/// The caller provides context about existing assignments and constraints, and receives
+/// back the target state: the set of indexer IDs that should be assigned.
 #[async_trait]
 pub trait CandidateSelection {
-    /// Select one indexer from the given list of candidates.
+    /// Select the optimal set of indexers for a deployment.
     ///
-    /// # Arguments
-    /// * `deployment_id` - The deployment to select an indexer for
-    /// * `candidates` - List of candidate indexers to choose from
-    /// * `context` - Load balancing context with existing assignments and pending work
-    async fn select_one(
-        &self,
-        deployment_id: DeploymentId,
-        candidates: Vec<Indexer>,
-        context: &SelectionContext,
-    ) -> Result<Option<Indexer>, SelectionError>;
-
-    /// Selects the best `num_candidates` indexers from the given list of candidates.
+    /// Returns the target state: the set of indexer IDs that SHOULD be assigned.
+    /// The caller diffs against current assignments to determine adds/cancels.
     ///
     /// # Arguments
     /// * `deployment_id` - The deployment to select indexers for
-    /// * `candidates` - List of candidate indexers to choose from
-    /// * `num_candidates` - Maximum number of indexers to select
-    /// * `context` - Load balancing context with existing assignments and pending work
-    async fn select(
+    /// * `num_candidates` - Target group size (number of indexers desired)
+    /// * `context` - Load balancing context with existing assignments and constraints
+    async fn select_indexers(
         &self,
         deployment_id: DeploymentId,
-        candidates: Vec<Indexer>,
         num_candidates: usize,
         context: &SelectionContext,
-    ) -> Result<Vec<Indexer>, SelectionError>;
+    ) -> Result<Vec<IndexerId>, SelectionError>;
 }
