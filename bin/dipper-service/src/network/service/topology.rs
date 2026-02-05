@@ -208,6 +208,11 @@ impl Snapshot {
         self.indexers.values()
     }
 
+    /// Get an [Indexer] by its [IndexerId].
+    pub fn get_indexer(&self, id: &IndexerId) -> Option<&Indexer> {
+        self.indexers.get(id)
+    }
+
     /// Get a [Deployment] by its [DeploymentId].
     ///
     /// # Arguments
