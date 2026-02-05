@@ -1,7 +1,7 @@
 use super::handlers::{
-    FindIndexerForIndexingRequest, ProcessIndexingAgreementCancellation,
-    ProcessIndexingRequestCancellation, ProcessNewIndexingRequest,
-    SendIndexingAgreementCancellation, SendIndexingAgreementProposal,
+    ProcessIndexingAgreementCancellation, ProcessIndexingRequestCancellation,
+    ProcessNewIndexingRequest, ReassessIndexingRequest, SendIndexingAgreementCancellation,
+    SendIndexingAgreementProposal,
 };
 
 /// The queue worker message enum
@@ -27,11 +27,14 @@ pub enum Message {
     /// See [`ProcessIndexingRequestCancellation`] for more details.
     ProcessIndexingRequestCancellation(ProcessIndexingRequestCancellation),
 
-    /// Find a new indexer to fulfill an indexing request.
+    /// Reassess an indexing request against the current IISA target state.
     ///
-    /// When an indexer cancels an indexing agreement, a new indexer must be selected
-    /// to fulfill the indexing request.
-    FindIndexerForIndexingRequest(FindIndexerForIndexingRequest),
+    /// Periodically re-evaluates open indexing requests by diffing the IISA target
+    /// group against current active agreements, canceling stale assignments and
+    /// creating new ones as needed.
+    ///
+    /// See [`ReassessIndexingRequest`] for more details.
+    ReassessIndexingRequest(ReassessIndexingRequest),
 
     /// Send an indexing agreement proposal to the indexer.
     ///

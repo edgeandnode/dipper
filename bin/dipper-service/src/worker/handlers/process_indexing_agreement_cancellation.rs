@@ -84,12 +84,13 @@ where
         return Ok(());
     };
 
-    // Request a new indexer to fulfill the indexing request
+    // Reassess the indexing request to find replacement indexers
     ctx.queue
-        .find_indexer_for_indexing_request(
+        .reassess_indexing_request(
             indexing_request.id,
             indexing_request.deployment_id,
             indexing_request.deployment_chain_id,
+            indexing_request.num_candidates,
         )
         .await
         .map_err(|err| {
@@ -97,7 +98,7 @@ where
                 %indexing_request_id,
                 %agreement_id,
                 error=?err,
-                "Failed to queue task: 'find_indexer_for_indexing_request'"
+                "Failed to queue task: 'reassess_indexing_request'"
             );
             JobError::Fatal(err)
         })?;
@@ -184,12 +185,13 @@ where
         return Ok(());
     };
 
-    // Try to find a new indexer for the indexing request
+    // Reassess the indexing request to find replacement indexers
     ctx.queue
-        .find_indexer_for_indexing_request(
+        .reassess_indexing_request(
             indexing_request.id,
             indexing_request.deployment_id,
             indexing_request.deployment_chain_id,
+            indexing_request.num_candidates,
         )
         .await
         .map_err(|err| {
@@ -197,7 +199,7 @@ where
                 %indexing_request_id,
                 %agreement_id,
                 error=?err,
-                "Failed to queue task: 'find_indexer_for_indexing_request'"
+                "Failed to queue task: 'reassess_indexing_request'"
             );
             JobError::Fatal(err)
         })?;

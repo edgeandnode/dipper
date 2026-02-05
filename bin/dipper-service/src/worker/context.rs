@@ -5,8 +5,8 @@ use thegraph_core::alloy::primitives::ChainId;
 
 use super::handlers::{
     ProcessIndexingAgreementCancellationCtx, ProcessIndexingRequestCancellationCtx,
-    ProcessNewIndexingRequestCtx, SendIndexingAgreementCancellationCtx,
-    SendIndexingAgreementProposalCtx,
+    ProcessNewIndexingRequestCtx, ReassessIndexingRequestCtx,
+    SendIndexingAgreementCancellationCtx, SendIndexingAgreementProposalCtx,
 };
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
@@ -74,7 +74,7 @@ pub(super) struct InnerCtx<R, N, W, C, I> {
 }
 
 impl<R, N, W, C, I> FromState<InnerCtx<R, N, W, C, I>>
-    for super::handlers::FindIndexerForIndexingRequestCtx<R, N, W, I>
+    for ReassessIndexingRequestCtx<R, N, W, I>
 where
     R: Clone,
     N: Clone,

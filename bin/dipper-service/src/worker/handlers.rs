@@ -1,15 +1,11 @@
-mod find_indexer_for_indexing_request;
 mod process_indexing_agreement_cancellation;
 mod process_indexing_request_cancellation;
 mod process_new_indexing_request;
+mod reassess_indexing_request;
 mod selection_context;
 mod send_indexing_agreement_cancellation;
 mod send_indexing_agreement_proposal;
 
-pub use find_indexer_for_indexing_request::{
-    Ctx as FindIndexerForIndexingRequestCtx, Message as FindIndexerForIndexingRequest,
-    handle as find_indexer_for_indexing_request,
-};
 pub use process_indexing_agreement_cancellation::{
     Ctx as ProcessIndexingAgreementCancellationCtx,
     Message as ProcessIndexingAgreementCancellation,
@@ -27,6 +23,10 @@ pub use process_new_indexing_request::{
 pub use send_indexing_agreement_cancellation::{
     Ctx as SendIndexingAgreementCancellationCtx, Message as SendIndexingAgreementCancellation,
     handle as send_indexing_agreement_cancellation,
+};
+pub use reassess_indexing_request::{
+    Ctx as ReassessIndexingRequestCtx, Message as ReassessIndexingRequest,
+    handle as reassess_indexing_request,
 };
 pub use send_indexing_agreement_proposal::{
     Ctx as SendIndexingAgreementProposalCtx, Message as SendIndexingAgreementProposal,

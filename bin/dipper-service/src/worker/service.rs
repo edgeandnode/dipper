@@ -9,8 +9,8 @@ pub use super::service_queue::{WorkerQueue, WorkerQueueHandle};
 use super::{
     context::{Ctx, InnerCtx},
     handlers::{
-        self, FindIndexerForIndexingRequestCtx, ProcessIndexingAgreementCancellationCtx,
-        ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
+        self, ProcessIndexingAgreementCancellationCtx, ProcessIndexingRequestCancellationCtx,
+        ProcessNewIndexingRequestCtx, ReassessIndexingRequestCtx,
         SendIndexingAgreementCancellationCtx, SendIndexingAgreementProposalCtx,
     },
     messages::Message,
@@ -157,7 +157,7 @@ where
     I: CandidateSelection,
     ProcessNewIndexingRequestCtx<R, N, W, I>: FromState<S>,
     ProcessIndexingRequestCancellationCtx<R, W>: FromState<S>,
-    FindIndexerForIndexingRequestCtx<R, N, W, I>: FromState<S>,
+    ReassessIndexingRequestCtx<R, N, W, I>: FromState<S>,
     SendIndexingAgreementProposalCtx<R, N, W, C>: FromState<S>,
     SendIndexingAgreementCancellationCtx<R, C>: FromState<S>,
     ProcessIndexingAgreementCancellationCtx<R, W>: FromState<S>,
@@ -177,7 +177,7 @@ where
     _dispatch!(state, message, job_meta, {
         Message::ProcessNewIndexingRequest => handlers::process_new_indexing_request,
         Message::ProcessIndexingRequestCancellation => handlers::process_indexing_request_cancellation,
-        Message::FindIndexerForIndexingRequest => handlers::find_indexer_for_indexing_request,
+        Message::ReassessIndexingRequest => handlers::reassess_indexing_request,
         Message::SendIndexingAgreementProposal => handlers::send_indexing_agreement_proposal,
         Message::SendIndexingAgreementCancellation => handlers::send_indexing_agreement_cancellation,
         Message::ProcessIndexingAgreementIndexerCancellation => handlers::process_indexing_agreement_indexer_cancellation,

@@ -163,21 +163,30 @@ where
                     .await
                     .map_err(|err| JobError::Fatal(err.into()))?;
 
-                // Request a new indexer to fulfill the indexing request
+                // Reassess the indexing request to find replacement indexers
                 tracing::trace!(
                     indexing_request_id=%indexing_request_id,
-                    "Requesting a new indexer to fulfill the indexing request"
+                    "Reassessing indexing request after proposal rejection"
                 );
+                let indexing_request = ctx
+                    .registry
+                    .get_indexing_request_by_id(indexing_request_id)
+                    .await
+                    .map_err(|err| JobError::Fatal(err.into()))?;
+                let num_candidates = indexing_request
+                    .map(|r| r.num_candidates)
+                    .unwrap_or(3);
                 if let Err(err) = ctx
                     .queue
-                    .find_indexer_for_indexing_request(
+                    .reassess_indexing_request(
                         *indexing_request_id,
                         *deployment_id,
                         *deployment_chain_id,
+                        num_candidates,
                     )
                     .await
                 {
-                    tracing::error!(error=%err, "Failed to queue task: 'find_indexer_for_indexing_request'");
+                    tracing::error!(error=%err, "Failed to queue task: 'reassess_indexing_request'");
                     return Err(JobError::Fatal(err));
                 };
             }
