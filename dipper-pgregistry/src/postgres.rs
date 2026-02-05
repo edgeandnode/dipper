@@ -46,6 +46,7 @@ impl PgRegistry {
         requested_by: Address,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
+        num_candidates: i32,
     ) -> Result<IndexingRequestId, Error> {
         sqlx::query_as(
             r#"
@@ -56,9 +57,10 @@ impl PgRegistry {
                 status,
                 requested_by,
                 deployment_id,
-                deployment_chain_id
+                deployment_chain_id,
+                num_candidates
             )
-            VALUES ($1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, $5)
+            VALUES ($1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, $5, $6)
             RETURNING id
             "#,
         )
@@ -67,6 +69,7 @@ impl PgRegistry {
         .bind(PgAddress(requested_by))
         .bind(PgDeploymentId(deployment_id))
         .bind(PgU64(deployment_chain_id))
+        .bind(num_candidates)
         .fetch_one(&self.pool)
         .await
         .map(|(id,)| id)
@@ -83,7 +86,8 @@ impl PgRegistry {
                 status,
                 requested_by,
                 deployment_id,
-                deployment_chain_id
+                deployment_chain_id,
+                num_candidates
             FROM dipper_reg_indexing_requests
             "#,
         )
@@ -105,7 +109,8 @@ impl PgRegistry {
                 status,
                 requested_by,
                 deployment_id,
-                deployment_chain_id
+                deployment_chain_id,
+                num_candidates
             FROM dipper_reg_indexing_requests
             WHERE id = $1
             "#,
@@ -129,7 +134,8 @@ impl PgRegistry {
                 status,
                 requested_by,
                 deployment_id,
-                deployment_chain_id
+                deployment_chain_id,
+                num_candidates
             FROM dipper_reg_indexing_requests
             WHERE deployment_id = $1
             "#,
@@ -707,6 +713,49 @@ impl PgRegistry {
         )
         .bind(agreement_id)
         .fetch_optional(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    // =========================================================================
+    // Reassignment operations
+    // =========================================================================
+
+    /// Get open indexing requests eligible for reassessment.
+    ///
+    /// Returns requests that are in the `OPEN` status and were created at least
+    /// `min_age_seconds` ago. Results are ordered by `updated_at` ascending to
+    /// prioritize requests that haven't been reassessed recently.
+    ///
+    /// If `batch_size` is greater than 0, limits the number of results.
+    /// If `batch_size` is 0 or negative, returns all matching requests.
+    pub async fn get_open_indexing_requests_for_reassessment(
+        &self,
+        min_age_seconds: i64,
+        batch_size: i64,
+    ) -> Result<Vec<IndexingRequest>, Error> {
+        sqlx::query_as(
+            r#"
+            SELECT
+                id,
+                created_at,
+                updated_at,
+                status,
+                requested_by,
+                deployment_id,
+                deployment_chain_id,
+                num_candidates
+            FROM dipper_reg_indexing_requests
+            WHERE status = $1
+              AND created_at < timezone('UTC', now()) - ($2 || ' seconds')::interval
+            ORDER BY updated_at ASC
+            LIMIT CASE WHEN $3 > 0 THEN $3 ELSE NULL END
+            "#,
+        )
+        .bind(IndexingRequestStatus::Open)
+        .bind(min_age_seconds)
+        .bind(batch_size)
+        .fetch_all(&self.pool)
         .await
         .map_err(Into::into)
     }

@@ -8,14 +8,16 @@ INSERT INTO dipper_reg_indexing_requests (id,
                                           status,
                                           requested_by,
                                           deployment_id,
-                                          deployment_chain_id)
+                                          deployment_chain_id,
+                                          num_candidates)
 VALUES ('01930100-0000-7000-8000-000000000001'::uuid,
         timezone('UTC', now()),
         timezone('UTC', now()),
         0, -- IndexingRequestStatus::Open
         '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
         'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
-        '\x000000000000a4b1'::bytea);
+        '\x000000000000a4b1'::bytea,
+        3);
 
 -- Indexer A: 0x1111111111111111111111111111111111111111
 -- Has 2 active agreements (1 Created, 1 Accepted)

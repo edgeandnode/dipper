@@ -43,6 +43,9 @@ pub struct IndexingRequest {
 
     /// The Subgraph deployment chain ID.
     pub deployment_chain_id: ChainId,
+
+    /// The desired number of indexers for this request.
+    pub num_candidates: i32,
 }
 
 impl IndexingRequest {
@@ -54,6 +57,7 @@ impl IndexingRequest {
         requested_by: Address,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
+        num_candidates: i32,
     ) -> Self {
         Self {
             id: IndexingRequestId::new(),
@@ -63,6 +67,7 @@ impl IndexingRequest {
             requested_by,
             deployment_id,
             deployment_chain_id,
+            num_candidates,
         }
     }
 

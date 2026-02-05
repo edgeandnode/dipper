@@ -24,6 +24,7 @@ impl sqlx::FromRow<'_, PgRow> for IndexingRequest {
         let PgAddress(requested_by) = row.try_get("requested_by")?;
         let PgDeploymentId(deployment_id) = row.try_get("deployment_id")?;
         let PgU64(deployment_chain_id) = row.try_get("deployment_chain_id")?;
+        let num_candidates: i32 = row.try_get("num_candidates")?;
 
         Ok(Self {
             id,
@@ -33,6 +34,7 @@ impl sqlx::FromRow<'_, PgRow> for IndexingRequest {
             requested_by,
             deployment_id,
             deployment_chain_id,
+            num_candidates,
         })
     }
 }

@@ -5,14 +5,16 @@ INSERT INTO dipper_reg_indexing_requests (id,
                                           status,
                                           requested_by,
                                           deployment_id,
-                                          deployment_chain_id)
+                                          deployment_chain_id,
+                                          num_candidates)
 VALUES ('019300ce-4751-780e-b58c-bf696b67eb23'::uuid,
         timezone('UTC', now()),
         timezone('UTC', now()),
         0, -- IndexingRequestStatus::Open
         '\x442a24985444cdc6a4db9503d354918d27b5ea97'::bytea,
         'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
-        '\x000000000000a4b1'::bytea); -- arbitrum-one (chain_id: 42161)
+        '\x000000000000a4b1'::bytea, -- arbitrum-one (chain_id: 42161)
+        3);
 
 -- Insert multiple indexing agreements
 -- Indexing agreement #1: CREATED
