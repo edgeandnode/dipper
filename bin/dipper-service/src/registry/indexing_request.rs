@@ -28,6 +28,7 @@ pub trait IndexingRequestRegistry {
         requested_by: Address,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
+        num_candidates: usize,
     ) -> RegistryResult<IndexingRequestId>;
 
     /// Get all indexing requests.
@@ -51,6 +52,20 @@ pub trait IndexingRequestRegistry {
     /// `OPEN` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
     async fn mark_indexing_request_as_canceled(&self, id: &IndexingRequestId)
     -> RegistryResult<()>;
+
+    /// Get open indexing requests eligible for reassessment.
+    ///
+    /// Returns requests that are in the `OPEN` status and were created at least
+    /// `min_age_seconds` ago. Results are ordered by `updated_at` ascending to
+    /// prioritize requests that haven't been reassessed recently.
+    ///
+    /// If `batch_size` is greater than 0, limits the number of results.
+    /// If `batch_size` is 0 or negative, returns all matching requests.
+    async fn get_open_indexing_requests_for_reassessment(
+        &self,
+        min_age_seconds: i64,
+        batch_size: i64,
+    ) -> RegistryResult<Vec<IndexingRequest>>;
 }
 
 /// An Indexing Request represents the request for indexing services initiated by the customer.
@@ -83,6 +98,9 @@ pub struct IndexingRequest {
 
     /// The Subgraph deployment chain ID.
     pub deployment_chain_id: ChainId,
+
+    /// The desired number of indexers for this request.
+    pub num_candidates: usize,
 }
 
 /// The status of the [`IndexingRequest`].
@@ -128,6 +146,7 @@ impl TryFrom<dipper_pgregistry::IndexingRequest> for IndexingRequest {
             requested_by: value.requested_by,
             deployment_id: value.deployment_id,
             deployment_chain_id: value.deployment_chain_id,
+            num_candidates: value.num_candidates as usize,
         })
     }
 }

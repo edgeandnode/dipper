@@ -51,9 +51,15 @@ impl IndexingRequestRegistry for RegistryProvider {
         requested_by: Address,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
+        num_candidates: usize,
     ) -> RegistryResult<IndexingRequestId> {
         self.inner
-            .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id)
+            .register_new_indexing_request(
+                requested_by,
+                deployment_id,
+                deployment_chain_id,
+                num_candidates as i32,
+            )
             .await
             .map_err(Into::into)
     }
@@ -103,6 +109,21 @@ impl IndexingRequestRegistry for RegistryProvider {
             .mark_indexing_request_as_canceled(id)
             .await
             .map_err(Into::into)
+    }
+
+    async fn get_open_indexing_requests_for_reassessment(
+        &self,
+        min_age_seconds: i64,
+        batch_size: i64,
+    ) -> RegistryResult<Vec<IndexingRequest>> {
+        Ok(self
+            .inner
+            .get_open_indexing_requests_for_reassessment(min_age_seconds, batch_size)
+            .await?
+            .into_iter()
+            .map(IndexingRequest::try_from)
+            .filter_map(Result::ok)
+            .collect())
     }
 }
 

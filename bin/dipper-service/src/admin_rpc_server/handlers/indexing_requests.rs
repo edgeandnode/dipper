@@ -123,7 +123,7 @@ where
         // Register the new indexing request
         let indexing_request_id = match self
             .registry
-            .register_new_indexing_request(requested_by, deployment_id, chain_id)
+            .register_new_indexing_request(requested_by, deployment_id, chain_id, self.max_candidates)
             .await
         {
             Ok(indexing_request_id) => indexing_request_id,

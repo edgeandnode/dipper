@@ -1,9 +1,9 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use dipper_core::ids::IndexingRequestId;
-use dipper_iisa::{CandidateSelection, Indexer as IndexerCandidate, SelectionError};
+use dipper_iisa::{CandidateSelection, SelectionError};
 use rand::seq::IndexedRandom;
-use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
+use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::ChainId};
 
 use super::selection_context::gather_selection_context;
 use crate::{
@@ -60,64 +60,49 @@ where
     W: WorkerQueue,
     I: CandidateSelection,
 {
-    // Get the indexers that are not indexing the deployment and treat it as the raw candidate list
-    // and pass it to the IISA to get the final list of candidates
-    let indexers = ctx
-        .network
-        .get_indexers_not_indexing_a_deployment_id(deployment_id)
-        .into_iter()
-        .map(|indexer| IndexerCandidate {
-            id: indexer.id,
-            url: indexer.url,
-        })
-        .collect::<Vec<_>>();
-    if indexers.is_empty() {
-        tracing::error!(
-            indexing_request_id=%indexing_request_id,
-            "No indexers available to fulfill the indexing request"
-        );
-        return Ok(());
-    }
-
     // Gather load balancing context for IISA
-    let context = gather_selection_context(&ctx.registry, deployment_id, &indexers).await?;
+    let context = gather_selection_context(&ctx.registry, deployment_id).await?;
 
     // Check if we're in fallback-eligible state (job has been retrying for 6+ hours)
-    // This allows us to avoid cloning indexers on the happy path
     let fallback_eligible = job_meta.age_exceeds(IISA_FALLBACK_THRESHOLD);
 
     // Try IISA selection, with random fallback if IISA has been unavailable for too long
-    let candidates = if fallback_eligible {
-        // Clone indexers only when fallback might be needed
+    let selected_ids = if fallback_eligible {
         match ctx
             .iisa
-            .select(*deployment_id, indexers.clone(), *num_candidates, &context)
+            .select_indexers(*deployment_id, *num_candidates, &context)
             .await
         {
-            Ok(candidates) => candidates,
+            Ok(ids) => ids,
             Err(SelectionError::IisaServiceUnavailable) => {
-                // IISA unavailable for 6+ hours, fall back to random selection
+                // IISA unavailable for 6+ hours, fall back to random selection from network
                 tracing::warn!(
                     indexing_request_id=%indexing_request_id,
                     age_hours=%((time::OffsetDateTime::now_utc() - job_meta.created_at).whole_hours()),
                     "IISA unavailable for 6+ hours, using random selection fallback"
                 );
+                let available_indexers: Vec<IndexerId> = ctx
+                    .network
+                    .get_indexers_not_indexing_a_deployment_id(deployment_id)
+                    .into_iter()
+                    .map(|i| i.id)
+                    .collect();
                 let mut rng = rand::rng();
-                indexers
+                available_indexers
                     .choose_multiple(&mut rng, *num_candidates)
-                    .cloned()
+                    .copied()
                     .collect()
             }
             Err(SelectionError::Error(e)) => return Err(JobError::Fatal(e)),
         }
     } else {
-        // Normal path: no clone needed since we won't fall back to random
+        // Normal path
         match ctx
             .iisa
-            .select(*deployment_id, indexers, *num_candidates, &context)
+            .select_indexers(*deployment_id, *num_candidates, &context)
             .await
         {
-            Ok(candidates) => candidates,
+            Ok(ids) => ids,
             Err(SelectionError::IisaServiceUnavailable) => {
                 tracing::warn!(
                     indexing_request_id=%indexing_request_id,
@@ -131,7 +116,8 @@ where
             Err(SelectionError::Error(e)) => return Err(JobError::Fatal(e)),
         }
     };
-    if candidates.is_empty() {
+
+    if selected_ids.is_empty() {
         tracing::error!(
             indexing_request_id=%indexing_request_id,
             "No candidates selected to fulfill the indexing request"
@@ -139,8 +125,20 @@ where
         return Ok(());
     }
 
-    // Create indexing agreements for the selected indexers and register them in the registry
-    for candidate in candidates {
+    // Resolve indexer IDs to full indexer objects (with URLs) via network topology
+    for indexer_id in selected_ids {
+        let indexer = match ctx.network.get_indexer_by_id(&indexer_id) {
+            Some(indexer) => indexer,
+            None => {
+                tracing::warn!(
+                    indexing_request_id=%indexing_request_id,
+                    indexer_id=%indexer_id,
+                    "IISA selected indexer not found in network topology, skipping"
+                );
+                continue;
+            }
+        };
+
         let voucher_metadata = {
             let prices = match ctx.chain_price.get(deployment_chain_id) {
                 Some(prices) => prices,
@@ -168,7 +166,7 @@ where
 
         let voucher = IndexingAgreementVoucher {
             payer: ctx.signer.address(),
-            recipient: candidate.id.into_inner(),
+            recipient: indexer.id.into_inner(),
             service: ctx.agreement_conf.service(),
             duration_epochs: ctx.agreement_conf.duration_epochs(),
             max_initial_amount: ctx.agreement_conf.max_initial_amount(),
@@ -184,8 +182,8 @@ where
             .register_new_indexing_agreement(
                 *indexing_request_id,
                 *deployment_id,
-                candidate.id,
-                candidate.url.clone(),
+                indexer.id,
+                indexer.url.clone(),
                 voucher,
             )
             .await
@@ -194,7 +192,7 @@ where
         if let Err(err) = ctx
             .queue
             .send_indexing_agreement_proposal(
-                candidate.url,
+                indexer.url,
                 agreement_id,
                 *indexing_request_id,
                 *deployment_id,

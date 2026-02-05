@@ -1,7 +1,7 @@
 //! Shared utilities for gathering IISA selection context.
 
-use dipper_iisa::{Indexer as IndexerCandidate, SelectionContext};
-use thegraph_core::{DeploymentId, IndexerId};
+use dipper_iisa::SelectionContext;
+use thegraph_core::DeploymentId;
 
 use crate::{
     registry::{AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementStatus},
@@ -18,13 +18,12 @@ const DECLINED_INDEXER_LOOKBACK_DAYS: i32 = 30;
 ///
 /// This function queries the registry to build context about:
 /// - Which indexers already have active agreements for this deployment
-/// - What other deployments each candidate indexer is currently working on
+/// - What pending agreements exist across all deployments
 /// - Which indexers have recently declined agreements (within 30 days)
 /// - Which indexers are on the denylist and should be excluded entirely
 pub async fn gather_selection_context<R>(
     registry: &R,
     deployment_id: &DeploymentId,
-    candidates: &[IndexerCandidate],
 ) -> JobResult<SelectionContext>
 where
     R: AgreementRegistry + IndexerDenylistRegistry,
@@ -39,12 +38,11 @@ where
         .map(|a| a.indexer.id)
         .collect::<Vec<_>>();
 
-    // Get pending agreements using database-side aggregation
-    // This returns deployment -> [indexers] directly, avoiding full object transfer
-    let candidate_ids: Vec<IndexerId> = candidates.iter().map(|c| c.id).collect();
-
+    // Get pending agreements across all deployments.
+    // Since IISA handles candidate filtering internally, we pass all existing indexer IDs
+    // from active agreements (the existing_indexers we just computed) as the filter.
     let pending_agreements = registry
-        .get_pending_agreement_indexers_by_deployment(&candidate_ids)
+        .get_pending_agreement_indexers_by_deployment(&existing_indexers)
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
