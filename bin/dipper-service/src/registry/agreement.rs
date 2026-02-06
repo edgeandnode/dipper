@@ -82,12 +82,6 @@ pub trait AgreementRegistry {
         request_id: &IndexingRequestId,
     ) -> RegistryResult<Vec<IndexingAgreement>>;
 
-    /// Get the canceled-by-indexer agreements for an indexing request.
-    async fn get_canceled_by_indexer_agreements_by_indexing_request_id(
-        &self,
-        request_id: &IndexingRequestId,
-    ) -> RegistryResult<Vec<IndexingAgreement>>;
-
     /// Register a new indexing agreement.
     async fn register_new_indexing_agreement(
         &self,

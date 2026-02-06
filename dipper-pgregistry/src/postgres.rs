@@ -176,35 +176,6 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
-    /// Returns all indexing agreements associated with an indexing request that are in
-    /// `CANCELED_BY_INDEXER` state.
-    pub async fn get_canceled_by_indexer_agreements_by_indexing_request_id(
-        &self,
-        request_id: &IndexingRequestId,
-    ) -> Result<Vec<IndexingAgreement>, Error> {
-        sqlx::query_as(
-            r#"
-            SELECT
-                id,
-                created_at,
-                updated_at,
-                status,
-                indexing_request_id,
-                deployment_id,
-                indexer_id,
-                indexer_url,
-                voucher
-            FROM dipper_reg_indexing_agreements
-            WHERE indexing_request_id = $1 AND status = $2
-            "#,
-        )
-        .bind(request_id)
-        .bind(IndexingAgreementStatus::CanceledByIndexer)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(Into::into)
-    }
-
     /// Mark an indexing request as `CANCELED`.
     ///
     /// If there is no indexing request with the given ID, or if the request is not in the

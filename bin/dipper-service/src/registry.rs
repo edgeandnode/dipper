@@ -215,20 +215,6 @@ impl AgreementRegistry for RegistryProvider {
             .filter_map(Result::ok)
             .collect())
     }
-    async fn get_canceled_by_indexer_agreements_by_indexing_request_id(
-        &self,
-        request_id: &IndexingRequestId,
-    ) -> RegistryResult<Vec<IndexingAgreement>> {
-        Ok(self
-            .inner
-            .get_canceled_by_indexer_agreements_by_indexing_request_id(request_id)
-            .await?
-            .into_iter()
-            .map(IndexingAgreement::try_from)
-            .filter_map(Result::ok)
-            .collect())
-    }
-
     async fn register_new_indexing_agreement(
         &self,
         request_id: IndexingRequestId,

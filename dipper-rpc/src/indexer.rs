@@ -32,8 +32,7 @@ pub mod indexer_client {
     pub mod rpc {
         #[doc(inline)]
         pub use indexer_dips::proto::indexer::graphprotocol::indexer::dips::{
-            CancelAgreementRequest, CancelAgreementResponse, ProposalResponse,
-            SubmitAgreementProposalRequest, SubmitAgreementProposalResponse,
+            CancelAgreementRequest, SubmitAgreementProposalRequest,
             indexer_dips_service_client::IndexerDipsServiceClient,
         };
     }
@@ -41,9 +40,8 @@ pub mod indexer_client {
     pub mod sol {
         #[doc(inline)]
         pub use indexer_dips::{
-            CancellationRequest, CollectionRequest, DipsError, IndexingAgreementVoucher,
-            SignedCancellationRequest, SignedIndexingAgreementVoucher,
-            SubgraphIndexingVoucherMetadata,
+            CancellationRequest, IndexingAgreementVoucher, SignedCancellationRequest,
+            SignedIndexingAgreementVoucher, SubgraphIndexingVoucherMetadata,
         };
     }
 

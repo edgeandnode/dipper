@@ -430,41 +430,6 @@ async fn get_indexing_agreements_by_indexing_request_id() {
 }
 
 #[tokio::test]
-async fn get_canceled_by_indexer_agreements_by_indexing_request_id() {
-    //* Given
-    let (db, _temp_db) = temp_registry_db().await;
-    run_fixture(&db, include_str!("fixtures/0002_indexing_agreements.sql"))
-        .await
-        .expect("Failed to run fixture");
-    let registry = PgRegistry::new(db);
-
-    let indexing_request_id = uuid!("019300ce-4751-780e-b58c-bf696b67eb23").into();
-
-    //* When
-    let res = registry
-        .get_canceled_by_indexer_agreements_by_indexing_request_id(&indexing_request_id)
-        .await;
-
-    //* Then
-    let agreements = res.expect("Failed to get indexing agreements by indexing request ID");
-    assert_eq!(agreements.len(), 2);
-
-    // Assert the agreements are in the expected state
-    assert!(
-        agreements
-            .iter()
-            .all(|agreement| { agreement.indexing_request_id == indexing_request_id }),
-        "Expected all agreements to be associated with the given indexing request"
-    );
-    assert!(
-        agreements.iter().all(|agreement| {
-            matches!(agreement.status, IndexingAgreementStatus::CanceledByIndexer)
-        }),
-        "Expected all agreements to be in CANCELED_BY_INDEXER state"
-    );
-}
-
-#[tokio::test]
 async fn register_new_indexing_receipt_no_indexing_agreement() {
     //* Given
     // Indexing agreement

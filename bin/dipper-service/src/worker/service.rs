@@ -20,9 +20,7 @@ use super::{
 use crate::{
     indexer_rpc_client::IndexerClient,
     network::NetworkProvider,
-    registry::{
-        AgreementRegistry, IndexerDenylistRegistry, IndexingRequestRegistry, ReceiptRegistry,
-    },
+    registry::{AgreementRegistry, IndexerDenylistRegistry, IndexingRequestRegistry},
 };
 
 /// Default period to poll the queue for new jobs
@@ -34,13 +32,7 @@ const DEFAULT_QUEUE_POLL_PERIOD: Duration = Duration::from_secs(1);
 pub fn new<S, Q, R, N, C, I>(state: S) -> (Handle<Q>, impl Future<Output = anyhow::Result<()>>)
 where
     Q: Queue<Message> + Clone + Send + Sync,
-    R: IndexingRequestRegistry
-        + AgreementRegistry
-        + IndexerDenylistRegistry
-        + ReceiptRegistry
-        + Clone
-        + Send
-        + Sync,
+    R: IndexingRequestRegistry + AgreementRegistry + IndexerDenylistRegistry + Clone + Send + Sync,
     N: NetworkProvider + Clone + Send + Sync,
     C: IndexerClient + Clone + Send + Sync,
     I: CandidateSelection + Clone + Send + Sync,
@@ -150,7 +142,7 @@ async fn process_job<S, W, N, R, C, I>(
     job_meta: JobMeta,
 ) -> JobResult<()>
 where
-    R: IndexingRequestRegistry + AgreementRegistry + IndexerDenylistRegistry + ReceiptRegistry,
+    R: IndexingRequestRegistry + AgreementRegistry + IndexerDenylistRegistry,
     N: NetworkProvider,
     W: WorkerQueue,
     C: IndexerClient,
