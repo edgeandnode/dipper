@@ -51,9 +51,15 @@ impl IndexingRequestRegistry for RegistryProvider {
         requested_by: Address,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
+        num_candidates: usize,
     ) -> RegistryResult<IndexingRequestId> {
         self.inner
-            .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id)
+            .register_new_indexing_request(
+                requested_by,
+                deployment_id,
+                deployment_chain_id,
+                num_candidates as i32,
+            )
             .await
             .map_err(Into::into)
     }
@@ -103,6 +109,21 @@ impl IndexingRequestRegistry for RegistryProvider {
             .mark_indexing_request_as_canceled(id)
             .await
             .map_err(Into::into)
+    }
+
+    async fn get_open_indexing_requests_for_reassessment(
+        &self,
+        min_age_seconds: i64,
+        batch_size: i64,
+    ) -> RegistryResult<Vec<IndexingRequest>> {
+        Ok(self
+            .inner
+            .get_open_indexing_requests_for_reassessment(min_age_seconds, batch_size)
+            .await?
+            .into_iter()
+            .map(IndexingRequest::try_from)
+            .filter_map(Result::ok)
+            .collect())
     }
 }
 
@@ -194,20 +215,6 @@ impl AgreementRegistry for RegistryProvider {
             .filter_map(Result::ok)
             .collect())
     }
-    async fn get_rejected_indexing_agreements_by_indexing_request_id(
-        &self,
-        request_id: &IndexingRequestId,
-    ) -> RegistryResult<Vec<IndexingAgreement>> {
-        Ok(self
-            .inner
-            .get_rejected_indexing_agreements_by_indexing_request_id(request_id)
-            .await?
-            .into_iter()
-            .map(IndexingAgreement::try_from)
-            .filter_map(Result::ok)
-            .collect())
-    }
-
     async fn register_new_indexing_agreement(
         &self,
         request_id: IndexingRequestId,
@@ -238,27 +245,6 @@ impl AgreementRegistry for RegistryProvider {
             .map_err(Into::into)
     }
 
-    async fn mark_indexing_agreement_as_accepted(
-        &self,
-        id: &IndexingAgreementId,
-        epoch: u32,
-    ) -> RegistryResult<()> {
-        self.inner
-            .mark_indexing_agreement_as_accepted(id, epoch)
-            .await
-            .map_err(Into::into)
-    }
-
-    async fn mark_indexing_agreement_as_rejected(
-        &self,
-        id: &IndexingAgreementId,
-    ) -> RegistryResult<()> {
-        self.inner
-            .mark_indexing_agreement_as_rejected(id)
-            .await
-            .map_err(Into::into)
-    }
-
     async fn mark_indexing_agreement_as_canceled_by_requester(
         &self,
         id: &IndexingAgreementId,
@@ -275,6 +261,16 @@ impl AgreementRegistry for RegistryProvider {
     ) -> RegistryResult<()> {
         self.inner
             .mark_indexing_agreement_as_canceled_by_indexer(id)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn mark_indexing_agreement_as_accepted_on_chain(
+        &self,
+        id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        self.inner
+            .mark_indexing_agreement_as_accepted_on_chain(id)
             .await
             .map_err(Into::into)
     }

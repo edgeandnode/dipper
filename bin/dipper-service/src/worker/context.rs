@@ -5,7 +5,7 @@ use thegraph_core::alloy::primitives::ChainId;
 
 use super::handlers::{
     ProcessIndexingAgreementCancellationCtx, ProcessIndexingRequestCancellationCtx,
-    ProcessNewIndexingRequestCtx, SendIndexingAgreementCancellationCtx,
+    ProcessNewIndexingRequestCtx, ReassessIndexingRequestCtx, SendIndexingAgreementCancellationCtx,
     SendIndexingAgreementProposalCtx,
 };
 use crate::{
@@ -73,8 +73,7 @@ pub(super) struct InnerCtx<R, N, W, C, I> {
     pub iisa: I,
 }
 
-impl<R, N, W, C, I> FromState<InnerCtx<R, N, W, C, I>>
-    for super::handlers::FindIndexerForIndexingRequestCtx<R, N, W, I>
+impl<R, N, W, C, I> FromState<InnerCtx<R, N, W, C, I>> for ReassessIndexingRequestCtx<R, N, W, I>
 where
     R: Clone,
     N: Clone,
@@ -146,11 +145,9 @@ where
     }
 }
 
-impl<R, N, W, C, I> FromState<InnerCtx<R, N, W, C, I>>
-    for SendIndexingAgreementProposalCtx<R, N, W, C>
+impl<R, N, W, C, I> FromState<InnerCtx<R, N, W, C, I>> for SendIndexingAgreementProposalCtx<R, W, C>
 where
     R: Clone,
-    N: Clone,
     W: Clone,
     C: Clone,
 {
@@ -158,7 +155,6 @@ where
     fn from_state(state: &InnerCtx<R, N, W, C, I>) -> Self {
         Self {
             registry: state.registry.clone(),
-            network: state.network.clone(),
             queue: state.worker.clone(),
             indexer_client: state.client.clone(),
         }

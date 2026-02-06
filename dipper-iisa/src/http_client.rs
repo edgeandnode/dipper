@@ -8,6 +8,7 @@
 //! - GeoIP resolution for geographic diversity
 //! - Calculating weighted scores for each candidate
 //! - Running the selection algorithm
+//! - Candidate filtering (internally, using its own scores data)
 
 use std::{collections::HashMap, time::Duration};
 
@@ -17,7 +18,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use thegraph_core::{DeploymentId, IndexerId};
 
-use crate::api::{CandidateSelection, Indexer, SelectionContext, SelectionError};
+use crate::api::{CandidateSelection, SelectionContext, SelectionError};
 
 /// Configuration for the HTTP client.
 #[derive(Debug, Clone)]
@@ -51,24 +52,11 @@ pub struct HttpIisaClient {
     config: HttpClientConfig,
 }
 
-/// A candidate indexer with ID and URL for the selection request.
-#[derive(Debug, Clone, Serialize)]
-struct CandidateIndexer {
-    /// Indexer ID as hex string (0x...)
-    id: String,
-    /// Indexer URL endpoint
-    url: String,
-}
-
-/// Request body for indexer selection endpoints.
+/// Request body for the /select-indexers endpoint.
 #[derive(Debug, Clone, Serialize)]
 struct SelectionRequest {
     /// The deployment ID to select indexers for
     deployment_id: String,
-
-    /// List of candidate indexers with their URLs
-    #[serde(skip_serializing_if = "Option::is_none")]
-    candidates: Option<Vec<CandidateIndexer>>,
 
     /// List of existing indexer IDs already assigned to this deployment
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -78,31 +66,27 @@ struct SelectionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pending_agreements: Option<HashMap<String, Vec<String>>>,
 
-    /// Number of indexers to select (for select-many)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    num_candidates: Option<usize>,
+    /// Target group size: number of indexers to select
+    num_candidates: usize,
 
-    /// Indexer IDs to exclude from selection entirely
+    /// Indexer IDs to exclude from selection entirely (maps from `indexer_denylist`)
     #[serde(skip_serializing_if = "Option::is_none")]
-    indexer_denylist: Option<Vec<String>>,
+    blocklist: Option<Vec<String>>,
 
     /// Declined indexers: deployment ID -> list of indexer IDs that recently declined
     #[serde(skip_serializing_if = "Option::is_none")]
     declined_indexers: Option<HashMap<String, Vec<String>>>,
 }
 
-/// Response from the /select-one endpoint.
+/// Response from the /select-indexers endpoint.
 #[derive(Debug, Deserialize)]
-struct SingleSelectionResponse {
-    /// The selected indexer ID, or None if no selection was made
-    indexer_id: Option<String>,
-}
+struct SelectionResponse {
+    /// The deployment ID (echoed back)
+    #[allow(dead_code)]
+    deployment_id: String,
 
-/// Response from the /select-many endpoint.
-#[derive(Debug, Deserialize)]
-struct MultiSelectionResponse {
-    /// List of selected indexer IDs
-    indexer_ids: Vec<String>,
+    /// Full list of indexer IDs that should be assigned
+    indexers: Vec<String>,
 }
 
 /// Check if an HTTP error is retryable.
@@ -260,14 +244,6 @@ impl HttpIisaClient {
         Err(last_error)
     }
 
-    /// Convert Indexer to CandidateIndexer for serialization.
-    fn to_candidate(indexer: &Indexer) -> CandidateIndexer {
-        CandidateIndexer {
-            id: format!("{:#x}", indexer.id),
-            url: indexer.url.to_string(),
-        }
-    }
-
     /// Format existing indexers from context for the HTTP request.
     ///
     /// Returns `None` if the list is empty to skip serialization.
@@ -309,10 +285,10 @@ impl HttpIisaClient {
         }
     }
 
-    /// Format indexer denylist from context for the HTTP request.
+    /// Format indexer denylist from context as `blocklist` for the HTTP request.
     ///
     /// Returns `None` if the list is empty to skip serialization.
-    fn format_indexer_denylist(context: &SelectionContext) -> Option<Vec<String>> {
+    fn format_blocklist(context: &SelectionContext) -> Option<Vec<String>> {
         if context.indexer_denylist.is_empty() {
             None
         } else {
@@ -353,78 +329,36 @@ impl HttpIisaClient {
 
 #[async_trait]
 impl CandidateSelection for HttpIisaClient {
-    async fn select_one(
+    async fn select_indexers(
         &self,
         deployment_id: DeploymentId,
-        candidates: Vec<Indexer>,
-        context: &SelectionContext,
-    ) -> Result<Option<Indexer>, SelectionError> {
-        if candidates.is_empty() {
-            return Ok(None);
-        }
-
-        let request = SelectionRequest {
-            deployment_id: deployment_id.to_string(),
-            candidates: Some(candidates.iter().map(Self::to_candidate).collect()),
-            existing_indexers: Self::format_existing_indexers(context),
-            pending_agreements: Self::format_pending_agreements(context),
-            num_candidates: None,
-            indexer_denylist: Self::format_indexer_denylist(context),
-            declined_indexers: Self::format_declined_indexers(context),
-        };
-
-        let url = format!("{}select-one", self.endpoint);
-        let result: SingleSelectionResponse = self.post_with_retry(&url, &request).await?;
-
-        // Find the selected indexer in the original candidates list
-        if let Some(id_str) = result.indexer_id {
-            let id: IndexerId = id_str
-                .parse()
-                .map_err(|e| SelectionError::Error(anyhow::anyhow!("Invalid indexer ID: {}", e)))?;
-
-            Ok(candidates.into_iter().find(|i| i.id == id))
-        } else {
-            Ok(None)
-        }
-    }
-
-    async fn select(
-        &self,
-        deployment_id: DeploymentId,
-        candidates: Vec<Indexer>,
         num_candidates: usize,
         context: &SelectionContext,
-    ) -> Result<Vec<Indexer>, SelectionError> {
-        if candidates.is_empty() || num_candidates == 0 {
+    ) -> Result<Vec<IndexerId>, SelectionError> {
+        if num_candidates == 0 {
             return Ok(Vec::new());
         }
 
         let request = SelectionRequest {
             deployment_id: deployment_id.to_string(),
-            candidates: Some(candidates.iter().map(Self::to_candidate).collect()),
             existing_indexers: Self::format_existing_indexers(context),
             pending_agreements: Self::format_pending_agreements(context),
-            num_candidates: Some(num_candidates),
-            indexer_denylist: Self::format_indexer_denylist(context),
+            num_candidates,
+            blocklist: Self::format_blocklist(context),
             declined_indexers: Self::format_declined_indexers(context),
         };
 
-        let url = format!("{}select-many", self.endpoint);
-        let result: MultiSelectionResponse = self.post_with_retry(&url, &request).await?;
+        let url = format!("{}select-indexers", self.endpoint);
+        let result: SelectionResponse = self.post_with_retry(&url, &request).await?;
 
-        // Find selected indexers in the original candidates list
-        let mut selected = Vec::with_capacity(result.indexer_ids.len());
-        for id_str in result.indexer_ids {
-            let id: IndexerId = match id_str.parse() {
-                Ok(id) => id,
+        // Parse returned indexer ID strings into IndexerId types
+        let mut selected = Vec::with_capacity(result.indexers.len());
+        for id_str in result.indexers {
+            match id_str.parse::<IndexerId>() {
+                Ok(id) => selected.push(id),
                 Err(e) => {
                     tracing::warn!("Failed to parse indexer ID '{}': {}", id_str, e);
-                    continue;
                 }
-            };
-
-            if let Some(indexer) = candidates.iter().find(|i| i.id == id) {
-                selected.push(indexer.clone());
             }
         }
 
@@ -586,13 +520,13 @@ mod tests {
     }
 
     #[test]
-    fn test_format_indexer_denylist_empty() {
+    fn test_format_blocklist_empty() {
         let context = SelectionContext::default();
-        assert_eq!(HttpIisaClient::format_indexer_denylist(&context), None);
+        assert_eq!(HttpIisaClient::format_blocklist(&context), None);
     }
 
     #[test]
-    fn test_format_indexer_denylist_with_data() {
+    fn test_format_blocklist_with_data() {
         let indexer_id: IndexerId = "0x1234567890123456789012345678901234567890"
             .parse()
             .unwrap();
@@ -601,11 +535,11 @@ mod tests {
             ..Default::default()
         };
 
-        let result = HttpIisaClient::format_indexer_denylist(&context);
+        let result = HttpIisaClient::format_blocklist(&context);
         assert!(result.is_some());
-        let denylist = result.unwrap();
-        assert_eq!(denylist.len(), 1);
-        assert_eq!(denylist[0], "0x1234567890123456789012345678901234567890");
+        let blocklist = result.unwrap();
+        assert_eq!(blocklist.len(), 1);
+        assert_eq!(blocklist[0], "0x1234567890123456789012345678901234567890");
     }
 
     #[test]
@@ -689,13 +623,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_select_indexers_success() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/select-indexers"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "deployment_id": "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
+                "indexers": [
+                    "0x1234567890123456789012345678901234567890",
+                    "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = HttpIisaClient::new(mock_server.uri());
+        let deployment_id: DeploymentId = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+            .parse()
+            .unwrap();
+
+        let result = client
+            .select_indexers(deployment_id, 2, &SelectionContext::default())
+            .await;
+
+        assert!(result.is_ok());
+        let indexers = result.unwrap();
+        assert_eq!(indexers.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_select_indexers_zero_candidates_returns_empty() {
+        let client = HttpIisaClient::new("http://localhost:1".to_string());
+        let deployment_id: DeploymentId = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+            .parse()
+            .unwrap();
+
+        let result = client
+            .select_indexers(deployment_id, 0, &SelectionContext::default())
+            .await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_retry_on_5xx_then_success() {
         let mock_server = MockServer::start().await;
         let call_count = std::sync::Arc::new(AtomicU32::new(0));
         let call_count_clone = call_count.clone();
 
         Mock::given(method("POST"))
-            .and(path("/select-one"))
+            .and(path("/select-indexers"))
             .respond_with(move |_: &wiremock::Request| {
                 let count = call_count_clone.fetch_add(1, Ordering::SeqCst);
                 if count < 2 {
@@ -704,7 +683,8 @@ mod tests {
                 } else {
                     // Third call succeeds
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                        "indexer_id": "0x1234567890123456789012345678901234567890"
+                        "deployment_id": "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
+                        "indexers": ["0x1234567890123456789012345678901234567890"]
                     }))
                 }
             })
@@ -718,26 +698,19 @@ mod tests {
         };
         let client = HttpIisaClient::with_config(mock_server.uri(), config);
 
-        let indexer = Indexer {
-            id: "0x1234567890123456789012345678901234567890"
-                .parse()
-                .unwrap(),
-            url: "http://indexer.example.com".parse().unwrap(),
-        };
-
         let result = client
-            .select_one(
+            .select_indexers(
                 "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
                     .parse()
                     .unwrap(),
-                vec![indexer],
+                1,
                 &SelectionContext::default(),
             )
             .await;
 
         // Should succeed after 2 retries (3 total calls)
         assert!(result.is_ok());
-        assert!(result.unwrap().is_some());
+        assert_eq!(result.unwrap().len(), 1);
         assert_eq!(call_count.load(Ordering::SeqCst), 3);
     }
 
@@ -748,7 +721,7 @@ mod tests {
         let call_count_clone = call_count.clone();
 
         Mock::given(method("POST"))
-            .and(path("/select-one"))
+            .and(path("/select-indexers"))
             .respond_with(move |_: &wiremock::Request| {
                 call_count_clone.fetch_add(1, Ordering::SeqCst);
                 ResponseTemplate::new(400)
@@ -764,19 +737,12 @@ mod tests {
         };
         let client = HttpIisaClient::with_config(mock_server.uri(), config);
 
-        let indexer = Indexer {
-            id: "0x1234567890123456789012345678901234567890"
-                .parse()
-                .unwrap(),
-            url: "http://indexer.example.com".parse().unwrap(),
-        };
-
         let result = client
-            .select_one(
+            .select_indexers(
                 "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
                     .parse()
                     .unwrap(),
-                vec![indexer],
+                1,
                 &SelectionContext::default(),
             )
             .await;
@@ -791,7 +757,7 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/select-one"))
+            .and(path("/select-indexers"))
             .respond_with(ResponseTemplate::new(503))
             .expect(4) // Initial + 3 retries
             .mount(&mock_server)
@@ -804,19 +770,12 @@ mod tests {
         };
         let client = HttpIisaClient::with_config(mock_server.uri(), config);
 
-        let indexer = Indexer {
-            id: "0x1234567890123456789012345678901234567890"
-                .parse()
-                .unwrap(),
-            url: "http://indexer.example.com".parse().unwrap(),
-        };
-
         let result = client
-            .select_one(
+            .select_indexers(
                 "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
                     .parse()
                     .unwrap(),
-                vec![indexer],
+                1,
                 &SelectionContext::default(),
             )
             .await;
@@ -833,11 +792,12 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/select-one"))
+            .and(path("/select-indexers"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(serde_json::json!({
-                        "indexer_id": "0x1234567890123456789012345678901234567890"
+                        "deployment_id": "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
+                        "indexers": ["0x1234567890123456789012345678901234567890"]
                     }))
                     .set_delay(Duration::from_secs(2)), // Delay longer than timeout
             )
@@ -851,19 +811,12 @@ mod tests {
         };
         let client = HttpIisaClient::with_config(mock_server.uri(), config);
 
-        let indexer = Indexer {
-            id: "0x1234567890123456789012345678901234567890"
-                .parse()
-                .unwrap(),
-            url: "http://indexer.example.com".parse().unwrap(),
-        };
-
         let result = client
-            .select_one(
+            .select_indexers(
                 "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
                     .parse()
                     .unwrap(),
-                vec![indexer],
+                1,
                 &SelectionContext::default(),
             )
             .await;
@@ -877,7 +830,7 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .and(path("/select-one"))
+            .and(path("/select-indexers"))
             .respond_with(ResponseTemplate::new(200).set_body_string("not valid json {{{"))
             .mount(&mock_server)
             .await;
@@ -889,19 +842,12 @@ mod tests {
         };
         let client = HttpIisaClient::with_config(mock_server.uri(), config);
 
-        let indexer = Indexer {
-            id: "0x1234567890123456789012345678901234567890"
-                .parse()
-                .unwrap(),
-            url: "http://indexer.example.com".parse().unwrap(),
-        };
-
         let result = client
-            .select_one(
+            .select_indexers(
                 "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
                     .parse()
                     .unwrap(),
-                vec![indexer],
+                1,
                 &SelectionContext::default(),
             )
             .await;

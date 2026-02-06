@@ -216,8 +216,6 @@ fn into_indexing_agreement_status(
     match status {
         IndexingAgreementRecordStatus::Created => IndexingAgreementStatus::Created,
         IndexingAgreementRecordStatus::DeliveryFailed => IndexingAgreementStatus::DeliveryFailed,
-        IndexingAgreementRecordStatus::Accepted { .. } => IndexingAgreementStatus::Accepted,
-        IndexingAgreementRecordStatus::Rejected => IndexingAgreementStatus::Rejected,
         IndexingAgreementRecordStatus::CanceledByRequester => {
             IndexingAgreementStatus::CanceledByRequester
         }
@@ -225,5 +223,6 @@ fn into_indexing_agreement_status(
             IndexingAgreementStatus::CanceledByIndexer
         }
         IndexingAgreementRecordStatus::Expired => IndexingAgreementStatus::Expired,
+        IndexingAgreementRecordStatus::AcceptedOnChain => IndexingAgreementStatus::AcceptedOnChain,
     }
 }

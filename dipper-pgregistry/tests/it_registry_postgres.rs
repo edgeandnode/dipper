@@ -55,7 +55,7 @@ async fn register_new_indexing_request() {
 
     //* When
     let res = registry
-        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id)
+        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id, 3)
         .await;
 
     //* Then
@@ -316,7 +316,7 @@ async fn register_new_indexing_agreement() {
 
     // Register a new indexing request
     let indexing_request_id = registry
-        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id)
+        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id, 3)
         .await
         .expect("Failed to register new indexing request");
 
@@ -357,7 +357,7 @@ async fn register_new_and_get_indexing_agreement_by_id() {
 
     // Register a new indexing request
     let indexing_request_id = registry
-        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id)
+        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id, 3)
         .await
         .expect("Failed to register new indexing request");
 
@@ -422,48 +422,10 @@ async fn get_indexing_agreements_by_indexing_request_id() {
         agreements.iter().all(|agreement| {
             matches!(
                 agreement.status,
-                IndexingAgreementStatus::Created | IndexingAgreementStatus::Accepted
+                IndexingAgreementStatus::Created | IndexingAgreementStatus::AcceptedOnChain
             )
         }),
-        "Expected all agreements to be in CREATED or ACCEPTED state"
-    );
-}
-
-#[tokio::test]
-async fn get_rejected_indexing_agreements_by_indexing_request_id() {
-    //* Given
-    let (db, _temp_db) = temp_registry_db().await;
-    run_fixture(&db, include_str!("fixtures/0002_indexing_agreements.sql"))
-        .await
-        .expect("Failed to run fixture");
-    let registry = PgRegistry::new(db);
-
-    let indexing_request_id = uuid!("019300ce-4751-780e-b58c-bf696b67eb23").into();
-
-    //* When
-    let res = registry
-        .get_rejected_indexing_agreements_by_indexing_request_id(&indexing_request_id)
-        .await;
-
-    //* Then
-    let agreements = res.expect("Failed to get indexing agreements by indexing request ID");
-    assert_eq!(agreements.len(), 2);
-
-    // Assert the agreements are in the expected state
-    assert!(
-        agreements
-            .iter()
-            .all(|agreement| { agreement.indexing_request_id == indexing_request_id }),
-        "Expected all agreements to be associated with the given indexing request"
-    );
-    assert!(
-        agreements.iter().all(|agreement| {
-            matches!(
-                agreement.status,
-                IndexingAgreementStatus::Rejected | IndexingAgreementStatus::CanceledByIndexer
-            )
-        }),
-        "Expected all agreements to be in REJECTED state"
+        "Expected all agreements to be in CREATED or ACCEPTED_ON_CHAIN state"
     );
 }
 
@@ -518,7 +480,7 @@ async fn register_new_indexing_receipt() {
 
     // Register a new indexing request
     let indexing_request_id = registry
-        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id)
+        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id, 3)
         .await
         .expect("Failed to register new indexing request");
 
@@ -575,9 +537,9 @@ async fn get_pending_agreement_indexers_by_deployment_aggregation() {
     //* Then
     // Should return 3 deployments (only those with active agreements):
     // - QmAAAAAA...1a -> [Indexer A] (Created)
-    // - QmBBBBBB...2b -> [Indexer A] (Accepted)
+    // - QmBBBBBB...2b -> [Indexer A] (AcceptedOnChain)
     // - QmDDDDDD...4d -> [Indexer B] (Created)
-    // Rejected and Expired agreements should NOT be included
+    // CanceledByIndexer and Expired agreements should NOT be included
     assert_eq!(result.len(), 3);
 
     // Verify specific deployments
@@ -680,7 +642,7 @@ async fn get_declined_indexers_by_deployment_returns_rejected() {
         .expect("Failed to get declined indexers");
 
     //* Then
-    // Indexer A rejected agreement for deployment QmCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC3c
+    // Indexer A canceled agreement for deployment QmCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC3c
     assert_eq!(
         result.len(),
         1,
@@ -758,12 +720,12 @@ async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
     .await
     .expect("Failed to run fixture");
 
-    // Update the rejected agreement to be 31 days old
+    // Update the canceled-by-indexer agreement to be 31 days old
     sqlx::query(
         r#"
         UPDATE dipper_reg_indexing_agreements
         SET updated_at = timezone('UTC', now()) - interval '31 days'
-        WHERE status = 2  -- Rejected
+        WHERE id = '01930100-0001-7000-8000-000000000003'::uuid
         "#,
     )
     .execute(&db)
@@ -780,7 +742,7 @@ async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
         .expect("Failed to get declined indexers");
 
     //* Then
-    // The rejected agreement is now 31 days old, outside the 30-day window
+    // The canceled-by-indexer agreement is now 31 days old, outside the 30-day window
     assert!(
         result.is_empty(),
         "Rejections older than lookback period should not be returned"
@@ -888,4 +850,164 @@ async fn indexer_denylist_excludes_expired_entries() {
         !denylist.contains(&expired_indexer),
         "Expired denial should not be returned"
     );
+}
+
+// =============================================================================
+// Reassessment query tests
+// =============================================================================
+
+#[tokio::test]
+async fn get_open_indexing_requests_for_reassessment_filters_by_age_and_status() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0004_reassessment_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    //* When
+    // Use 1 hour (3600 seconds) min age
+    let requests = registry
+        .get_open_indexing_requests_for_reassessment(3600, 0)
+        .await
+        .expect("Failed to get requests for reassessment");
+
+    //* Then
+    // Should return 3 requests: #1, #2, #5 (all OPEN and older than 1 hour)
+    // Should NOT include #3 (too new) or #4 (canceled status)
+    assert_eq!(requests.len(), 3, "Expected 3 eligible requests");
+
+    // All should be OPEN status
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.status == IndexingRequestStatus::Open),
+        "All requests should have OPEN status"
+    );
+
+    // Request #3 (created 5 min ago) should NOT be included
+    let new_request_id: IndexingRequestId = uuid!("01940003-0003-7000-0003-000000000003").into();
+    assert!(
+        !requests.iter().any(|r| r.id == new_request_id),
+        "New request should not be included"
+    );
+
+    // Request #4 (canceled) should NOT be included
+    let canceled_request_id: IndexingRequestId =
+        uuid!("01940004-0004-7000-0004-000000000004").into();
+    assert!(
+        !requests.iter().any(|r| r.id == canceled_request_id),
+        "Canceled request should not be included"
+    );
+}
+
+#[tokio::test]
+async fn get_open_indexing_requests_for_reassessment_orders_by_updated_at() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0004_reassessment_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let requests = registry
+        .get_open_indexing_requests_for_reassessment(3600, 0)
+        .await
+        .expect("Failed to get requests for reassessment");
+
+    //* Then
+    // Results should be ordered by updated_at ASC (oldest first)
+    // Request #5 (updated 3 hours ago) should come first
+    // Request #2 (updated 2 hours ago) should come second
+    // Request #1 (updated 30 min ago) should come last
+    let expected_order: Vec<IndexingRequestId> = vec![
+        uuid!("01940005-0005-7000-0005-000000000005").into(),
+        uuid!("01940002-0002-7000-0002-000000000002").into(),
+        uuid!("01940001-0001-7000-0001-000000000001").into(),
+    ];
+
+    let actual_order: Vec<IndexingRequestId> = requests.iter().map(|r| r.id).collect();
+    assert_eq!(
+        actual_order, expected_order,
+        "Requests should be ordered by updated_at ASC"
+    );
+}
+
+#[tokio::test]
+async fn get_open_indexing_requests_for_reassessment_respects_batch_size() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0004_reassessment_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    //* When
+    // Request batch size of 2
+    let requests = registry
+        .get_open_indexing_requests_for_reassessment(3600, 2)
+        .await
+        .expect("Failed to get requests for reassessment");
+
+    //* Then
+    // Should return exactly 2 requests (limited by batch size)
+    assert_eq!(requests.len(), 2, "Expected 2 requests (batch size limit)");
+
+    // Should be the 2 oldest by updated_at
+    let expected_ids: HashSet<IndexingRequestId> = [
+        uuid!("01940005-0005-7000-0005-000000000005").into(),
+        uuid!("01940002-0002-7000-0002-000000000002").into(),
+    ]
+    .into_iter()
+    .collect();
+
+    let actual_ids: HashSet<IndexingRequestId> = requests.iter().map(|r| r.id).collect();
+    assert_eq!(
+        actual_ids, expected_ids,
+        "Should return the 2 oldest eligible requests"
+    );
+}
+
+#[tokio::test]
+async fn get_open_indexing_requests_for_reassessment_returns_empty_when_none_eligible() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0004_reassessment_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    //* When
+    // Use very long min age (1 week = 604800 seconds) so nothing qualifies
+    let requests = registry
+        .get_open_indexing_requests_for_reassessment(604800, 0)
+        .await
+        .expect("Failed to get requests for reassessment");
+
+    //* Then
+    assert!(
+        requests.is_empty(),
+        "No requests should be old enough for reassessment"
+    );
+}
+
+#[tokio::test]
+async fn get_open_indexing_requests_for_reassessment_zero_batch_returns_all() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0004_reassessment_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    //* When
+    // batch_size = 0 should return all eligible
+    let requests = registry
+        .get_open_indexing_requests_for_reassessment(3600, 0)
+        .await
+        .expect("Failed to get requests for reassessment");
+
+    //* Then
+    assert_eq!(requests.len(), 3, "Expected all 3 eligible requests");
 }

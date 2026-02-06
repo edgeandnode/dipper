@@ -5,9 +5,9 @@ use url::Url;
 
 use super::{
     handlers::{
-        FindIndexerForIndexingRequest, ProcessIndexingAgreementCancellation,
-        ProcessIndexingRequestCancellation, ProcessNewIndexingRequest,
-        SendIndexingAgreementCancellation, SendIndexingAgreementProposal,
+        ProcessIndexingAgreementCancellation, ProcessIndexingRequestCancellation,
+        ProcessNewIndexingRequest, ReassessIndexingRequest, SendIndexingAgreementCancellation,
+        SendIndexingAgreementProposal,
     },
     messages::Message,
     queue::{JobId, Queue},
@@ -21,13 +21,6 @@ pub trait WorkerQueue {
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
         num_candidates: usize,
-    ) -> anyhow::Result<JobId>;
-
-    async fn find_indexer_for_indexing_request(
-        &self,
-        indexing_request_id: IndexingRequestId,
-        deployment_id: DeploymentId,
-        deployment_chain_id: ChainId,
     ) -> anyhow::Result<JobId>;
 
     async fn send_indexing_agreement_proposal(
@@ -61,6 +54,14 @@ pub trait WorkerQueue {
         &self,
         indexing_request_id: IndexingRequestId,
         agreement_id: IndexingAgreementId,
+    ) -> anyhow::Result<JobId>;
+
+    async fn reassess_indexing_request(
+        &self,
+        indexing_request_id: IndexingRequestId,
+        deployment_id: DeploymentId,
+        deployment_chain_id: ChainId,
+        num_candidates: usize,
     ) -> anyhow::Result<JobId>;
 }
 
@@ -96,23 +97,6 @@ where
                     deployment_id,
                     deployment_chain_id,
                     num_candidates,
-                },
-            ))
-            .await
-    }
-
-    async fn find_indexer_for_indexing_request(
-        &self,
-        indexing_request_id: IndexingRequestId,
-        deployment_id: DeploymentId,
-        deployment_chain_id: ChainId,
-    ) -> anyhow::Result<JobId> {
-        self.queue
-            .push(Message::FindIndexerForIndexingRequest(
-                FindIndexerForIndexingRequest {
-                    indexing_request_id,
-                    deployment_id,
-                    deployment_chain_id,
                 },
             ))
             .await
@@ -196,6 +180,23 @@ where
                     agreement_id,
                 },
             ))
+            .await
+    }
+
+    async fn reassess_indexing_request(
+        &self,
+        indexing_request_id: IndexingRequestId,
+        deployment_id: DeploymentId,
+        deployment_chain_id: ChainId,
+        num_candidates: usize,
+    ) -> anyhow::Result<JobId> {
+        self.queue
+            .push(Message::ReassessIndexingRequest(ReassessIndexingRequest {
+                indexing_request_id,
+                deployment_id,
+                deployment_chain_id,
+                num_candidates,
+            }))
             .await
     }
 }

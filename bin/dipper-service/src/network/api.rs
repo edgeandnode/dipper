@@ -45,6 +45,9 @@ pub trait NetworkProvider {
         deployment_id: &DeploymentId,
     ) -> Vec<Indexer>;
 
+    /// Get an indexer by its ID.
+    fn get_indexer_by_id(&self, indexer_id: &IndexerId) -> Option<Indexer>;
+
     /// Get [`IndexerId`] for operator address
     fn get_indexer_id_for_operator_address(&self, operator_address: &Address) -> Option<IndexerId>;
 

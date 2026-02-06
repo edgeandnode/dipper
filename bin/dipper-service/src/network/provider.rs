@@ -76,6 +76,16 @@ impl NetworkProvider for NetworkProviderService {
             .collect()
     }
 
+    fn get_indexer_by_id(&self, indexer_id: &IndexerId) -> Option<Indexer> {
+        self.topology
+            .snapshot()
+            .get_indexer(indexer_id)
+            .map(|indexer| Indexer {
+                id: indexer.id,
+                url: indexer.url.clone(),
+            })
+    }
+
     fn get_indexer_id_for_operator_address(&self, operator_address: &Address) -> Option<IndexerId> {
         self.topology
             .snapshot()

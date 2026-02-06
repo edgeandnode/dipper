@@ -22,39 +22,22 @@ pub enum DipsError {
     #[error("Error sending the request to the indexer: {0}")]
     RequestError(Box<dyn std::error::Error + Send + Sync>),
 
-    #[error("Invalid response: {0}")]
-    ResponseError(Box<dyn std::error::Error + Send + Sync>),
-
     #[error("Request signing failed: {0}")]
     SigningError(Box<dyn std::error::Error + Send + Sync>),
-}
-
-#[derive(Debug)]
-pub enum AgreementProposalResponse {
-    Accepted,
-    Rejected,
-}
-
-impl std::fmt::Display for AgreementProposalResponse {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let repr = match self {
-            AgreementProposalResponse::Accepted => "ACCEPTED",
-            AgreementProposalResponse::Rejected => "REJECTED",
-        };
-        f.write_str(repr)
-    }
 }
 
 /// Indexer client's DIPs trait
 #[async_trait]
 pub trait IndexerClient {
-    /// Send an indexing agreement proposal request to the indexer
+    /// Send an indexing agreement proposal request to the indexer (fire-and-forget).
+    ///
+    /// Returns `Ok(())` if the proposal was delivered, or an error if delivery failed.
     async fn send_indexing_agreement_proposal(
         &self,
         indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
         voucher: IndexingAgreementVoucher,
-    ) -> Result<AgreementProposalResponse, DipsError>;
+    ) -> Result<(), DipsError>;
 
     /// Send an indexing agreement cancel request to the indexer
     async fn send_indexing_agreement_cancellation_notification(
@@ -98,7 +81,7 @@ impl IndexerClient for DipsIndexerClient {
         indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
         voucher: IndexingAgreementVoucher,
-    ) -> Result<AgreementProposalResponse, DipsError> {
+    ) -> Result<(), DipsError> {
         // Convert to the solidity voucher data structure
         let sol_voucher = into_sol_voucher(indexing_agreement_id, voucher);
 
@@ -116,30 +99,19 @@ impl IndexerClient for DipsIndexerClient {
         .abi_encode();
 
         // Build the SubmitAgreementProposalRequest RPC request message
-        // For now, the MVP, we are using version 1
         let request = tonic::Request::new(rpc::SubmitAgreementProposalRequest {
-            version: 1, // MVP version
+            version: 1,
             signed_voucher: sol_signed_voucher_bytes,
         });
 
-        // Send the proposal request to the indexer
+        // Send the proposal request to the indexer (fire-and-forget)
         let mut client = self.get_client(indexer)?;
-        let response = client
+        client
             .submit_agreement_proposal(request)
             .await
             .map_err(|err| DipsError::RequestError(err.into()))?;
 
-        // Check the proposal response
-        let resp = response.into_inner();
-        if resp.response == rpc::ProposalResponse::Accept as i32 {
-            Ok(AgreementProposalResponse::Accepted)
-        } else if resp.response == rpc::ProposalResponse::Reject as i32 {
-            Ok(AgreementProposalResponse::Rejected)
-        } else {
-            Err(DipsError::ResponseError(
-                format!("Invalid response decision value: {}", resp.response).into(),
-            ))
-        }
+        Ok(())
     }
 
     async fn send_indexing_agreement_cancellation_notification(

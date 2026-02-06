@@ -59,6 +59,9 @@ pub struct Config {
     pub tap_signer: TapSignerConfig,
     /// The IISA (Indexing Indexer Selection Algorithm) service configuration
     pub iisa: IisaConfig,
+    /// The reassignment service configuration
+    #[serde(default)]
+    pub reassignment: Option<ReassignmentConfig>,
 }
 
 /// The IISA (Indexing Indexer Selection Algorithm) service configuration
@@ -97,6 +100,82 @@ fn default_connect_timeout() -> Duration {
 
 fn default_max_retries() -> u32 {
     3
+}
+
+/// Configuration for the periodic reassignment service
+#[serde_as]
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ReassignmentConfig {
+    /// Whether the reassignment service is enabled (default: true)
+    #[serde(default = "default_reassignment_enabled")]
+    pub enabled: bool,
+
+    /// Interval between reassignment cycles in seconds (default: 86400s / 24 hours)
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    #[serde(default = "default_reassignment_interval")]
+    pub interval: Duration,
+
+    /// Hour of day (UTC, 0-23) to run the reassignment cycle (default: 10, i.e., 10:00 UTC)
+    ///
+    /// The first cycle will be delayed until this hour, then subsequent cycles
+    /// run at the configured interval. This allows alignment with upstream data
+    /// refresh schedules (e.g., IISA score computation runs at 09:00 UTC).
+    #[serde(
+        default = "default_reassignment_run_at_utc_hour",
+        deserialize_with = "deserialize_utc_hour"
+    )]
+    pub run_at_utc_hour: u8,
+
+    /// Maximum number of requests to process per cycle (default: 100, 0 = unlimited)
+    #[serde(default = "default_reassignment_batch_size")]
+    pub batch_size: i64,
+
+    /// Minimum age of requests to consider for reassessment in seconds (default: 86400s)
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    #[serde(default = "default_reassignment_min_age")]
+    pub min_request_age: Duration,
+}
+
+fn default_reassignment_enabled() -> bool {
+    true
+}
+
+fn default_reassignment_interval() -> Duration {
+    Duration::from_secs(86400) // 24 hours
+}
+
+fn deserialize_utc_hour<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u8, D::Error> {
+    let hour = <u8 as serde::Deserialize>::deserialize(deserializer)?;
+    if hour > 23 {
+        return Err(serde::de::Error::custom(format!(
+            "run_at_utc_hour must be 0-23, got {hour}"
+        )));
+    }
+    Ok(hour)
+}
+
+fn default_reassignment_run_at_utc_hour() -> u8 {
+    10 // 10:00 UTC, 1 hour after IISA score computation at 09:00 UTC
+}
+
+fn default_reassignment_batch_size() -> i64 {
+    100
+}
+
+fn default_reassignment_min_age() -> Duration {
+    Duration::from_secs(86400)
+}
+
+impl Default for ReassignmentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_reassignment_enabled(),
+            interval: default_reassignment_interval(),
+            run_at_utc_hour: default_reassignment_run_at_utc_hour(),
+            batch_size: default_reassignment_batch_size(),
+            min_request_age: default_reassignment_min_age(),
+        }
+    }
 }
 
 #[serde_as]

@@ -192,6 +192,20 @@ pub async fn main() -> anyhow::Result<()> {
     };
     tracing::info!("initialized Worker service");
 
+    //- The reassignment service (optional, enabled by config)
+    let reassignment_handle = match conf.reassignment {
+        Some(ref reassignment_conf) if reassignment_conf.enabled => {
+            let ctx = network::service::reassignment::Ctx {
+                registry: registry.clone(),
+                worker_queue: worker_handle.queue().clone(),
+                config: reassignment_conf.clone(),
+            };
+            let (handle, service) = network::service::reassignment::new(ctx);
+            Some((handle, service))
+        }
+        _ => None,
+    };
+
     //- The admin RPC service
     let (admin_rpc_handle, admin_rpc_service) = {
         let config = admin_rpc_server::service::Config {
@@ -241,6 +255,15 @@ pub async fn main() -> anyhow::Result<()> {
     let worker_task_handle = task_tree.spawn(worker_service);
     tracing::debug!(task_id=%worker_task_handle.id(), "Worker service started");
 
+    // Spawn the reassignment service if enabled
+    let reassignment_stop_handle = if let Some((handle, service)) = reassignment_handle {
+        let task_handle = task_tree.spawn(service);
+        tracing::debug!(task_id=%task_handle.id(), "Reassignment service started");
+        Some(handle)
+    } else {
+        None
+    };
+
     let indexer_rpc_task_handle = task_tree.spawn(indexer_rpc_service);
     tracing::debug!(task_id=%indexer_rpc_task_handle.id(), "Indexer RPC service started");
 
@@ -269,6 +292,13 @@ pub async fn main() -> anyhow::Result<()> {
         tracing::trace!("stopping Indexer RPC service");
         indexer_rpc_handle.stop().await;
         tracing::trace!("stopped Indexer RPC service");
+
+        // Stop reassignment service before worker (it depends on worker queue)
+        if let Some(handle) = reassignment_stop_handle {
+            tracing::trace!("stopping Reassignment service");
+            handle.stop().await;
+            tracing::trace!("stopped Reassignment service");
+        }
 
         tracing::trace!("stopping Worker service");
         worker_handle.stop().await;

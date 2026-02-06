@@ -9,8 +9,8 @@ pub use super::service_queue::{WorkerQueue, WorkerQueueHandle};
 use super::{
     context::{Ctx, InnerCtx},
     handlers::{
-        self, FindIndexerForIndexingRequestCtx, ProcessIndexingAgreementCancellationCtx,
-        ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
+        self, ProcessIndexingAgreementCancellationCtx, ProcessIndexingRequestCancellationCtx,
+        ProcessNewIndexingRequestCtx, ReassessIndexingRequestCtx,
         SendIndexingAgreementCancellationCtx, SendIndexingAgreementProposalCtx,
     },
     messages::Message,
@@ -20,9 +20,7 @@ use super::{
 use crate::{
     indexer_rpc_client::IndexerClient,
     network::NetworkProvider,
-    registry::{
-        AgreementRegistry, IndexerDenylistRegistry, IndexingRequestRegistry, ReceiptRegistry,
-    },
+    registry::{AgreementRegistry, IndexerDenylistRegistry, IndexingRequestRegistry},
 };
 
 /// Default period to poll the queue for new jobs
@@ -34,13 +32,7 @@ const DEFAULT_QUEUE_POLL_PERIOD: Duration = Duration::from_secs(1);
 pub fn new<S, Q, R, N, C, I>(state: S) -> (Handle<Q>, impl Future<Output = anyhow::Result<()>>)
 where
     Q: Queue<Message> + Clone + Send + Sync,
-    R: IndexingRequestRegistry
-        + AgreementRegistry
-        + IndexerDenylistRegistry
-        + ReceiptRegistry
-        + Clone
-        + Send
-        + Sync,
+    R: IndexingRequestRegistry + AgreementRegistry + IndexerDenylistRegistry + Clone + Send + Sync,
     N: NetworkProvider + Clone + Send + Sync,
     C: IndexerClient + Clone + Send + Sync,
     I: CandidateSelection + Clone + Send + Sync,
@@ -150,15 +142,15 @@ async fn process_job<S, W, N, R, C, I>(
     job_meta: JobMeta,
 ) -> JobResult<()>
 where
-    R: IndexingRequestRegistry + AgreementRegistry + IndexerDenylistRegistry + ReceiptRegistry,
+    R: IndexingRequestRegistry + AgreementRegistry + IndexerDenylistRegistry,
     N: NetworkProvider,
     W: WorkerQueue,
     C: IndexerClient,
     I: CandidateSelection,
     ProcessNewIndexingRequestCtx<R, N, W, I>: FromState<S>,
     ProcessIndexingRequestCancellationCtx<R, W>: FromState<S>,
-    FindIndexerForIndexingRequestCtx<R, N, W, I>: FromState<S>,
-    SendIndexingAgreementProposalCtx<R, N, W, C>: FromState<S>,
+    ReassessIndexingRequestCtx<R, N, W, I>: FromState<S>,
+    SendIndexingAgreementProposalCtx<R, W, C>: FromState<S>,
     SendIndexingAgreementCancellationCtx<R, C>: FromState<S>,
     ProcessIndexingAgreementCancellationCtx<R, W>: FromState<S>,
 {
@@ -177,7 +169,7 @@ where
     _dispatch!(state, message, job_meta, {
         Message::ProcessNewIndexingRequest => handlers::process_new_indexing_request,
         Message::ProcessIndexingRequestCancellation => handlers::process_indexing_request_cancellation,
-        Message::FindIndexerForIndexingRequest => handlers::find_indexer_for_indexing_request,
+        Message::ReassessIndexingRequest => handlers::reassess_indexing_request,
         Message::SendIndexingAgreementProposal => handlers::send_indexing_agreement_proposal,
         Message::SendIndexingAgreementCancellation => handlers::send_indexing_agreement_cancellation,
         Message::ProcessIndexingAgreementIndexerCancellation => handlers::process_indexing_agreement_indexer_cancellation,
