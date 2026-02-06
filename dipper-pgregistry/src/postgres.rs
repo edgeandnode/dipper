@@ -147,7 +147,7 @@ impl PgRegistry {
     }
 
     /// Returns all indexing agreements associated with an indexing request that are in an active
-    /// state: `CREATED`, `ACCEPTED`, or `ACCEPTED_ON_CHAIN`.
+    /// state: `CREATED` or `ACCEPTED_ON_CHAIN`.
     pub async fn get_active_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
@@ -161,17 +161,15 @@ impl PgRegistry {
                 status,
                 indexing_request_id,
                 deployment_id,
-                accepted_at_epoch,
                 indexer_id,
                 indexer_url,
                 voucher
             FROM dipper_reg_indexing_agreements
-            WHERE indexing_request_id = $1 AND status IN ($2, $3, $4)
+            WHERE indexing_request_id = $1 AND status IN ($2, $3)
             "#,
         )
         .bind(request_id)
         .bind(IndexingAgreementStatus::Created)
-        .bind(IndexingAgreementStatus::Accepted)
         .bind(IndexingAgreementStatus::AcceptedOnChain)
         .fetch_all(&self.pool)
         .await
@@ -179,7 +177,7 @@ impl PgRegistry {
     }
 
     /// Returns all indexing agreements associated with an indexing request that are in
-    /// either `REJECTED` or `CANCELED_BY_INDEXER` state.
+    /// `CANCELED_BY_INDEXER` state.
     pub async fn get_rejected_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
@@ -193,16 +191,14 @@ impl PgRegistry {
                 status,
                 indexing_request_id,
                 deployment_id,
-                accepted_at_epoch,
                 indexer_id,
                 indexer_url,
                 voucher
             FROM dipper_reg_indexing_agreements
-        WHERE indexing_request_id = $1 AND status IN ($2, $3)
+            WHERE indexing_request_id = $1 AND status = $2
             "#,
         )
         .bind(request_id)
-        .bind(IndexingAgreementStatus::Rejected)
         .bind(IndexingAgreementStatus::CanceledByIndexer)
         .fetch_all(&self.pool)
         .await
@@ -255,7 +251,6 @@ impl PgRegistry {
                 created_at,
                 updated_at,
                 status,
-                accepted_at_epoch,
                 indexing_request_id,
                 deployment_id,
                 indexer_id,
@@ -263,15 +258,14 @@ impl PgRegistry {
                 voucher
             )
             VALUES (
-                $1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, $5, $6,
-                $7, $8
+                $1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, $5,
+                $6, $7
             )
             RETURNING id
             "#,
         )
         .bind(IndexingAgreementId::new())
         .bind(IndexingAgreementStatus::default())
-        .bind(None::<PgU32>)
         .bind(request_id)
         .bind(PgDeploymentId(deployment_id))
         .bind(PgIndexerId(indexer_id))
@@ -294,10 +288,8 @@ impl PgRegistry {
                 created_at,
                 updated_at,
                 status,
-                accepted_at_epoch,
                 indexing_request_id,
                 deployment_id,
-                accepted_at_epoch,
                 indexer_id,
                 indexer_url,
                 voucher
@@ -322,10 +314,8 @@ impl PgRegistry {
                 created_at,
                 updated_at,
                 status,
-                accepted_at_epoch,
                 indexing_request_id,
                 deployment_id,
-                accepted_at_epoch,
                 indexer_id,
                 indexer_url,
                 voucher
@@ -350,10 +340,8 @@ impl PgRegistry {
                 created_at,
                 updated_at,
                 status,
-                accepted_at_epoch,
                 indexing_request_id,
                 deployment_id,
-                accepted_at_epoch,
                 indexer_id,
                 indexer_url,
                 voucher
@@ -369,7 +357,7 @@ impl PgRegistry {
 
     /// Get aggregated deployment-to-indexers mapping for active agreements.
     ///
-    /// Returns agreements that are in `CREATED`, `ACCEPTED`, or `ACCEPTED_ON_CHAIN` status
+    /// Returns agreements that are in `CREATED` or `ACCEPTED_ON_CHAIN` status
     /// for any of the provided indexer IDs, grouped by deployment. This performs database-side
     /// aggregation, returning only the deployment IDs and their associated indexer IDs rather
     /// than full agreement objects.
@@ -393,13 +381,12 @@ impl PgRegistry {
                 deployment_id,
                 array_agg(indexer_id) as indexer_ids
             FROM dipper_reg_indexing_agreements
-            WHERE indexer_id = ANY($1) AND status IN ($2, $3, $4)
+            WHERE indexer_id = ANY($1) AND status IN ($2, $3)
             GROUP BY deployment_id
             "#,
         )
         .bind(&pg_indexer_ids[..])
         .bind(IndexingAgreementStatus::Created)
-        .bind(IndexingAgreementStatus::Accepted)
         .bind(IndexingAgreementStatus::AcceptedOnChain)
         .fetch_all(&self.pool)
         .await?;
@@ -414,9 +401,9 @@ impl PgRegistry {
 
     /// Get declined indexers grouped by deployment within a lookback period.
     ///
-    /// Returns indexers that have `Rejected` or `CanceledByIndexer` status within
-    /// the specified number of days, grouped by deployment. This is used to avoid
-    /// re-offering agreements to indexers that recently declined.
+    /// Returns indexers that have `CanceledByIndexer` status within the specified
+    /// number of days, grouped by deployment. This is used to avoid re-offering
+    /// agreements to indexers that recently declined.
     ///
     /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
     /// that declined agreements for that deployment.
@@ -430,12 +417,11 @@ impl PgRegistry {
                 deployment_id,
                 array_agg(DISTINCT indexer_id) as indexer_ids
             FROM dipper_reg_indexing_agreements
-            WHERE status IN ($1, $2)
-              AND updated_at >= timezone('UTC', now()) - make_interval(days => $3)
+            WHERE status = $1
+              AND updated_at >= timezone('UTC', now()) - make_interval(days => $2)
             GROUP BY deployment_id
             "#,
         )
-        .bind(IndexingAgreementStatus::Rejected)
         .bind(IndexingAgreementStatus::CanceledByIndexer)
         .bind(lookback_days)
         .fetch_all(&self.pool)
@@ -460,10 +446,8 @@ impl PgRegistry {
                 created_at,
                 updated_at,
                 status,
-                accepted_at_epoch,
                 indexing_request_id,
                 deployment_id,
-                accepted_at_epoch,
                 indexer_id,
                 indexer_url,
                 voucher
@@ -504,63 +488,6 @@ impl PgRegistry {
         Ok(())
     }
 
-    pub async fn mark_indexing_agreement_as_accepted(
-        &self,
-        agreement_id: &IndexingAgreementId,
-        epoch: u32,
-    ) -> Result<(), Error> {
-        let record: Option<(IndexingAgreementId,)> = sqlx::query_as(
-            r#"
-            UPDATE dipper_reg_indexing_agreements
-            SET
-                status = $1,
-                accepted_at_epoch = $2,
-                updated_at = timezone('UTC', now())
-            WHERE id = $3 AND status = $4
-            RETURNING id
-            "#,
-        )
-        .bind(IndexingAgreementStatus::Accepted)
-        .bind(Some(PgU32(epoch)))
-        .bind(agreement_id)
-        .bind(IndexingAgreementStatus::Created)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        if record.is_none() {
-            return Err(Error::NoRecordsUpdated);
-        }
-
-        Ok(())
-    }
-
-    pub async fn mark_indexing_agreement_as_rejected(
-        &self,
-        agreement_id: &IndexingAgreementId,
-    ) -> Result<(), Error> {
-        let record: Option<(IndexingAgreementId,)> = sqlx::query_as(
-            r#"
-            UPDATE dipper_reg_indexing_agreements
-            SET
-                status = $1,
-                updated_at = timezone('UTC', now())
-            WHERE id = $2 AND status = $3
-            RETURNING id
-            "#,
-        )
-        .bind(IndexingAgreementStatus::Rejected)
-        .bind(agreement_id)
-        .bind(IndexingAgreementStatus::Created)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        if record.is_none() {
-            return Err(Error::NoRecordsUpdated);
-        }
-
-        Ok(())
-    }
-
     pub async fn mark_indexing_agreement_as_canceled_by_requester(
         &self,
         agreement_id: &IndexingAgreementId,
@@ -571,14 +498,13 @@ impl PgRegistry {
             SET
                 status = $1,
                 updated_at = timezone('UTC', now())
-            WHERE id = $2 AND status IN ($3, $4, $5)
+            WHERE id = $2 AND status IN ($3, $4)
             RETURNING id
             "#,
         )
         .bind(IndexingAgreementStatus::CanceledByRequester)
         .bind(agreement_id)
         .bind(IndexingAgreementStatus::Created)
-        .bind(IndexingAgreementStatus::Accepted)
         .bind(IndexingAgreementStatus::AcceptedOnChain)
         .fetch_optional(&self.pool)
         .await?;
@@ -606,7 +532,7 @@ impl PgRegistry {
         )
         .bind(IndexingAgreementStatus::CanceledByIndexer)
         .bind(agreement_id)
-        .bind(IndexingAgreementStatus::Accepted)
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -633,7 +559,7 @@ impl PgRegistry {
         )
         .bind(IndexingAgreementStatus::AcceptedOnChain)
         .bind(agreement_id)
-        .bind(IndexingAgreementStatus::Accepted)
+        .bind(IndexingAgreementStatus::Created)
         .fetch_optional(&self.pool)
         .await?;
 

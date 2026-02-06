@@ -68,11 +68,11 @@ where
 
 /// Check if an agreement status represents an active agreement.
 ///
-/// Active agreements are those that are either pending acceptance (Created)
-/// or currently in effect (Accepted).
+/// Active agreements are those that are either pending on-chain acceptance (Created)
+/// or confirmed on-chain (AcceptedOnChain).
 fn is_active_agreement(status: &IndexingAgreementStatus) -> bool {
     matches!(
         status,
-        IndexingAgreementStatus::Created | IndexingAgreementStatus::Accepted { .. }
+        IndexingAgreementStatus::Created | IndexingAgreementStatus::AcceptedOnChain
     )
 }

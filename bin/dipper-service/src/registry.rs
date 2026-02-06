@@ -259,27 +259,6 @@ impl AgreementRegistry for RegistryProvider {
             .map_err(Into::into)
     }
 
-    async fn mark_indexing_agreement_as_accepted(
-        &self,
-        id: &IndexingAgreementId,
-        epoch: u32,
-    ) -> RegistryResult<()> {
-        self.inner
-            .mark_indexing_agreement_as_accepted(id, epoch)
-            .await
-            .map_err(Into::into)
-    }
-
-    async fn mark_indexing_agreement_as_rejected(
-        &self,
-        id: &IndexingAgreementId,
-    ) -> RegistryResult<()> {
-        self.inner
-            .mark_indexing_agreement_as_rejected(id)
-            .await
-            .map_err(Into::into)
-    }
-
     async fn mark_indexing_agreement_as_canceled_by_requester(
         &self,
         id: &IndexingAgreementId,

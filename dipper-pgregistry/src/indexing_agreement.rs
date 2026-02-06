@@ -4,11 +4,8 @@
 //! between the DIPs Gateway (Dipper) and the indexer to index the data.
 //!
 //! - An agreement MUST be associated with an *indexing request*.
-//! - Agreements MUST be explicitly accepted (or rejected) by an indexer.
-//! - An agreement is in effect until the indexer indexes the data or the agreement is cancelled.
+//! - An agreement is in effect once accepted on-chain, or until the RCA deadline expires.
 //!   It can be cancelled by the customer or the indexer.
-//! - An agreement can also expire if the indexer does not accept the agreement within a predefine
-//!   time frame.
 //!
 //! An Indexer Agreement is created every time the Dipper runs the *Indexing Indexer Selection
 //! Algorithm (IISA)* and finds an indexer to fulfill the *indexing request*.
@@ -38,9 +35,6 @@ pub struct IndexingAgreement {
 
     /// The indexing agreement status.
     pub status: Status,
-
-    /// The epoch when the agreement was accepted.
-    pub accepted_at_epoch: Option<u32>,
 
     /// The indexing agreement associated indexing request
     pub indexing_request_id: IndexingRequestId,
@@ -79,18 +73,6 @@ pub enum Status {
     /// This is a terminal state.
     DeliveryFailed = 1,
 
-    /// The [`IndexingAgreement`] is in effect.
-    ///
-    /// The indexer responded back accepting the agreement.
-    Accepted = 0,
-
-    /// The [`IndexingAgreement`] was rejected.
-    ///
-    /// The indexer responded back rejecting the agreement.
-    ///
-    /// This is a terminal state.
-    Rejected = 2,
-
     /// The associated [`IndexingRequest`] got cancelled.
     ///
     /// The [`IndexingAgreement`] is cancelled and no longer in effect.
@@ -126,8 +108,6 @@ impl std::fmt::Display for Status {
         let status = match self {
             Status::Created => "CREATED",
             Status::DeliveryFailed => "DELIVERY_FAILED",
-            Status::Accepted => "ACCEPTED",
-            Status::Rejected => "REJECTED",
             Status::CanceledByRequester => "CANCELED_BY_REQUESTER",
             Status::CanceledByIndexer => "CANCELED_BY_INDEXER",
             Status::Expired => "EXPIRED",

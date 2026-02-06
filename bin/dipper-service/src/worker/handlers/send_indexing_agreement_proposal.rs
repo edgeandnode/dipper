@@ -4,7 +4,7 @@ use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 use url::Url;
 
 use crate::{
-    indexer_rpc_client::{AgreementProposalResponse, IndexerClient},
+    indexer_rpc_client::IndexerClient,
     network::NetworkProvider,
     registry::{
         AgreementRegistry, IndexingAgreementStatus, IndexingAgreementVoucher,
@@ -36,13 +36,11 @@ pub struct Message {
     pub deployment_chain_id: ChainId,
 }
 
-/// Send an indexing agreement proposal to the indexer.
+/// Send an indexing agreement proposal to the indexer (fire-and-forget).
 ///
-/// This function sends an indexing agreement proposal to the indexer. If the proposal is accepted,
-/// the agreement is marked as accepted in the registry. If the proposal is rejected, the agreement
-/// is marked as rejected in the registry.
-///
-/// In the case of an error, mark the agreement as delivery failed in the registry.
+/// This function sends a SignedRCA to the indexer. If delivery fails, the agreement is marked
+/// as delivery failed and the indexing request is reassessed. On successful delivery, the
+/// agreement stays in `Created` until an on-chain acceptance event is observed.
 pub async fn handle<R, N, W, C>(
     ctx: Ctx<R, N, W, C>,
     Message {
@@ -67,8 +65,6 @@ where
         url
     };
 
-    let current_epoch = ctx.network.get_current_epoch();
-
     // Check the status of the agreement before sending the proposal
     let agreement = match ctx
         .registry
@@ -86,14 +82,6 @@ where
         }
         Some(agreement) => match agreement.status {
             IndexingAgreementStatus::Created => agreement,
-            IndexingAgreementStatus::Accepted { .. } | IndexingAgreementStatus::Rejected => {
-                tracing::error!(
-                    indexing_request_id=%indexing_request_id,
-                    agreement_id=%agreement_id,
-                    "Not sending agreement proposal. Agreement already accepted/rejected"
-                );
-                return Ok(());
-            }
             status => {
                 tracing::error!(
                     indexing_request_id=%indexing_request_id,
@@ -136,59 +124,15 @@ where
         .send_indexing_agreement_proposal(&indexer_url, *agreement_id, voucher)
         .await
     {
-        Ok(resp) => match resp {
-            AgreementProposalResponse::Accepted => {
-                tracing::debug!(
-                    indexing_request_id=%indexing_request_id,
-                    agreement_id=%agreement_id,
-                    deployment_id=%deployment_id,
-                    indexer_url=%indexer_url,
-                    "Agreement proposal accepted"
-                );
-                ctx.registry
-                    .mark_indexing_agreement_as_accepted(agreement_id, current_epoch)
-                    .await
-                    .map_err(|err| JobError::Fatal(err.into()))?;
-            }
-            AgreementProposalResponse::Rejected => {
-                tracing::debug!(
-                    indexing_request_id=%indexing_request_id,
-                    agreement_id=%agreement_id,
-                    deployment_id=%deployment_id,
-                    indexer_url=%indexer_url,
-                    "Agreement proposal rejected"
-                );
-                ctx.registry
-                    .mark_indexing_agreement_as_rejected(agreement_id)
-                    .await
-                    .map_err(|err| JobError::Fatal(err.into()))?;
-
-                // Reassess the indexing request to find replacement indexers
-                tracing::trace!(
-                    indexing_request_id=%indexing_request_id,
-                    "Reassessing indexing request after proposal rejection"
-                );
-                let indexing_request = ctx
-                    .registry
-                    .get_indexing_request_by_id(indexing_request_id)
-                    .await
-                    .map_err(|err| JobError::Fatal(err.into()))?;
-                let num_candidates = indexing_request.map(|r| r.num_candidates).unwrap_or(3);
-                if let Err(err) = ctx
-                    .queue
-                    .reassess_indexing_request(
-                        *indexing_request_id,
-                        *deployment_id,
-                        *deployment_chain_id,
-                        num_candidates,
-                    )
-                    .await
-                {
-                    tracing::error!(error=%err, "Failed to queue task: 'reassess_indexing_request'");
-                    return Err(JobError::Fatal(err));
-                };
-            }
-        },
+        Ok(()) => {
+            tracing::debug!(
+                indexing_request_id=%indexing_request_id,
+                agreement_id=%agreement_id,
+                deployment_id=%deployment_id,
+                indexer_url=%indexer_url,
+                "Agreement proposal delivered"
+            );
+        }
         Err(err) => {
             tracing::error!(error=?err, "Failed to send indexing agreement proposal");
             tracing::trace!(
@@ -200,6 +144,31 @@ where
                 .mark_indexing_agreement_as_delivery_failed(agreement_id)
                 .await
                 .map_err(|err| JobError::Fatal(err.into()))?;
+
+            // Reassess the indexing request to find replacement indexers
+            tracing::trace!(
+                indexing_request_id=%indexing_request_id,
+                "Reassessing indexing request after delivery failure"
+            );
+            let indexing_request = ctx
+                .registry
+                .get_indexing_request_by_id(indexing_request_id)
+                .await
+                .map_err(|err| JobError::Fatal(err.into()))?;
+            let num_candidates = indexing_request.map(|r| r.num_candidates).unwrap_or(3);
+            if let Err(err) = ctx
+                .queue
+                .reassess_indexing_request(
+                    *indexing_request_id,
+                    *deployment_id,
+                    *deployment_chain_id,
+                    num_candidates,
+                )
+                .await
+            {
+                tracing::error!(error=%err, "Failed to queue task: 'reassess_indexing_request'");
+                return Err(JobError::Fatal(err));
+            };
         }
     }
 

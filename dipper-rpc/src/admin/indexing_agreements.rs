@@ -113,18 +113,6 @@ pub enum Status {
     /// This is a terminal state.
     DeliveryFailed,
 
-    /// The [`IndexingAgreement`] is in effect.
-    ///
-    /// The indexer responded back accepting the agreement.
-    Accepted,
-
-    /// The [`IndexingAgreement`] was rejected.
-    ///
-    /// The indexer responded back rejecting the agreement.
-    ///
-    /// This is a terminal state.
-    Rejected,
-
     /// The associated [`IndexingRequest`] got cancelled.
     ///
     /// The [`IndexingAgreement`] is cancelled and no longer in effect.
@@ -161,8 +149,6 @@ impl serde::Serialize for Status {
         let status = match self {
             Status::Created => "CREATED",
             Status::DeliveryFailed => "DELIVERY_FAILED",
-            Status::Accepted => "ACCEPTED",
-            Status::Rejected => "REJECTED",
             Status::CanceledByRequester => "CANCELED_BY_REQUESTER",
             Status::CanceledByIndexer => "CANCELED_BY_INDEXER",
             Status::Expired => "EXPIRED",
@@ -182,8 +168,6 @@ impl<'de> serde::Deserialize<'de> for Status {
         let status = match status.to_uppercase().as_str() {
             "CREATED" => Status::Created,
             "DELIVERY_FAILED" => Status::DeliveryFailed,
-            "ACCEPTED" => Status::Accepted,
-            "REJECTED" => Status::Rejected,
             "CANCELED_BY_REQUESTER" => Status::CanceledByRequester,
             "CANCELED_BY_INDEXER" => Status::CanceledByIndexer,
             "EXPIRED" => Status::Expired,

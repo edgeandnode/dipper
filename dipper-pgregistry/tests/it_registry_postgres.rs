@@ -422,10 +422,10 @@ async fn get_indexing_agreements_by_indexing_request_id() {
         agreements.iter().all(|agreement| {
             matches!(
                 agreement.status,
-                IndexingAgreementStatus::Created | IndexingAgreementStatus::Accepted
+                IndexingAgreementStatus::Created | IndexingAgreementStatus::AcceptedOnChain
             )
         }),
-        "Expected all agreements to be in CREATED or ACCEPTED state"
+        "Expected all agreements to be in CREATED or ACCEPTED_ON_CHAIN state"
     );
 }
 
@@ -458,12 +458,9 @@ async fn get_rejected_indexing_agreements_by_indexing_request_id() {
     );
     assert!(
         agreements.iter().all(|agreement| {
-            matches!(
-                agreement.status,
-                IndexingAgreementStatus::Rejected | IndexingAgreementStatus::CanceledByIndexer
-            )
+            matches!(agreement.status, IndexingAgreementStatus::CanceledByIndexer)
         }),
-        "Expected all agreements to be in REJECTED state"
+        "Expected all agreements to be in CANCELED_BY_INDEXER state"
     );
 }
 
@@ -575,9 +572,9 @@ async fn get_pending_agreement_indexers_by_deployment_aggregation() {
     //* Then
     // Should return 3 deployments (only those with active agreements):
     // - QmAAAAAA...1a -> [Indexer A] (Created)
-    // - QmBBBBBB...2b -> [Indexer A] (Accepted)
+    // - QmBBBBBB...2b -> [Indexer A] (AcceptedOnChain)
     // - QmDDDDDD...4d -> [Indexer B] (Created)
-    // Rejected and Expired agreements should NOT be included
+    // CanceledByIndexer and Expired agreements should NOT be included
     assert_eq!(result.len(), 3);
 
     // Verify specific deployments
@@ -680,7 +677,7 @@ async fn get_declined_indexers_by_deployment_returns_rejected() {
         .expect("Failed to get declined indexers");
 
     //* Then
-    // Indexer A rejected agreement for deployment QmCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC3c
+    // Indexer A canceled agreement for deployment QmCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC3c
     assert_eq!(
         result.len(),
         1,
@@ -758,12 +755,12 @@ async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
     .await
     .expect("Failed to run fixture");
 
-    // Update the rejected agreement to be 31 days old
+    // Update the canceled-by-indexer agreement to be 31 days old
     sqlx::query(
         r#"
         UPDATE dipper_reg_indexing_agreements
         SET updated_at = timezone('UTC', now()) - interval '31 days'
-        WHERE status = 2  -- Rejected
+        WHERE id = '01930100-0001-7000-8000-000000000003'::uuid
         "#,
     )
     .execute(&db)
@@ -780,7 +777,7 @@ async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
         .expect("Failed to get declined indexers");
 
     //* Then
-    // The rejected agreement is now 31 days old, outside the 30-day window
+    // The canceled-by-indexer agreement is now 31 days old, outside the 30-day window
     assert!(
         result.is_empty(),
         "Rejections older than lookback period should not be returned"

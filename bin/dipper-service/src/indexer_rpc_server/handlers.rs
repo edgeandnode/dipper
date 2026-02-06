@@ -1,4 +1,4 @@
-use std::{cmp::max, collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 use dipper_core::{ids::IndexingAgreementId, state::FromState};
@@ -289,15 +289,11 @@ where
             return Err(Status::permission_denied("Unauthorized"));
         }
 
-        // Ensure the agreement is in an accepted state, otherwise return an error
-        let agreement_accept_epoch = match &agreement.status {
-            IndexingAgreementStatus::Accepted { at_epoch }
-            | IndexingAgreementStatus::AcceptedOnChain { at_epoch } => *at_epoch,
+        // Ensure the agreement is in an accepted-on-chain state, otherwise return an error
+        match &agreement.status {
+            IndexingAgreementStatus::AcceptedOnChain => {}
             IndexingAgreementStatus::Created | IndexingAgreementStatus::DeliveryFailed => {
                 return Err(Status::not_found("agreement not found"));
-            }
-            IndexingAgreementStatus::Rejected => {
-                return Err(Status::failed_precondition("agreement rejected"));
             }
             IndexingAgreementStatus::CanceledByRequester => {
                 return Err(Status::failed_precondition(
@@ -337,9 +333,9 @@ where
             }));
         }
 
-        // If the agreement was accepted after the allocation was opened, use the agreement's
-        // accept epoch as the payment origin epoch, otherwise use the allocation's opening epoch
-        let payment_orig_epoch = max(agreement_accept_epoch, allocation.opened_at);
+        // Use the allocation's opening epoch as the payment origin epoch.
+        // TODO(v2): This entire handler is being replaced by on-chain payment.
+        let payment_orig_epoch = allocation.opened_at;
         let payment_end_epoch = allocation_closed_at;
         let payment_epochs_elapsed = payment_end_epoch.saturating_sub(payment_orig_epoch);
 
