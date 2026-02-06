@@ -20,13 +20,13 @@ pub use process_new_indexing_request::{
     Ctx as ProcessNewIndexingRequestCtx, Message as ProcessNewIndexingRequest,
     handle as process_new_indexing_request,
 };
-pub use send_indexing_agreement_cancellation::{
-    Ctx as SendIndexingAgreementCancellationCtx, Message as SendIndexingAgreementCancellation,
-    handle as send_indexing_agreement_cancellation,
-};
 pub use reassess_indexing_request::{
     Ctx as ReassessIndexingRequestCtx, Message as ReassessIndexingRequest,
     handle as reassess_indexing_request,
+};
+pub use send_indexing_agreement_cancellation::{
+    Ctx as SendIndexingAgreementCancellationCtx, Message as SendIndexingAgreementCancellation,
+    handle as send_indexing_agreement_cancellation,
 };
 pub use send_indexing_agreement_proposal::{
     Ctx as SendIndexingAgreementProposalCtx, Message as SendIndexingAgreementProposal,

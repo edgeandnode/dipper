@@ -191,14 +191,12 @@ where
         num_candidates: usize,
     ) -> anyhow::Result<JobId> {
         self.queue
-            .push(Message::ReassessIndexingRequest(
-                ReassessIndexingRequest {
-                    indexing_request_id,
-                    deployment_id,
-                    deployment_chain_id,
-                    num_candidates,
-                },
-            ))
+            .push(Message::ReassessIndexingRequest(ReassessIndexingRequest {
+                indexing_request_id,
+                deployment_id,
+                deployment_chain_id,
+                num_candidates,
+            }))
             .await
     }
 }

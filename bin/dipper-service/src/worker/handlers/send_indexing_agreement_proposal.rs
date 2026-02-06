@@ -173,9 +173,7 @@ where
                     .get_indexing_request_by_id(indexing_request_id)
                     .await
                     .map_err(|err| JobError::Fatal(err.into()))?;
-                let num_candidates = indexing_request
-                    .map(|r| r.num_candidates)
-                    .unwrap_or(3);
+                let num_candidates = indexing_request.map(|r| r.num_candidates).unwrap_or(3);
                 if let Err(err) = ctx
                     .queue
                     .reassess_indexing_request(

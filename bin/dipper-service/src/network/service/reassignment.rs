@@ -11,9 +11,7 @@ use time::OffsetDateTime;
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::{
-    config::ReassignmentConfig,
-    registry::IndexingRequestRegistry,
-    worker::service::WorkerQueue,
+    config::ReassignmentConfig, registry::IndexingRequestRegistry, worker::service::WorkerQueue,
 };
 
 /// Calculate the duration until the next occurrence of the target UTC hour.

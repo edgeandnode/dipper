@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, collections::HashSet, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use dipper_core::ids::IndexingRequestId;
 use dipper_iisa::{CandidateSelection, SelectionError};

@@ -898,12 +898,9 @@ async fn indexer_denylist_excludes_expired_entries() {
 async fn get_open_indexing_requests_for_reassessment_filters_by_age_and_status() {
     //* Given
     let (db, _temp_db) = temp_registry_db().await;
-    run_fixture(
-        &db,
-        include_str!("fixtures/0004_reassessment_requests.sql"),
-    )
-    .await
-    .expect("Failed to run fixture");
+    run_fixture(&db, include_str!("fixtures/0004_reassessment_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
     let registry = PgRegistry::new(db);
 
     //* When
@@ -946,12 +943,9 @@ async fn get_open_indexing_requests_for_reassessment_filters_by_age_and_status()
 async fn get_open_indexing_requests_for_reassessment_orders_by_updated_at() {
     //* Given
     let (db, _temp_db) = temp_registry_db().await;
-    run_fixture(
-        &db,
-        include_str!("fixtures/0004_reassessment_requests.sql"),
-    )
-    .await
-    .expect("Failed to run fixture");
+    run_fixture(&db, include_str!("fixtures/0004_reassessment_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
     let registry = PgRegistry::new(db);
 
     //* When
@@ -982,12 +976,9 @@ async fn get_open_indexing_requests_for_reassessment_orders_by_updated_at() {
 async fn get_open_indexing_requests_for_reassessment_respects_batch_size() {
     //* Given
     let (db, _temp_db) = temp_registry_db().await;
-    run_fixture(
-        &db,
-        include_str!("fixtures/0004_reassessment_requests.sql"),
-    )
-    .await
-    .expect("Failed to run fixture");
+    run_fixture(&db, include_str!("fixtures/0004_reassessment_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
     let registry = PgRegistry::new(db);
 
     //* When
@@ -1020,12 +1011,9 @@ async fn get_open_indexing_requests_for_reassessment_respects_batch_size() {
 async fn get_open_indexing_requests_for_reassessment_returns_empty_when_none_eligible() {
     //* Given
     let (db, _temp_db) = temp_registry_db().await;
-    run_fixture(
-        &db,
-        include_str!("fixtures/0004_reassessment_requests.sql"),
-    )
-    .await
-    .expect("Failed to run fixture");
+    run_fixture(&db, include_str!("fixtures/0004_reassessment_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
     let registry = PgRegistry::new(db);
 
     //* When
@@ -1046,12 +1034,9 @@ async fn get_open_indexing_requests_for_reassessment_returns_empty_when_none_eli
 async fn get_open_indexing_requests_for_reassessment_zero_batch_returns_all() {
     //* Given
     let (db, _temp_db) = temp_registry_db().await;
-    run_fixture(
-        &db,
-        include_str!("fixtures/0004_reassessment_requests.sql"),
-    )
-    .await
-    .expect("Failed to run fixture");
+    run_fixture(&db, include_str!("fixtures/0004_reassessment_requests.sql"))
+        .await
+        .expect("Failed to run fixture");
     let registry = PgRegistry::new(db);
 
     //* When
