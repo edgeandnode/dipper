@@ -158,7 +158,7 @@ where
     ProcessNewIndexingRequestCtx<R, N, W, I>: FromState<S>,
     ProcessIndexingRequestCancellationCtx<R, W>: FromState<S>,
     ReassessIndexingRequestCtx<R, N, W, I>: FromState<S>,
-    SendIndexingAgreementProposalCtx<R, N, W, C>: FromState<S>,
+    SendIndexingAgreementProposalCtx<R, W, C>: FromState<S>,
     SendIndexingAgreementCancellationCtx<R, C>: FromState<S>,
     ProcessIndexingAgreementCancellationCtx<R, W>: FromState<S>,
 {

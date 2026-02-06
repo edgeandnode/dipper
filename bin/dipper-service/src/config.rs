@@ -115,12 +115,15 @@ pub struct ReassignmentConfig {
     #[serde(default = "default_reassignment_interval")]
     pub interval: Duration,
 
-    /// Hour of day (UTC) to run the reassignment cycle (default: 10, i.e., 10:00 UTC)
+    /// Hour of day (UTC, 0-23) to run the reassignment cycle (default: 10, i.e., 10:00 UTC)
     ///
     /// The first cycle will be delayed until this hour, then subsequent cycles
     /// run at the configured interval. This allows alignment with upstream data
     /// refresh schedules (e.g., IISA score computation runs at 09:00 UTC).
-    #[serde(default = "default_reassignment_run_at_utc_hour")]
+    #[serde(
+        default = "default_reassignment_run_at_utc_hour",
+        deserialize_with = "deserialize_utc_hour"
+    )]
     pub run_at_utc_hour: u8,
 
     /// Maximum number of requests to process per cycle (default: 100, 0 = unlimited)
@@ -139,6 +142,16 @@ fn default_reassignment_enabled() -> bool {
 
 fn default_reassignment_interval() -> Duration {
     Duration::from_secs(86400) // 24 hours
+}
+
+fn deserialize_utc_hour<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u8, D::Error> {
+    let hour = <u8 as serde::Deserialize>::deserialize(deserializer)?;
+    if hour > 23 {
+        return Err(serde::de::Error::custom(format!(
+            "run_at_utc_hour must be 0-23, got {hour}"
+        )));
+    }
+    Ok(hour)
 }
 
 fn default_reassignment_run_at_utc_hour() -> u8 {

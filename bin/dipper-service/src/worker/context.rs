@@ -145,11 +145,9 @@ where
     }
 }
 
-impl<R, N, W, C, I> FromState<InnerCtx<R, N, W, C, I>>
-    for SendIndexingAgreementProposalCtx<R, N, W, C>
+impl<R, N, W, C, I> FromState<InnerCtx<R, N, W, C, I>> for SendIndexingAgreementProposalCtx<R, W, C>
 where
     R: Clone,
-    N: Clone,
     W: Clone,
     C: Clone,
 {
@@ -157,7 +155,6 @@ where
     fn from_state(state: &InnerCtx<R, N, W, C, I>) -> Self {
         Self {
             registry: state.registry.clone(),
-            network: state.network.clone(),
             queue: state.worker.clone(),
             indexer_client: state.client.clone(),
         }

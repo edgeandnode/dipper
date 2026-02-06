@@ -145,7 +145,19 @@ where
         }
     }
 
-    // Create agreements for indexers newly in the target group
+    // Look up chain prices once (bail early if missing)
+    let prices = ctx
+        .chain_price
+        .get(deployment_chain_id)
+        .ok_or(JobError::Fatal(anyhow::anyhow!(
+            "Chain prices not found for chain_id: {}",
+            deployment_chain_id
+        )))?;
+
+    // Create agreements for indexers newly in the target group.
+    // Continue on per-indexer failures so that a single error does not prevent
+    // the remaining additions from being processed.
+    let mut add_failures = 0u32;
     for indexer_id in &to_add {
         let candidate = match ctx.network.get_indexer_by_id(indexer_id) {
             Some(indexer) => indexer,
@@ -159,21 +171,12 @@ where
             }
         };
 
-        let voucher_metadata = {
-            let prices = ctx
-                .chain_price
-                .get(deployment_chain_id)
-                .ok_or(JobError::Fatal(anyhow::anyhow!(
-                    "Chain prices not found for chain_id: {}",
-                    deployment_chain_id
-                )))?;
-            IndexingAgreementVoucherMetadata {
-                base_price_per_epoch: prices.base_price_per_epoch,
-                price_per_entity: prices.price_per_entity,
-                subgraph_deployment_id: *deployment_id,
-                protocol_network: ctx.signer.chain_id(),
-                chain_id: *deployment_chain_id,
-            }
+        let voucher_metadata = IndexingAgreementVoucherMetadata {
+            base_price_per_epoch: prices.base_price_per_epoch,
+            price_per_entity: prices.price_per_entity,
+            subgraph_deployment_id: *deployment_id,
+            protocol_network: ctx.signer.chain_id(),
+            chain_id: *deployment_chain_id,
         };
 
         let voucher = IndexingAgreementVoucher {
@@ -189,7 +192,7 @@ where
             metadata: voucher_metadata,
         };
 
-        let agreement_id = ctx
+        let agreement_id = match ctx
             .registry
             .register_new_indexing_agreement(
                 *indexing_request_id,
@@ -199,7 +202,18 @@ where
                 voucher,
             )
             .await
-            .map_err(|err| JobError::Fatal(err.into()))?;
+        {
+            Ok(id) => id,
+            Err(err) => {
+                add_failures += 1;
+                tracing::error!(
+                    error=%err,
+                    indexer_id=%indexer_id,
+                    "Failed to register new indexing agreement, skipping indexer"
+                );
+                continue;
+            }
+        };
 
         if let Err(err) = ctx
             .queue
@@ -212,12 +226,20 @@ where
             )
             .await
         {
+            add_failures += 1;
             tracing::error!(
                 error=%err,
                 "Failed to queue task: 'send_indexing_agreement_proposal'"
             );
-            return Err(JobError::Fatal(err));
         }
+    }
+
+    if add_failures > 0 {
+        tracing::warn!(
+            indexing_request_id=%indexing_request_id,
+            failures=add_failures,
+            "some agreement additions failed during reassessment"
+        );
     }
 
     tracing::info!(

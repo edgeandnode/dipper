@@ -430,7 +430,7 @@ async fn get_indexing_agreements_by_indexing_request_id() {
 }
 
 #[tokio::test]
-async fn get_rejected_indexing_agreements_by_indexing_request_id() {
+async fn get_canceled_by_indexer_agreements_by_indexing_request_id() {
     //* Given
     let (db, _temp_db) = temp_registry_db().await;
     run_fixture(&db, include_str!("fixtures/0002_indexing_agreements.sql"))
@@ -442,7 +442,7 @@ async fn get_rejected_indexing_agreements_by_indexing_request_id() {
 
     //* When
     let res = registry
-        .get_rejected_indexing_agreements_by_indexing_request_id(&indexing_request_id)
+        .get_canceled_by_indexer_agreements_by_indexing_request_id(&indexing_request_id)
         .await;
 
     //* Then

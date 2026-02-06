@@ -168,6 +168,12 @@ where
             let mut timed_out = 0;
 
             for request in requests {
+                // Check for shutdown between queue pushes to stay responsive
+                if rx_stop.try_recv().is_ok() {
+                    tracing::debug!("reassignment service stopping mid-cycle");
+                    return Ok(());
+                }
+
                 let push_result = tokio::time::timeout(
                     QUEUE_PUSH_TIMEOUT,
                     worker_queue.reassess_indexing_request(

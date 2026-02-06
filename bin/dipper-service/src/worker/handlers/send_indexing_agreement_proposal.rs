@@ -4,8 +4,8 @@ use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 use url::Url;
 
 use crate::{
+    config::DEFAULT_MAX_CANDIDATES,
     indexer_rpc_client::IndexerClient,
-    network::NetworkProvider,
     registry::{
         AgreementRegistry, IndexingAgreementStatus, IndexingAgreementVoucher,
         IndexingAgreementVoucherMetadata, IndexingRequestRegistry,
@@ -16,9 +16,8 @@ use crate::{
     },
 };
 
-pub struct Ctx<R, N, W, C> {
+pub struct Ctx<R, W, C> {
     pub registry: R,
-    pub network: N,
     pub queue: W,
     pub indexer_client: C,
 }
@@ -41,8 +40,8 @@ pub struct Message {
 /// This function sends a SignedRCA to the indexer. If delivery fails, the agreement is marked
 /// as delivery failed and the indexing request is reassessed. On successful delivery, the
 /// agreement stays in `Created` until an on-chain acceptance event is observed.
-pub async fn handle<R, N, W, C>(
-    ctx: Ctx<R, N, W, C>,
+pub async fn handle<R, W, C>(
+    ctx: Ctx<R, W, C>,
     Message {
         indexer_url,
         agreement_id,
@@ -54,7 +53,6 @@ pub async fn handle<R, N, W, C>(
 ) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
-    N: NetworkProvider,
     W: WorkerQueue,
     C: IndexerClient,
 {
@@ -155,7 +153,9 @@ where
                 .get_indexing_request_by_id(indexing_request_id)
                 .await
                 .map_err(|err| JobError::Fatal(err.into()))?;
-            let num_candidates = indexing_request.map(|r| r.num_candidates).unwrap_or(3);
+            let num_candidates = indexing_request
+                .map(|r| r.num_candidates)
+                .unwrap_or(DEFAULT_MAX_CANDIDATES);
             if let Err(err) = ctx
                 .queue
                 .reassess_indexing_request(

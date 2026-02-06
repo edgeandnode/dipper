@@ -178,7 +178,7 @@ impl PgRegistry {
 
     /// Returns all indexing agreements associated with an indexing request that are in
     /// `CANCELED_BY_INDEXER` state.
-    pub async fn get_rejected_indexing_agreements_by_indexing_request_id(
+    pub async fn get_canceled_by_indexer_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
     ) -> Result<Vec<IndexingAgreement>, Error> {
@@ -703,7 +703,7 @@ impl PgRegistry {
                 num_candidates
             FROM dipper_reg_indexing_requests
             WHERE status = $1
-              AND created_at < timezone('UTC', now()) - ($2 || ' seconds')::interval
+              AND created_at < timezone('UTC', now()) - ($2 * interval '1 second')
             ORDER BY updated_at ASC
             LIMIT CASE WHEN $3 > 0 THEN $3 ELSE NULL END
             "#,
