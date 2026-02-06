@@ -225,5 +225,8 @@ fn into_indexing_agreement_status(
             IndexingAgreementStatus::CanceledByIndexer
         }
         IndexingAgreementRecordStatus::Expired => IndexingAgreementStatus::Expired,
+        IndexingAgreementRecordStatus::AcceptedOnChain { .. } => {
+            IndexingAgreementStatus::AcceptedOnChain
+        }
     }
 }

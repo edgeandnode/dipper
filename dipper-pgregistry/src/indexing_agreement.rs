@@ -112,6 +112,11 @@ pub enum Status {
     /// This is a terminal state.
     Expired = 5,
 
+    /// The [`IndexingAgreement`] was accepted on-chain.
+    ///
+    /// The on-chain `IndexingAgreementAccepted` event was observed for this agreement.
+    AcceptedOnChain = 6,
+
     /// A fallback for unknown status values.
     Unknown = i32::MAX,
 }
@@ -126,6 +131,7 @@ impl std::fmt::Display for Status {
             Status::CanceledByRequester => "CANCELED_BY_REQUESTER",
             Status::CanceledByIndexer => "CANCELED_BY_INDEXER",
             Status::Expired => "EXPIRED",
+            Status::AcceptedOnChain => "ACCEPTED_ON_CHAIN",
             Status::Unknown => "UNKNOWN",
         };
         f.write_str(status)

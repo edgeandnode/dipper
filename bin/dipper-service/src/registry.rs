@@ -299,6 +299,16 @@ impl AgreementRegistry for RegistryProvider {
             .await
             .map_err(Into::into)
     }
+
+    async fn mark_indexing_agreement_as_accepted_on_chain(
+        &self,
+        id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        self.inner
+            .mark_indexing_agreement_as_accepted_on_chain(id)
+            .await
+            .map_err(Into::into)
+    }
 }
 
 #[async_trait]

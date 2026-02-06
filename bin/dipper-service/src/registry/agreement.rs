@@ -46,10 +46,10 @@ pub trait AgreementRegistry {
 
     /// Get aggregated deployment-to-indexers mapping for active agreements.
     ///
-    /// Returns agreements that are in `Created` or `Accepted` status for any of the
-    /// provided indexer IDs, grouped by deployment. This performs database-side aggregation,
-    /// returning only the deployment IDs and their associated indexer IDs rather than
-    /// full agreement objects.
+    /// Returns agreements that are in `Created`, `Accepted`, or `AcceptedOnChain` status
+    /// for any of the provided indexer IDs, grouped by deployment. This performs database-side
+    /// aggregation, returning only the deployment IDs and their associated indexer IDs rather
+    /// than full agreement objects.
     ///
     /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
     /// that have active agreements for that deployment.
@@ -79,7 +79,8 @@ pub trait AgreementRegistry {
 
     /// Get the active agreements for an indexing request.
     ///
-    /// Agreements are considered active if they are in `CREATED` or `ACCEPTED` status.
+    /// Agreements are considered active if they are in `CREATED`, `ACCEPTED`, or
+    /// `ACCEPTED_ON_CHAIN` status.
     async fn get_active_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
@@ -134,7 +135,7 @@ pub trait AgreementRegistry {
     /// Mark an indexing agreement as `CANCELED_BY_REQUESTER`.
     ///
     /// If there is no indexing agreement with the given ID, or if the agreement is not in the
-    /// `CREATED` or `ACCEPTED` state, this method returns a
+    /// `CREATED`, `ACCEPTED`, or `ACCEPTED_ON_CHAIN` state, this method returns a
     /// [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
     async fn mark_indexing_agreement_as_canceled_by_requester(
         &self,
@@ -146,6 +147,16 @@ pub trait AgreementRegistry {
     /// If there is no indexing agreement with the given ID, or if the agreement is not in the
     /// `ACCEPTED` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
     async fn mark_indexing_agreement_as_canceled_by_indexer(
+        &self,
+        id: &IndexingAgreementId,
+    ) -> RegistryResult<()>;
+
+    /// Mark an indexing agreement as `ACCEPTED_ON_CHAIN`.
+    ///
+    /// The on-chain `IndexingAgreementAccepted` event was observed for this agreement.
+    /// If there is no indexing agreement with the given ID, or if the agreement is not in the
+    /// `ACCEPTED` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
+    async fn mark_indexing_agreement_as_accepted_on_chain(
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;
@@ -284,6 +295,11 @@ pub enum Status {
     ///
     /// This is a terminal state.
     Expired,
+
+    /// The [`IndexingAgreement`] was accepted on-chain.
+    ///
+    /// The on-chain `IndexingAgreementAccepted` event was observed for this agreement.
+    AcceptedOnChain { at_epoch: u32 },
 }
 
 impl std::fmt::Display for Status {
@@ -296,6 +312,7 @@ impl std::fmt::Display for Status {
             Status::CanceledByRequester => "CANCELED_BY_REQUESTER",
             Status::CanceledByIndexer => "CANCELED_BY_INDEXER",
             Status::Expired => "EXPIRED",
+            Status::AcceptedOnChain { .. } => "ACCEPTED_ON_CHAIN",
         };
         f.write_str(status)
     }
@@ -325,6 +342,9 @@ impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
                     Status::CanceledByIndexer
                 }
                 (dipper_pgregistry::IndexingAgreementStatus::Expired, _) => Status::Expired,
+                (dipper_pgregistry::IndexingAgreementStatus::AcceptedOnChain, Some(at_epoch)) => {
+                    Status::AcceptedOnChain { at_epoch }
+                }
                 _ => {
                     return Err(anyhow::anyhow!("Invalid status: {:?}", value.status));
                 }

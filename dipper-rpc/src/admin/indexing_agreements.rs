@@ -146,6 +146,9 @@ pub enum Status {
     /// This is a terminal state.
     Expired,
 
+    /// The [`IndexingAgreement`] was accepted on-chain.
+    AcceptedOnChain,
+
     /// A fallback for unknown status values.
     Unknown,
 }
@@ -163,6 +166,7 @@ impl serde::Serialize for Status {
             Status::CanceledByRequester => "CANCELED_BY_REQUESTER",
             Status::CanceledByIndexer => "CANCELED_BY_INDEXER",
             Status::Expired => "EXPIRED",
+            Status::AcceptedOnChain => "ACCEPTED_ON_CHAIN",
             Status::Unknown => "UNKNOWN",
         };
         serializer.serialize_str(status)
@@ -183,6 +187,7 @@ impl<'de> serde::Deserialize<'de> for Status {
             "CANCELED_BY_REQUESTER" => Status::CanceledByRequester,
             "CANCELED_BY_INDEXER" => Status::CanceledByIndexer,
             "EXPIRED" => Status::Expired,
+            "ACCEPTED_ON_CHAIN" => Status::AcceptedOnChain,
             _ => Status::Unknown,
         };
         Ok(status)

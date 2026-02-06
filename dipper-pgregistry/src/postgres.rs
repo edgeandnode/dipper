@@ -146,8 +146,8 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
-    /// Returns all indexing associated with an indexing request that are in the `CREATED` or
-    /// `ACCEPTED` state.
+    /// Returns all indexing agreements associated with an indexing request that are in an active
+    /// state: `CREATED`, `ACCEPTED`, or `ACCEPTED_ON_CHAIN`.
     pub async fn get_active_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
@@ -166,12 +166,13 @@ impl PgRegistry {
                 indexer_url,
                 voucher
             FROM dipper_reg_indexing_agreements
-            WHERE indexing_request_id = $1 AND status IN ($2, $3)
+            WHERE indexing_request_id = $1 AND status IN ($2, $3, $4)
             "#,
         )
         .bind(request_id)
         .bind(IndexingAgreementStatus::Created)
         .bind(IndexingAgreementStatus::Accepted)
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
         .fetch_all(&self.pool)
         .await
         .map_err(Into::into)
@@ -368,10 +369,10 @@ impl PgRegistry {
 
     /// Get aggregated deployment-to-indexers mapping for active agreements.
     ///
-    /// Returns agreements that are in `CREATED` or `ACCEPTED` status for any of the
-    /// provided indexer IDs, grouped by deployment. This performs database-side aggregation,
-    /// returning only the deployment IDs and their associated indexer IDs rather than
-    /// full agreement objects.
+    /// Returns agreements that are in `CREATED`, `ACCEPTED`, or `ACCEPTED_ON_CHAIN` status
+    /// for any of the provided indexer IDs, grouped by deployment. This performs database-side
+    /// aggregation, returning only the deployment IDs and their associated indexer IDs rather
+    /// than full agreement objects.
     ///
     /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
     /// that have active agreements for that deployment.
@@ -392,13 +393,14 @@ impl PgRegistry {
                 deployment_id,
                 array_agg(indexer_id) as indexer_ids
             FROM dipper_reg_indexing_agreements
-            WHERE indexer_id = ANY($1) AND status IN ($2, $3)
+            WHERE indexer_id = ANY($1) AND status IN ($2, $3, $4)
             GROUP BY deployment_id
             "#,
         )
         .bind(&pg_indexer_ids[..])
         .bind(IndexingAgreementStatus::Created)
         .bind(IndexingAgreementStatus::Accepted)
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
         .fetch_all(&self.pool)
         .await?;
 
@@ -569,7 +571,7 @@ impl PgRegistry {
             SET
                 status = $1,
                 updated_at = timezone('UTC', now())
-            WHERE id = $2 AND status IN ($3, $4)
+            WHERE id = $2 AND status IN ($3, $4, $5)
             RETURNING id
             "#,
         )
@@ -577,6 +579,7 @@ impl PgRegistry {
         .bind(agreement_id)
         .bind(IndexingAgreementStatus::Created)
         .bind(IndexingAgreementStatus::Accepted)
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -602,6 +605,33 @@ impl PgRegistry {
             "#,
         )
         .bind(IndexingAgreementStatus::CanceledByIndexer)
+        .bind(agreement_id)
+        .bind(IndexingAgreementStatus::Accepted)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if record.is_none() {
+            return Err(Error::NoRecordsUpdated);
+        }
+
+        Ok(())
+    }
+
+    pub async fn mark_indexing_agreement_as_accepted_on_chain(
+        &self,
+        agreement_id: &IndexingAgreementId,
+    ) -> Result<(), Error> {
+        let record: Option<(IndexingAgreementId,)> = sqlx::query_as(
+            r#"
+            UPDATE dipper_reg_indexing_agreements
+            SET
+                status = $1,
+                updated_at = timezone('UTC', now())
+            WHERE id = $2 AND status = $3
+            RETURNING id
+            "#,
+        )
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
         .bind(agreement_id)
         .bind(IndexingAgreementStatus::Accepted)
         .fetch_optional(&self.pool)

@@ -291,7 +291,8 @@ where
 
         // Ensure the agreement is in an accepted state, otherwise return an error
         let agreement_accept_epoch = match &agreement.status {
-            IndexingAgreementStatus::Accepted { at_epoch } => *at_epoch,
+            IndexingAgreementStatus::Accepted { at_epoch }
+            | IndexingAgreementStatus::AcceptedOnChain { at_epoch } => *at_epoch,
             IndexingAgreementStatus::Created | IndexingAgreementStatus::DeliveryFailed => {
                 return Err(Status::not_found("agreement not found"));
             }
