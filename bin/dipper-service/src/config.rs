@@ -412,3 +412,150 @@ impl From<DipsAgreementConfig>
         (Arc::new(config), Arc::new(prices))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json;
+
+    use super::*;
+
+    #[test]
+    fn test_dips_agreement_config_deserialization() {
+        //* Arrange - JSON config with all new field names
+        let json = r#"{
+            "data_service": "0x1111111111111111111111111111111111111111",
+            "recurring_collector": "0x2222222222222222222222222222222222222222",
+            "max_initial_tokens": "1000",
+            "max_ongoing_tokens_per_second": "100",
+            "min_seconds_per_collection": 60,
+            "max_seconds_per_collection": 3600,
+            "duration_seconds": 86400,
+            "deadline_seconds": 300,
+            "pricing_table": {
+                "1": {
+                    "tokens_per_second": "10",
+                    "tokens_per_entity_per_second": "2"
+                },
+                "42161": {
+                    "tokens_per_second": "5",
+                    "tokens_per_entity_per_second": "1"
+                }
+            }
+        }"#;
+
+        //* Act - Deserialize
+        let config: DipsAgreementConfig =
+            serde_json::from_str(json).expect("deserialization failed");
+
+        //* Assert - Verify all fields
+        use thegraph_core::alloy::primitives::{U256, address};
+
+        assert_eq!(
+            config.data_service,
+            address!("1111111111111111111111111111111111111111"),
+            "data_service mismatch"
+        );
+        assert_eq!(
+            config.recurring_collector,
+            address!("2222222222222222222222222222222222222222"),
+            "recurring_collector mismatch"
+        );
+        assert_eq!(
+            config.max_initial_tokens,
+            U256::from(1000u64),
+            "max_initial_tokens mismatch"
+        );
+        assert_eq!(
+            config.max_ongoing_tokens_per_second,
+            U256::from(100u64),
+            "max_ongoing_tokens_per_second mismatch"
+        );
+        assert_eq!(
+            config.min_seconds_per_collection, 60,
+            "min_seconds_per_collection mismatch"
+        );
+        assert_eq!(
+            config.max_seconds_per_collection, 3600,
+            "max_seconds_per_collection mismatch"
+        );
+        assert_eq!(
+            config.duration_seconds,
+            Some(86400),
+            "duration_seconds mismatch"
+        );
+        assert_eq!(config.deadline_seconds, 300, "deadline_seconds mismatch");
+
+        // Verify pricing table
+        assert_eq!(
+            config.pricing_table.len(),
+            2,
+            "pricing_table should have 2 entries"
+        );
+
+        let chain_1_prices = config.pricing_table.get(&1).expect("chain 1 not found");
+        assert_eq!(
+            chain_1_prices.tokens_per_second,
+            U256::from(10u64),
+            "chain 1 tokens_per_second mismatch"
+        );
+        assert_eq!(
+            chain_1_prices.tokens_per_entity_per_second,
+            U256::from(2u64),
+            "chain 1 tokens_per_entity_per_second mismatch"
+        );
+
+        let chain_42161_prices = config
+            .pricing_table
+            .get(&42161)
+            .expect("chain 42161 not found");
+        assert_eq!(
+            chain_42161_prices.tokens_per_second,
+            U256::from(5u64),
+            "chain 42161 tokens_per_second mismatch"
+        );
+        assert_eq!(
+            chain_42161_prices.tokens_per_entity_per_second,
+            U256::from(1u64),
+            "chain 42161 tokens_per_entity_per_second mismatch"
+        );
+    }
+
+    #[test]
+    fn test_dips_agreement_config_defaults() {
+        //* Arrange - Minimal JSON with defaults
+        let json = r#"{
+            "data_service": "0x1111111111111111111111111111111111111111",
+            "recurring_collector": "0x2222222222222222222222222222222222222222",
+            "max_initial_tokens": "1000",
+            "max_ongoing_tokens_per_second": "100",
+            "min_seconds_per_collection": 60,
+            "max_seconds_per_collection": 3600,
+            "pricing_table": {}
+        }"#;
+
+        //* Act
+        let config: DipsAgreementConfig =
+            serde_json::from_str(json).expect("deserialization failed");
+
+        //* Assert - Check defaults
+        assert_eq!(
+            config.duration_seconds, None,
+            "duration_seconds should default to None"
+        );
+        assert_eq!(
+            config.deadline_seconds, 300,
+            "deadline_seconds should default to 300"
+        );
+
+        // Test the From conversion - None should map to u64::MAX
+        let (agreement_config, _) = <(
+            Arc<IndexingAgreementConfig>,
+            Arc<BTreeMap<u64, IndexingAgreementChainPrices>>,
+        )>::from(config);
+        assert_eq!(
+            agreement_config.duration_seconds(),
+            u64::MAX,
+            "duration_seconds None should convert to u64::MAX"
+        );
+    }
+}

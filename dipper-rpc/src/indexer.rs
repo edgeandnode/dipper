@@ -107,3 +107,47 @@ pub fn rca_eip712_domain(chain_id: u64, recurring_collector: Address) -> Eip712D
         verifying_contract: recurring_collector,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use thegraph_core::alloy::{primitives::keccak256, sol_types::SolStruct};
+
+    use super::*;
+
+    #[test]
+    fn test_rca_eip712_typehash() {
+        use thegraph_core::alloy::primitives::{FixedBytes, U256};
+
+        // The canonical EIP-712 type string for RecurringCollectionAgreement.
+        // This matches the hardcoded typehash in RecurringCollector.sol at line 27-30.
+        // If this test fails, it means the sol! struct definition has drifted from
+        // the on-chain contract's EIP-712 typehash.
+        const EXPECTED_TYPE_STRING: &[u8] = b"RecurringCollectionAgreement(bytes16 agreementId,uint256 deadline,uint256 endsAt,address payer,address dataService,address serviceProvider,uint256 maxInitialTokens,uint256 maxOngoingTokensPerSecond,uint32 minSecondsPerCollection,uint32 maxSecondsPerCollection,bytes metadata)";
+
+        let expected_typehash = keccak256(EXPECTED_TYPE_STRING);
+
+        // Create a dummy RCA to call the instance method
+        let dummy_rca = indexer_client::sol::RecurringCollectionAgreement {
+            agreementId: FixedBytes::default(),
+            deadline: U256::ZERO,
+            endsAt: U256::ZERO,
+            payer: Address::ZERO,
+            dataService: Address::ZERO,
+            serviceProvider: Address::ZERO,
+            maxInitialTokens: U256::ZERO,
+            maxOngoingTokensPerSecond: U256::ZERO,
+            minSecondsPerCollection: 0,
+            maxSecondsPerCollection: 0,
+            metadata: Default::default(),
+        };
+
+        let actual_typehash = dummy_rca.eip712_type_hash();
+
+        assert_eq!(
+            actual_typehash, expected_typehash,
+            "RecurringCollectionAgreement EIP-712 typehash mismatch. \
+             This likely means the sol! struct definition does not match the on-chain contract. \
+             Verify that all field types (especially deadline and endsAt as uint256) match the contract's typehash."
+        );
+    }
+}

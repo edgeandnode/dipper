@@ -224,3 +224,97 @@ pub mod fake_impl {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json;
+    use thegraph_core::alloy::primitives::{U256, address};
+
+    use super::*;
+
+    #[test]
+    fn test_voucher_serde_round_trip() {
+        use std::str::FromStr;
+
+        //* Arrange
+        let voucher = Voucher {
+            payer: address!("1111111111111111111111111111111111111111"),
+            service_provider: address!("2222222222222222222222222222222222222222"),
+            data_service: address!("3333333333333333333333333333333333333333"),
+            deadline: 1234567890,
+            ends_at: 9876543210,
+            max_initial_tokens: U256::from(4096u64),
+            max_ongoing_tokens_per_second: U256::from(512u64),
+            min_seconds_per_collection: 60,
+            max_seconds_per_collection: 3600,
+            metadata: VoucherMetadata {
+                tokens_per_second: U256::from(10u64),
+                tokens_per_entity_per_second: U256::from(2u64),
+                subgraph_deployment_id: DeploymentId::from_str(
+                    "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9",
+                )
+                .unwrap(),
+                protocol_network: 42161,
+                chain_id: 1,
+            },
+        };
+
+        //* Act - Serialize to JSON
+        let json = serde_json::to_string(&voucher).expect("serialization failed");
+
+        //* Act - Deserialize from JSON
+        let deserialized: Voucher = serde_json::from_str(&json).expect("deserialization failed");
+
+        //* Assert - Field-by-field comparison
+        assert_eq!(deserialized.payer, voucher.payer, "payer mismatch");
+        assert_eq!(
+            deserialized.service_provider, voucher.service_provider,
+            "service_provider mismatch"
+        );
+        assert_eq!(
+            deserialized.data_service, voucher.data_service,
+            "data_service mismatch"
+        );
+        assert_eq!(deserialized.deadline, voucher.deadline, "deadline mismatch");
+        assert_eq!(deserialized.ends_at, voucher.ends_at, "ends_at mismatch");
+        assert_eq!(
+            deserialized.max_initial_tokens, voucher.max_initial_tokens,
+            "max_initial_tokens mismatch"
+        );
+        assert_eq!(
+            deserialized.max_ongoing_tokens_per_second, voucher.max_ongoing_tokens_per_second,
+            "max_ongoing_tokens_per_second mismatch"
+        );
+        assert_eq!(
+            deserialized.min_seconds_per_collection, voucher.min_seconds_per_collection,
+            "min_seconds_per_collection mismatch"
+        );
+        assert_eq!(
+            deserialized.max_seconds_per_collection, voucher.max_seconds_per_collection,
+            "max_seconds_per_collection mismatch"
+        );
+
+        // Assert metadata fields
+        assert_eq!(
+            deserialized.metadata.tokens_per_second, voucher.metadata.tokens_per_second,
+            "tokens_per_second mismatch"
+        );
+        assert_eq!(
+            deserialized.metadata.tokens_per_entity_per_second,
+            voucher.metadata.tokens_per_entity_per_second,
+            "tokens_per_entity_per_second mismatch"
+        );
+        assert_eq!(
+            deserialized.metadata.subgraph_deployment_id, voucher.metadata.subgraph_deployment_id,
+            "subgraph_deployment_id mismatch"
+        );
+        assert_eq!(
+            deserialized.metadata.protocol_network, voucher.metadata.protocol_network,
+            "protocol_network mismatch"
+        );
+        assert_eq!(
+            deserialized.metadata.chain_id, voucher.metadata.chain_id,
+            "chain_id mismatch"
+        );
+    }
+}

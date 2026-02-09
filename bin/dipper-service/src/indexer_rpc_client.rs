@@ -197,3 +197,125 @@ fn into_sol_cancellation_request(agreement_id: IndexingAgreementId) -> sol::Canc
         agreement_id: agreement_id.as_bytes().into(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use thegraph_core::alloy::{primitives::U256, sol_types::SolValue};
+
+    use super::*;
+    use crate::registry::IndexingAgreementVoucherMetadata;
+
+    #[test]
+    fn test_into_sol_rca_conversion() {
+        use thegraph_core::{DeploymentId, alloy::primitives::address};
+
+        //* Arrange
+        let agreement_id = IndexingAgreementId::new();
+        let deployment_id =
+            DeploymentId::from_str("QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9").unwrap();
+
+        let payer = address!("0000000000000000000000000000000000000001");
+        let service_provider = address!("0000000000000000000000000000000000000002");
+        let data_service = address!("0000000000000000000000000000000000000003");
+        let deadline = 1234567890u64;
+        let ends_at = 9876543210u64;
+        let max_initial_tokens = U256::from(1000u64);
+        let max_ongoing_tokens_per_second = U256::from(100u64);
+        let min_seconds_per_collection = 60u32;
+        let max_seconds_per_collection = 3600u32;
+        let tokens_per_second = U256::from(10u64);
+        let tokens_per_entity_per_second = U256::from(2u64);
+
+        let voucher = IndexingAgreementVoucher {
+            payer,
+            service_provider,
+            data_service,
+            deadline,
+            ends_at,
+            max_initial_tokens,
+            max_ongoing_tokens_per_second,
+            min_seconds_per_collection,
+            max_seconds_per_collection,
+            metadata: IndexingAgreementVoucherMetadata {
+                tokens_per_second,
+                tokens_per_entity_per_second,
+                subgraph_deployment_id: deployment_id,
+                protocol_network: 42161,
+                chain_id: 1,
+            },
+        };
+
+        //* Act
+        let rca = into_sol_rca(agreement_id, voucher);
+
+        //* Assert
+        // Verify top-level fields
+        use thegraph_core::alloy::primitives::FixedBytes;
+        assert_eq!(
+            rca.agreementId,
+            FixedBytes::<16>::from(*agreement_id.as_bytes()),
+            "agreementId mismatch"
+        );
+        assert_eq!(
+            rca.deadline,
+            U256::from(deadline),
+            "deadline should be converted to U256"
+        );
+        assert_eq!(
+            rca.endsAt,
+            U256::from(ends_at),
+            "endsAt should be converted to U256"
+        );
+        assert_eq!(rca.payer, payer, "payer mismatch");
+        assert_eq!(rca.dataService, data_service, "dataService mismatch");
+        assert_eq!(
+            rca.serviceProvider, service_provider,
+            "serviceProvider mismatch"
+        );
+        assert_eq!(
+            rca.maxInitialTokens, max_initial_tokens,
+            "maxInitialTokens mismatch"
+        );
+        assert_eq!(
+            rca.maxOngoingTokensPerSecond, max_ongoing_tokens_per_second,
+            "maxOngoingTokensPerSecond mismatch"
+        );
+        assert_eq!(
+            rca.minSecondsPerCollection, min_seconds_per_collection,
+            "minSecondsPerCollection mismatch"
+        );
+        assert_eq!(
+            rca.maxSecondsPerCollection, max_seconds_per_collection,
+            "maxSecondsPerCollection mismatch"
+        );
+
+        //* Assert - Verify nested metadata ABI encoding
+        let decoded_metadata = sol::AcceptIndexingAgreementMetadata::abi_decode(&rca.metadata)
+            .expect("metadata should be valid ABI-encoded AcceptIndexingAgreementMetadata");
+
+        assert_eq!(
+            decoded_metadata.subgraphDeploymentId,
+            B256::from(deployment_id),
+            "subgraphDeploymentId in metadata mismatch"
+        );
+        assert_eq!(
+            decoded_metadata.version, 0,
+            "version should be 0 (IndexingAgreementVersion::V1)"
+        );
+
+        // Verify nested terms
+        let decoded_terms = sol::IndexingAgreementTermsV1::abi_decode(&decoded_metadata.terms)
+            .expect("terms should be valid ABI-encoded IndexingAgreementTermsV1");
+
+        assert_eq!(
+            decoded_terms.tokensPerSecond, tokens_per_second,
+            "tokensPerSecond in nested terms mismatch"
+        );
+        assert_eq!(
+            decoded_terms.tokensPerEntityPerSecond, tokens_per_entity_per_second,
+            "tokensPerEntityPerSecond in nested terms mismatch"
+        );
+    }
+}

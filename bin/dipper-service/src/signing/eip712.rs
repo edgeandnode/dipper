@@ -200,4 +200,57 @@ mod tests {
         let recovered_address = result.expect("message verification failed");
         assert_eq!(recovered_address, signer_address);
     }
+
+    #[test]
+    fn test_sign_rca_msg() {
+        use dipper_rpc::indexer::{indexer_client::sol, rca_eip712_domain};
+        use thegraph_core::{
+            alloy::primitives::{FixedBytes, U256},
+            signed_message::recover_signer_address,
+        };
+
+        //* Arrange
+        let signer = wallet();
+        let signer_address = signer.address();
+        let signer_chain = 42161;
+        let recurring_collector = address!("1111111111111111111111111111111111111111");
+
+        // Create an Eip712Signer with the RCA domain
+        let rca_domain = rca_eip712_domain(signer_chain, recurring_collector);
+        let eip712_signer = Eip712Signer::new(
+            signer,
+            signer_address,
+            signer_chain,
+            rca_domain.clone(),
+            recurring_collector,
+        );
+
+        // Build a RecurringCollectionAgreement with known values
+        let rca = sol::RecurringCollectionAgreement {
+            agreementId: FixedBytes::<16>::from([1u8; 16]),
+            deadline: U256::from(1234567890u64),
+            endsAt: U256::from(9876543210u64),
+            payer: address!("0000000000000000000000000000000000000001"),
+            dataService: address!("0000000000000000000000000000000000000002"),
+            serviceProvider: address!("0000000000000000000000000000000000000003"),
+            maxInitialTokens: U256::from(1000u64),
+            maxOngoingTokensPerSecond: U256::from(100u64),
+            minSecondsPerCollection: 60,
+            maxSecondsPerCollection: 3600,
+            metadata: Default::default(),
+        };
+
+        //* Act
+        let signed_rca = eip712_signer.sign_rca_msg(rca).expect("RCA signing failed");
+
+        //* Assert
+        // Recover the signer from the signed message using the RCA domain
+        let recovered_address = recover_signer_address(&rca_domain, &signed_rca)
+            .expect("RCA signature recovery failed");
+
+        assert_eq!(
+            recovered_address, signer_address,
+            "Recovered signer address should match original signer"
+        );
+    }
 }
