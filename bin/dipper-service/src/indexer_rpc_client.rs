@@ -7,7 +7,10 @@ use std::{str::FromStr, sync::Arc};
 use async_trait::async_trait;
 use dipper_core::ids::IndexingAgreementId;
 use dipper_rpc::indexer::indexer_client::{rpc, sol};
-use thegraph_core::alloy::sol_types::SolValue;
+use thegraph_core::alloy::{
+    primitives::{B256, U256},
+    sol_types::SolValue,
+};
 use url::Url;
 
 use crate::{registry::IndexingAgreementVoucher, signing::eip712::PrivateKeyEip712Signer};
@@ -82,26 +85,26 @@ impl IndexerClient for DipsIndexerClient {
         indexing_agreement_id: IndexingAgreementId,
         voucher: IndexingAgreementVoucher,
     ) -> Result<(), DipsError> {
-        // Convert to the solidity voucher data structure
-        let sol_voucher = into_sol_voucher(indexing_agreement_id, voucher);
+        // Convert to the RCA solidity data structure
+        let sol_rca = into_sol_rca(indexing_agreement_id, voucher);
 
-        // Sign the solidity voucher with the appropriate domain
+        // Sign the RCA with the RecurringCollector EIP-712 domain
         let signed = self
             .signer
-            .sign_dips_agreement_msg(sol_voucher)
+            .sign_rca_msg(sol_rca)
             .map_err(|err| DipsError::SigningError(err.into()))?;
 
-        // Serialize the Solidity signed voucher to bytes (ABI encoding)
-        let sol_signed_voucher_bytes: Vec<u8> = sol::SignedIndexingAgreementVoucher {
-            voucher: signed.message,
+        // Serialize the signed RCA to bytes (ABI encoding)
+        let sol_signed_rca_bytes: Vec<u8> = sol::SignedRecurringCollectionAgreement {
+            agreement: signed.message,
             signature: signed.signature.as_bytes().into(),
         }
         .abi_encode();
 
         // Build the SubmitAgreementProposalRequest RPC request message
         let request = tonic::Request::new(rpc::SubmitAgreementProposalRequest {
-            version: 1,
-            signed_voucher: sol_signed_voucher_bytes,
+            version: 2,
+            signed_voucher: sol_signed_rca_bytes,
         });
 
         // Send the proposal request to the indexer (fire-and-forget)
@@ -152,31 +155,39 @@ impl IndexerClient for DipsIndexerClient {
     }
 }
 
+/// Convert an internal voucher to the on-chain `RecurringCollectionAgreement` sol type.
 #[inline]
-fn into_sol_voucher(
+fn into_sol_rca(
     agreement_id: IndexingAgreementId,
     voucher: IndexingAgreementVoucher,
-) -> sol::IndexingAgreementVoucher {
-    sol::IndexingAgreementVoucher {
-        agreement_id: agreement_id.as_bytes().into(),
+) -> sol::RecurringCollectionAgreement {
+    // Build the V1 pricing terms
+    let terms = sol::IndexingAgreementTermsV1 {
+        tokensPerSecond: voucher.metadata.tokens_per_second,
+        tokensPerEntityPerSecond: voucher.metadata.tokens_per_entity_per_second,
+    }
+    .abi_encode();
+
+    // Build the acceptance metadata (ABI-encoded into the RCA metadata field)
+    let metadata = sol::AcceptIndexingAgreementMetadata {
+        subgraphDeploymentId: B256::from(voucher.metadata.subgraph_deployment_id),
+        version: 0, // IndexingAgreementVersion::V1
+        terms: terms.into(),
+    }
+    .abi_encode();
+
+    sol::RecurringCollectionAgreement {
+        agreementId: agreement_id.as_bytes().into(),
+        deadline: U256::from(voucher.deadline),
+        endsAt: U256::from(voucher.ends_at),
         payer: voucher.payer,
-        recipient: voucher.recipient,
-        service: voucher.service,
-        durationEpochs: voucher.duration_epochs,
-        maxInitialAmount: voucher.max_initial_amount,
-        maxOngoingAmountPerEpoch: voucher.max_ongoing_amount_per_epoch,
-        minEpochsPerCollection: voucher.min_epochs_per_collection,
-        maxEpochsPerCollection: voucher.max_epochs_per_collection,
-        deadline: voucher.deadline,
-        metadata: sol::SubgraphIndexingVoucherMetadata {
-            basePricePerEpoch: voucher.metadata.base_price_per_epoch,
-            pricePerEntity: voucher.metadata.price_per_entity,
-            subgraphDeploymentId: voucher.metadata.subgraph_deployment_id.to_string(),
-            protocolNetwork: format!("eip155:{}", voucher.metadata.protocol_network),
-            chainId: format!("eip155:{}", voucher.metadata.chain_id),
-        }
-        .abi_encode()
-        .into(),
+        dataService: voucher.data_service,
+        serviceProvider: voucher.service_provider,
+        maxInitialTokens: voucher.max_initial_tokens,
+        maxOngoingTokensPerSecond: voucher.max_ongoing_tokens_per_second,
+        minSecondsPerCollection: voucher.min_seconds_per_collection,
+        maxSecondsPerCollection: voucher.max_seconds_per_collection,
+        metadata: metadata.into(),
     }
 }
 
@@ -184,5 +195,127 @@ fn into_sol_voucher(
 fn into_sol_cancellation_request(agreement_id: IndexingAgreementId) -> sol::CancellationRequest {
     sol::CancellationRequest {
         agreement_id: agreement_id.as_bytes().into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use thegraph_core::alloy::{primitives::U256, sol_types::SolValue};
+
+    use super::*;
+    use crate::registry::IndexingAgreementVoucherMetadata;
+
+    #[test]
+    fn test_into_sol_rca_conversion() {
+        use thegraph_core::{DeploymentId, alloy::primitives::address};
+
+        //* Arrange
+        let agreement_id = IndexingAgreementId::new();
+        let deployment_id =
+            DeploymentId::from_str("QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9").unwrap();
+
+        let payer = address!("0000000000000000000000000000000000000001");
+        let service_provider = address!("0000000000000000000000000000000000000002");
+        let data_service = address!("0000000000000000000000000000000000000003");
+        let deadline = 1234567890u64;
+        let ends_at = 9876543210u64;
+        let max_initial_tokens = U256::from(1000u64);
+        let max_ongoing_tokens_per_second = U256::from(100u64);
+        let min_seconds_per_collection = 60u32;
+        let max_seconds_per_collection = 3600u32;
+        let tokens_per_second = U256::from(10u64);
+        let tokens_per_entity_per_second = U256::from(2u64);
+
+        let voucher = IndexingAgreementVoucher {
+            payer,
+            service_provider,
+            data_service,
+            deadline,
+            ends_at,
+            max_initial_tokens,
+            max_ongoing_tokens_per_second,
+            min_seconds_per_collection,
+            max_seconds_per_collection,
+            metadata: IndexingAgreementVoucherMetadata {
+                tokens_per_second,
+                tokens_per_entity_per_second,
+                subgraph_deployment_id: deployment_id,
+                protocol_network: 42161,
+                chain_id: 1,
+            },
+        };
+
+        //* Act
+        let rca = into_sol_rca(agreement_id, voucher);
+
+        //* Assert
+        // Verify top-level fields
+        use thegraph_core::alloy::primitives::FixedBytes;
+        assert_eq!(
+            rca.agreementId,
+            FixedBytes::<16>::from(*agreement_id.as_bytes()),
+            "agreementId mismatch"
+        );
+        assert_eq!(
+            rca.deadline,
+            U256::from(deadline),
+            "deadline should be converted to U256"
+        );
+        assert_eq!(
+            rca.endsAt,
+            U256::from(ends_at),
+            "endsAt should be converted to U256"
+        );
+        assert_eq!(rca.payer, payer, "payer mismatch");
+        assert_eq!(rca.dataService, data_service, "dataService mismatch");
+        assert_eq!(
+            rca.serviceProvider, service_provider,
+            "serviceProvider mismatch"
+        );
+        assert_eq!(
+            rca.maxInitialTokens, max_initial_tokens,
+            "maxInitialTokens mismatch"
+        );
+        assert_eq!(
+            rca.maxOngoingTokensPerSecond, max_ongoing_tokens_per_second,
+            "maxOngoingTokensPerSecond mismatch"
+        );
+        assert_eq!(
+            rca.minSecondsPerCollection, min_seconds_per_collection,
+            "minSecondsPerCollection mismatch"
+        );
+        assert_eq!(
+            rca.maxSecondsPerCollection, max_seconds_per_collection,
+            "maxSecondsPerCollection mismatch"
+        );
+
+        //* Assert - Verify nested metadata ABI encoding
+        let decoded_metadata = sol::AcceptIndexingAgreementMetadata::abi_decode(&rca.metadata)
+            .expect("metadata should be valid ABI-encoded AcceptIndexingAgreementMetadata");
+
+        assert_eq!(
+            decoded_metadata.subgraphDeploymentId,
+            B256::from(deployment_id),
+            "subgraphDeploymentId in metadata mismatch"
+        );
+        assert_eq!(
+            decoded_metadata.version, 0,
+            "version should be 0 (IndexingAgreementVersion::V1)"
+        );
+
+        // Verify nested terms
+        let decoded_terms = sol::IndexingAgreementTermsV1::abi_decode(&decoded_metadata.terms)
+            .expect("terms should be valid ABI-encoded IndexingAgreementTermsV1");
+
+        assert_eq!(
+            decoded_terms.tokensPerSecond, tokens_per_second,
+            "tokensPerSecond in nested terms mismatch"
+        );
+        assert_eq!(
+            decoded_terms.tokensPerEntityPerSecond, tokens_per_entity_per_second,
+            "tokensPerEntityPerSecond in nested terms mismatch"
+        );
     }
 }

@@ -171,46 +171,42 @@ pub struct Indexer {
     pub url: Url,
 }
 
-/// The _indexing agreement_ proposal voucher.
+/// The agreement terms. Field names align with the on-chain `RecurringCollectionAgreement`.
 #[derive(Debug, Clone)]
 pub struct Voucher {
-    /// The agreement payer.
-    ///
-    /// It should coincide with the voucher signer address.
+    /// The agreement payer (signer address).
     pub payer: Address,
-    /// The voucher recipient address. The indexer ID.
-    pub recipient: Address,
-    /// Data service that will initiate the payment collection.
-    pub service: Address,
+    /// The indexer (service provider).
+    pub service_provider: Address,
+    /// The data service address (SubgraphService contract).
+    pub data_service: Address,
 
-    /// The duration of the agreement in epochs.
-    pub duration_epochs: u32,
-
-    /// The maximum amount, in _wei GRT_, that can be collected for the initial subgraph sync.
-    pub max_initial_amount: U256,
-    /// The maximum amount, in _wei GRT_, that can be collected per epoch (after the initial sync).
-    pub max_ongoing_amount_per_epoch: U256,
-
-    /// The minimum number of epochs that can be collected at once.
-    pub min_epochs_per_collection: u32,
-    /// The maximum number of epochs that can be collected at once.
-    pub max_epochs_per_collection: u32,
-
-    /// The deadline for the indexer to accept the agreement.
-    // TODO(v2): Review this
+    /// Deadline for on-chain acceptance (unix timestamp).
     pub deadline: u64,
+    /// When the agreement expires (unix timestamp).
+    pub ends_at: u64,
 
-    /// The voucher metadata
+    /// Maximum tokens for the initial subgraph sync.
+    pub max_initial_tokens: U256,
+    /// Maximum tokens per second for ongoing indexing.
+    pub max_ongoing_tokens_per_second: U256,
+
+    /// Minimum seconds per collection.
+    pub min_seconds_per_collection: u32,
+    /// Maximum seconds per collection.
+    pub max_seconds_per_collection: u32,
+
+    /// The agreement metadata.
     pub metadata: VoucherMetadata,
 }
 
-/// The _indexing agreement_ proposal voucher metadata
+/// Pricing and deployment metadata for the agreement.
 #[derive(Debug, Clone)]
 pub struct VoucherMetadata {
-    /// The base price per epoch in _wei GRT_.
-    pub base_price_per_epoch: U256,
-    /// The price per entity in _wei GRT_.
-    pub price_per_entity: U256,
+    /// Tokens per second (base rate) in wei GRT.
+    pub tokens_per_second: U256,
+    /// Tokens per entity per second in wei GRT.
+    pub tokens_per_entity_per_second: U256,
 
     /// The Subgraph deployment ID to index.
     pub subgraph_deployment_id: DeploymentId,
@@ -321,14 +317,14 @@ impl From<dipper_pgregistry::IndexingAgreementVoucher> for Voucher {
     fn from(value: dipper_pgregistry::IndexingAgreementVoucher) -> Self {
         Self {
             payer: value.payer,
-            recipient: value.recipient,
-            service: value.service,
-            duration_epochs: value.duration_epochs,
-            max_initial_amount: value.max_initial_amount,
-            max_ongoing_amount_per_epoch: value.max_ongoing_amount_per_epoch,
-            min_epochs_per_collection: value.min_epochs_per_collection,
-            max_epochs_per_collection: value.max_epochs_per_collection,
+            service_provider: value.service_provider,
+            data_service: value.data_service,
             deadline: value.deadline,
+            ends_at: value.ends_at,
+            max_initial_tokens: value.max_initial_tokens,
+            max_ongoing_tokens_per_second: value.max_ongoing_tokens_per_second,
+            min_seconds_per_collection: value.min_seconds_per_collection,
+            max_seconds_per_collection: value.max_seconds_per_collection,
             metadata: value.metadata.into(),
         }
     }
@@ -337,8 +333,8 @@ impl From<dipper_pgregistry::IndexingAgreementVoucher> for Voucher {
 impl From<dipper_pgregistry::IndexingAgreementVoucherMetadata> for VoucherMetadata {
     fn from(value: dipper_pgregistry::IndexingAgreementVoucherMetadata) -> Self {
         Self {
-            base_price_per_epoch: value.base_price_per_epoch,
-            price_per_entity: value.price_per_entity,
+            tokens_per_second: value.tokens_per_second,
+            tokens_per_entity_per_second: value.tokens_per_entity_per_second,
             subgraph_deployment_id: value.subgraph_deployment_id,
             protocol_network: value.protocol_network,
             chain_id: value.chain_id,
@@ -350,14 +346,14 @@ impl From<Voucher> for dipper_pgregistry::IndexingAgreementVoucher {
     fn from(value: Voucher) -> Self {
         Self {
             payer: value.payer,
-            recipient: value.recipient,
-            service: value.service,
-            duration_epochs: value.duration_epochs,
-            max_initial_amount: value.max_initial_amount,
-            max_ongoing_amount_per_epoch: value.max_ongoing_amount_per_epoch,
-            min_epochs_per_collection: value.min_epochs_per_collection,
-            max_epochs_per_collection: value.max_epochs_per_collection,
+            service_provider: value.service_provider,
+            data_service: value.data_service,
             deadline: value.deadline,
+            ends_at: value.ends_at,
+            max_initial_tokens: value.max_initial_tokens,
+            max_ongoing_tokens_per_second: value.max_ongoing_tokens_per_second,
+            min_seconds_per_collection: value.min_seconds_per_collection,
+            max_seconds_per_collection: value.max_seconds_per_collection,
             metadata: value.metadata.into(),
         }
     }
@@ -366,8 +362,8 @@ impl From<Voucher> for dipper_pgregistry::IndexingAgreementVoucher {
 impl From<VoucherMetadata> for dipper_pgregistry::IndexingAgreementVoucherMetadata {
     fn from(value: VoucherMetadata) -> Self {
         Self {
-            base_price_per_epoch: value.base_price_per_epoch,
-            price_per_entity: value.price_per_entity,
+            tokens_per_second: value.tokens_per_second,
+            tokens_per_entity_per_second: value.tokens_per_entity_per_second,
             subgraph_deployment_id: value.subgraph_deployment_id,
             protocol_network: value.protocol_network,
             chain_id: value.chain_id,
@@ -393,52 +389,33 @@ pub mod fake_impl {
 
     impl Dummy<Faker> for Voucher {
         fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
-            let payer = Address::new(<[u8; 20]>::dummy_with_rng(config, rng));
-            let recipient = Address::new(<[u8; 20]>::dummy_with_rng(config, rng));
-            let service = Address::new(<[u8; 20]>::dummy_with_rng(config, rng));
-
-            let duration_epochs = u32::dummy_with_rng(config, rng);
-
-            let max_initial_amount = U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
-            let max_ongoing_amount_per_epoch =
-                U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
-
-            let max_epochs_per_collection = u32::dummy_with_rng(config, rng);
-            let min_epochs_per_collection = u32::dummy_with_rng(config, rng);
-
-            let deadline = u64::dummy_with_rng(config, rng);
-
-            let metadata = VoucherMetadata::dummy_with_rng(config, rng);
-
             Self {
-                payer,
-                recipient,
-                service,
-                duration_epochs,
-                max_initial_amount,
-                max_ongoing_amount_per_epoch,
-                max_epochs_per_collection,
-                min_epochs_per_collection,
-                deadline,
-                metadata,
+                payer: Address::new(<[u8; 20]>::dummy_with_rng(config, rng)),
+                service_provider: Address::new(<[u8; 20]>::dummy_with_rng(config, rng)),
+                data_service: Address::new(<[u8; 20]>::dummy_with_rng(config, rng)),
+                deadline: u64::dummy_with_rng(config, rng),
+                ends_at: u64::dummy_with_rng(config, rng),
+                max_initial_tokens: U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng)),
+                max_ongoing_tokens_per_second: U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(
+                    config, rng,
+                )),
+                min_seconds_per_collection: u32::dummy_with_rng(config, rng),
+                max_seconds_per_collection: u32::dummy_with_rng(config, rng),
+                metadata: VoucherMetadata::dummy_with_rng(config, rng),
             }
         }
     }
 
     impl Dummy<Faker> for VoucherMetadata {
         fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
-            let base_price_per_epoch = U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
-            let price_per_entity = U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
-            let subgraph_deployment_id = DeploymentId::dummy_with_rng(config, rng);
-            let protocol_network = ChainId::dummy_with_rng(config, rng);
-            let chain_id = ChainId::dummy_with_rng(config, rng);
-
             Self {
-                base_price_per_epoch,
-                price_per_entity,
-                subgraph_deployment_id,
-                protocol_network,
-                chain_id,
+                tokens_per_second: U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng)),
+                tokens_per_entity_per_second: U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(
+                    config, rng,
+                )),
+                subgraph_deployment_id: DeploymentId::dummy_with_rng(config, rng),
+                protocol_network: ChainId::dummy_with_rng(config, rng),
+                chain_id: ChainId::dummy_with_rng(config, rng),
             }
         }
     }

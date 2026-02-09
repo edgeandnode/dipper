@@ -181,34 +181,42 @@ impl Default for ReassignmentConfig {
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
 pub struct DipsAgreementConfig {
-    /// The _indexing agreement_'s service address.
-    pub service: Address,
-    /// The _indexing agreement_'s maximum amount that can be collected for the subgraph initial
-    /// sync.
-    pub max_initial_amount: U256,
-    /// The _indexing agreement_'s maximum amount collectable per epoch.
-    pub max_ongoing_amount_per_epoch: U256,
-    /// The _indexing agreement_'s maximum epochs per collection.
-    pub max_epochs_per_collection: u32,
-    /// The _indexing agreement_'s minimum epochs per collection.
-    pub min_epochs_per_collection: u32,
-    /// The _indexing agreement_'s duration in epochs.
-    pub duration_epochs: Option<u32>,
+    /// The data service address (SubgraphService contract).
+    pub data_service: Address,
+    /// The RecurringCollector contract address (used for EIP-712 signing domain).
+    pub recurring_collector: Address,
+    /// Maximum tokens for the initial subgraph sync.
+    pub max_initial_tokens: U256,
+    /// Maximum tokens per second for ongoing indexing.
+    pub max_ongoing_tokens_per_second: U256,
+    /// Maximum seconds per collection.
+    pub max_seconds_per_collection: u32,
+    /// Minimum seconds per collection.
+    pub min_seconds_per_collection: u32,
+    /// Agreement duration in seconds (None = u64::MAX).
+    pub duration_seconds: Option<u64>,
+    /// Deadline duration in seconds (how long the indexer has to accept on-chain).
+    #[serde(default = "default_deadline_seconds")]
+    pub deadline_seconds: u64,
 
-    /// The _indexing agreement_'s per chain pricing table.
+    /// Per-chain pricing table.
     pub pricing_table: BTreeMap<ChainId, ChainPrices>,
 }
 
-/// Per-chain prices for the DIPs _indexing agreement_.
+fn default_deadline_seconds() -> u64 {
+    300 // 5 minutes
+}
+
+/// Per-chain pricing for indexing agreements.
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
 pub struct ChainPrices {
-    /// The price per block in wei GRT.
+    /// Tokens per second (base rate) in wei GRT.
     #[serde_as(as = "serde_with::DisplayFromStr")]
-    pub base_price_per_epoch: U256,
-    /// The price per entity in wei GRT per epoch.
+    pub tokens_per_second: U256,
+    /// Tokens per entity per second in wei GRT.
     #[serde_as(as = "serde_with::DisplayFromStr")]
-    pub price_per_entity: U256,
+    pub tokens_per_entity_per_second: U256,
 }
 
 /// Gateway operator API configuration. Authenticates via EIP-712 signatures.
@@ -307,67 +315,67 @@ pub struct TapSignerConfig {
     pub verifier: Address,
 }
 
-/// The _indexing agreement_ configuration.
-///
-/// It holds the configuration for the _indexing agreements_, e.g., the service address, the
-/// maximum amount that can be collected for the subgraph initial sync, the maximum amount
-/// collectable per epoch, etc.
+/// Runtime indexing agreement configuration.
 #[derive(Debug)]
 pub struct IndexingAgreementConfig {
-    /// The _indexing agreement_'s service address.
-    pub service: Address,
-    /// The _indexing agreement_'s maximum amount that can be collected for the subgraph initial
-    /// sync.
-    pub max_initial_amount: U256,
-    /// The _indexing agreement_'s maximum amount collectable per epoch.
-    pub max_ongoing_amount_per_epoch: U256,
-    /// The _indexing agreement_'s maximum epochs per collection.
-    pub max_epochs_per_collection: u32,
-    /// The _indexing agreement_'s minimum epochs per collection.
-    pub min_epochs_per_collection: u32,
-    /// The _indexing agreement_'s duration in epochs.
-    pub duration_epochs: Option<u32>,
+    /// The data service address (SubgraphService contract).
+    pub data_service: Address,
+    /// The RecurringCollector contract address.
+    pub recurring_collector: Address,
+    /// Maximum tokens for the initial subgraph sync.
+    pub max_initial_tokens: U256,
+    /// Maximum tokens per second for ongoing indexing.
+    pub max_ongoing_tokens_per_second: U256,
+    /// Maximum seconds per collection.
+    pub max_seconds_per_collection: u32,
+    /// Minimum seconds per collection.
+    pub min_seconds_per_collection: u32,
+    /// Agreement duration in seconds.
+    pub duration_seconds: u64,
+    /// Deadline duration in seconds.
+    pub deadline_seconds: u64,
 }
 
-/// The _indexing agreement_'s per-chain prices.
+/// Per-chain pricing for indexing agreements (runtime).
 #[derive(Debug)]
 pub struct IndexingAgreementChainPrices {
-    /// The price per block in wei GRT.
-    pub base_price_per_epoch: U256,
-    /// The price per entity in wei GRT per epoch.
-    pub price_per_entity: U256,
+    /// Tokens per second (base rate) in wei GRT.
+    pub tokens_per_second: U256,
+    /// Tokens per entity per second in wei GRT.
+    pub tokens_per_entity_per_second: U256,
 }
 
 impl IndexingAgreementConfig {
-    /// Get the _indexing agreement_'s service address.
-    pub fn service(&self) -> Address {
-        self.service
+    pub fn data_service(&self) -> Address {
+        self.data_service
     }
 
-    /// Get the _indexing agreement_'s maximum amount that can be collected for the subgraph initial
-    /// sync.
-    pub fn max_initial_amount(&self) -> U256 {
-        self.max_initial_amount
+    pub fn recurring_collector(&self) -> Address {
+        self.recurring_collector
     }
 
-    /// Get the _indexing agreement_'s maximum amount collectable per epoch.
-    pub fn max_ongoing_amount_per_epoch(&self) -> U256 {
-        self.max_ongoing_amount_per_epoch
+    pub fn max_initial_tokens(&self) -> U256 {
+        self.max_initial_tokens
     }
 
-    /// Get the _indexing agreement_'s maximum epochs per collection.
-    pub fn max_epochs_per_collection(&self) -> u32 {
-        self.max_epochs_per_collection
+    pub fn max_ongoing_tokens_per_second(&self) -> U256 {
+        self.max_ongoing_tokens_per_second
     }
 
-    /// Get the _indexing agreement_'s minimum epochs per collection.
-    pub fn min_epochs_per_collection(&self) -> u32 {
-        self.min_epochs_per_collection
+    pub fn max_seconds_per_collection(&self) -> u32 {
+        self.max_seconds_per_collection
     }
 
-    /// Get the _indexing agreement_'s duration in epochs.
-    pub fn duration_epochs(&self) -> u32 {
-        self.duration_epochs.unwrap_or(u32::MAX)
+    pub fn min_seconds_per_collection(&self) -> u32 {
+        self.min_seconds_per_collection
+    }
+
+    pub fn duration_seconds(&self) -> u64 {
+        self.duration_seconds
+    }
+
+    pub fn deadline_seconds(&self) -> u64 {
+        self.deadline_seconds
     }
 }
 
@@ -379,12 +387,14 @@ impl From<DipsAgreementConfig>
 {
     fn from(value: DipsAgreementConfig) -> Self {
         let config = IndexingAgreementConfig {
-            service: value.service,
-            max_initial_amount: value.max_initial_amount,
-            max_ongoing_amount_per_epoch: value.max_ongoing_amount_per_epoch,
-            max_epochs_per_collection: value.max_epochs_per_collection,
-            min_epochs_per_collection: value.min_epochs_per_collection,
-            duration_epochs: value.duration_epochs,
+            data_service: value.data_service,
+            recurring_collector: value.recurring_collector,
+            max_initial_tokens: value.max_initial_tokens,
+            max_ongoing_tokens_per_second: value.max_ongoing_tokens_per_second,
+            max_seconds_per_collection: value.max_seconds_per_collection,
+            min_seconds_per_collection: value.min_seconds_per_collection,
+            duration_seconds: value.duration_seconds.unwrap_or(u64::MAX),
+            deadline_seconds: value.deadline_seconds,
         };
         let prices = value
             .pricing_table
@@ -393,12 +403,159 @@ impl From<DipsAgreementConfig>
                 (
                     chain_id,
                     IndexingAgreementChainPrices {
-                        base_price_per_epoch: prices.base_price_per_epoch,
-                        price_per_entity: prices.price_per_entity,
+                        tokens_per_second: prices.tokens_per_second,
+                        tokens_per_entity_per_second: prices.tokens_per_entity_per_second,
                     },
                 )
             })
             .collect();
         (Arc::new(config), Arc::new(prices))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json;
+
+    use super::*;
+
+    #[test]
+    fn test_dips_agreement_config_deserialization() {
+        //* Arrange - JSON config with all new field names
+        let json = r#"{
+            "data_service": "0x1111111111111111111111111111111111111111",
+            "recurring_collector": "0x2222222222222222222222222222222222222222",
+            "max_initial_tokens": "1000",
+            "max_ongoing_tokens_per_second": "100",
+            "min_seconds_per_collection": 60,
+            "max_seconds_per_collection": 3600,
+            "duration_seconds": 86400,
+            "deadline_seconds": 300,
+            "pricing_table": {
+                "1": {
+                    "tokens_per_second": "10",
+                    "tokens_per_entity_per_second": "2"
+                },
+                "42161": {
+                    "tokens_per_second": "5",
+                    "tokens_per_entity_per_second": "1"
+                }
+            }
+        }"#;
+
+        //* Act - Deserialize
+        let config: DipsAgreementConfig =
+            serde_json::from_str(json).expect("deserialization failed");
+
+        //* Assert - Verify all fields
+        use thegraph_core::alloy::primitives::{U256, address};
+
+        assert_eq!(
+            config.data_service,
+            address!("1111111111111111111111111111111111111111"),
+            "data_service mismatch"
+        );
+        assert_eq!(
+            config.recurring_collector,
+            address!("2222222222222222222222222222222222222222"),
+            "recurring_collector mismatch"
+        );
+        assert_eq!(
+            config.max_initial_tokens,
+            U256::from(1000u64),
+            "max_initial_tokens mismatch"
+        );
+        assert_eq!(
+            config.max_ongoing_tokens_per_second,
+            U256::from(100u64),
+            "max_ongoing_tokens_per_second mismatch"
+        );
+        assert_eq!(
+            config.min_seconds_per_collection, 60,
+            "min_seconds_per_collection mismatch"
+        );
+        assert_eq!(
+            config.max_seconds_per_collection, 3600,
+            "max_seconds_per_collection mismatch"
+        );
+        assert_eq!(
+            config.duration_seconds,
+            Some(86400),
+            "duration_seconds mismatch"
+        );
+        assert_eq!(config.deadline_seconds, 300, "deadline_seconds mismatch");
+
+        // Verify pricing table
+        assert_eq!(
+            config.pricing_table.len(),
+            2,
+            "pricing_table should have 2 entries"
+        );
+
+        let chain_1_prices = config.pricing_table.get(&1).expect("chain 1 not found");
+        assert_eq!(
+            chain_1_prices.tokens_per_second,
+            U256::from(10u64),
+            "chain 1 tokens_per_second mismatch"
+        );
+        assert_eq!(
+            chain_1_prices.tokens_per_entity_per_second,
+            U256::from(2u64),
+            "chain 1 tokens_per_entity_per_second mismatch"
+        );
+
+        let chain_42161_prices = config
+            .pricing_table
+            .get(&42161)
+            .expect("chain 42161 not found");
+        assert_eq!(
+            chain_42161_prices.tokens_per_second,
+            U256::from(5u64),
+            "chain 42161 tokens_per_second mismatch"
+        );
+        assert_eq!(
+            chain_42161_prices.tokens_per_entity_per_second,
+            U256::from(1u64),
+            "chain 42161 tokens_per_entity_per_second mismatch"
+        );
+    }
+
+    #[test]
+    fn test_dips_agreement_config_defaults() {
+        //* Arrange - Minimal JSON with defaults
+        let json = r#"{
+            "data_service": "0x1111111111111111111111111111111111111111",
+            "recurring_collector": "0x2222222222222222222222222222222222222222",
+            "max_initial_tokens": "1000",
+            "max_ongoing_tokens_per_second": "100",
+            "min_seconds_per_collection": 60,
+            "max_seconds_per_collection": 3600,
+            "pricing_table": {}
+        }"#;
+
+        //* Act
+        let config: DipsAgreementConfig =
+            serde_json::from_str(json).expect("deserialization failed");
+
+        //* Assert - Check defaults
+        assert_eq!(
+            config.duration_seconds, None,
+            "duration_seconds should default to None"
+        );
+        assert_eq!(
+            config.deadline_seconds, 300,
+            "deadline_seconds should default to 300"
+        );
+
+        // Test the From conversion - None should map to u64::MAX
+        let (agreement_config, _) = <(
+            Arc<IndexingAgreementConfig>,
+            Arc<BTreeMap<u64, IndexingAgreementChainPrices>>,
+        )>::from(config);
+        assert_eq!(
+            agreement_config.duration_seconds(),
+            u64::MAX,
+            "duration_seconds None should convert to u64::MAX"
+        );
     }
 }

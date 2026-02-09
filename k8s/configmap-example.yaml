@@ -8,12 +8,14 @@ data:
   config.json: |
     {
       "dips": {
-        "service": "0x0000000000000000000000000000000000000000",
-        "max_initial_amount": "0",
-        "max_ongoing_amount_per_epoch": "0",
-        "max_epochs_per_collection": 1,
-        "min_epochs_per_collection": 1,
-        "duration_epochs": null,
+        "data_service": "0x0000000000000000000000000000000000000000",
+        "recurring_collector": "0x0000000000000000000000000000000000000000",
+        "max_initial_tokens": "0",
+        "max_ongoing_tokens_per_second": "0",
+        "max_seconds_per_collection": 86400,
+        "min_seconds_per_collection": 86400,
+        "duration_seconds": null,
+        "deadline_seconds": 300,
         "pricing_table": {}
       },
       "admin_rpc": {

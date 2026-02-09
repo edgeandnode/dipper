@@ -23,6 +23,7 @@ url.workspace = true
 dipper-core = { path = "../dipper-core" }
 fake = { workspace = true, features = ["url"] }
 pgtemp = "0.6.0"
+serde_json.workspace = true
 thegraph-core = { workspace = true, features = ["fake"] }
 tokio = { workspace = true, features = ["macros", "test-util"] }
 uuid.workspace = true

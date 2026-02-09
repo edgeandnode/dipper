@@ -2196,6 +2196,7 @@ dependencies = [
  "num-traits",
  "pgtemp",
  "serde",
+ "serde_json",
  "sqlx",
  "thegraph-core",
  "thiserror 2.0.17",

@@ -127,46 +127,44 @@ pub struct Indexer {
     pub url: Url,
 }
 
-/// The _indexing agreement_ proposal voucher
+/// The agreement terms, stored as JSON in the `voucher` column.
+///
+/// Field names align with the on-chain `RecurringCollectionAgreement` type.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Voucher {
-    /// The agreement payer.
-    ///
-    /// It should coincide with the voucher signer address.
+    /// The agreement payer (signer address).
     pub payer: Address,
-    /// The voucher recipient address. The indexer ID.
-    pub recipient: Address,
-    /// Data service that will initiate the payment collection.
-    pub service: Address,
+    /// The indexer (service provider).
+    pub service_provider: Address,
+    /// The data service address (SubgraphService contract).
+    pub data_service: Address,
 
-    /// The duration of the agreement in epochs.
-    pub duration_epochs: u32,
-
-    /// The maximum amount, in _wei GRT_, that can be collected for the initial subgraph sync.
-    pub max_initial_amount: U256,
-    /// The maximum amount, in _wei GRT_, that can be collected per epoch (after the initial sync).
-    pub max_ongoing_amount_per_epoch: U256,
-
-    /// The minimum number of epochs that can be collected at once.
-    pub min_epochs_per_collection: u32,
-    /// The maximum number of epochs that can be collected at once.
-    pub max_epochs_per_collection: u32,
-
-    /// The deadline for the indexer to accept the agreement.
-    // TODO(v2): Review this
+    /// Deadline for on-chain acceptance (unix timestamp).
     pub deadline: u64,
+    /// When the agreement expires (unix timestamp).
+    pub ends_at: u64,
 
-    /// The voucher metadata
+    /// Maximum tokens for the initial subgraph sync.
+    pub max_initial_tokens: U256,
+    /// Maximum tokens per second for ongoing indexing.
+    pub max_ongoing_tokens_per_second: U256,
+
+    /// Minimum seconds per collection.
+    pub min_seconds_per_collection: u32,
+    /// Maximum seconds per collection.
+    pub max_seconds_per_collection: u32,
+
+    /// The agreement metadata.
     pub metadata: VoucherMetadata,
 }
 
-/// The _indexing agreement_ proposal voucher metadata
+/// Pricing and deployment metadata for the agreement.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VoucherMetadata {
-    /// The base price per epoch in _wei GRT_.
-    pub base_price_per_epoch: U256,
-    /// The price per entity in _wei GRT_.
-    pub price_per_entity: U256,
+    /// Tokens per second (base rate) in wei GRT.
+    pub tokens_per_second: U256,
+    /// Tokens per entity per second in wei GRT.
+    pub tokens_per_entity_per_second: U256,
 
     /// The Subgraph deployment ID to index.
     pub subgraph_deployment_id: DeploymentId,
@@ -195,53 +193,128 @@ pub mod fake_impl {
 
     impl Dummy<Faker> for Voucher {
         fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
-            let payer = Address::new(<[u8; 20]>::dummy_with_rng(config, rng));
-            let recipient = Address::new(<[u8; 20]>::dummy_with_rng(config, rng));
-            let service = Address::new(<[u8; 20]>::dummy_with_rng(config, rng));
-
-            let duration_epochs = u32::dummy_with_rng(config, rng);
-
-            let max_initial_amount = U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
-            let max_ongoing_amount_per_epoch =
-                U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
-
-            let max_epochs_per_collection = u32::dummy_with_rng(config, rng);
-            let min_epochs_per_collection = u32::dummy_with_rng(config, rng);
-
-            let deadline = u64::dummy_with_rng(config, rng);
-
-            let metadata = VoucherMetadata::dummy_with_rng(config, rng);
-
             Self {
-                payer,
-                recipient,
-                service,
-                duration_epochs,
-                max_initial_amount,
-                max_ongoing_amount_per_epoch,
-                max_epochs_per_collection,
-                min_epochs_per_collection,
-                deadline,
-                metadata,
+                payer: Address::new(<[u8; 20]>::dummy_with_rng(config, rng)),
+                service_provider: Address::new(<[u8; 20]>::dummy_with_rng(config, rng)),
+                data_service: Address::new(<[u8; 20]>::dummy_with_rng(config, rng)),
+                deadline: u64::dummy_with_rng(config, rng),
+                ends_at: u64::dummy_with_rng(config, rng),
+                max_initial_tokens: U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng)),
+                max_ongoing_tokens_per_second: U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(
+                    config, rng,
+                )),
+                min_seconds_per_collection: u32::dummy_with_rng(config, rng),
+                max_seconds_per_collection: u32::dummy_with_rng(config, rng),
+                metadata: VoucherMetadata::dummy_with_rng(config, rng),
             }
         }
     }
 
     impl Dummy<Faker> for VoucherMetadata {
         fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
-            let base_price_per_epoch = U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
-            let price_per_entity = U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng));
-            let subgraph_deployment_id = DeploymentId::dummy_with_rng(config, rng);
-            let protocol_network = ChainId::dummy_with_rng(config, rng);
-            let chain_id = ChainId::dummy_with_rng(config, rng);
-
             Self {
-                base_price_per_epoch,
-                price_per_entity,
-                subgraph_deployment_id,
-                protocol_network,
-                chain_id,
+                tokens_per_second: U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng)),
+                tokens_per_entity_per_second: U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(
+                    config, rng,
+                )),
+                subgraph_deployment_id: DeploymentId::dummy_with_rng(config, rng),
+                protocol_network: ChainId::dummy_with_rng(config, rng),
+                chain_id: ChainId::dummy_with_rng(config, rng),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json;
+    use thegraph_core::alloy::primitives::{U256, address};
+
+    use super::*;
+
+    #[test]
+    fn test_voucher_serde_round_trip() {
+        use std::str::FromStr;
+
+        //* Arrange
+        let voucher = Voucher {
+            payer: address!("1111111111111111111111111111111111111111"),
+            service_provider: address!("2222222222222222222222222222222222222222"),
+            data_service: address!("3333333333333333333333333333333333333333"),
+            deadline: 1234567890,
+            ends_at: 9876543210,
+            max_initial_tokens: U256::from(4096u64),
+            max_ongoing_tokens_per_second: U256::from(512u64),
+            min_seconds_per_collection: 60,
+            max_seconds_per_collection: 3600,
+            metadata: VoucherMetadata {
+                tokens_per_second: U256::from(10u64),
+                tokens_per_entity_per_second: U256::from(2u64),
+                subgraph_deployment_id: DeploymentId::from_str(
+                    "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9",
+                )
+                .unwrap(),
+                protocol_network: 42161,
+                chain_id: 1,
+            },
+        };
+
+        //* Act - Serialize to JSON
+        let json = serde_json::to_string(&voucher).expect("serialization failed");
+
+        //* Act - Deserialize from JSON
+        let deserialized: Voucher = serde_json::from_str(&json).expect("deserialization failed");
+
+        //* Assert - Field-by-field comparison
+        assert_eq!(deserialized.payer, voucher.payer, "payer mismatch");
+        assert_eq!(
+            deserialized.service_provider, voucher.service_provider,
+            "service_provider mismatch"
+        );
+        assert_eq!(
+            deserialized.data_service, voucher.data_service,
+            "data_service mismatch"
+        );
+        assert_eq!(deserialized.deadline, voucher.deadline, "deadline mismatch");
+        assert_eq!(deserialized.ends_at, voucher.ends_at, "ends_at mismatch");
+        assert_eq!(
+            deserialized.max_initial_tokens, voucher.max_initial_tokens,
+            "max_initial_tokens mismatch"
+        );
+        assert_eq!(
+            deserialized.max_ongoing_tokens_per_second, voucher.max_ongoing_tokens_per_second,
+            "max_ongoing_tokens_per_second mismatch"
+        );
+        assert_eq!(
+            deserialized.min_seconds_per_collection, voucher.min_seconds_per_collection,
+            "min_seconds_per_collection mismatch"
+        );
+        assert_eq!(
+            deserialized.max_seconds_per_collection, voucher.max_seconds_per_collection,
+            "max_seconds_per_collection mismatch"
+        );
+
+        // Assert metadata fields
+        assert_eq!(
+            deserialized.metadata.tokens_per_second, voucher.metadata.tokens_per_second,
+            "tokens_per_second mismatch"
+        );
+        assert_eq!(
+            deserialized.metadata.tokens_per_entity_per_second,
+            voucher.metadata.tokens_per_entity_per_second,
+            "tokens_per_entity_per_second mismatch"
+        );
+        assert_eq!(
+            deserialized.metadata.subgraph_deployment_id, voucher.metadata.subgraph_deployment_id,
+            "subgraph_deployment_id mismatch"
+        );
+        assert_eq!(
+            deserialized.metadata.protocol_network, voucher.metadata.protocol_network,
+            "protocol_network mismatch"
+        );
+        assert_eq!(
+            deserialized.metadata.chain_id, voucher.metadata.chain_id,
+            "chain_id mismatch"
+        );
     }
 }
