@@ -7,7 +7,7 @@ use std::{str::FromStr, sync::Arc};
 use async_trait::async_trait;
 use dipper_core::ids::IndexingAgreementId;
 use dipper_rpc::indexer::indexer_client::{rpc, sol};
-use thegraph_core::alloy::sol_types::SolValue;
+use thegraph_core::alloy::{primitives::B256, sol_types::SolValue};
 use url::Url;
 
 use crate::{registry::IndexingAgreementVoucher, signing::eip712::PrivateKeyEip712Signer};
@@ -82,26 +82,26 @@ impl IndexerClient for DipsIndexerClient {
         indexing_agreement_id: IndexingAgreementId,
         voucher: IndexingAgreementVoucher,
     ) -> Result<(), DipsError> {
-        // Convert to the solidity voucher data structure
-        let sol_voucher = into_sol_voucher(indexing_agreement_id, voucher);
+        // Convert to the RCA solidity data structure
+        let sol_rca = into_sol_rca(indexing_agreement_id, voucher);
 
-        // Sign the solidity voucher with the appropriate domain
+        // Sign the RCA with the RecurringCollector EIP-712 domain
         let signed = self
             .signer
-            .sign_dips_agreement_msg(sol_voucher)
+            .sign_rca_msg(sol_rca)
             .map_err(|err| DipsError::SigningError(err.into()))?;
 
-        // Serialize the Solidity signed voucher to bytes (ABI encoding)
-        let sol_signed_voucher_bytes: Vec<u8> = sol::SignedIndexingAgreementVoucher {
-            voucher: signed.message,
+        // Serialize the signed RCA to bytes (ABI encoding)
+        let sol_signed_rca_bytes: Vec<u8> = sol::SignedRecurringCollectionAgreement {
+            agreement: signed.message,
             signature: signed.signature.as_bytes().into(),
         }
         .abi_encode();
 
         // Build the SubmitAgreementProposalRequest RPC request message
         let request = tonic::Request::new(rpc::SubmitAgreementProposalRequest {
-            version: 1,
-            signed_voucher: sol_signed_voucher_bytes,
+            version: 2,
+            signed_voucher: sol_signed_rca_bytes,
         });
 
         // Send the proposal request to the indexer (fire-and-forget)
@@ -152,31 +152,39 @@ impl IndexerClient for DipsIndexerClient {
     }
 }
 
+/// Convert an internal voucher to the on-chain `RecurringCollectionAgreement` sol type.
 #[inline]
-fn into_sol_voucher(
+fn into_sol_rca(
     agreement_id: IndexingAgreementId,
     voucher: IndexingAgreementVoucher,
-) -> sol::IndexingAgreementVoucher {
-    sol::IndexingAgreementVoucher {
-        agreement_id: agreement_id.as_bytes().into(),
-        payer: voucher.payer,
-        recipient: voucher.recipient,
-        service: voucher.service,
-        durationEpochs: voucher.duration_epochs,
-        maxInitialAmount: voucher.max_initial_amount,
-        maxOngoingAmountPerEpoch: voucher.max_ongoing_amount_per_epoch,
-        minEpochsPerCollection: voucher.min_epochs_per_collection,
-        maxEpochsPerCollection: voucher.max_epochs_per_collection,
+) -> sol::RecurringCollectionAgreement {
+    // Build the V1 pricing terms
+    let terms = sol::IndexingAgreementTermsV1 {
+        tokensPerSecond: voucher.metadata.tokens_per_second,
+        tokensPerEntityPerSecond: voucher.metadata.tokens_per_entity_per_second,
+    }
+    .abi_encode();
+
+    // Build the acceptance metadata (ABI-encoded into the RCA metadata field)
+    let metadata = sol::AcceptIndexingAgreementMetadata {
+        subgraphDeploymentId: B256::from(voucher.metadata.subgraph_deployment_id),
+        version: 0, // IndexingAgreementVersion::V1
+        terms: terms.into(),
+    }
+    .abi_encode();
+
+    sol::RecurringCollectionAgreement {
+        agreementId: agreement_id.as_bytes().into(),
         deadline: voucher.deadline,
-        metadata: sol::SubgraphIndexingVoucherMetadata {
-            basePricePerEpoch: voucher.metadata.base_price_per_epoch,
-            pricePerEntity: voucher.metadata.price_per_entity,
-            subgraphDeploymentId: voucher.metadata.subgraph_deployment_id.to_string(),
-            protocolNetwork: format!("eip155:{}", voucher.metadata.protocol_network),
-            chainId: format!("eip155:{}", voucher.metadata.chain_id),
-        }
-        .abi_encode()
-        .into(),
+        endsAt: voucher.ends_at,
+        payer: voucher.payer,
+        dataService: voucher.data_service,
+        serviceProvider: voucher.service_provider,
+        maxInitialTokens: voucher.max_initial_tokens,
+        maxOngoingTokensPerSecond: voucher.max_ongoing_tokens_per_second,
+        minSecondsPerCollection: voucher.min_seconds_per_collection,
+        maxSecondsPerCollection: voucher.max_seconds_per_collection,
+        metadata: metadata.into(),
     }
 }
 

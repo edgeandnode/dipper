@@ -60,6 +60,7 @@ pub async fn main() -> anyhow::Result<()> {
             private_key_signer_address,
             conf.signer.chain_id,
             domain,
+            agreement_conf.recurring_collector(),
         ))
     };
     tracing::info!(address=%signer.address(), "Signer wallet imported");

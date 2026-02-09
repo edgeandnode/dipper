@@ -7,7 +7,7 @@ edition = "2024"
 # Enables the admin RPC functionality
 admin-rpc = ["dep:serde", "dep:serde_with", "dep:thegraph-core", "dep:time", "dep:jsonrpsee", "dep:dipper-core"]
 # Enables the indexer RPC functionality
-indexer-rpc = ["dep:indexer-dips", "indexer-dips/rpc"]
+indexer-rpc = ["dep:indexer-dips", "indexer-dips/rpc", "dep:thegraph-core"]
 
 [dependencies]
 dipper-core = { version = "0.1.0", path = "../dipper-core", features = ["serde"], optional = true }

@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use dipper_core::ids::IndexingRequestId;
@@ -171,9 +171,14 @@ where
             }
         };
 
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before UNIX epoch")
+            .as_secs();
+
         let voucher_metadata = IndexingAgreementVoucherMetadata {
-            base_price_per_epoch: prices.base_price_per_epoch,
-            price_per_entity: prices.price_per_entity,
+            tokens_per_second: prices.tokens_per_second,
+            tokens_per_entity_per_second: prices.tokens_per_entity_per_second,
             subgraph_deployment_id: *deployment_id,
             protocol_network: ctx.signer.chain_id(),
             chain_id: *deployment_chain_id,
@@ -181,14 +186,14 @@ where
 
         let voucher = IndexingAgreementVoucher {
             payer: ctx.signer.address(),
-            recipient: candidate.id.into_inner(),
-            service: ctx.agreement_conf.service(),
-            duration_epochs: ctx.agreement_conf.duration_epochs(),
-            max_initial_amount: ctx.agreement_conf.max_initial_amount(),
-            max_ongoing_amount_per_epoch: ctx.agreement_conf.max_ongoing_amount_per_epoch(),
-            max_epochs_per_collection: ctx.agreement_conf.max_epochs_per_collection(),
-            min_epochs_per_collection: ctx.agreement_conf.min_epochs_per_collection(),
-            deadline: Default::default(), // TODO(v2): add the deadline
+            service_provider: candidate.id.into_inner(),
+            data_service: ctx.agreement_conf.data_service(),
+            ends_at: now + ctx.agreement_conf.duration_seconds(),
+            max_initial_tokens: ctx.agreement_conf.max_initial_tokens(),
+            max_ongoing_tokens_per_second: ctx.agreement_conf.max_ongoing_tokens_per_second(),
+            min_seconds_per_collection: ctx.agreement_conf.min_seconds_per_collection(),
+            max_seconds_per_collection: ctx.agreement_conf.max_seconds_per_collection(),
+            deadline: now + ctx.agreement_conf.deadline_seconds(),
             metadata: voucher_metadata,
         };
 

@@ -98,8 +98,10 @@ pub struct IndexingAgreement {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub indexer_url: Url,
 
-    /// The agreement duration.
-    pub duration_epochs: u32,
+    /// Deadline for on-chain acceptance (unix timestamp).
+    pub deadline: u64,
+    /// When the agreement expires (unix timestamp).
+    pub ends_at: u64,
 }
 
 /// The status of the [`IndexingAgreement`].

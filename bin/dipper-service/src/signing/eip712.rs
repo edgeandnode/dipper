@@ -2,7 +2,7 @@
 //!
 //! The EIP-712 signer is a wrapper around an ECDSA signer and an EIP-712 domain separator.
 
-use dipper_rpc::indexer::{gateway_server, indexer_client};
+use dipper_rpc::indexer::{gateway_server, indexer_client, rca_eip712_domain};
 use thegraph_core::{
     alloy::{
         primitives::{Address, ChainId},
@@ -29,8 +29,10 @@ pub struct Eip712Signer<S> {
     signer_address: Address,
     /// The signer's chain ID
     signer_chain: ChainId,
-    /// The EIP-712 domain separator
+    /// The EIP-712 domain separator (admin RPC messages)
     domain: Eip712Domain,
+    /// The EIP-712 domain for RecurringCollector (RCA signing)
+    rca_domain: Eip712Domain,
 }
 
 impl<S> Eip712Signer<S>
@@ -43,12 +45,15 @@ where
         signer_address: Address,
         signer_chain: ChainId,
         domain: Eip712Domain,
+        recurring_collector: Address,
     ) -> Self {
+        let rca_domain = rca_eip712_domain(signer_chain, recurring_collector);
         Self {
             signer,
             signer_address,
             signer_chain,
             domain,
+            rca_domain,
         }
     }
 
@@ -78,26 +83,18 @@ where
         recover_signer_address(&self.domain, signed_message)
     }
 
-    /// Sign a DIPs Agreement message using the [EIP-712] standard
-    ///
-    /// Returns a [`SignedMessage`] containing the message and the ECDSA signature of the message
+    /// Sign a RecurringCollectionAgreement using the RecurringCollector [EIP-712] domain.
     ///
     /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
-    pub fn sign_dips_agreement_msg<M, MSol>(&self, msg: M) -> Result<SignedMessage<M>, SigningError>
+    pub fn sign_rca_msg<M, MSol>(&self, msg: M) -> Result<SignedMessage<M>, SigningError>
     where
         M: ToSolStruct<MSol>,
         MSol: SolStruct,
     {
-        sign(
-            &self.signer,
-            &indexer_client::dips_agreement_eip712_domain(self.signer_chain),
-            msg,
-        )
+        sign(&self.signer, &self.rca_domain, msg)
     }
 
-    /// Sign a DIPs Cancellation message using the [EIP-712] standard
-    ///
-    /// Returns a [`SignedMessage`] containing the message and the ECDSA signature of the message
+    /// Sign a DIPs Cancellation message using the [EIP-712] standard.
     ///
     /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
     pub fn sign_dips_cancellation_msg<M, MSol>(
@@ -115,28 +112,7 @@ where
         )
     }
 
-    /// Recover the signer's address from an [EIP-712] signed DIPs collection message
-    ///
-    /// Returns the signer's address
-    ///
-    /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
-    pub fn recover_dips_collection_msg_signer<M, MSol>(
-        &self,
-        msg: &SignedMessage<M>,
-    ) -> Result<Address, RecoverSignerError>
-    where
-        M: ToSolStruct<MSol>,
-        MSol: SolStruct,
-    {
-        recover_signer_address(
-            &gateway_server::dips_collection_eip712_domain(self.signer_chain),
-            msg,
-        )
-    }
-
-    /// Recover the signer's address from an [EIP-712] signed DIPs cancellation message
-    ///
-    /// Returns the signer's address
+    /// Recover the signer's address from an [EIP-712] signed DIPs cancellation message.
     ///
     /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
     pub fn recover_dips_cancellation_msg_signer<M, MSol>(
@@ -202,7 +178,14 @@ mod tests {
         };
 
         // Create an Eip712Signer instance
-        let eip712_signer = Eip712Signer::new(signer, signer_address, signer_chain, domain);
+        let recurring_collector = address!("0000000000000000000000000000000000000000");
+        let eip712_signer = Eip712Signer::new(
+            signer,
+            signer_address,
+            signer_chain,
+            domain,
+            recurring_collector,
+        );
 
         // Sign the message
         let signed_message = sign(&eip712_signer.signer, &eip712_signer.domain, message)
