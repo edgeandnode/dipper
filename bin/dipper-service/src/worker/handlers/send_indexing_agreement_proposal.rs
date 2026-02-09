@@ -6,10 +6,7 @@ use url::Url;
 use crate::{
     config::DEFAULT_MAX_CANDIDATES,
     indexer_rpc_client::IndexerClient,
-    registry::{
-        AgreementRegistry, IndexingAgreementStatus, IndexingAgreementVoucher,
-        IndexingAgreementVoucherMetadata, IndexingRequestRegistry,
-    },
+    registry::{AgreementRegistry, IndexingAgreementStatus, IndexingRequestRegistry},
     worker::{
         result::{JobError, JobMeta, JobResult},
         service::WorkerQueue,
@@ -91,25 +88,6 @@ where
         },
     };
 
-    let voucher = IndexingAgreementVoucher {
-        payer: agreement.voucher.payer,
-        service_provider: agreement.voucher.service_provider,
-        data_service: agreement.voucher.data_service,
-        ends_at: agreement.voucher.ends_at,
-        max_initial_tokens: agreement.voucher.max_initial_tokens,
-        max_ongoing_tokens_per_second: agreement.voucher.max_ongoing_tokens_per_second,
-        min_seconds_per_collection: agreement.voucher.min_seconds_per_collection,
-        max_seconds_per_collection: agreement.voucher.max_seconds_per_collection,
-        deadline: agreement.voucher.deadline,
-        metadata: IndexingAgreementVoucherMetadata {
-            tokens_per_second: agreement.voucher.metadata.tokens_per_second,
-            tokens_per_entity_per_second: agreement.voucher.metadata.tokens_per_entity_per_second,
-            subgraph_deployment_id: agreement.voucher.metadata.subgraph_deployment_id,
-            protocol_network: agreement.voucher.metadata.protocol_network,
-            chain_id: agreement.voucher.metadata.chain_id,
-        },
-    };
-
     tracing::debug!(
         indexing_request_id=%indexing_request_id,
         agreement_id=%agreement_id,
@@ -119,7 +97,7 @@ where
     );
     match ctx
         .indexer_client
-        .send_indexing_agreement_proposal(&indexer_url, *agreement_id, voucher)
+        .send_indexing_agreement_proposal(&indexer_url, *agreement_id, agreement.voucher)
         .await
     {
         Ok(()) => {

@@ -50,8 +50,10 @@ pub mod indexer_client {
             /// Matches `IRecurringCollector.RecurringCollectionAgreement` exactly.
             struct RecurringCollectionAgreement {
                 bytes16 agreementId;
-                uint64 deadline;
-                uint64 endsAt;
+                // NB: The on-chain struct declares these as uint64 for storage efficiency,
+                // but the EIP-712 typehash uses uint256. We must match the typehash.
+                uint256 deadline;
+                uint256 endsAt;
                 address payer;
                 address dataService;
                 address serviceProvider;

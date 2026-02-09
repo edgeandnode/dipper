@@ -129,6 +129,11 @@ where
         return Ok(());
     }
 
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before UNIX epoch")
+        .as_secs();
+
     // Resolve indexer IDs to full indexer objects (with URLs) via network topology
     for indexer_id in selected_ids {
         let indexer = match ctx.network.get_indexer_by_id(&indexer_id) {
@@ -142,11 +147,6 @@ where
                 continue;
             }
         };
-
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock before UNIX epoch")
-            .as_secs();
 
         let voucher_metadata = {
             let prices = match ctx.chain_price.get(deployment_chain_id) {
@@ -177,12 +177,12 @@ where
             payer: ctx.signer.address(),
             service_provider: indexer.id.into_inner(),
             data_service: ctx.agreement_conf.data_service(),
-            ends_at: now + ctx.agreement_conf.duration_seconds(),
+            ends_at: now.saturating_add(ctx.agreement_conf.duration_seconds()),
             max_initial_tokens: ctx.agreement_conf.max_initial_tokens(),
             max_ongoing_tokens_per_second: ctx.agreement_conf.max_ongoing_tokens_per_second(),
             min_seconds_per_collection: ctx.agreement_conf.min_seconds_per_collection(),
             max_seconds_per_collection: ctx.agreement_conf.max_seconds_per_collection(),
-            deadline: now + ctx.agreement_conf.deadline_seconds(),
+            deadline: now.saturating_add(ctx.agreement_conf.deadline_seconds()),
             metadata: voucher_metadata,
         };
 

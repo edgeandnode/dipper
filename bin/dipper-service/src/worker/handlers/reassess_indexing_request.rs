@@ -157,6 +157,11 @@ where
     // Create agreements for indexers newly in the target group.
     // Continue on per-indexer failures so that a single error does not prevent
     // the remaining additions from being processed.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before UNIX epoch")
+        .as_secs();
+
     let mut add_failures = 0u32;
     for indexer_id in &to_add {
         let candidate = match ctx.network.get_indexer_by_id(indexer_id) {
@@ -171,11 +176,6 @@ where
             }
         };
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock before UNIX epoch")
-            .as_secs();
-
         let voucher_metadata = IndexingAgreementVoucherMetadata {
             tokens_per_second: prices.tokens_per_second,
             tokens_per_entity_per_second: prices.tokens_per_entity_per_second,
@@ -188,12 +188,12 @@ where
             payer: ctx.signer.address(),
             service_provider: candidate.id.into_inner(),
             data_service: ctx.agreement_conf.data_service(),
-            ends_at: now + ctx.agreement_conf.duration_seconds(),
+            ends_at: now.saturating_add(ctx.agreement_conf.duration_seconds()),
             max_initial_tokens: ctx.agreement_conf.max_initial_tokens(),
             max_ongoing_tokens_per_second: ctx.agreement_conf.max_ongoing_tokens_per_second(),
             min_seconds_per_collection: ctx.agreement_conf.min_seconds_per_collection(),
             max_seconds_per_collection: ctx.agreement_conf.max_seconds_per_collection(),
-            deadline: now + ctx.agreement_conf.deadline_seconds(),
+            deadline: now.saturating_add(ctx.agreement_conf.deadline_seconds()),
             metadata: voucher_metadata,
         };
 

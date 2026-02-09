@@ -7,7 +7,10 @@ use std::{str::FromStr, sync::Arc};
 use async_trait::async_trait;
 use dipper_core::ids::IndexingAgreementId;
 use dipper_rpc::indexer::indexer_client::{rpc, sol};
-use thegraph_core::alloy::{primitives::B256, sol_types::SolValue};
+use thegraph_core::alloy::{
+    primitives::{B256, U256},
+    sol_types::SolValue,
+};
 use url::Url;
 
 use crate::{registry::IndexingAgreementVoucher, signing::eip712::PrivateKeyEip712Signer};
@@ -175,8 +178,8 @@ fn into_sol_rca(
 
     sol::RecurringCollectionAgreement {
         agreementId: agreement_id.as_bytes().into(),
-        deadline: voucher.deadline,
-        endsAt: voucher.ends_at,
+        deadline: U256::from(voucher.deadline),
+        endsAt: U256::from(voucher.ends_at),
         payer: voucher.payer,
         dataService: voucher.data_service,
         serviceProvider: voucher.service_provider,
