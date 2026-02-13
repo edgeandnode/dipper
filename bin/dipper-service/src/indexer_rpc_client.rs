@@ -418,4 +418,53 @@ mod tests {
             "tokensPerEntityPerSecond in nested terms mismatch"
         );
     }
+
+    #[test]
+    fn test_is_retryable_status_transient_errors() {
+        // These should be retried
+        assert!(is_retryable_status(&tonic::Status::unavailable("service down")));
+        assert!(is_retryable_status(&tonic::Status::resource_exhausted(
+            "rate limited"
+        )));
+        assert!(is_retryable_status(&tonic::Status::aborted("conflict")));
+        assert!(is_retryable_status(&tonic::Status::deadline_exceeded(
+            "timeout"
+        )));
+    }
+
+    #[test]
+    fn test_is_retryable_status_permanent_errors() {
+        // These should NOT be retried
+        assert!(!is_retryable_status(&tonic::Status::not_found("missing")));
+        assert!(!is_retryable_status(&tonic::Status::invalid_argument(
+            "bad request"
+        )));
+        assert!(!is_retryable_status(&tonic::Status::permission_denied(
+            "unauthorized"
+        )));
+        assert!(!is_retryable_status(&tonic::Status::unimplemented(
+            "not supported"
+        )));
+        // UNKNOWN is intentionally not retried - could mask permanent failures
+        assert!(!is_retryable_status(&tonic::Status::unknown("mystery")));
+    }
+
+    #[test]
+    fn test_calculate_retry_delay_exponential_backoff() {
+        // Verify exponential backoff: 1s, 2s, 4s, 8s, 16s
+        assert_eq!(calculate_retry_delay(0), Duration::from_secs(1));
+        assert_eq!(calculate_retry_delay(1), Duration::from_secs(2));
+        assert_eq!(calculate_retry_delay(2), Duration::from_secs(4));
+        assert_eq!(calculate_retry_delay(3), Duration::from_secs(8));
+        assert_eq!(calculate_retry_delay(4), Duration::from_secs(16));
+        // attempt 5 would be 32s but gets capped to 30s
+    }
+
+    #[test]
+    fn test_calculate_retry_delay_capped_at_30s() {
+        // High attempt numbers should be capped at 30 seconds
+        assert_eq!(calculate_retry_delay(6), Duration::from_secs(30)); // Would be 64s, capped
+        assert_eq!(calculate_retry_delay(10), Duration::from_secs(30));
+        assert_eq!(calculate_retry_delay(100), Duration::from_secs(30));
+    }
 }
