@@ -52,5 +52,10 @@ data:
         "request_timeout": 30,
         "connect_timeout": 10,
         "max_retries": 3
+      },
+      "indexer_client": {
+        "request_timeout": 240,
+        "connect_timeout": 10,
+        "max_retries": 3
       }
     }

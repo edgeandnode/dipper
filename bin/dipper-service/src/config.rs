@@ -59,6 +59,9 @@ pub struct Config {
     pub tap_signer: TapSignerConfig,
     /// The IISA (Indexing Indexer Selection Algorithm) service configuration
     pub iisa: IisaConfig,
+    /// The indexer gRPC client configuration (for sending RCA proposals)
+    #[serde(default)]
+    pub indexer_client: IndexerClientConfig,
     /// The reassignment service configuration
     #[serde(default)]
     pub reassignment: Option<ReassignmentConfig>,
@@ -100,6 +103,55 @@ fn default_connect_timeout() -> Duration {
 
 fn default_max_retries() -> u32 {
     3
+}
+
+/// Indexer gRPC client configuration (for sending RCA proposals to indexers)
+#[serde_as]
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct IndexerClientConfig {
+    /// Request timeout in seconds (default: 240).
+    ///
+    /// This must be long enough to cover indexer-rs IPFS retry worst case (190s)
+    /// plus buffer. indexer-rs retries IPFS fetches up to 4 times with exponential
+    /// backoff (30s timeout + 10s/20s/40s delays = 190s worst case).
+    #[serde(default = "default_indexer_request_timeout")]
+    #[serde_as(as = "serde_with::DurationSeconds")]
+    pub request_timeout: Duration,
+
+    /// Connection timeout in seconds (default: 10)
+    #[serde(default = "default_indexer_connect_timeout")]
+    #[serde_as(as = "serde_with::DurationSeconds")]
+    pub connect_timeout: Duration,
+
+    /// Maximum retry attempts for transient failures (default: 3).
+    ///
+    /// This is the number of *additional* attempts after the initial request fails.
+    /// Retries use exponential backoff (1s, 2s, 4s, ...) and only occur on
+    /// transient gRPC errors (connection failures, UNAVAILABLE, RESOURCE_EXHAUSTED).
+    #[serde(default = "default_indexer_max_retries")]
+    pub max_retries: u32,
+}
+
+fn default_indexer_request_timeout() -> Duration {
+    Duration::from_secs(240) // 190s IPFS worst case + 50s buffer
+}
+
+fn default_indexer_connect_timeout() -> Duration {
+    Duration::from_secs(10)
+}
+
+fn default_indexer_max_retries() -> u32 {
+    3
+}
+
+impl Default for IndexerClientConfig {
+    fn default() -> Self {
+        Self {
+            request_timeout: default_indexer_request_timeout(),
+            connect_timeout: default_indexer_connect_timeout(),
+            max_retries: default_indexer_max_retries(),
+        }
+    }
 }
 
 /// Configuration for the periodic reassignment service

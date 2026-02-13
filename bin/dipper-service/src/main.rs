@@ -92,7 +92,8 @@ pub async fn main() -> anyhow::Result<()> {
     let registry = RegistryProvider::new(db_conn.clone());
 
     //- The indexer client component
-    let indexer_client = indexer_rpc_client::DipsIndexerClient::new(signer.clone());
+    let indexer_client =
+        indexer_rpc_client::DipsIndexerClient::with_config(signer.clone(), conf.indexer_client);
 
     //- The network services
     let (
