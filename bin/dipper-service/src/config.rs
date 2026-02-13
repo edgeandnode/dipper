@@ -125,9 +125,9 @@ pub struct IndexerClientConfig {
 
     /// Maximum retry attempts for transient failures (default: 3).
     ///
-    /// This is the number of *additional* attempts after the initial request fails.
+    /// With `max_retries = 3`, up to 4 total attempts are made (1 initial + 3 retries).
     /// Retries use exponential backoff (1s, 2s, 4s, ...) and only occur on
-    /// transient gRPC errors (connection failures, UNAVAILABLE, RESOURCE_EXHAUSTED).
+    /// transient gRPC errors (UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED, DEADLINE_EXCEEDED).
     #[serde(default = "default_indexer_max_retries")]
     pub max_retries: u32,
 }
