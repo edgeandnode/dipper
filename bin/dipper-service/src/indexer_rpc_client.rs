@@ -137,6 +137,7 @@ fn calculate_retry_delay(attempt: u32) -> Duration {
 async fn with_retry<C, F, Fut, T>(
     max_retries: u32,
     indexer: &Url,
+    agreement_id: IndexingAgreementId,
     operation: &str,
     get_client: impl Fn() -> Result<C, DipsError>,
     make_request: F,
@@ -155,6 +156,7 @@ where
                     let delay = calculate_retry_delay(attempt);
                     tracing::warn!(
                         indexer = %indexer,
+                        agreement_id = %agreement_id,
                         operation = operation,
                         attempt = attempt + 1,
                         max_retries = max_retries,
@@ -210,6 +212,7 @@ impl IndexerClient for DipsIndexerClient {
         with_retry(
             self.max_retries,
             indexer,
+            indexing_agreement_id,
             "submit_proposal",
             || self.get_client(indexer),
             |mut client| {
@@ -249,6 +252,7 @@ impl IndexerClient for DipsIndexerClient {
         with_retry(
             self.max_retries,
             indexer,
+            indexing_agreement_id,
             "cancel_agreement",
             || self.get_client(indexer),
             |mut client| {
@@ -430,7 +434,9 @@ mod tests {
     #[test]
     fn test_is_retryable_status_transient_errors() {
         // These should be retried
-        assert!(is_retryable_status(&tonic::Status::unavailable("service down")));
+        assert!(is_retryable_status(&tonic::Status::unavailable(
+            "service down"
+        )));
         assert!(is_retryable_status(&tonic::Status::resource_exhausted(
             "rate limited"
         )));
