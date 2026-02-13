@@ -131,6 +131,9 @@ fn calculate_retry_delay(attempt: u32) -> Duration {
 ///
 /// Takes a client factory and a request executor. Creates a fresh client for each
 /// retry attempt (safe since `connect_lazy` doesn't make network calls until use).
+///
+/// Note: `get_client` errors (e.g., invalid URL) are NOT retried - they fail immediately.
+/// This is intentional since URL parsing errors are permanent, not transient.
 async fn with_retry<C, F, Fut, T>(
     max_retries: u32,
     indexer: &Url,
