@@ -208,6 +208,20 @@ pub async fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
+    //- The expiration service (optional, enabled by config)
+    let expiration_handle = match conf.expiration {
+        Some(ref expiration_conf) if expiration_conf.enabled => {
+            let ctx = network::service::expiration::Ctx {
+                registry: registry.clone(),
+                worker_queue: worker_handle.queue().clone(),
+                config: expiration_conf.clone(),
+            };
+            let (handle, service) = network::service::expiration::new(ctx);
+            Some((handle, service))
+        }
+        _ => None,
+    };
+
     //- The admin RPC service
     let (admin_rpc_handle, admin_rpc_service) = {
         let config = admin_rpc_server::service::Config {
@@ -266,6 +280,15 @@ pub async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // Spawn the expiration service if enabled
+    let expiration_stop_handle = if let Some((handle, service)) = expiration_handle {
+        let task_handle = task_tree.spawn(service);
+        tracing::debug!(task_id=%task_handle.id(), "Expiration service started");
+        Some(handle)
+    } else {
+        None
+    };
+
     let indexer_rpc_task_handle = task_tree.spawn(indexer_rpc_service);
     tracing::debug!(task_id=%indexer_rpc_task_handle.id(), "Indexer RPC service started");
 
@@ -300,6 +323,13 @@ pub async fn main() -> anyhow::Result<()> {
             tracing::trace!("stopping Reassignment service");
             handle.stop().await;
             tracing::trace!("stopped Reassignment service");
+        }
+
+        // Stop expiration service before worker (it depends on worker queue)
+        if let Some(handle) = expiration_stop_handle {
+            tracing::trace!("stopping Expiration service");
+            handle.stop().await;
+            tracing::trace!("stopped Expiration service");
         }
 
         tracing::trace!("stopping Worker service");

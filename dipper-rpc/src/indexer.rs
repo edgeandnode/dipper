@@ -34,8 +34,8 @@ pub mod indexer_client {
     pub mod rpc {
         #[doc(inline)]
         pub use indexer_dips::proto::indexer::graphprotocol::indexer::dips::{
-            CancelAgreementRequest, SubmitAgreementProposalRequest,
-            indexer_dips_service_client::IndexerDipsServiceClient,
+            CancelAgreementRequest, ProposalResponse, SubmitAgreementProposalRequest,
+            SubmitAgreementProposalResponse, indexer_dips_service_client::IndexerDipsServiceClient,
         };
     }
 

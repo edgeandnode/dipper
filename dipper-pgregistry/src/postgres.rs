@@ -372,9 +372,10 @@ impl PgRegistry {
 
     /// Get declined indexers grouped by deployment within a lookback period.
     ///
-    /// Returns indexers that have `CanceledByIndexer` status within the specified
-    /// number of days, grouped by deployment. This is used to avoid re-offering
-    /// agreements to indexers that recently declined.
+    /// Returns indexers with `CanceledByIndexer` or `Expired` status within the
+    /// specified number of days, grouped by deployment. This is used to avoid
+    /// re-offering agreements to indexers that recently declined or let the
+    /// deadline pass without accepting.
     ///
     /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
     /// that declined agreements for that deployment.
@@ -388,12 +389,13 @@ impl PgRegistry {
                 deployment_id,
                 array_agg(DISTINCT indexer_id) as indexer_ids
             FROM dipper_reg_indexing_agreements
-            WHERE status = $1
-              AND updated_at >= timezone('UTC', now()) - make_interval(days => $2)
+            WHERE status IN ($1, $2)
+              AND updated_at >= timezone('UTC', now()) - make_interval(days => $3)
             GROUP BY deployment_id
             "#,
         )
         .bind(IndexingAgreementStatus::CanceledByIndexer)
+        .bind(IndexingAgreementStatus::Expired)
         .bind(lookback_days)
         .fetch_all(&self.pool)
         .await?;
@@ -685,6 +687,76 @@ impl PgRegistry {
         .fetch_all(&self.pool)
         .await
         .map_err(Into::into)
+    }
+
+    // =========================================================================
+    // Deadline expiration operations
+    // =========================================================================
+
+    /// Get `Created` agreements whose RCA deadline has passed.
+    ///
+    /// The deadline is stored in the `voucher` JSONB column. Once the deadline passes,
+    /// the indexer can no longer accept on-chain, so we mark these as `Expired`.
+    /// Results are ordered by deadline ascending (oldest first).
+    pub async fn get_expired_created_agreements(
+        &self,
+        batch_size: i64,
+    ) -> Result<Vec<IndexingAgreement>, Error> {
+        sqlx::query_as(
+            r#"
+            SELECT
+                id,
+                created_at,
+                updated_at,
+                status,
+                indexing_request_id,
+                deployment_id,
+                indexer_id,
+                indexer_url,
+                voucher
+            FROM dipper_reg_indexing_agreements
+            WHERE status = $1
+              AND (voucher->>'deadline')::bigint < EXTRACT(epoch FROM timezone('UTC', now()))
+            ORDER BY (voucher->>'deadline')::bigint ASC
+            LIMIT CASE WHEN $2 > 0 THEN $2 ELSE NULL END
+            "#,
+        )
+        .bind(IndexingAgreementStatus::Created)
+        .bind(batch_size)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Mark an agreement as `Expired` (deadline passed, never accepted on-chain).
+    ///
+    /// Only transitions from `Created` status. Returns [`NoRecordsUpdated`](Error::NoRecordsUpdated)
+    /// if the agreement doesn't exist or isn't in `Created` status.
+    pub async fn mark_indexing_agreement_as_expired(
+        &self,
+        agreement_id: &IndexingAgreementId,
+    ) -> Result<(), Error> {
+        let record: Option<(IndexingAgreementId,)> = sqlx::query_as(
+            r#"
+            UPDATE dipper_reg_indexing_agreements
+            SET
+                status = $1,
+                updated_at = timezone('UTC', now())
+            WHERE id = $2 AND status = $3
+            RETURNING id
+            "#,
+        )
+        .bind(IndexingAgreementStatus::Expired)
+        .bind(agreement_id)
+        .bind(IndexingAgreementStatus::Created)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if record.is_none() {
+            return Err(Error::NoRecordsUpdated);
+        }
+
+        Ok(())
     }
 
     // =========================================================================

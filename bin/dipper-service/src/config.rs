@@ -65,6 +65,9 @@ pub struct Config {
     /// The reassignment service configuration
     #[serde(default)]
     pub reassignment: Option<ReassignmentConfig>,
+    /// The expiration service configuration (marks stale Created agreements as Expired)
+    #[serde(default)]
+    pub expiration: Option<ExpirationConfig>,
 }
 
 /// The IISA (Indexing Indexer Selection Algorithm) service configuration
@@ -226,6 +229,50 @@ impl Default for ReassignmentConfig {
             run_at_utc_hour: default_reassignment_run_at_utc_hour(),
             batch_size: default_reassignment_batch_size(),
             min_request_age: default_reassignment_min_age(),
+        }
+    }
+}
+
+/// Configuration for the deadline expiration service.
+///
+/// This service periodically scans for `Created` agreements whose RCA deadline
+/// has passed, marks them as `Expired`, and triggers IISA reassessment to find
+/// replacement indexers.
+#[serde_as]
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ExpirationConfig {
+    /// Whether the expiration service is enabled (default: true)
+    #[serde(default = "default_expiration_enabled")]
+    pub enabled: bool,
+
+    /// Interval between expiration scans in seconds (default: 90s)
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    #[serde(default = "default_expiration_interval")]
+    pub interval: Duration,
+
+    /// Maximum agreements to process per cycle (default: 100)
+    #[serde(default = "default_expiration_batch_size")]
+    pub batch_size: i64,
+}
+
+fn default_expiration_enabled() -> bool {
+    true
+}
+
+fn default_expiration_interval() -> Duration {
+    Duration::from_secs(90)
+}
+
+fn default_expiration_batch_size() -> i64 {
+    100
+}
+
+impl Default for ExpirationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_expiration_enabled(),
+            interval: default_expiration_interval(),
+            batch_size: default_expiration_batch_size(),
         }
     }
 }

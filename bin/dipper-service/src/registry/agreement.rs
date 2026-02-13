@@ -57,9 +57,10 @@ pub trait AgreementRegistry {
 
     /// Get declined indexers grouped by deployment within a lookback period.
     ///
-    /// Returns indexers that have `CanceledByIndexer` status within the specified
-    /// number of days, grouped by deployment. This is used to avoid re-offering
-    /// agreements to indexers that recently declined.
+    /// Returns indexers with `CanceledByIndexer` or `Expired` status within the
+    /// specified number of days, grouped by deployment. This is used to avoid
+    /// re-offering agreements to indexers that recently declined or let the
+    /// deadline pass without accepting.
     ///
     /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
     /// that declined agreements for that deployment.
@@ -127,6 +128,25 @@ pub trait AgreementRegistry {
     /// If there is no indexing agreement with the given ID, or if the agreement is not in the
     /// `CREATED` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
     async fn mark_indexing_agreement_as_accepted_on_chain(
+        &self,
+        id: &IndexingAgreementId,
+    ) -> RegistryResult<()>;
+
+    /// Get `Created` agreements whose RCA deadline has passed.
+    ///
+    /// These agreements are eligible for expiration since the indexer can no longer
+    /// accept on-chain. Results are ordered by deadline ascending (oldest first).
+    async fn get_expired_created_agreements(
+        &self,
+        batch_size: i64,
+    ) -> RegistryResult<Vec<IndexingAgreement>>;
+
+    /// Mark an indexing agreement as `EXPIRED`.
+    ///
+    /// The RCA deadline passed without on-chain acceptance.
+    /// If there is no indexing agreement with the given ID, or if the agreement is not in the
+    /// `CREATED` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
+    async fn mark_indexing_agreement_as_expired(
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;

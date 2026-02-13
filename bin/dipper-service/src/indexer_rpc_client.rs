@@ -46,15 +46,16 @@ pub enum DipsError {
 /// Indexer client's DIPs trait
 #[async_trait]
 pub trait IndexerClient {
-    /// Send an indexing agreement proposal request to the indexer (fire-and-forget).
+    /// Send an indexing agreement proposal to the indexer.
     ///
-    /// Returns `Ok(())` if the proposal was delivered, or an error if delivery failed.
+    /// Returns the indexer's response (`Accept` or `Reject`) on successful delivery,
+    /// or an error if delivery failed (network issues, connection errors, etc.).
     async fn send_indexing_agreement_proposal(
         &self,
         indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
         voucher: IndexingAgreementVoucher,
-    ) -> Result<(), DipsError>;
+    ) -> Result<rpc::ProposalResponse, DipsError>;
 
     /// Send an indexing agreement cancel request to the indexer
     async fn send_indexing_agreement_cancellation_notification(
@@ -187,7 +188,7 @@ impl IndexerClient for DipsIndexerClient {
         indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
         voucher: IndexingAgreementVoucher,
-    ) -> Result<(), DipsError> {
+    ) -> Result<rpc::ProposalResponse, DipsError> {
         // Convert to the RCA solidity data structure
         let sol_rca = into_sol_rca(indexing_agreement_id, voucher);
 
@@ -220,7 +221,18 @@ impl IndexerClient for DipsIndexerClient {
                     version: 2,
                     signed_voucher: sol_signed_rca_bytes.clone(),
                 });
-                async move { client.submit_agreement_proposal(request).await.map(|_| ()) }
+                async move {
+                    client.submit_agreement_proposal(request).await.map(|resp| {
+                        let response_code = resp.into_inner().response;
+                        rpc::ProposalResponse::try_from(response_code).unwrap_or_else(|_| {
+                            tracing::warn!(
+                                response_code,
+                                "unknown proposal response code, treating as Reject"
+                            );
+                            rpc::ProposalResponse::Reject
+                        })
+                    })
+                }
             },
         )
         .await

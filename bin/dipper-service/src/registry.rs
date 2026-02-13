@@ -274,6 +274,30 @@ impl AgreementRegistry for RegistryProvider {
             .await
             .map_err(Into::into)
     }
+
+    async fn get_expired_created_agreements(
+        &self,
+        batch_size: i64,
+    ) -> RegistryResult<Vec<IndexingAgreement>> {
+        Ok(self
+            .inner
+            .get_expired_created_agreements(batch_size)
+            .await?
+            .into_iter()
+            .map(IndexingAgreement::try_from)
+            .filter_map(Result::ok)
+            .collect())
+    }
+
+    async fn mark_indexing_agreement_as_expired(
+        &self,
+        id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        self.inner
+            .mark_indexing_agreement_as_expired(id)
+            .await
+            .map_err(Into::into)
+    }
 }
 
 #[async_trait]
