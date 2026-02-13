@@ -202,7 +202,11 @@ impl IndexerClient for DipsIndexerClient {
         }
         .abi_encode();
 
-        // Send the proposal request with retry on transient failures
+        // Send the proposal request with retry on transient failures.
+        // Note: signed_voucher is cloned for each retry (~1KB). This is acceptable:
+        // - Retries are rare (only on transient failures)
+        // - Max 3 retries = 3KB allocations worst case
+        // - Negligible vs network I/O cost
         with_retry(
             self.max_retries,
             indexer,
@@ -240,7 +244,8 @@ impl IndexerClient for DipsIndexerClient {
         }
         .abi_encode();
 
-        // Send the cancellation request with retry on transient failures
+        // Send the cancellation request with retry on transient failures.
+        // Clone cost is negligible (see comment in send_indexing_agreement_proposal).
         with_retry(
             self.max_retries,
             indexer,
