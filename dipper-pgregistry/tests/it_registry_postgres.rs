@@ -773,6 +773,209 @@ async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
 }
 
 // =============================================================================
+// mark_indexing_agreement_as_rejected tests
+// =============================================================================
+
+#[tokio::test]
+async fn mark_indexing_agreement_as_rejected_transitions_created_to_rejected() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    // Agreement in Created status
+    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
+
+    //* When
+    let result = registry
+        .mark_indexing_agreement_as_rejected(&agreement_id)
+        .await;
+
+    //* Then
+    result.expect("Should successfully mark as rejected");
+
+    let agreement = registry
+        .get_indexing_agreement_by_id(&agreement_id)
+        .await
+        .expect("Failed to get agreement")
+        .expect("Agreement not found");
+    assert_eq!(
+        agreement.status,
+        IndexingAgreementStatus::Rejected,
+        "Status should be Rejected"
+    );
+}
+
+#[tokio::test]
+async fn mark_indexing_agreement_as_rejected_fails_if_not_created() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    // Agreement in AcceptedOnChain status (not Created)
+    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000002").into();
+
+    //* When
+    let result = registry
+        .mark_indexing_agreement_as_rejected(&agreement_id)
+        .await;
+
+    //* Then
+    let err = result.expect_err("Should fail for non-Created agreement");
+    assert!(matches!(err, Error::NoRecordsUpdated));
+}
+
+#[tokio::test]
+async fn mark_indexing_agreement_as_rejected_fails_if_not_found() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+
+    // Non-existent agreement
+    let agreement_id: IndexingAgreementId = uuid!("01930100-9999-7000-8000-000000000001").into();
+
+    //* When
+    let result = registry
+        .mark_indexing_agreement_as_rejected(&agreement_id)
+        .await;
+
+    //* Then
+    let err = result.expect_err("Should fail for non-existent agreement");
+    assert!(matches!(err, Error::NoRecordsUpdated));
+}
+
+#[tokio::test]
+async fn get_declined_indexers_includes_rejected_status() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // Mark one agreement as Rejected
+    let agreement_id: IndexingAgreementId = uuid!("01930100-0002-7000-8000-000000000001").into();
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = 7
+        WHERE id = $1
+        "#,
+    )
+    .bind(agreement_id)
+    .execute(&db)
+    .await
+    .expect("Failed to update agreement to Rejected");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_declined_indexers_by_deployment(30)
+        .await
+        .expect("Failed to get declined indexers");
+
+    //* Then
+    // Should include CanceledByIndexer, Expired, AND Rejected
+    assert_eq!(
+        result.len(),
+        3,
+        "Should have 3 deployments with declined indexers"
+    );
+
+    // Check Rejected is included
+    let deployment_4d: DeploymentId = "QmDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD4d"
+        .parse()
+        .unwrap();
+    let indexer_b = indexer_id!("2222222222222222222222222222222222222222");
+    let declined_4d = result.get(&deployment_4d).expect("Deployment 4d not found");
+    assert!(
+        declined_4d.contains(&indexer_b),
+        "Rejected indexer should be in declined list"
+    );
+}
+
+// =============================================================================
+// Chain listener state tests
+// =============================================================================
+
+#[tokio::test]
+async fn get_chain_listener_state_returns_none_when_not_exists() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry.get_chain_listener_state(42161).await;
+
+    //* Then
+    let state = result.expect("Should not error");
+    assert!(state.is_none(), "Should return None for non-existent chain");
+}
+
+#[tokio::test]
+async fn update_chain_listener_state_creates_new_record() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+
+    //* When
+    registry
+        .update_chain_listener_state(42161, 12345678)
+        .await
+        .expect("Should create state");
+
+    //* Then
+    let state = registry
+        .get_chain_listener_state(42161)
+        .await
+        .expect("Should not error")
+        .expect("State should exist");
+    assert_eq!(state.0, 42161, "Chain ID should match");
+    assert_eq!(state.1, 12345678, "Block number should match");
+}
+
+#[tokio::test]
+async fn update_chain_listener_state_upserts_existing() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+
+    // Create initial state
+    registry
+        .update_chain_listener_state(42161, 1000)
+        .await
+        .expect("Should create state");
+
+    //* When
+    registry
+        .update_chain_listener_state(42161, 2000)
+        .await
+        .expect("Should update state");
+
+    //* Then
+    let state = registry
+        .get_chain_listener_state(42161)
+        .await
+        .expect("Should not error")
+        .expect("State should exist");
+    assert_eq!(state.1, 2000, "Block number should be updated");
+}
+
+// =============================================================================
 // Indexer denylist tests
 // =============================================================================
 

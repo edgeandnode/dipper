@@ -17,7 +17,7 @@ use url::Url;
 use self::result::Result as RegistryResult;
 pub use self::{
     agreement::{
-        AgreementRegistry, IndexingAgreement, Status as IndexingAgreementStatus,
+        AgreementRegistry, Indexer, IndexingAgreement, Status as IndexingAgreementStatus,
         Voucher as IndexingAgreementVoucher, VoucherMetadata as IndexingAgreementVoucherMetadata,
     },
     indexer_denylist::IndexerDenylistRegistry,
