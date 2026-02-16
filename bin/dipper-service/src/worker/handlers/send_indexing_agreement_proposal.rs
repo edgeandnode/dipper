@@ -124,8 +124,9 @@ where
                 indexer_url=%indexer_url,
                 "Agreement proposal rejected by indexer"
             );
-            // Treat rejection same as delivery failure - mark and reassess
-            mark_failed_and_reassess(
+            // Mark as Rejected and reassess. The indexer may still accept on-chain,
+            // in which case the chain listener will trigger cancellation.
+            mark_rejected_and_reassess(
                 &ctx,
                 agreement_id,
                 indexing_request_id,
@@ -155,6 +156,35 @@ where
     Ok(())
 }
 
+/// Mark an agreement as rejected and queue reassessment.
+///
+/// The indexer rejected the proposal off-chain. We mark as Rejected and find a replacement.
+/// If the indexer later accepts on-chain anyway, the chain listener will cancel it.
+async fn mark_rejected_and_reassess<R, W, C>(
+    ctx: &Ctx<R, W, C>,
+    agreement_id: &IndexingAgreementId,
+    indexing_request_id: &IndexingRequestId,
+    deployment_id: &DeploymentId,
+    deployment_chain_id: &ChainId,
+) -> JobResult<()>
+where
+    R: IndexingRequestRegistry + AgreementRegistry,
+    W: WorkerQueue,
+    C: IndexerClient,
+{
+    tracing::trace!(
+        indexing_request_id=%indexing_request_id,
+        agreement_id=%agreement_id,
+        "Marking indexing agreement as REJECTED"
+    );
+    ctx.registry
+        .mark_indexing_agreement_as_rejected(agreement_id)
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
+
+    queue_reassessment(ctx, indexing_request_id, deployment_id, deployment_chain_id).await
+}
+
 /// Mark an agreement as delivery failed and queue reassessment.
 async fn mark_failed_and_reassess<R, W, C>(
     ctx: &Ctx<R, W, C>,
@@ -178,7 +208,21 @@ where
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
-    // Reassess the indexing request to find replacement indexers
+    queue_reassessment(ctx, indexing_request_id, deployment_id, deployment_chain_id).await
+}
+
+/// Queue a reassessment job for the indexing request.
+async fn queue_reassessment<R, W, C>(
+    ctx: &Ctx<R, W, C>,
+    indexing_request_id: &IndexingRequestId,
+    deployment_id: &DeploymentId,
+    deployment_chain_id: &ChainId,
+) -> JobResult<()>
+where
+    R: IndexingRequestRegistry + AgreementRegistry,
+    W: WorkerQueue,
+    C: IndexerClient,
+{
     tracing::trace!(
         indexing_request_id=%indexing_request_id,
         "Reassessing indexing request after failure"

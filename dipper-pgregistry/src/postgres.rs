@@ -372,9 +372,9 @@ impl PgRegistry {
 
     /// Get declined indexers grouped by deployment within a lookback period.
     ///
-    /// Returns indexers with `CanceledByIndexer` or `Expired` status within the
-    /// specified number of days, grouped by deployment. This is used to avoid
-    /// re-offering agreements to indexers that recently declined or let the
+    /// Returns indexers with `CanceledByIndexer`, `Expired`, or `Rejected` status
+    /// within the specified number of days, grouped by deployment. This is used to
+    /// avoid re-offering agreements to indexers that recently declined or let the
     /// deadline pass without accepting.
     ///
     /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
@@ -389,13 +389,14 @@ impl PgRegistry {
                 deployment_id,
                 array_agg(DISTINCT indexer_id) as indexer_ids
             FROM dipper_reg_indexing_agreements
-            WHERE status IN ($1, $2)
-              AND updated_at >= timezone('UTC', now()) - make_interval(days => $3)
+            WHERE status IN ($1, $2, $3)
+              AND updated_at >= timezone('UTC', now()) - make_interval(days => $4)
             GROUP BY deployment_id
             "#,
         )
         .bind(IndexingAgreementStatus::CanceledByIndexer)
         .bind(IndexingAgreementStatus::Expired)
+        .bind(IndexingAgreementStatus::Rejected)
         .bind(lookback_days)
         .fetch_all(&self.pool)
         .await?;
@@ -759,6 +760,40 @@ impl PgRegistry {
         Ok(())
     }
 
+    /// Mark an agreement as `Rejected` (indexer rejected the proposal off-chain).
+    ///
+    /// Only transitions from `Created` status. The indexer may still accept on-chain
+    /// before the deadline, in which case Dipper will cancel via `cancelIndexingAgreementByPayer`.
+    ///
+    /// Returns [`NoRecordsUpdated`](Error::NoRecordsUpdated) if the agreement doesn't exist
+    /// or isn't in `Created` status.
+    pub async fn mark_indexing_agreement_as_rejected(
+        &self,
+        agreement_id: &IndexingAgreementId,
+    ) -> Result<(), Error> {
+        let record: Option<(IndexingAgreementId,)> = sqlx::query_as(
+            r#"
+            UPDATE dipper_reg_indexing_agreements
+            SET
+                status = $1,
+                updated_at = timezone('UTC', now())
+            WHERE id = $2 AND status = $3
+            RETURNING id
+            "#,
+        )
+        .bind(IndexingAgreementStatus::Rejected)
+        .bind(agreement_id)
+        .bind(IndexingAgreementStatus::Created)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if record.is_none() {
+            return Err(Error::NoRecordsUpdated);
+        }
+
+        Ok(())
+    }
+
     // =========================================================================
     // Indexer denylist operations
     // =========================================================================
@@ -778,5 +813,56 @@ impl PgRegistry {
         .await?;
 
         Ok(rows.into_iter().map(|(id,)| id.0).collect())
+    }
+
+    // =========================================================================
+    // Chain listener state operations
+    // =========================================================================
+
+    /// Get the chain listener state for a given chain ID.
+    ///
+    /// Returns `None` if no state exists for the chain (first run).
+    pub async fn get_chain_listener_state(
+        &self,
+        chain_id: u64,
+    ) -> Result<Option<(u64, u64)>, Error> {
+        let row: Option<(i64, i64)> = sqlx::query_as(
+            r#"
+            SELECT chain_id, last_processed_block
+            FROM dipper_chain_listener_state
+            WHERE chain_id = $1
+            "#,
+        )
+        .bind(chain_id as i64)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|(chain_id, block)| (chain_id as u64, block as u64)))
+    }
+
+    /// Update the chain listener state for a given chain ID.
+    ///
+    /// Creates the record if it doesn't exist (upsert).
+    pub async fn update_chain_listener_state(
+        &self,
+        chain_id: u64,
+        last_processed_block: u64,
+    ) -> Result<(), Error> {
+        sqlx::query(
+            r#"
+            INSERT INTO dipper_chain_listener_state (chain_id, last_processed_block, updated_at)
+            VALUES ($1, $2, timezone('UTC', now()))
+            ON CONFLICT (chain_id)
+            DO UPDATE SET
+                last_processed_block = EXCLUDED.last_processed_block,
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(chain_id as i64)
+        .bind(last_processed_block as i64)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
     }
 }
