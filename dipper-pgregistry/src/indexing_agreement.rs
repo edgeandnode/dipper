@@ -99,6 +99,12 @@ pub enum Status {
     /// The on-chain `IndexingAgreementAccepted` event was observed for this agreement.
     AcceptedOnChain = 6,
 
+    /// The indexer rejected the agreement proposal off-chain.
+    ///
+    /// The indexer may still accept on-chain before the deadline. If they do,
+    /// Dipper will cancel the agreement via `cancelIndexingAgreementByPayer`.
+    Rejected = 7,
+
     /// A fallback for unknown status values.
     Unknown = i32::MAX,
 }
@@ -112,6 +118,7 @@ impl std::fmt::Display for Status {
             Status::CanceledByIndexer => "CANCELED_BY_INDEXER",
             Status::Expired => "EXPIRED",
             Status::AcceptedOnChain => "ACCEPTED_ON_CHAIN",
+            Status::Rejected => "REJECTED",
             Status::Unknown => "UNKNOWN",
         };
         f.write_str(status)

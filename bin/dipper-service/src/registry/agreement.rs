@@ -150,6 +150,17 @@ pub trait AgreementRegistry {
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;
+
+    /// Mark an indexing agreement as `REJECTED`.
+    ///
+    /// The indexer rejected the proposal off-chain. The indexer may still accept on-chain
+    /// before the deadline, in which case Dipper will cancel via `cancelIndexingAgreementByPayer`.
+    /// If there is no indexing agreement with the given ID, or if the agreement is not in the
+    /// `CREATED` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
+    async fn mark_indexing_agreement_as_rejected(
+        &self,
+        id: &IndexingAgreementId,
+    ) -> RegistryResult<()>;
 }
 
 /// An Indexing Agreement represents the contract between the DIPs Gateway (Dipper) and the indexer
@@ -274,6 +285,12 @@ pub enum Status {
     ///
     /// The on-chain `IndexingAgreementAccepted` event was observed for this agreement.
     AcceptedOnChain,
+
+    /// The indexer rejected the agreement proposal off-chain.
+    ///
+    /// The indexer may still accept on-chain before the deadline. If they do,
+    /// Dipper will cancel the agreement via `cancelIndexingAgreementByPayer`.
+    Rejected,
 }
 
 impl std::fmt::Display for Status {
@@ -285,6 +302,7 @@ impl std::fmt::Display for Status {
             Status::CanceledByIndexer => "CANCELED_BY_INDEXER",
             Status::Expired => "EXPIRED",
             Status::AcceptedOnChain => "ACCEPTED_ON_CHAIN",
+            Status::Rejected => "REJECTED",
         };
         f.write_str(status)
     }
@@ -313,6 +331,7 @@ impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
                 dipper_pgregistry::IndexingAgreementStatus::AcceptedOnChain => {
                     Status::AcceptedOnChain
                 }
+                dipper_pgregistry::IndexingAgreementStatus::Rejected => Status::Rejected,
                 _ => {
                     return Err(anyhow::anyhow!("Invalid status: {:?}", value.status));
                 }
