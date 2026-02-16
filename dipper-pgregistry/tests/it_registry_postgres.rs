@@ -642,21 +642,31 @@ async fn get_declined_indexers_by_deployment_returns_rejected() {
         .expect("Failed to get declined indexers");
 
     //* Then
-    // Indexer A canceled agreement for deployment QmCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC3c
+    // Indexer A has CanceledByIndexer for deployment QmCCCC...3c
+    // Indexer C has Expired for deployment QmEEEE...5e
     assert_eq!(
         result.len(),
-        1,
-        "Should have 1 deployment with declined indexers"
+        2,
+        "Should have 2 deployments with declined indexers (CanceledByIndexer + Expired)"
     );
 
-    let deployment_id: DeploymentId = "QmCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC3c"
+    // Check CanceledByIndexer
+    let deployment_3c: DeploymentId = "QmCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC3c"
         .parse()
         .unwrap();
     let indexer_a = indexer_id!("1111111111111111111111111111111111111111");
+    let declined_3c = result.get(&deployment_3c).expect("Deployment 3c not found");
+    assert_eq!(declined_3c.len(), 1);
+    assert!(declined_3c.contains(&indexer_a));
 
-    let declined = result.get(&deployment_id).expect("Deployment not found");
-    assert_eq!(declined.len(), 1);
-    assert!(declined.contains(&indexer_a));
+    // Check Expired
+    let deployment_5e: DeploymentId = "QmEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE5e"
+        .parse()
+        .unwrap();
+    let indexer_c = indexer_id!("3333333333333333333333333333333333333333");
+    let declined_5e = result.get(&deployment_5e).expect("Deployment 5e not found");
+    assert_eq!(declined_5e.len(), 1);
+    assert!(declined_5e.contains(&indexer_c));
 }
 
 #[tokio::test]
@@ -730,7 +740,20 @@ async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
     )
     .execute(&db)
     .await
-    .expect("Failed to update agreement timestamp");
+    .expect("Failed to update CanceledByIndexer agreement timestamp");
+
+    // Also update the expired agreement to be 31 days old
+    // (declined_indexers query now includes both CanceledByIndexer and Expired)
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET updated_at = timezone('UTC', now()) - interval '31 days'
+        WHERE id = '01930100-0003-7000-8000-000000000001'::uuid
+        "#,
+    )
+    .execute(&db)
+    .await
+    .expect("Failed to update Expired agreement timestamp");
 
     let registry = PgRegistry::new(db);
 
@@ -742,7 +765,7 @@ async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
         .expect("Failed to get declined indexers");
 
     //* Then
-    // The canceled-by-indexer agreement is now 31 days old, outside the 30-day window
+    // Both CanceledByIndexer and Expired agreements are now 31 days old, outside the 30-day window
     assert!(
         result.is_empty(),
         "Rejections older than lookback period should not be returned"
