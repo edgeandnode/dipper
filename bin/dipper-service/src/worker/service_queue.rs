@@ -5,9 +5,9 @@ use url::Url;
 
 use super::{
     handlers::{
-        ProcessIndexingAgreementCancellation, ProcessIndexingRequestCancellation,
-        ProcessNewIndexingRequest, ReassessIndexingRequest, SendIndexingAgreementCancellation,
-        SendIndexingAgreementProposal,
+        CancelRejectedAgreementOnChain, ProcessIndexingAgreementCancellation,
+        ProcessIndexingRequestCancellation, ProcessNewIndexingRequest, ReassessIndexingRequest,
+        SendIndexingAgreementCancellation, SendIndexingAgreementProposal,
     },
     messages::Message,
     queue::{JobId, Queue},
@@ -62,6 +62,15 @@ pub trait WorkerQueue {
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
         num_candidates: usize,
+    ) -> anyhow::Result<JobId>;
+
+    /// Cancel a rejected agreement on-chain.
+    ///
+    /// When an indexer rejected off-chain but accepted on-chain, this cancels
+    /// the agreement via `cancelIndexingAgreementByPayer`.
+    async fn cancel_rejected_agreement_on_chain(
+        &self,
+        agreement_id: IndexingAgreementId,
     ) -> anyhow::Result<JobId>;
 }
 
@@ -197,6 +206,17 @@ where
                 deployment_chain_id,
                 num_candidates,
             }))
+            .await
+    }
+
+    async fn cancel_rejected_agreement_on_chain(
+        &self,
+        agreement_id: IndexingAgreementId,
+    ) -> anyhow::Result<JobId> {
+        self.queue
+            .push(Message::CancelRejectedAgreementOnChain(
+                CancelRejectedAgreementOnChain { agreement_id },
+            ))
             .await
     }
 }

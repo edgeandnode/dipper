@@ -4,8 +4,9 @@ use dipper_core::state::FromState;
 use thegraph_core::alloy::primitives::ChainId;
 
 use super::handlers::{
-    ProcessIndexingAgreementCancellationCtx, ProcessIndexingRequestCancellationCtx,
-    ProcessNewIndexingRequestCtx, ReassessIndexingRequestCtx, SendIndexingAgreementCancellationCtx,
+    CancelRejectedAgreementOnChainCtx, ProcessIndexingAgreementCancellationCtx,
+    ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
+    ReassessIndexingRequestCtx, SendIndexingAgreementCancellationCtx,
     SendIndexingAgreementProposalCtx,
 };
 use crate::{
@@ -17,7 +18,7 @@ use crate::{
 ///
 /// This is a input context for the worker service
 #[derive(Clone)]
-pub struct Ctx<Q, R, N, C, I> {
+pub struct Ctx<Q, R, N, C, I, T> {
     /// The message queue worker
     pub queue: Q,
 
@@ -41,13 +42,16 @@ pub struct Ctx<Q, R, N, C, I> {
 
     /// The Indexing Indexer Selection Algorithm (IISA) service
     pub iisa: I,
+
+    /// The chain client for on-chain transactions
+    pub chain_client: T,
 }
 
 /// The inner worker context.
 ///
 /// This is a shared context across all message handlers.
 #[derive(Clone)]
-pub(super) struct InnerCtx<R, N, W, C, I> {
+pub(super) struct InnerCtx<R, N, W, C, I, T> {
     /// The EIP-712 signer
     pub signer: Arc<PrivateKeyEip712Signer>,
 
@@ -71,9 +75,13 @@ pub(super) struct InnerCtx<R, N, W, C, I> {
 
     /// The Indexing Indexer Selection Algorithm (IISA) service
     pub iisa: I,
+
+    /// The chain client for on-chain transactions
+    pub chain_client: T,
 }
 
-impl<R, N, W, C, I> FromState<InnerCtx<R, N, W, C, I>> for ReassessIndexingRequestCtx<R, N, W, I>
+impl<R, N, W, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
+    for ReassessIndexingRequestCtx<R, N, W, I>
 where
     R: Clone,
     N: Clone,
@@ -81,7 +89,7 @@ where
     I: Clone,
 {
     #[inline]
-    fn from_state(state: &InnerCtx<R, N, W, C, I>) -> Self {
+    fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
         Self {
             signer: state.signer.clone(),
             agreement_conf: state.agreement_conf.clone(),
@@ -94,14 +102,14 @@ where
     }
 }
 
-impl<R, N, W, C, I> FromState<InnerCtx<R, N, W, C, I>>
+impl<R, N, W, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
     for SendIndexingAgreementCancellationCtx<R, C>
 where
     R: Clone,
     C: Clone,
 {
     #[inline]
-    fn from_state(state: &InnerCtx<R, N, W, C, I>) -> Self {
+    fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
         Self {
             registry: state.registry.clone(),
             indexer_client: state.client.clone(),
@@ -109,14 +117,14 @@ where
     }
 }
 
-impl<R, N, W, C, I> FromState<InnerCtx<R, N, W, C, I>>
+impl<R, N, W, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
     for ProcessIndexingRequestCancellationCtx<R, W>
 where
     R: Clone,
     W: Clone,
 {
     #[inline]
-    fn from_state(state: &InnerCtx<R, N, W, C, I>) -> Self {
+    fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
         Self {
             registry: state.registry.clone(),
             queue: state.worker.clone(),
@@ -124,7 +132,8 @@ where
     }
 }
 
-impl<W, N, R, C, I> FromState<InnerCtx<R, N, W, C, I>> for ProcessNewIndexingRequestCtx<R, N, W, I>
+impl<W, N, R, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
+    for ProcessNewIndexingRequestCtx<R, N, W, I>
 where
     R: Clone,
     N: Clone,
@@ -132,7 +141,7 @@ where
     I: Clone,
 {
     #[inline]
-    fn from_state(state: &InnerCtx<R, N, W, C, I>) -> Self {
+    fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
         Self {
             signer: state.signer.clone(),
             agreement_conf: state.agreement_conf.clone(),
@@ -145,14 +154,15 @@ where
     }
 }
 
-impl<R, N, W, C, I> FromState<InnerCtx<R, N, W, C, I>> for SendIndexingAgreementProposalCtx<R, W, C>
+impl<R, N, W, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
+    for SendIndexingAgreementProposalCtx<R, W, C>
 where
     R: Clone,
     W: Clone,
     C: Clone,
 {
     #[inline]
-    fn from_state(state: &InnerCtx<R, N, W, C, I>) -> Self {
+    fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
         Self {
             registry: state.registry.clone(),
             queue: state.worker.clone(),
@@ -161,17 +171,32 @@ where
     }
 }
 
-impl<R, N, W, C, I> FromState<InnerCtx<R, N, W, C, I>>
+impl<R, N, W, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
     for ProcessIndexingAgreementCancellationCtx<R, W>
 where
     R: Clone,
     W: Clone,
 {
     #[inline]
-    fn from_state(state: &InnerCtx<R, N, W, C, I>) -> Self {
+    fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
         Self {
             queue: state.worker.clone(),
             registry: state.registry.clone(),
+        }
+    }
+}
+
+impl<R, N, W, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
+    for CancelRejectedAgreementOnChainCtx<R, T>
+where
+    R: Clone,
+    T: Clone,
+{
+    #[inline]
+    fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
+        Self {
+            registry: state.registry.clone(),
+            chain_client: state.chain_client.clone(),
         }
     }
 }
