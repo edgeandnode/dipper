@@ -15,6 +15,7 @@ use self::{
 };
 
 mod admin_rpc_server;
+mod chain_client;
 mod config;
 mod db;
 mod indexer_rpc_client;
@@ -189,6 +190,8 @@ pub async fn main() -> anyhow::Result<()> {
             network: network_provider.clone(),
             client: indexer_client,
             iisa: iisa_client.clone(),
+            // TODO: Replace with real ChainClient implementation (#560)
+            chain_client: chain_client::StubChainClient,
         };
         worker::service::new(ctx)
     };
@@ -203,6 +206,48 @@ pub async fn main() -> anyhow::Result<()> {
                 config: reassignment_conf.clone(),
             };
             let (handle, service) = network::service::reassignment::new(ctx);
+            Some((handle, service))
+        }
+        _ => None,
+    };
+
+    //- The expiration service (optional, enabled by config)
+    let expiration_handle = match conf.expiration {
+        Some(ref expiration_conf) if expiration_conf.enabled => {
+            let ctx = network::service::expiration::Ctx {
+                registry: registry.clone(),
+                worker_queue: worker_handle.queue().clone(),
+                config: expiration_conf.clone(),
+            };
+            let (handle, service) = network::service::expiration::new(ctx);
+            Some((handle, service))
+        }
+        _ => None,
+    };
+
+    //- The chain listener service (optional, enabled by config)
+    // Monitors on-chain events for agreement acceptance/cancellation via subgraph
+    let chain_listener_handle = match conf.chain_listener {
+        Some(ref chain_listener_conf) if chain_listener_conf.enabled => {
+            // Create the subgraph event source
+            let event_source_config = network::service::chain_events::SubgraphEventSourceConfig {
+                endpoint: chain_listener_conf.subgraph_endpoint.clone(),
+                api_key: chain_listener_conf.subgraph_api_key.clone(),
+                payer_address: signer.address(),
+                request_timeout: chain_listener_conf.request_timeout,
+                max_retries: chain_listener_conf.max_retries,
+            };
+            let event_source =
+                network::service::chain_events::SubgraphEventSource::new(event_source_config);
+
+            let ctx = network::service::chain_listener::Ctx {
+                registry: registry.clone(),
+                worker_queue: worker_handle.queue().clone(),
+                event_source,
+                config: chain_listener_conf.clone(),
+                signer_address: signer.address(),
+            };
+            let (handle, service) = network::service::chain_listener::new(ctx);
             Some((handle, service))
         }
         _ => None,
@@ -266,6 +311,24 @@ pub async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // Spawn the expiration service if enabled
+    let expiration_stop_handle = if let Some((handle, service)) = expiration_handle {
+        let task_handle = task_tree.spawn(service);
+        tracing::debug!(task_id=%task_handle.id(), "Expiration service started");
+        Some(handle)
+    } else {
+        None
+    };
+
+    // Spawn the chain listener service if enabled
+    let chain_listener_stop_handle = if let Some((handle, service)) = chain_listener_handle {
+        let task_handle = task_tree.spawn(service);
+        tracing::debug!(task_id=%task_handle.id(), "Chain listener service started");
+        Some(handle)
+    } else {
+        None
+    };
+
     let indexer_rpc_task_handle = task_tree.spawn(indexer_rpc_service);
     tracing::debug!(task_id=%indexer_rpc_task_handle.id(), "Indexer RPC service started");
 
@@ -300,6 +363,20 @@ pub async fn main() -> anyhow::Result<()> {
             tracing::trace!("stopping Reassignment service");
             handle.stop().await;
             tracing::trace!("stopped Reassignment service");
+        }
+
+        // Stop expiration service before worker (it depends on worker queue)
+        if let Some(handle) = expiration_stop_handle {
+            tracing::trace!("stopping Expiration service");
+            handle.stop().await;
+            tracing::trace!("stopped Expiration service");
+        }
+
+        // Stop chain listener service before worker (it depends on worker queue)
+        if let Some(handle) = chain_listener_stop_handle {
+            tracing::trace!("stopping Chain listener service");
+            handle.stop().await;
+            tracing::trace!("stopped Chain listener service");
         }
 
         tracing::trace!("stopping Worker service");

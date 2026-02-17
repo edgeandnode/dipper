@@ -99,6 +99,12 @@ pub enum Status {
     /// The on-chain `IndexingAgreementAccepted` event was observed for this agreement.
     AcceptedOnChain = 6,
 
+    /// The indexer rejected the agreement proposal off-chain.
+    ///
+    /// The indexer may still accept on-chain before the deadline. If they do,
+    /// Dipper will cancel the agreement via `cancelIndexingAgreementByPayer`.
+    Rejected = 7,
+
     /// A fallback for unknown status values.
     Unknown = i32::MAX,
 }
@@ -112,6 +118,7 @@ impl std::fmt::Display for Status {
             Status::CanceledByIndexer => "CANCELED_BY_INDEXER",
             Status::Expired => "EXPIRED",
             Status::AcceptedOnChain => "ACCEPTED_ON_CHAIN",
+            Status::Rejected => "REJECTED",
             Status::Unknown => "UNKNOWN",
         };
         f.write_str(status)
@@ -191,18 +198,28 @@ pub mod fake_impl {
         }
     }
 
+    /// Generate a random u64 that fits within PostgreSQL bigint range.
+    /// PostgreSQL bigint is signed 64-bit, max value is 2^63 - 1.
+    fn bigint_safe_u64<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> u64 {
+        i64::dummy_with_rng(config, rng).unsigned_abs()
+    }
+
+    /// Generate a random U256 that fits within PostgreSQL bigint range.
+    fn bigint_safe_u256<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> U256 {
+        U256::from(bigint_safe_u64(config, rng))
+    }
+
     impl Dummy<Faker> for Voucher {
         fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
             Self {
                 payer: Address::new(<[u8; 20]>::dummy_with_rng(config, rng)),
                 service_provider: Address::new(<[u8; 20]>::dummy_with_rng(config, rng)),
                 data_service: Address::new(<[u8; 20]>::dummy_with_rng(config, rng)),
-                deadline: u64::dummy_with_rng(config, rng),
-                ends_at: u64::dummy_with_rng(config, rng),
-                max_initial_tokens: U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng)),
-                max_ongoing_tokens_per_second: U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(
-                    config, rng,
-                )),
+                // deadline and ends_at are cast to bigint in queries, so constrain them
+                deadline: bigint_safe_u64(config, rng),
+                ends_at: bigint_safe_u64(config, rng),
+                max_initial_tokens: bigint_safe_u256(config, rng),
+                max_ongoing_tokens_per_second: bigint_safe_u256(config, rng),
                 min_seconds_per_collection: u32::dummy_with_rng(config, rng),
                 max_seconds_per_collection: u32::dummy_with_rng(config, rng),
                 metadata: VoucherMetadata::dummy_with_rng(config, rng),
@@ -213,10 +230,8 @@ pub mod fake_impl {
     impl Dummy<Faker> for VoucherMetadata {
         fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
             Self {
-                tokens_per_second: U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng)),
-                tokens_per_entity_per_second: U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(
-                    config, rng,
-                )),
+                tokens_per_second: bigint_safe_u256(config, rng),
+                tokens_per_entity_per_second: bigint_safe_u256(config, rng),
                 subgraph_deployment_id: DeploymentId::dummy_with_rng(config, rng),
                 protocol_network: ChainId::dummy_with_rng(config, rng),
                 chain_id: ChainId::dummy_with_rng(config, rng),

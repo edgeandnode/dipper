@@ -65,6 +65,12 @@ pub struct Config {
     /// The reassignment service configuration
     #[serde(default)]
     pub reassignment: Option<ReassignmentConfig>,
+    /// The expiration service configuration (marks stale Created agreements as Expired)
+    #[serde(default)]
+    pub expiration: Option<ExpirationConfig>,
+    /// The chain listener service configuration (monitors on-chain events)
+    #[serde(default)]
+    pub chain_listener: Option<ChainListenerConfig>,
 }
 
 /// The IISA (Indexing Indexer Selection Algorithm) service configuration
@@ -228,6 +234,135 @@ impl Default for ReassignmentConfig {
             min_request_age: default_reassignment_min_age(),
         }
     }
+}
+
+/// Configuration for the deadline expiration service.
+///
+/// This service periodically scans for `Created` agreements whose RCA deadline
+/// has passed, marks them as `Expired`, and triggers IISA reassessment to find
+/// replacement indexers.
+#[serde_as]
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ExpirationConfig {
+    /// Whether the expiration service is enabled (default: true)
+    #[serde(default = "default_expiration_enabled")]
+    pub enabled: bool,
+
+    /// Interval between expiration scans in seconds (default: 90s)
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    #[serde(default = "default_expiration_interval")]
+    pub interval: Duration,
+
+    /// Maximum agreements to process per cycle (default: 100)
+    #[serde(default = "default_expiration_batch_size")]
+    pub batch_size: i64,
+}
+
+fn default_expiration_enabled() -> bool {
+    true
+}
+
+fn default_expiration_interval() -> Duration {
+    Duration::from_secs(90)
+}
+
+fn default_expiration_batch_size() -> i64 {
+    100
+}
+
+impl Default for ExpirationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_expiration_enabled(),
+            interval: default_expiration_interval(),
+            batch_size: default_expiration_batch_size(),
+        }
+    }
+}
+
+/// Configuration for the on-chain event listener service.
+///
+/// This service monitors the SubgraphService contract for `IndexingAgreementAccepted`
+/// and `IndexingAgreementCanceled` events via a subgraph. When a `Rejected` agreement
+/// is accepted on-chain, it triggers automatic cancellation via `cancelIndexingAgreementByPayer`.
+#[serde_as]
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ChainListenerConfig {
+    /// Whether the chain listener service is enabled (default: false)
+    ///
+    /// Disabled by default since it requires subgraph configuration.
+    #[serde(default = "default_chain_listener_enabled")]
+    pub enabled: bool,
+
+    /// The subgraph endpoint URL for querying indexing agreement events.
+    ///
+    /// This should point to a subgraph that indexes the SubgraphService contract's
+    /// IndexingAgreementAccepted and IndexingAgreementCanceled events.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub subgraph_endpoint: Url,
+
+    /// API key for subgraph authentication (optional for local/test subgraphs).
+    #[serde(default)]
+    pub subgraph_api_key: Option<String>,
+
+    /// Chain ID for state tracking (default: 42161 for Arbitrum One)
+    #[serde(default = "default_chain_id")]
+    pub chain_id: u64,
+
+    /// Poll interval in seconds (default: 30s)
+    ///
+    /// How often to query the subgraph for new events. Since subgraphs have some
+    /// indexing latency, polling more frequently than ~30s provides diminishing returns.
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    #[serde(default = "default_chain_listener_poll_interval")]
+    pub poll_interval: Duration,
+
+    /// Request timeout in seconds (default: 30)
+    #[serde(default = "default_chain_listener_request_timeout")]
+    #[serde_as(as = "serde_with::DurationSeconds")]
+    pub request_timeout: Duration,
+
+    /// Maximum retry attempts for transient failures (default: 3)
+    #[serde(default = "default_chain_listener_max_retries")]
+    pub max_retries: u32,
+
+    /// Gas price multiplier for cancellation transactions (default: 1.2)
+    ///
+    /// Applied to the estimated gas price to ensure timely inclusion.
+    #[serde(default = "default_gas_price_multiplier")]
+    pub gas_price_multiplier: f64,
+
+    /// Maximum gas price in gwei for cancellation transactions (default: 100)
+    #[serde(default = "default_max_gas_price_gwei")]
+    pub max_gas_price_gwei: u64,
+}
+
+fn default_chain_listener_enabled() -> bool {
+    false
+}
+
+fn default_chain_id() -> u64 {
+    42161 // Arbitrum One
+}
+
+fn default_chain_listener_poll_interval() -> Duration {
+    Duration::from_secs(30)
+}
+
+fn default_chain_listener_request_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
+fn default_chain_listener_max_retries() -> u32 {
+    3
+}
+
+fn default_gas_price_multiplier() -> f64 {
+    1.2
+}
+
+fn default_max_gas_price_gwei() -> u64 {
+    100
 }
 
 #[serde_as]

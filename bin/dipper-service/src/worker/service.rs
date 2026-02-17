@@ -9,15 +9,17 @@ pub use super::service_queue::{WorkerQueue, WorkerQueueHandle};
 use super::{
     context::{Ctx, InnerCtx},
     handlers::{
-        self, ProcessIndexingAgreementCancellationCtx, ProcessIndexingRequestCancellationCtx,
-        ProcessNewIndexingRequestCtx, ReassessIndexingRequestCtx,
-        SendIndexingAgreementCancellationCtx, SendIndexingAgreementProposalCtx,
+        self, CancelRejectedAgreementOnChainCtx, ProcessIndexingAgreementCancellationCtx,
+        ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
+        ReassessIndexingRequestCtx, SendIndexingAgreementCancellationCtx,
+        SendIndexingAgreementProposalCtx,
     },
     messages::Message,
     queue::Queue,
     result::{JobError, JobMeta, JobResult, calculate_backoff_delay},
 };
 use crate::{
+    chain_client::ChainClient,
     indexer_rpc_client::IndexerClient,
     network::NetworkProvider,
     registry::{AgreementRegistry, IndexerDenylistRegistry, IndexingRequestRegistry},
@@ -29,14 +31,15 @@ const DEFAULT_QUEUE_POLL_PERIOD: Duration = Duration::from_secs(1);
 /// Create a new worker and a future that processes jobs from the queue.
 ///
 /// The worker pulls jobs from the queue and processes them concurrently every 1 second.
-pub fn new<S, Q, R, N, C, I>(state: S) -> (Handle<Q>, impl Future<Output = anyhow::Result<()>>)
+pub fn new<S, Q, R, N, C, I, T>(state: S) -> (Handle<Q>, impl Future<Output = anyhow::Result<()>>)
 where
     Q: Queue<Message> + Clone + Send + Sync,
     R: IndexingRequestRegistry + AgreementRegistry + IndexerDenylistRegistry + Clone + Send + Sync,
     N: NetworkProvider + Clone + Send + Sync,
     C: IndexerClient + Clone + Send + Sync,
     I: CandidateSelection + Clone + Send + Sync,
-    S: Into<Ctx<Q, R, N, C, I>>,
+    T: ChainClient + Clone + Send + Sync,
+    S: Into<Ctx<Q, R, N, C, I, T>>,
 {
     let Ctx {
         queue,
@@ -47,6 +50,7 @@ where
         network,
         client,
         iisa,
+        chain_client,
     } = state.into();
 
     let (tx_stop, rx_stop) = mpsc::channel(1);
@@ -64,6 +68,7 @@ where
             network,
             client,
             iisa,
+            chain_client,
             worker: WorkerQueueHandle::new(queue.clone()),
         };
 
@@ -136,7 +141,7 @@ where
     (handle, fut)
 }
 
-async fn process_job<S, W, N, R, C, I>(
+async fn process_job<S, W, N, R, C, I, T>(
     state: &S,
     message: &Message,
     job_meta: JobMeta,
@@ -147,12 +152,14 @@ where
     W: WorkerQueue,
     C: IndexerClient,
     I: CandidateSelection,
+    T: ChainClient,
     ProcessNewIndexingRequestCtx<R, N, W, I>: FromState<S>,
     ProcessIndexingRequestCancellationCtx<R, W>: FromState<S>,
     ReassessIndexingRequestCtx<R, N, W, I>: FromState<S>,
     SendIndexingAgreementProposalCtx<R, W, C>: FromState<S>,
     SendIndexingAgreementCancellationCtx<R, C>: FromState<S>,
     ProcessIndexingAgreementCancellationCtx<R, W>: FromState<S>,
+    CancelRejectedAgreementOnChainCtx<R, T>: FromState<S>,
 {
     /// Dispatch a message to the appropriate message handler, based on the message type, with
     /// the given state and job metadata.
@@ -174,6 +181,7 @@ where
         Message::SendIndexingAgreementCancellation => handlers::send_indexing_agreement_cancellation,
         Message::ProcessIndexingAgreementIndexerCancellation => handlers::process_indexing_agreement_indexer_cancellation,
         Message::ProcessIndexingAgreementRequesterCancellation => handlers::process_indexing_agreement_requester_cancellation,
+        Message::CancelRejectedAgreementOnChain => handlers::cancel_rejected_agreement_on_chain,
     })
 }
 

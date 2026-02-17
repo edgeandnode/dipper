@@ -57,9 +57,10 @@ pub trait AgreementRegistry {
 
     /// Get declined indexers grouped by deployment within a lookback period.
     ///
-    /// Returns indexers that have `CanceledByIndexer` status within the specified
-    /// number of days, grouped by deployment. This is used to avoid re-offering
-    /// agreements to indexers that recently declined.
+    /// Returns indexers with `CanceledByIndexer`, `Expired`, or `Rejected` status
+    /// within the specified number of days, grouped by deployment. This is used to
+    /// avoid re-offering agreements to indexers that recently declined, let the
+    /// deadline pass without accepting, or rejected the proposal off-chain.
     ///
     /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
     /// that declined agreements for that deployment.
@@ -127,6 +128,36 @@ pub trait AgreementRegistry {
     /// If there is no indexing agreement with the given ID, or if the agreement is not in the
     /// `CREATED` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
     async fn mark_indexing_agreement_as_accepted_on_chain(
+        &self,
+        id: &IndexingAgreementId,
+    ) -> RegistryResult<()>;
+
+    /// Get `Created` agreements whose RCA deadline has passed.
+    ///
+    /// These agreements are eligible for expiration since the indexer can no longer
+    /// accept on-chain. Results are ordered by deadline ascending (oldest first).
+    async fn get_expired_created_agreements(
+        &self,
+        batch_size: i64,
+    ) -> RegistryResult<Vec<IndexingAgreement>>;
+
+    /// Mark an indexing agreement as `EXPIRED`.
+    ///
+    /// The RCA deadline passed without on-chain acceptance.
+    /// If there is no indexing agreement with the given ID, or if the agreement is not in the
+    /// `CREATED` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
+    async fn mark_indexing_agreement_as_expired(
+        &self,
+        id: &IndexingAgreementId,
+    ) -> RegistryResult<()>;
+
+    /// Mark an indexing agreement as `REJECTED`.
+    ///
+    /// The indexer rejected the proposal off-chain. The indexer may still accept on-chain
+    /// before the deadline, in which case Dipper will cancel via `cancelIndexingAgreementByPayer`.
+    /// If there is no indexing agreement with the given ID, or if the agreement is not in the
+    /// `CREATED` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
+    async fn mark_indexing_agreement_as_rejected(
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;
@@ -254,6 +285,12 @@ pub enum Status {
     ///
     /// The on-chain `IndexingAgreementAccepted` event was observed for this agreement.
     AcceptedOnChain,
+
+    /// The indexer rejected the agreement proposal off-chain.
+    ///
+    /// The indexer may still accept on-chain before the deadline. If they do,
+    /// Dipper will cancel the agreement via `cancelIndexingAgreementByPayer`.
+    Rejected,
 }
 
 impl std::fmt::Display for Status {
@@ -265,6 +302,7 @@ impl std::fmt::Display for Status {
             Status::CanceledByIndexer => "CANCELED_BY_INDEXER",
             Status::Expired => "EXPIRED",
             Status::AcceptedOnChain => "ACCEPTED_ON_CHAIN",
+            Status::Rejected => "REJECTED",
         };
         f.write_str(status)
     }
@@ -293,6 +331,7 @@ impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
                 dipper_pgregistry::IndexingAgreementStatus::AcceptedOnChain => {
                     Status::AcceptedOnChain
                 }
+                dipper_pgregistry::IndexingAgreementStatus::Rejected => Status::Rejected,
                 _ => {
                     return Err(anyhow::anyhow!("Invalid status: {:?}", value.status));
                 }

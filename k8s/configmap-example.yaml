@@ -57,5 +57,10 @@ data:
         "request_timeout": 240,
         "connect_timeout": 10,
         "max_retries": 3
+      },
+      "expiration": {
+        "enabled": true,
+        "interval": 90,
+        "batch_size": 100
       }
     }

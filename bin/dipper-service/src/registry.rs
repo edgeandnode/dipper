@@ -14,6 +14,9 @@ use thegraph_core::{
 };
 use url::Url;
 
+// Re-export for tests only
+#[cfg(test)]
+pub use self::agreement::Indexer;
 use self::result::Result as RegistryResult;
 pub use self::{
     agreement::{
@@ -274,6 +277,40 @@ impl AgreementRegistry for RegistryProvider {
             .await
             .map_err(Into::into)
     }
+
+    async fn get_expired_created_agreements(
+        &self,
+        batch_size: i64,
+    ) -> RegistryResult<Vec<IndexingAgreement>> {
+        Ok(self
+            .inner
+            .get_expired_created_agreements(batch_size)
+            .await?
+            .into_iter()
+            .map(IndexingAgreement::try_from)
+            .filter_map(Result::ok)
+            .collect())
+    }
+
+    async fn mark_indexing_agreement_as_expired(
+        &self,
+        id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        self.inner
+            .mark_indexing_agreement_as_expired(id)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn mark_indexing_agreement_as_rejected(
+        &self,
+        id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        self.inner
+            .mark_indexing_agreement_as_rejected(id)
+            .await
+            .map_err(Into::into)
+    }
 }
 
 #[async_trait]
@@ -314,5 +351,33 @@ impl ReceiptRegistry for RegistryProvider {
 impl IndexerDenylistRegistry for RegistryProvider {
     async fn get_indexer_denylist(&self) -> RegistryResult<Vec<IndexerId>> {
         self.inner.get_indexer_denylist().await.map_err(Into::into)
+    }
+}
+
+#[async_trait]
+impl crate::network::service::chain_listener::ChainListenerStateRegistry for RegistryProvider {
+    async fn get_chain_listener_state(
+        &self,
+        chain_id: u64,
+    ) -> RegistryResult<Option<crate::network::service::chain_listener::ChainListenerState>> {
+        Ok(self.inner.get_chain_listener_state(chain_id).await?.map(
+            |(chain_id, last_processed_block)| {
+                crate::network::service::chain_listener::ChainListenerState {
+                    chain_id,
+                    last_processed_block,
+                }
+            },
+        ))
+    }
+
+    async fn update_chain_listener_state(
+        &self,
+        chain_id: u64,
+        last_processed_block: u64,
+    ) -> RegistryResult<()> {
+        self.inner
+            .update_chain_listener_state(chain_id, last_processed_block)
+            .await
+            .map_err(Into::into)
     }
 }
