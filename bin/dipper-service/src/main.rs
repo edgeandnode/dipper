@@ -190,7 +190,7 @@ pub async fn main() -> anyhow::Result<()> {
             network: network_provider.clone(),
             client: indexer_client,
             iisa: iisa_client.clone(),
-            // TODO: Replace with real ChainClient implementation (Task #4)
+            // TODO: Replace with real ChainClient implementation (#560)
             chain_client: chain_client::StubChainClient,
         };
         worker::service::new(ctx)

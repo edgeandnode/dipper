@@ -57,10 +57,10 @@ pub trait AgreementRegistry {
 
     /// Get declined indexers grouped by deployment within a lookback period.
     ///
-    /// Returns indexers with `CanceledByIndexer` or `Expired` status within the
-    /// specified number of days, grouped by deployment. This is used to avoid
-    /// re-offering agreements to indexers that recently declined or let the
-    /// deadline pass without accepting.
+    /// Returns indexers with `CanceledByIndexer`, `Expired`, or `Rejected` status
+    /// within the specified number of days, grouped by deployment. This is used to
+    /// avoid re-offering agreements to indexers that recently declined, let the
+    /// deadline pass without accepting, or rejected the proposal off-chain.
     ///
     /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
     /// that declined agreements for that deployment.

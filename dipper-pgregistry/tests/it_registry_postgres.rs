@@ -909,6 +909,236 @@ async fn get_declined_indexers_includes_rejected_status() {
 }
 
 // =============================================================================
+// Deadline expiration tests
+// =============================================================================
+
+#[tokio::test]
+async fn get_expired_created_agreements_returns_past_deadline() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // The fixture has deadline=1700000300 which is in the past
+    // Agreement 01930100-0001-7000-8000-000000000001 is Created with past deadline
+    // Agreement 01930100-0002-7000-8000-000000000001 is Created with past deadline
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_expired_created_agreements(100)
+        .await
+        .expect("Failed to get expired agreements");
+
+    //* Then
+    // Should return the 2 Created agreements (both have past deadlines)
+    assert_eq!(
+        result.len(),
+        2,
+        "Should return 2 expired Created agreements"
+    );
+
+    let agreement_ids: Vec<_> = result.iter().map(|a| a.id).collect();
+    let expected_id_1: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
+    let expected_id_2: IndexingAgreementId = uuid!("01930100-0002-7000-8000-000000000001").into();
+    assert!(
+        agreement_ids.contains(&expected_id_1),
+        "Should include first Created agreement"
+    );
+    assert!(
+        agreement_ids.contains(&expected_id_2),
+        "Should include second Created agreement"
+    );
+}
+
+#[tokio::test]
+async fn get_expired_created_agreements_excludes_future_deadline() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // Update one agreement to have a future deadline (year 2100)
+    let future_deadline: i64 = 4102444800; // 2100-01-01
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET voucher = jsonb_set(voucher::jsonb, '{deadline}', to_jsonb($1::bigint))
+        WHERE id = '01930100-0001-7000-8000-000000000001'::uuid
+        "#,
+    )
+    .bind(future_deadline)
+    .execute(&db)
+    .await
+    .expect("Failed to update deadline");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_expired_created_agreements(100)
+        .await
+        .expect("Failed to get expired agreements");
+
+    //* Then
+    // Should only return 1 agreement (the one with past deadline)
+    assert_eq!(
+        result.len(),
+        1,
+        "Should return only 1 expired Created agreement"
+    );
+    let expected_id: IndexingAgreementId = uuid!("01930100-0002-7000-8000-000000000001").into();
+    assert_eq!(
+        result[0].id, expected_id,
+        "Should return the past-deadline agreement"
+    );
+}
+
+#[tokio::test]
+async fn get_expired_created_agreements_respects_batch_size() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_expired_created_agreements(1) // Only request 1
+        .await
+        .expect("Failed to get expired agreements");
+
+    //* Then
+    assert_eq!(result.len(), 1, "Should respect batch_size limit");
+}
+
+#[tokio::test]
+async fn get_expired_created_agreements_excludes_non_created_status() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // The fixture also has AcceptedOnChain (status=6) and Expired (status=5) agreements
+    // with past deadlines - these should NOT be returned
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_expired_created_agreements(100)
+        .await
+        .expect("Failed to get expired agreements");
+
+    //* Then
+    // Verify none of the returned agreements have non-Created status
+    for agreement in &result {
+        assert_eq!(
+            agreement.status,
+            IndexingAgreementStatus::Created,
+            "Should only return Created agreements"
+        );
+    }
+}
+
+#[tokio::test]
+async fn mark_indexing_agreement_as_expired_transitions_created_to_expired() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    // Agreement in Created status
+    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
+
+    //* When
+    let result = registry
+        .mark_indexing_agreement_as_expired(&agreement_id)
+        .await;
+
+    //* Then
+    result.expect("Should successfully mark as expired");
+
+    let agreement = registry
+        .get_indexing_agreement_by_id(&agreement_id)
+        .await
+        .expect("Failed to get agreement")
+        .expect("Agreement not found");
+    assert_eq!(
+        agreement.status,
+        IndexingAgreementStatus::Expired,
+        "Status should be Expired"
+    );
+}
+
+#[tokio::test]
+async fn mark_indexing_agreement_as_expired_fails_if_not_created() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    // Agreement in AcceptedOnChain status (not Created)
+    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000002").into();
+
+    //* When
+    let result = registry
+        .mark_indexing_agreement_as_expired(&agreement_id)
+        .await;
+
+    //* Then
+    let err = result.expect_err("Should fail for non-Created agreement");
+    assert!(matches!(err, Error::NoRecordsUpdated));
+}
+
+#[tokio::test]
+async fn mark_indexing_agreement_as_expired_fails_if_not_found() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+
+    // Non-existent agreement
+    let agreement_id: IndexingAgreementId = uuid!("01930100-9999-7000-8000-000000000001").into();
+
+    //* When
+    let result = registry
+        .mark_indexing_agreement_as_expired(&agreement_id)
+        .await;
+
+    //* Then
+    let err = result.expect_err("Should fail for non-existent agreement");
+    assert!(matches!(err, Error::NoRecordsUpdated));
+}
+
+// =============================================================================
 // Chain listener state tests
 // =============================================================================
 

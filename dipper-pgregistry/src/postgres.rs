@@ -472,7 +472,7 @@ impl PgRegistry {
             SET
                 status = $1,
                 updated_at = timezone('UTC', now())
-            WHERE id = $2 AND status IN ($3, $4)
+            WHERE id = $2 AND status IN ($3, $4, $5)
             RETURNING id
             "#,
         )
@@ -480,6 +480,7 @@ impl PgRegistry {
         .bind(agreement_id)
         .bind(IndexingAgreementStatus::Created)
         .bind(IndexingAgreementStatus::AcceptedOnChain)
+        .bind(IndexingAgreementStatus::Rejected)
         .fetch_optional(&self.pool)
         .await?;
 
