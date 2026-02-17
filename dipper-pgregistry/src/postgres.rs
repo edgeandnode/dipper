@@ -717,8 +717,8 @@ impl PgRegistry {
                 voucher
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
-              AND (voucher->>'deadline')::bigint < EXTRACT(epoch FROM timezone('UTC', now()))
-            ORDER BY (voucher->>'deadline')::bigint ASC
+              AND CAST(voucher->>'deadline' AS bigint) < EXTRACT(epoch FROM timezone('UTC', now()))
+            ORDER BY CAST(voucher->>'deadline' AS bigint) ASC
             LIMIT CASE WHEN $2 > 0 THEN $2 ELSE NULL END
             "#,
         )
