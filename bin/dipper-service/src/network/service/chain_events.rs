@@ -3,6 +3,34 @@
 //! This module provides a trait-based abstraction for fetching on-chain events
 //! related to indexing agreements. The primary implementation uses a subgraph
 //! for reliable, scalable event retrieval.
+//!
+//! ## Expected Subgraph Schema
+//!
+//! The subgraph must index the SubgraphService contract's indexing agreement events.
+//! Expected entity schemas (field names use camelCase as per Graph conventions):
+//!
+//! ```graphql
+//! type IndexingAgreementAccepted @entity {
+//!   id: ID!
+//!   agreementId: Bytes!      # bytes16
+//!   indexer: Bytes!          # address
+//!   payer: Bytes!            # address
+//!   allocationId: Bytes!     # address
+//!   blockNumber: BigInt!
+//! }
+//!
+//! type IndexingAgreementCanceled @entity {
+//!   id: ID!
+//!   agreementId: Bytes!      # bytes16
+//!   indexer: Bytes!          # address
+//!   payer: Bytes!            # address
+//!   canceledBy: Bytes!       # address (who initiated the cancellation)
+//!   blockNumber: BigInt!
+//! }
+//! ```
+//!
+//! If the actual subgraph schema differs, update the GraphQL queries and response
+//! types in this module accordingly.
 
 use std::time::Duration;
 
@@ -26,6 +54,19 @@ pub struct AcceptedAgreementEvent {
     pub block_number: u64,
 }
 
+/// An on-chain event indicating an indexing agreement was canceled.
+#[derive(Debug, Clone)]
+pub struct CanceledAgreementEvent {
+    /// The agreement ID (bytes16 from contract)
+    pub agreement_id: IndexingAgreementId,
+    /// The indexer address
+    pub indexer: Address,
+    /// The address that initiated the cancellation (payer or indexer)
+    pub canceled_by: Address,
+    /// The block number where this event was emitted
+    pub block_number: u64,
+}
+
 /// Errors that can occur when fetching chain events.
 #[derive(Debug, thiserror::Error)]
 pub enum ChainEventError {
@@ -45,10 +86,18 @@ impl ChainEventError {
     }
 }
 
-/// Result of fetching chain events.
-pub struct ChainEventResult {
+/// Result of fetching accepted agreement events.
+pub struct AcceptedEventsResult {
     /// The accepted agreement events found
     pub events: Vec<AcceptedAgreementEvent>,
+    /// The latest block number processed (use this for next query)
+    pub latest_block: u64,
+}
+
+/// Result of fetching canceled agreement events.
+pub struct CanceledEventsResult {
+    /// The canceled agreement events found
+    pub events: Vec<CanceledAgreementEvent>,
     /// The latest block number processed (use this for next query)
     pub latest_block: u64,
 }
@@ -68,13 +117,30 @@ pub trait ChainEventSource: Send + Sync {
     /// * `since_block` - Fetch events from blocks after this number
     ///
     /// # Returns
-    /// * `Ok(ChainEventResult)` - Events found and the latest processed block
+    /// * `Ok(AcceptedEventsResult)` - Events found and the latest processed block
     /// * `Err(ChainEventError::Transient(_))` - Temporary failure, can retry
     /// * `Err(ChainEventError::Permanent(_))` - Permanent failure, should not retry
     async fn get_accepted_agreements(
         &self,
         since_block: u64,
-    ) -> Result<ChainEventResult, ChainEventError>;
+    ) -> Result<AcceptedEventsResult, ChainEventError>;
+
+    /// Fetch canceled agreement events since the given block.
+    ///
+    /// Returns events where the payer matches the configured signer address,
+    /// along with the latest block number that was processed.
+    ///
+    /// # Arguments
+    /// * `since_block` - Fetch events from blocks after this number
+    ///
+    /// # Returns
+    /// * `Ok(CanceledEventsResult)` - Events found and the latest processed block
+    /// * `Err(ChainEventError::Transient(_))` - Temporary failure, can retry
+    /// * `Err(ChainEventError::Permanent(_))` - Permanent failure, should not retry
+    async fn get_canceled_agreements(
+        &self,
+        since_block: u64,
+    ) -> Result<CanceledEventsResult, ChainEventError>;
 }
 
 /// Configuration for the subgraph event source.
@@ -130,6 +196,28 @@ struct SubgraphMeta {
 #[derive(Debug, Deserialize)]
 struct SubgraphBlock {
     number: u64,
+}
+
+/// GraphQL response for canceled agreements query.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CanceledAgreementsResponse {
+    indexing_agreement_canceleds: Vec<CanceledAgreementEntity>,
+    #[serde(rename = "_meta")]
+    meta: SubgraphMeta,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CanceledAgreementEntity {
+    /// Hex-encoded agreement ID (bytes16)
+    agreement_id: String,
+    /// Hex-encoded indexer address
+    indexer: String,
+    /// Hex-encoded address of who initiated the cancellation
+    canceled_by: String,
+    /// Block number as string (BigInt in GraphQL)
+    block_number: String,
 }
 
 impl SubgraphEventSource {
@@ -265,9 +353,8 @@ impl ChainEventSource for SubgraphEventSource {
     async fn get_accepted_agreements(
         &self,
         since_block: u64,
-    ) -> Result<ChainEventResult, ChainEventError> {
+    ) -> Result<AcceptedEventsResult, ChainEventError> {
         // GraphQL query for accepted agreements
-        // Assumes subgraph schema has indexingAgreementAccepteds entity
         const QUERY: &str = r#"
             query AcceptedAgreements($payer: Bytes!, $sinceBlock: BigInt!) {
                 indexingAgreementAccepteds(
@@ -314,7 +401,64 @@ impl ChainEventSource for SubgraphEventSource {
             })
             .collect();
 
-        Ok(ChainEventResult {
+        Ok(AcceptedEventsResult {
+            events,
+            latest_block: response.meta.block.number,
+        })
+    }
+
+    async fn get_canceled_agreements(
+        &self,
+        since_block: u64,
+    ) -> Result<CanceledEventsResult, ChainEventError> {
+        // GraphQL query for canceled agreements
+        const QUERY: &str = r#"
+            query CanceledAgreements($payer: Bytes!, $sinceBlock: BigInt!) {
+                indexingAgreementCanceleds(
+                    where: { payer: $payer, blockNumber_gt: $sinceBlock }
+                    orderBy: blockNumber
+                    orderDirection: asc
+                    first: 1000
+                ) {
+                    agreementId
+                    indexer
+                    canceledBy
+                    blockNumber
+                }
+                _meta {
+                    block {
+                        number
+                    }
+                }
+            }
+        "#;
+
+        let variables = serde_json::json!({
+            "payer": format!("{:#x}", self.config.payer_address),
+            "sinceBlock": since_block.to_string(),
+        });
+
+        let response: CanceledAgreementsResponse = self.query_with_retry(QUERY, variables).await?;
+
+        let events = response
+            .indexing_agreement_canceleds
+            .into_iter()
+            .filter_map(|entity| {
+                let agreement_id = parse_agreement_id(&entity.agreement_id)?;
+                let indexer = entity.indexer.parse().ok()?;
+                let canceled_by = entity.canceled_by.parse().ok()?;
+                let block_number = entity.block_number.parse().ok()?;
+
+                Some(CanceledAgreementEvent {
+                    agreement_id,
+                    indexer,
+                    canceled_by,
+                    block_number,
+                })
+            })
+            .collect();
+
+        Ok(CanceledEventsResult {
             events,
             latest_block: response.meta.block.number,
         })
@@ -365,23 +509,32 @@ pub mod mock {
 
     /// A mock chain event source for testing.
     pub struct MockEventSource {
-        events: Arc<Mutex<Vec<AcceptedAgreementEvent>>>,
+        accepted_events: Arc<Mutex<Vec<AcceptedAgreementEvent>>>,
+        canceled_events: Arc<Mutex<Vec<CanceledAgreementEvent>>>,
         latest_block: Arc<Mutex<u64>>,
-        error: Arc<Mutex<Option<ChainEventError>>>,
+        accepted_error: Arc<Mutex<Option<ChainEventError>>>,
+        canceled_error: Arc<Mutex<Option<ChainEventError>>>,
     }
 
     impl MockEventSource {
         pub fn new() -> Self {
             Self {
-                events: Arc::new(Mutex::new(Vec::new())),
+                accepted_events: Arc::new(Mutex::new(Vec::new())),
+                canceled_events: Arc::new(Mutex::new(Vec::new())),
                 latest_block: Arc::new(Mutex::new(0)),
-                error: Arc::new(Mutex::new(None)),
+                accepted_error: Arc::new(Mutex::new(None)),
+                canceled_error: Arc::new(Mutex::new(None)),
             }
         }
 
-        /// Add events to return on next query.
-        pub fn add_events(&self, events: Vec<AcceptedAgreementEvent>) {
-            self.events.lock().unwrap().extend(events);
+        /// Add accepted events to return on next query.
+        pub fn add_accepted_events(&self, events: Vec<AcceptedAgreementEvent>) {
+            self.accepted_events.lock().unwrap().extend(events);
+        }
+
+        /// Add canceled events to return on next query.
+        pub fn add_canceled_events(&self, events: Vec<CanceledAgreementEvent>) {
+            self.canceled_events.lock().unwrap().extend(events);
         }
 
         /// Set the latest block number.
@@ -389,9 +542,14 @@ pub mod mock {
             *self.latest_block.lock().unwrap() = block;
         }
 
-        /// Set an error to return on next query.
-        pub fn set_error(&self, error: Option<ChainEventError>) {
-            *self.error.lock().unwrap() = error;
+        /// Set an error to return on next accepted query.
+        pub fn set_accepted_error(&self, error: Option<ChainEventError>) {
+            *self.accepted_error.lock().unwrap() = error;
+        }
+
+        /// Set an error to return on next canceled query.
+        pub fn set_canceled_error(&self, error: Option<ChainEventError>) {
+            *self.canceled_error.lock().unwrap() = error;
         }
     }
 
@@ -406,14 +564,14 @@ pub mod mock {
         async fn get_accepted_agreements(
             &self,
             since_block: u64,
-        ) -> Result<ChainEventResult, ChainEventError> {
+        ) -> Result<AcceptedEventsResult, ChainEventError> {
             // Check for configured error
-            if let Some(error) = self.error.lock().unwrap().take() {
+            if let Some(error) = self.accepted_error.lock().unwrap().take() {
                 return Err(error);
             }
 
             let events: Vec<_> = self
-                .events
+                .accepted_events
                 .lock()
                 .unwrap()
                 .iter()
@@ -423,7 +581,33 @@ pub mod mock {
 
             let latest_block = *self.latest_block.lock().unwrap();
 
-            Ok(ChainEventResult {
+            Ok(AcceptedEventsResult {
+                events,
+                latest_block,
+            })
+        }
+
+        async fn get_canceled_agreements(
+            &self,
+            since_block: u64,
+        ) -> Result<CanceledEventsResult, ChainEventError> {
+            // Check for configured error
+            if let Some(error) = self.canceled_error.lock().unwrap().take() {
+                return Err(error);
+            }
+
+            let events: Vec<_> = self
+                .canceled_events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| e.block_number > since_block)
+                .cloned()
+                .collect();
+
+            let latest_block = *self.latest_block.lock().unwrap();
+
+            Ok(CanceledEventsResult {
                 events,
                 latest_block,
             })

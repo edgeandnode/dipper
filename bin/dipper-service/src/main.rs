@@ -245,6 +245,7 @@ pub async fn main() -> anyhow::Result<()> {
                 worker_queue: worker_handle.queue().clone(),
                 event_source,
                 config: chain_listener_conf.clone(),
+                signer_address: signer.address(),
             };
             let (handle, service) = network::service::chain_listener::new(ctx);
             Some((handle, service))
