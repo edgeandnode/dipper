@@ -210,7 +210,7 @@ pub async fn main() -> anyhow::Result<()> {
             network: network_provider.clone(),
             client: indexer_client,
             iisa: iisa_client.clone(),
-            chain_client,
+            chain_client: chain_client.clone(),
         };
         worker::service::new(ctx)
     };
@@ -267,6 +267,22 @@ pub async fn main() -> anyhow::Result<()> {
                 signer_address: signer.address(),
             };
             let (handle, service) = network::service::chain_listener::new(ctx);
+            Some((handle, service))
+        }
+        _ => None,
+    };
+
+    //- The liveness checker service (optional, enabled by config)
+    // Detects indexers who silently stop indexing active AcceptedOnChain agreements
+    let liveness_checker_handle = match conf.liveness_checker {
+        Some(ref lc_conf) if lc_conf.enabled => {
+            let ctx = network::service::liveness_checker::Ctx {
+                registry: registry.clone(),
+                worker_queue: worker_handle.queue().clone(),
+                chain_client: chain_client.clone(),
+                config: lc_conf.clone(),
+            };
+            let (handle, service) = network::service::liveness_checker::new(ctx);
             Some((handle, service))
         }
         _ => None,
@@ -339,6 +355,15 @@ pub async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // Spawn the liveness checker service if enabled
+    let liveness_checker_stop_handle = if let Some((handle, service)) = liveness_checker_handle {
+        let task_handle = task_tree.spawn(service);
+        tracing::debug!(task_id=%task_handle.id(), "Liveness checker service started");
+        Some(handle)
+    } else {
+        None
+    };
+
     // Spawn the chain listener service if enabled
     let chain_listener_stop_handle = if let Some((handle, service)) = chain_listener_handle {
         let task_handle = task_tree.spawn(service);
@@ -389,6 +414,13 @@ pub async fn main() -> anyhow::Result<()> {
             tracing::trace!("stopping Expiration service");
             handle.stop().await;
             tracing::trace!("stopped Expiration service");
+        }
+
+        // Stop liveness checker service before worker (it depends on worker queue)
+        if let Some(handle) = liveness_checker_stop_handle {
+            tracing::trace!("stopping Liveness checker service");
+            handle.stop().await;
+            tracing::trace!("stopped Liveness checker service");
         }
 
         // Stop chain listener service before worker (it depends on worker queue)

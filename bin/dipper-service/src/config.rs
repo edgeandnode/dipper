@@ -71,6 +71,9 @@ pub struct Config {
     /// The chain listener service configuration (monitors on-chain events)
     #[serde(default)]
     pub chain_listener: Option<ChainListenerConfig>,
+    /// The liveness checker service configuration (detects silent agreement abandonment)
+    #[serde(default)]
+    pub liveness_checker: Option<LivenessCheckerConfig>,
     /// The chain client configuration (for sending on-chain transactions)
     #[serde(default)]
     pub chain_client: Option<ChainClientConfig>,
@@ -279,6 +282,75 @@ impl Default for ExpirationConfig {
             enabled: default_expiration_enabled(),
             interval: default_expiration_interval(),
             batch_size: default_expiration_batch_size(),
+        }
+    }
+}
+
+/// Configuration for the liveness checker service.
+///
+/// This service periodically polls each indexer's status endpoint to verify that
+/// indexing is progressing. Agreements where no block height progress is observed
+/// within the tolerance window are canceled as payer and reassigned.
+#[serde_as]
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct LivenessCheckerConfig {
+    /// Whether the liveness checker is enabled (default: false).
+    ///
+    /// Disabled by default since it requires the chain client to be configured
+    /// for on-chain cancellation.
+    #[serde(default = "default_liveness_checker_enabled")]
+    pub enabled: bool,
+
+    /// Interval between liveness checks in seconds (default: 300s / 5 min).
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    #[serde(default = "default_liveness_checker_interval")]
+    pub interval: Duration,
+
+    /// Maximum tolerance window in days (default: 4).
+    ///
+    /// The actual threshold scales with the number of active agreements on the
+    /// deployment: `min(active_count, max_tolerance_days)` days.
+    #[serde(default = "default_liveness_checker_max_tolerance_days")]
+    pub max_tolerance_days: u32,
+
+    /// Timeout per indexer status HTTP request in seconds (default: 10s).
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    #[serde(default = "default_liveness_checker_request_timeout")]
+    pub request_timeout: Duration,
+
+    /// Maximum agreements to fetch per cycle (default: 500).
+    #[serde(default = "default_liveness_checker_batch_size")]
+    pub batch_size: i64,
+}
+
+fn default_liveness_checker_enabled() -> bool {
+    false
+}
+
+fn default_liveness_checker_interval() -> Duration {
+    Duration::from_secs(300)
+}
+
+fn default_liveness_checker_max_tolerance_days() -> u32 {
+    4
+}
+
+fn default_liveness_checker_request_timeout() -> Duration {
+    Duration::from_secs(10)
+}
+
+fn default_liveness_checker_batch_size() -> i64 {
+    500
+}
+
+impl Default for LivenessCheckerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_liveness_checker_enabled(),
+            interval: default_liveness_checker_interval(),
+            max_tolerance_days: default_liveness_checker_max_tolerance_days(),
+            request_timeout: default_liveness_checker_request_timeout(),
+            batch_size: default_liveness_checker_batch_size(),
         }
     }
 }
