@@ -71,6 +71,9 @@ pub struct Config {
     /// The chain listener service configuration (monitors on-chain events)
     #[serde(default)]
     pub chain_listener: Option<ChainListenerConfig>,
+    /// The chain client configuration (for sending on-chain transactions)
+    #[serde(default)]
+    pub chain_client: Option<ChainClientConfig>,
 }
 
 /// The IISA (Indexing Indexer Selection Algorithm) service configuration
@@ -363,6 +366,103 @@ fn default_gas_price_multiplier() -> f64 {
 
 fn default_max_gas_price_gwei() -> u64 {
     100
+}
+
+/// Configuration for the on-chain transaction client.
+///
+/// This client sends transactions to the blockchain, such as calling
+/// `cancelIndexingAgreementByPayer` on the SubgraphService contract.
+/// It supports multiple RPC providers with automatic failover and retry.
+#[serde_as]
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ChainClientConfig {
+    /// Whether the chain client is enabled (default: false)
+    ///
+    /// Disabled by default since it requires RPC provider and contract configuration.
+    #[serde(default = "default_chain_client_enabled")]
+    pub enabled: bool,
+
+    /// List of RPC provider URLs (first is primary, rest are fallbacks).
+    ///
+    /// At least one provider is required when enabled. Providers are tried in order,
+    /// rotating to the next on persistent failures.
+    pub providers: Vec<Url>,
+
+    /// Request timeout per RPC call in seconds (default: 30s)
+    #[serde(default = "default_chain_client_request_timeout")]
+    #[serde_as(as = "serde_with::DurationSeconds")]
+    pub request_timeout: Duration,
+
+    /// Maximum retry attempts before rotating to next provider (default: 3)
+    ///
+    /// Uses exponential backoff (1s, 2s, 4s...) between retries.
+    #[serde(default = "default_chain_client_max_retries")]
+    pub max_retries: u32,
+
+    /// Chain ID (default: 42161 for Arbitrum One)
+    #[serde(default = "default_chain_id")]
+    pub chain_id: u64,
+
+    /// SubgraphService contract address.
+    ///
+    /// This is the contract that manages indexing agreements and exposes
+    /// `cancelIndexingAgreementByPayer(bytes32)`.
+    pub subgraph_service_address: Address,
+
+    /// Gas price multiplier (default: 1.2)
+    ///
+    /// Applied to the estimated gas price to ensure timely inclusion.
+    #[serde(default = "default_gas_price_multiplier")]
+    pub gas_price_multiplier: f64,
+
+    /// Maximum gas price in gwei (default: 100)
+    ///
+    /// Transactions will fail if the gas price exceeds this limit.
+    #[serde(default = "default_max_gas_price_gwei")]
+    pub max_gas_price_gwei: u64,
+
+    /// Gas limit buffer multiplier (default: 2.0)
+    ///
+    /// The estimated gas is multiplied by this value, then bounded by
+    /// floor and ceiling.
+    #[serde(default = "default_gas_buffer_multiplier")]
+    pub gas_buffer_multiplier: f64,
+
+    /// Minimum gas limit floor (default: 100,000)
+    ///
+    /// Even if the estimate is lower, this floor is applied.
+    #[serde(default = "default_gas_floor")]
+    pub gas_floor: u64,
+
+    /// Maximum gas addition above estimate (default: 200,000)
+    ///
+    /// The gas limit is capped at estimate + this value.
+    #[serde(default = "default_gas_max_addition")]
+    pub gas_max_addition: u64,
+}
+
+fn default_chain_client_enabled() -> bool {
+    false
+}
+
+fn default_chain_client_request_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
+fn default_chain_client_max_retries() -> u32 {
+    3
+}
+
+fn default_gas_buffer_multiplier() -> f64 {
+    2.0
+}
+
+fn default_gas_floor() -> u64 {
+    100_000
+}
+
+fn default_gas_max_addition() -> u64 {
+    200_000
 }
 
 #[serde_as]

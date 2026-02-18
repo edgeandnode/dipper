@@ -2,8 +2,27 @@
 //!
 //! This module provides the interface for interacting with the blockchain
 //! to manage indexing agreements on-chain.
+//!
+//! ## Implementation
+//!
+//! The production implementation uses alloy for Ethereum interactions and
+//! includes:
+//! - RPC provider pool with automatic failover
+//! - Exponential backoff retry logic
+//! - Gas estimation with safety bounds
+//! - Nonce management and error handling
+//!
+//! See [`AlloyChainClient`] for the production implementation.
+
+mod abi;
+mod client;
+mod gas;
+mod rpc_provider;
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
+pub use client::AlloyChainClient;
 use dipper_core::ids::IndexingAgreementId;
 use thegraph_core::alloy::primitives::B256;
 
@@ -40,6 +59,22 @@ pub trait ChainClient {
         &self,
         agreement_id: IndexingAgreementId,
     ) -> Result<B256, ChainClientError>;
+}
+
+/// Blanket impl for Arc-wrapped trait objects.
+///
+/// This allows using `Arc<dyn ChainClient + Send + Sync>` as a Clone-able
+/// chain client, enabling runtime selection between implementations.
+#[async_trait]
+impl<T: ChainClient + Send + Sync + ?Sized> ChainClient for Arc<T> {
+    async fn cancel_indexing_agreement_by_payer(
+        &self,
+        agreement_id: IndexingAgreementId,
+    ) -> Result<B256, ChainClientError> {
+        (**self)
+            .cancel_indexing_agreement_by_payer(agreement_id)
+            .await
+    }
 }
 
 /// Stub implementation that returns unimplemented error.

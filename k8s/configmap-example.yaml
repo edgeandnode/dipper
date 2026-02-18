@@ -62,5 +62,21 @@ data:
         "enabled": true,
         "interval": 90,
         "batch_size": 100
+      },
+      "chain_client": {
+        "enabled": false,
+        "providers": [
+          "https://arb1.arbitrum.io/rpc",
+          "https://arbitrum-one.publicnode.com"
+        ],
+        "request_timeout": 30,
+        "max_retries": 3,
+        "chain_id": 42161,
+        "subgraph_service_address": "0x0000000000000000000000000000000000000000",
+        "gas_price_multiplier": 1.2,
+        "max_gas_price_gwei": 100,
+        "gas_buffer_multiplier": 2.0,
+        "gas_floor": 100000,
+        "gas_max_addition": 200000
       }
     }
