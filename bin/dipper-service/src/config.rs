@@ -328,16 +328,6 @@ pub struct ChainListenerConfig {
     /// Maximum retry attempts for transient failures (default: 3)
     #[serde(default = "default_chain_listener_max_retries")]
     pub max_retries: u32,
-
-    /// Gas price multiplier for cancellation transactions (default: 1.2)
-    ///
-    /// Applied to the estimated gas price to ensure timely inclusion.
-    #[serde(default = "default_gas_price_multiplier")]
-    pub gas_price_multiplier: f64,
-
-    /// Maximum gas price in gwei for cancellation transactions (default: 100)
-    #[serde(default = "default_max_gas_price_gwei")]
-    pub max_gas_price_gwei: u64,
 }
 
 fn default_chain_listener_enabled() -> bool {
