@@ -163,7 +163,9 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher
+                voucher,
+                last_block_height,
+                last_progress_at
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1 AND status IN ($2, $3)
             "#,
@@ -263,7 +265,9 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher
+                voucher,
+                last_block_height,
+                last_progress_at
             FROM dipper_reg_indexing_agreements
             WHERE id = $1
             "#,
@@ -289,7 +293,9 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher
+                voucher,
+                last_block_height,
+                last_progress_at
             FROM dipper_reg_indexing_agreements
             WHERE deployment_id = $1
             "#,
@@ -315,7 +321,9 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher
+                voucher,
+                last_block_height,
+                last_progress_at
             FROM dipper_reg_indexing_agreements
             WHERE indexer_id = $1
             "#,
@@ -424,7 +432,9 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher
+                voucher,
+                last_block_height,
+                last_progress_at
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1
             "#,
@@ -715,7 +725,9 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher
+                voucher,
+                last_block_height,
+                last_progress_at
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
               AND CAST(voucher->>'deadline' AS bigint) < EXTRACT(epoch FROM timezone('UTC', now()))
