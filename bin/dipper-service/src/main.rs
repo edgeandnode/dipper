@@ -179,6 +179,26 @@ pub async fn main() -> anyhow::Result<()> {
 
     // Application services
 
+    //- The chain client (for on-chain transactions)
+    let chain_client: Arc<dyn chain_client::ChainClient + Send + Sync> = match &conf.chain_client {
+        Some(cfg) if cfg.enabled => {
+            // Extract the secret key bytes from the signer config
+            let secret_bytes: [u8; 32] = conf.signer.secret_key.as_ref().to_bytes().into();
+            let client = chain_client::AlloyChainClient::new(cfg, &secret_bytes)
+                .expect("Failed to create AlloyChainClient");
+            tracing::info!(
+                subgraph_service = %cfg.subgraph_service_address,
+                chain_id = cfg.chain_id,
+                "initialized AlloyChainClient for on-chain transactions"
+            );
+            Arc::new(client)
+        }
+        _ => {
+            tracing::info!("chain client disabled, using stub implementation");
+            Arc::new(chain_client::StubChainClient)
+        }
+    };
+
     //- The worker service
     let (worker_handle, worker_service) = {
         let ctx = worker::Ctx {
@@ -190,8 +210,7 @@ pub async fn main() -> anyhow::Result<()> {
             network: network_provider.clone(),
             client: indexer_client,
             iisa: iisa_client.clone(),
-            // TODO: Replace with real ChainClient implementation (#560)
-            chain_client: chain_client::StubChainClient,
+            chain_client,
         };
         worker::service::new(ctx)
     };
