@@ -576,11 +576,434 @@ async fn query_indexer_status(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+    };
 
-    use thegraph_core::DeploymentId;
+    use async_trait::async_trait;
+    use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
+    use dipper_pgmq::JobId;
+    use thegraph_core::{
+        DeploymentId, IndexerId,
+        alloy::primitives::{Address, B256, ChainId, U256},
+    };
+    use time::OffsetDateTime;
+    use url::Url;
 
-    use super::{group_by_indexer_url, tolerance_duration};
+    use super::{cancel_and_reassess, group_by_indexer_url, record_progress, tolerance_duration};
+    use crate::{
+        chain_client::{ChainClient, ChainClientError},
+        config::LivenessCheckerConfig,
+        registry::{
+            AgreementRegistry, IndexingAgreement, IndexingAgreementStatus,
+            IndexingAgreementVoucher, IndexingAgreementVoucherMetadata, IndexingRequest,
+            IndexingRequestRegistry, Result as RegistryResult,
+        },
+        worker::service::WorkerQueue,
+    };
+
+    // ---- Test helpers ----
+
+    fn make_agreement(
+        url: Url,
+        deployment_id: DeploymentId,
+        last_block_height: Option<u64>,
+        last_progress_at: Option<OffsetDateTime>,
+    ) -> IndexingAgreement {
+        IndexingAgreement {
+            id: IndexingAgreementId::new(),
+            created_at: OffsetDateTime::now_utc(),
+            updated_at: OffsetDateTime::now_utc(),
+            status: IndexingAgreementStatus::AcceptedOnChain,
+            indexing_request_id: IndexingRequestId::new(),
+            indexer: crate::registry::Indexer {
+                id: IndexerId::from(Address::ZERO),
+                url,
+            },
+            voucher: IndexingAgreementVoucher {
+                payer: Address::ZERO,
+                service_provider: Address::ZERO,
+                data_service: Address::ZERO,
+                deadline: 0,
+                ends_at: 0,
+                max_initial_tokens: U256::ZERO,
+                max_ongoing_tokens_per_second: U256::ZERO,
+                min_seconds_per_collection: 0,
+                max_seconds_per_collection: 0,
+                metadata: IndexingAgreementVoucherMetadata {
+                    tokens_per_second: U256::ZERO,
+                    tokens_per_entity_per_second: U256::ZERO,
+                    subgraph_deployment_id: deployment_id,
+                    protocol_network: 1u64,
+                    chain_id: 1u64,
+                },
+            },
+            last_block_height,
+            last_progress_at,
+        }
+    }
+
+    fn make_request(id: IndexingRequestId, num_candidates: usize) -> IndexingRequest {
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        IndexingRequest {
+            id,
+            created_at: OffsetDateTime::now_utc(),
+            updated_at: OffsetDateTime::now_utc(),
+            status: crate::registry::IndexingRequestStatus::Open,
+            requested_by: Address::ZERO,
+            deployment_id: dep,
+            deployment_chain_id: 1u64,
+            num_candidates,
+        }
+    }
+
+    // ---- Mocks ----
+
+    #[derive(Clone, Default)]
+    struct MockCalls {
+        progress_updates: Arc<Mutex<Vec<(IndexingAgreementId, u64)>>>,
+        abandoned: Arc<Mutex<Vec<IndexingAgreementId>>>,
+        reassessments: Arc<Mutex<Vec<IndexingRequestId>>>,
+        chain_cancels: Arc<Mutex<Vec<IndexingAgreementId>>>,
+    }
+
+    struct MockRegistry {
+        calls: MockCalls,
+        mark_abandoned_result: Arc<Mutex<Option<RegistryResult<IndexingAgreement>>>>,
+        get_request_result: Arc<Mutex<Option<RegistryResult<Option<IndexingRequest>>>>>,
+        agreement: IndexingAgreement,
+    }
+
+    impl MockRegistry {
+        fn new(calls: MockCalls, agreement: IndexingAgreement) -> Self {
+            let abandoned_agreement = {
+                let mut a = agreement.clone();
+                a.status = IndexingAgreementStatus::AbandonedByIndexer;
+                a
+            };
+            let request = make_request(agreement.indexing_request_id, 2);
+            Self {
+                calls,
+                mark_abandoned_result: Arc::new(Mutex::new(Some(Ok(abandoned_agreement)))),
+                get_request_result: Arc::new(Mutex::new(Some(Ok(Some(request))))),
+                agreement,
+            }
+        }
+
+        fn with_chain_error(calls: MockCalls, agreement: IndexingAgreement) -> Self {
+            let mut mock = Self::new(calls, agreement);
+            mock.mark_abandoned_result = Arc::new(Mutex::new(None));
+            mock
+        }
+    }
+
+    #[async_trait]
+    impl AgreementRegistry for MockRegistry {
+        async fn get_indexing_agreement_by_id(
+            &self,
+            _id: &IndexingAgreementId,
+        ) -> RegistryResult<Option<IndexingAgreement>> {
+            unimplemented!()
+        }
+        async fn get_indexing_agreements_by_deployment_id(
+            &self,
+            _id: &DeploymentId,
+        ) -> RegistryResult<Vec<IndexingAgreement>> {
+            unimplemented!()
+        }
+        async fn get_indexing_agreements_by_indexer_id(
+            &self,
+            _id: &IndexerId,
+        ) -> RegistryResult<Vec<IndexingAgreement>> {
+            unimplemented!()
+        }
+        async fn get_pending_agreement_indexers_by_deployment(
+            &self,
+            _ids: &[IndexerId],
+        ) -> RegistryResult<HashMap<DeploymentId, Vec<IndexerId>>> {
+            unimplemented!()
+        }
+        async fn get_declined_indexers_by_deployment(
+            &self,
+            _days: i32,
+        ) -> RegistryResult<HashMap<DeploymentId, Vec<IndexerId>>> {
+            unimplemented!()
+        }
+        async fn get_indexing_agreements_by_indexing_request_id(
+            &self,
+            _id: &IndexingRequestId,
+        ) -> RegistryResult<Vec<IndexingAgreement>> {
+            unimplemented!()
+        }
+        async fn get_active_indexing_agreements_by_indexing_request_id(
+            &self,
+            _id: &IndexingRequestId,
+        ) -> RegistryResult<Vec<IndexingAgreement>> {
+            unimplemented!()
+        }
+        async fn register_new_indexing_agreement(
+            &self,
+            _req_id: IndexingRequestId,
+            _dep_id: DeploymentId,
+            _idx_id: IndexerId,
+            _url: Url,
+            _voucher: crate::registry::IndexingAgreementVoucher,
+        ) -> RegistryResult<IndexingAgreementId> {
+            unimplemented!()
+        }
+        async fn mark_indexing_agreement_as_delivery_failed(
+            &self,
+            _id: &IndexingAgreementId,
+        ) -> RegistryResult<()> {
+            unimplemented!()
+        }
+        async fn mark_indexing_agreement_as_canceled_by_requester(
+            &self,
+            _id: &IndexingAgreementId,
+        ) -> RegistryResult<()> {
+            unimplemented!()
+        }
+        async fn mark_indexing_agreement_as_canceled_by_indexer(
+            &self,
+            _id: &IndexingAgreementId,
+        ) -> RegistryResult<()> {
+            unimplemented!()
+        }
+        async fn mark_indexing_agreement_as_accepted_on_chain(
+            &self,
+            _id: &IndexingAgreementId,
+        ) -> RegistryResult<()> {
+            unimplemented!()
+        }
+        async fn get_expired_created_agreements(
+            &self,
+            _limit: i64,
+        ) -> RegistryResult<Vec<IndexingAgreement>> {
+            unimplemented!()
+        }
+        async fn mark_indexing_agreement_as_expired(
+            &self,
+            _id: &IndexingAgreementId,
+        ) -> RegistryResult<()> {
+            unimplemented!()
+        }
+        async fn mark_indexing_agreement_as_rejected(
+            &self,
+            _id: &IndexingAgreementId,
+        ) -> RegistryResult<()> {
+            unimplemented!()
+        }
+        async fn get_accepted_on_chain_agreements(
+            &self,
+            _limit: i64,
+        ) -> RegistryResult<Vec<IndexingAgreement>> {
+            unimplemented!()
+        }
+        async fn update_agreement_sync_progress(
+            &self,
+            id: &IndexingAgreementId,
+            block_height: u64,
+            _progress_at: OffsetDateTime,
+        ) -> RegistryResult<()> {
+            self.calls
+                .progress_updates
+                .lock()
+                .unwrap()
+                .push((*id, block_height));
+            Ok(())
+        }
+        async fn count_active_agreements_by_deployment(
+            &self,
+        ) -> RegistryResult<HashMap<DeploymentId, usize>> {
+            unimplemented!()
+        }
+        async fn mark_indexing_agreement_as_abandoned(
+            &self,
+            id: &IndexingAgreementId,
+        ) -> RegistryResult<IndexingAgreement> {
+            self.calls.abandoned.lock().unwrap().push(*id);
+            self.mark_abandoned_result
+                .lock()
+                .unwrap()
+                .take()
+                .expect("mark_abandoned called more than once")
+        }
+    }
+
+    #[async_trait]
+    impl IndexingRequestRegistry for MockRegistry {
+        async fn register_new_indexing_request(
+            &self,
+            _by: Address,
+            _dep: DeploymentId,
+            _chain: ChainId,
+            _n: usize,
+        ) -> RegistryResult<IndexingRequestId> {
+            unimplemented!()
+        }
+        async fn get_all_indexing_requests(&self) -> RegistryResult<Vec<IndexingRequest>> {
+            unimplemented!()
+        }
+        async fn get_indexing_request_by_id(
+            &self,
+            _id: &IndexingRequestId,
+        ) -> RegistryResult<Option<IndexingRequest>> {
+            self.get_request_result
+                .lock()
+                .unwrap()
+                .take()
+                .expect("get_indexing_request_by_id called more than once")
+        }
+        async fn get_indexing_requests_by_deployment_id(
+            &self,
+            _dep: &DeploymentId,
+        ) -> RegistryResult<Vec<IndexingRequest>> {
+            unimplemented!()
+        }
+        async fn mark_indexing_request_as_canceled(
+            &self,
+            _id: &IndexingRequestId,
+        ) -> RegistryResult<()> {
+            unimplemented!()
+        }
+        async fn get_open_indexing_requests_for_reassessment(
+            &self,
+            _min_age: i64,
+            _batch: i64,
+        ) -> RegistryResult<Vec<IndexingRequest>> {
+            unimplemented!()
+        }
+    }
+
+    #[derive(Clone)]
+    struct MockWorkerQueue {
+        calls: MockCalls,
+    }
+
+    #[async_trait]
+    impl WorkerQueue for MockWorkerQueue {
+        async fn process_new_indexing_request(
+            &self,
+            _req_id: IndexingRequestId,
+            _dep: DeploymentId,
+            _chain: ChainId,
+            _n: usize,
+        ) -> anyhow::Result<JobId> {
+            unimplemented!()
+        }
+        async fn send_indexing_agreement_proposal(
+            &self,
+            _url: Url,
+            _agr_id: IndexingAgreementId,
+            _req_id: IndexingRequestId,
+            _dep: DeploymentId,
+            _chain: ChainId,
+        ) -> anyhow::Result<JobId> {
+            unimplemented!()
+        }
+        async fn send_indexing_agreement_cancellation(
+            &self,
+            _url: Url,
+            _req_id: IndexingRequestId,
+            _agr_id: IndexingAgreementId,
+        ) -> anyhow::Result<JobId> {
+            unimplemented!()
+        }
+        async fn process_indexing_request_cancellation(
+            &self,
+            _req_id: IndexingRequestId,
+        ) -> anyhow::Result<JobId> {
+            unimplemented!()
+        }
+        async fn process_indexing_agreement_requester_cancellation(
+            &self,
+            _req_id: IndexingRequestId,
+            _agr_id: IndexingAgreementId,
+        ) -> anyhow::Result<JobId> {
+            unimplemented!()
+        }
+        async fn process_indexing_agreement_indexer_cancellation(
+            &self,
+            _req_id: IndexingRequestId,
+            _agr_id: IndexingAgreementId,
+        ) -> anyhow::Result<JobId> {
+            unimplemented!()
+        }
+        async fn reassess_indexing_request(
+            &self,
+            req_id: IndexingRequestId,
+            _dep: DeploymentId,
+            _chain: ChainId,
+            _n: usize,
+        ) -> anyhow::Result<JobId> {
+            self.calls.reassessments.lock().unwrap().push(req_id);
+            Ok(JobId::default())
+        }
+        async fn cancel_rejected_agreement_on_chain(
+            &self,
+            _agr_id: IndexingAgreementId,
+        ) -> anyhow::Result<JobId> {
+            unimplemented!()
+        }
+    }
+
+    struct MockChainClient {
+        calls: MockCalls,
+        result: Result<B256, ChainClientError>,
+    }
+
+    impl MockChainClient {
+        fn success(calls: MockCalls) -> Self {
+            Self {
+                calls,
+                result: Ok(B256::ZERO),
+            }
+        }
+
+        fn config_error(calls: MockCalls) -> Self {
+            Self {
+                calls,
+                result: Err(ChainClientError::ConfigError("disabled".into())),
+            }
+        }
+
+        fn rpc_error(calls: MockCalls) -> Self {
+            Self {
+                calls,
+                result: Err(ChainClientError::RpcError(anyhow::anyhow!("network error"))),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ChainClient for MockChainClient {
+        async fn cancel_indexing_agreement_by_payer(
+            &self,
+            id: IndexingAgreementId,
+        ) -> Result<B256, ChainClientError> {
+            self.calls.chain_cancels.lock().unwrap().push(id);
+            match &self.result {
+                Ok(hash) => Ok(*hash),
+                Err(ChainClientError::ConfigError(s)) => {
+                    Err(ChainClientError::ConfigError(s.clone()))
+                }
+                Err(ChainClientError::RpcError(e)) => {
+                    Err(ChainClientError::RpcError(anyhow::anyhow!("{e}")))
+                }
+                Err(ChainClientError::SubmitFailed(e)) => {
+                    Err(ChainClientError::SubmitFailed(anyhow::anyhow!("{e}")))
+                }
+            }
+        }
+    }
+
+    const DB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+    const QUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    // ---- Pure function tests ----
 
     #[test]
     fn test_threshold_scales_with_active_agreements() {
@@ -613,5 +1036,165 @@ mod tests {
         // Deployment not found → defaults to 1 day
         let counts = HashMap::new();
         assert_eq!(tolerance_duration(deployment, &counts, max).whole_days(), 1);
+    }
+
+    #[test]
+    fn test_group_by_indexer_url() {
+        let url_a: Url = "http://indexer-a.example.com/".parse().unwrap();
+        let url_b: Url = "http://indexer-b.example.com/".parse().unwrap();
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+
+        let a1 = make_agreement(url_a.clone(), dep, None, None);
+        let a2 = make_agreement(url_a.clone(), dep, None, None);
+        let b1 = make_agreement(url_b.clone(), dep, None, None);
+
+        let groups = group_by_indexer_url(vec![a1, a2, b1]);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[&url_a].len(), 2);
+        assert_eq!(groups[&url_b].len(), 1);
+    }
+
+    #[test]
+    fn test_default_config() {
+        let config = LivenessCheckerConfig::default();
+        assert!(!config.enabled); // off by default
+        assert_eq!(config.interval, std::time::Duration::from_secs(300));
+        assert_eq!(config.max_tolerance_days, 4);
+        assert_eq!(config.request_timeout, std::time::Duration::from_secs(10));
+        assert_eq!(config.batch_size, 500);
+    }
+
+    // ---- cancel_and_reassess behavior tests ----
+
+    #[tokio::test]
+    async fn test_cancel_and_reassess_success() {
+        // Arrange
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let url: Url = "http://indexer.example.com/".parse().unwrap();
+        let agreement = make_agreement(url, dep, Some(100), Some(OffsetDateTime::now_utc()));
+        let req_id = agreement.indexing_request_id;
+        let agr_id = agreement.id;
+
+        let calls = MockCalls::default();
+        let registry = MockRegistry::new(calls.clone(), agreement.clone());
+        let queue = MockWorkerQueue {
+            calls: calls.clone(),
+        };
+        let chain = MockChainClient::success(calls.clone());
+
+        // Act
+        cancel_and_reassess(
+            &agreement,
+            &registry,
+            &queue,
+            &chain,
+            DB_TIMEOUT,
+            QUEUE_TIMEOUT,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(calls.chain_cancels.lock().unwrap().as_slice(), &[agr_id]);
+        assert_eq!(calls.abandoned.lock().unwrap().as_slice(), &[agr_id]);
+        assert_eq!(calls.reassessments.lock().unwrap().as_slice(), &[req_id]);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_and_reassess_config_error_proceeds() {
+        // Arrange: chain client disabled (ConfigError) → still mark abandoned and reassess
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let url: Url = "http://indexer.example.com/".parse().unwrap();
+        let agreement = make_agreement(url, dep, Some(100), Some(OffsetDateTime::now_utc()));
+        let req_id = agreement.indexing_request_id;
+        let agr_id = agreement.id;
+
+        let calls = MockCalls::default();
+        let registry = MockRegistry::new(calls.clone(), agreement.clone());
+        let queue = MockWorkerQueue {
+            calls: calls.clone(),
+        };
+        let chain = MockChainClient::config_error(calls.clone());
+
+        // Act
+        cancel_and_reassess(
+            &agreement,
+            &registry,
+            &queue,
+            &chain,
+            DB_TIMEOUT,
+            QUEUE_TIMEOUT,
+        )
+        .await;
+
+        // Assert: no on-chain cancel (ConfigError is treated as disabled, not a real error)
+        // but DB mark and reassessment still happen
+        assert_eq!(calls.chain_cancels.lock().unwrap().as_slice(), &[agr_id]);
+        assert_eq!(calls.abandoned.lock().unwrap().as_slice(), &[agr_id]);
+        assert_eq!(calls.reassessments.lock().unwrap().as_slice(), &[req_id]);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_and_reassess_chain_error_skips() {
+        // Arrange: transient RPC error → do nothing (retry next cycle)
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let url: Url = "http://indexer.example.com/".parse().unwrap();
+        let agreement = make_agreement(url, dep, Some(100), Some(OffsetDateTime::now_utc()));
+        let agr_id = agreement.id;
+
+        let calls = MockCalls::default();
+        let registry = MockRegistry::with_chain_error(calls.clone(), agreement.clone());
+        let queue = MockWorkerQueue {
+            calls: calls.clone(),
+        };
+        let chain = MockChainClient::rpc_error(calls.clone());
+
+        // Act
+        cancel_and_reassess(
+            &agreement,
+            &registry,
+            &queue,
+            &chain,
+            DB_TIMEOUT,
+            QUEUE_TIMEOUT,
+        )
+        .await;
+
+        // Assert: chain cancel attempted, but DB and queue untouched
+        assert_eq!(calls.chain_cancels.lock().unwrap().as_slice(), &[agr_id]);
+        assert!(calls.abandoned.lock().unwrap().is_empty());
+        assert!(calls.reassessments.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_record_progress_calls_registry() {
+        // Arrange
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let url: Url = "http://indexer.example.com/".parse().unwrap();
+        let agreement = make_agreement(url, dep, None, None);
+        let agr_id = agreement.id;
+
+        let calls = MockCalls::default();
+        let registry = MockRegistry::new(calls.clone(), agreement.clone());
+
+        let now = OffsetDateTime::now_utc();
+
+        // Act
+        record_progress(&registry, &agreement, 12345, now, DB_TIMEOUT).await;
+
+        // Assert
+        let updates = calls.progress_updates.lock().unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0], (agr_id, 12345));
     }
 }
