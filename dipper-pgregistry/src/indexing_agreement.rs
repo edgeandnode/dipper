@@ -46,6 +46,16 @@ pub struct IndexingAgreement {
     ///
     /// It contains the agreement terms and conditions.
     pub voucher: Voucher,
+
+    /// The last observed block height for the subgraph deployment.
+    ///
+    /// `None` until the first liveness check fires for this agreement.
+    pub last_block_height: Option<u64>,
+
+    /// When the block height was last observed to change (progress or resync).
+    ///
+    /// `None` until the first liveness check fires for this agreement.
+    pub last_progress_at: Option<OffsetDateTime>,
 }
 
 /// The status of the [`IndexingAgreement`].
@@ -105,6 +115,14 @@ pub enum Status {
     /// Dipper will cancel the agreement via `cancelIndexingAgreementByPayer`.
     Rejected = 7,
 
+    /// The liveness checker detected no indexing progress within the tolerance window.
+    ///
+    /// Dipper canceled the agreement via `cancelIndexingAgreementByPayer` and will
+    /// trigger reassignment to find a replacement indexer.
+    ///
+    /// This is a terminal state.
+    AbandonedByIndexer = 8,
+
     /// A fallback for unknown status values.
     Unknown = i32::MAX,
 }
@@ -119,6 +137,7 @@ impl std::fmt::Display for Status {
             Status::Expired => "EXPIRED",
             Status::AcceptedOnChain => "ACCEPTED_ON_CHAIN",
             Status::Rejected => "REJECTED",
+            Status::AbandonedByIndexer => "ABANDONED_BY_INDEXER",
             Status::Unknown => "UNKNOWN",
         };
         f.write_str(status)

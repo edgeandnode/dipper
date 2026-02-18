@@ -12,6 +12,7 @@ use thegraph_core::{
     DeploymentId, IndexerId,
     alloy::primitives::{Address, ChainId, U256},
 };
+use time;
 use url::Url;
 
 // Re-export for tests only
@@ -310,6 +311,52 @@ impl AgreementRegistry for RegistryProvider {
             .mark_indexing_agreement_as_rejected(id)
             .await
             .map_err(Into::into)
+    }
+
+    async fn get_accepted_on_chain_agreements(
+        &self,
+        batch_size: i64,
+    ) -> RegistryResult<Vec<IndexingAgreement>> {
+        Ok(self
+            .inner
+            .get_accepted_on_chain_agreements(batch_size)
+            .await?
+            .into_iter()
+            .map(IndexingAgreement::try_from)
+            .filter_map(Result::ok)
+            .collect())
+    }
+
+    async fn update_agreement_sync_progress(
+        &self,
+        id: &IndexingAgreementId,
+        block_height: u64,
+        progress_at: time::OffsetDateTime,
+    ) -> RegistryResult<()> {
+        self.inner
+            .update_agreement_sync_progress(id, block_height, progress_at)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn count_active_agreements_by_deployment(
+        &self,
+    ) -> RegistryResult<std::collections::HashMap<DeploymentId, usize>> {
+        self.inner
+            .count_active_agreements_by_deployment()
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn mark_indexing_agreement_as_abandoned(
+        &self,
+        id: &IndexingAgreementId,
+    ) -> RegistryResult<IndexingAgreement> {
+        let raw = self.inner.mark_indexing_agreement_as_abandoned(id).await?;
+        // The conversion only fails for Unknown status; since we just wrote
+        // AbandonedByIndexer, this cannot fail in practice.
+        IndexingAgreement::try_from(raw)
+            .map_err(|_| dipper_pgregistry::Error::NoRecordsUpdated.into())
     }
 }
 

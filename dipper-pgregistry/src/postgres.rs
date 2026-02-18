@@ -796,6 +796,141 @@ impl PgRegistry {
     }
 
     // =========================================================================
+    // Liveness tracking operations
+    // =========================================================================
+
+    /// Get all `AcceptedOnChain` agreements for liveness checking.
+    ///
+    /// Returns agreements ordered by `last_progress_at` ascending (NULLs first),
+    /// so agreements that have never been checked are processed first.
+    pub async fn get_accepted_on_chain_agreements(
+        &self,
+        batch_size: i64,
+    ) -> Result<Vec<IndexingAgreement>, Error> {
+        sqlx::query_as(
+            r#"
+            SELECT
+                id,
+                created_at,
+                updated_at,
+                status,
+                indexing_request_id,
+                deployment_id,
+                indexer_id,
+                indexer_url,
+                voucher,
+                last_block_height,
+                last_progress_at
+            FROM dipper_reg_indexing_agreements
+            WHERE status = $1
+            ORDER BY last_progress_at ASC NULLS FIRST
+            LIMIT CASE WHEN $2 > 0 THEN $2 ELSE NULL END
+            "#,
+        )
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
+        .bind(batch_size)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Update the sync progress for an agreement.
+    ///
+    /// Called when the liveness checker observes the block height has changed
+    /// (either advancing or resetting due to a resync).
+    pub async fn update_agreement_sync_progress(
+        &self,
+        agreement_id: &IndexingAgreementId,
+        block_height: u64,
+        progress_at: time::OffsetDateTime,
+    ) -> Result<(), Error> {
+        sqlx::query(
+            r#"
+            UPDATE dipper_reg_indexing_agreements
+            SET
+                last_block_height = $1,
+                last_progress_at = $2
+            WHERE id = $3
+            "#,
+        )
+        .bind(block_height as i64)
+        .bind(progress_at)
+        .bind(agreement_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Count active agreements per deployment.
+    ///
+    /// Returns a map of deployment ID to count of `Created` or `AcceptedOnChain`
+    /// agreements. Used by the liveness checker to determine the tolerance threshold
+    /// for each deployment.
+    pub async fn count_active_agreements_by_deployment(
+        &self,
+    ) -> Result<HashMap<DeploymentId, usize>, Error> {
+        let rows: Vec<(PgDeploymentId, i64)> = sqlx::query_as(
+            r#"
+            SELECT deployment_id, COUNT(*) as count
+            FROM dipper_reg_indexing_agreements
+            WHERE status IN ($1, $2)
+            GROUP BY deployment_id
+            "#,
+        )
+        .bind(IndexingAgreementStatus::Created)
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(deployment, count)| (deployment.0, count as usize))
+            .collect())
+    }
+
+    /// Mark an agreement as `AbandonedByIndexer`.
+    ///
+    /// Transitions `AcceptedOnChain → AbandonedByIndexer`. Returns the full
+    /// agreement for use in the subsequent reassessment call.
+    ///
+    /// Returns [`NoRecordsUpdated`](Error::NoRecordsUpdated) if the agreement
+    /// doesn't exist or isn't in `AcceptedOnChain` status.
+    pub async fn mark_indexing_agreement_as_abandoned(
+        &self,
+        agreement_id: &IndexingAgreementId,
+    ) -> Result<IndexingAgreement, Error> {
+        let record: Option<IndexingAgreement> = sqlx::query_as(
+            r#"
+            UPDATE dipper_reg_indexing_agreements
+            SET
+                status = $1,
+                updated_at = timezone('UTC', now())
+            WHERE id = $2 AND status = $3
+            RETURNING
+                id,
+                created_at,
+                updated_at,
+                status,
+                indexing_request_id,
+                deployment_id,
+                indexer_id,
+                indexer_url,
+                voucher,
+                last_block_height,
+                last_progress_at
+            "#,
+        )
+        .bind(IndexingAgreementStatus::AbandonedByIndexer)
+        .bind(agreement_id)
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        record.ok_or(Error::NoRecordsUpdated)
+    }
+
+    // =========================================================================
     // Indexer denylist operations
     // =========================================================================
 
