@@ -208,68 +208,65 @@ where
 
                     let now = OffsetDateTime::now_utc();
 
-                    match agreement.last_block_height {
-                        None => {
-                            // First check for this agreement: initialize progress tracking.
-                            // Use 0 if the deployment is missing from the response so we give
-                            // the indexer a full tolerance window before any cancellation.
-                            let block = current_block.unwrap_or(0);
+                    let action = decide_liveness_action(
+                        agreement.last_block_height,
+                        current_block,
+                        agreement.last_progress_at,
+                        now,
+                        agreement.voucher.metadata.subgraph_deployment_id,
+                        &active_counts,
+                        config.max_tolerance_days,
+                    );
+
+                    match action {
+                        LivenessAction::InitializeTracking(block)
+                        | LivenessAction::ResetProgress(block) => {
                             record_progress(&registry, &agreement, block, now, DB_UPDATE_TIMEOUT)
                                 .await;
                         }
-                        Some(last) => {
-                            let current = current_block.unwrap_or(0);
-                            if current != last {
-                                // Block changed (up or down): reset clock
-                                record_progress(
-                                    &registry,
-                                    &agreement,
-                                    current,
-                                    now,
-                                    DB_UPDATE_TIMEOUT,
-                                )
-                                .await;
-                            } else {
-                                // No change: check elapsed time against threshold
-                                let last_progress = agreement.last_progress_at.unwrap_or(now);
-                                let elapsed = now - last_progress;
-                                let threshold = tolerance_duration(
-                                    agreement.voucher.metadata.subgraph_deployment_id,
-                                    &active_counts,
-                                    config.max_tolerance_days,
-                                );
-
-                                if elapsed > threshold {
-                                    tracing::warn!(
-                                        agreement_id = %agreement.id,
-                                        indexer_url = %indexer_url,
-                                        deployment = %deployment_id_str,
-                                        last_block = last,
-                                        elapsed_hours = elapsed.whole_hours(),
-                                        threshold_hours = threshold.whole_hours(),
-                                        "agreement stale: no indexing progress detected"
-                                    );
-
-                                    cancel_and_reassess(
-                                        &agreement,
-                                        &registry,
-                                        &worker_queue,
-                                        &chain_client,
-                                        DB_UPDATE_TIMEOUT,
-                                        QUEUE_PUSH_TIMEOUT,
-                                    )
-                                    .await;
-                                } else {
-                                    tracing::debug!(
-                                        agreement_id = %agreement.id,
-                                        deployment = %deployment_id_str,
-                                        last_block = last,
-                                        elapsed_hours = elapsed.whole_hours(),
-                                        threshold_hours = threshold.whole_hours(),
-                                        "agreement block unchanged but within tolerance"
-                                    );
-                                }
-                            }
+                        LivenessAction::WithinTolerance => {
+                            let last_progress = agreement.last_progress_at.unwrap_or(now);
+                            let elapsed = now - last_progress;
+                            let threshold = tolerance_duration(
+                                agreement.voucher.metadata.subgraph_deployment_id,
+                                &active_counts,
+                                config.max_tolerance_days,
+                            );
+                            tracing::debug!(
+                                agreement_id = %agreement.id,
+                                deployment = %deployment_id_str,
+                                last_block = agreement.last_block_height.unwrap_or(0),
+                                elapsed_hours = elapsed.whole_hours(),
+                                threshold_hours = threshold.whole_hours(),
+                                "agreement block unchanged but within tolerance"
+                            );
+                        }
+                        LivenessAction::CancelAndReassess => {
+                            let last_progress = agreement.last_progress_at.unwrap_or(now);
+                            let elapsed = now - last_progress;
+                            let threshold = tolerance_duration(
+                                agreement.voucher.metadata.subgraph_deployment_id,
+                                &active_counts,
+                                config.max_tolerance_days,
+                            );
+                            tracing::warn!(
+                                agreement_id = %agreement.id,
+                                indexer_url = %indexer_url,
+                                deployment = %deployment_id_str,
+                                last_block = agreement.last_block_height.unwrap_or(0),
+                                elapsed_hours = elapsed.whole_hours(),
+                                threshold_hours = threshold.whole_hours(),
+                                "agreement stale: no indexing progress detected"
+                            );
+                            cancel_and_reassess(
+                                &agreement,
+                                &registry,
+                                &worker_queue,
+                                &chain_client,
+                                DB_UPDATE_TIMEOUT,
+                                QUEUE_PUSH_TIMEOUT,
+                            )
+                            .await;
                         }
                     }
                 }
@@ -491,6 +488,52 @@ async fn cancel_and_reassess<R, W, C>(
     }
 }
 
+/// The action the liveness checker should take for a single agreement after evaluating its sync state.
+#[derive(Debug, PartialEq)]
+pub(crate) enum LivenessAction {
+    /// No prior state: record the current block height to start the clock.
+    InitializeTracking(u64),
+    /// Block height changed (up or down, including resync): reset the progress clock.
+    ResetProgress(u64),
+    /// Block height unchanged and within tolerance: no action.
+    WithinTolerance,
+    /// Block height unchanged and tolerance exceeded: cancel and reassess.
+    CancelAndReassess,
+}
+
+/// Pure decision function — determines what action to take for one agreement.
+///
+/// No I/O, no async, fully unit testable.
+pub(crate) fn decide_liveness_action(
+    last_block_height: Option<u64>,
+    current_block: Option<u64>,
+    last_progress_at: Option<OffsetDateTime>,
+    now: OffsetDateTime,
+    deployment_id: DeploymentId,
+    active_counts: &HashMap<DeploymentId, usize>,
+    max_tolerance_days: u32,
+) -> LivenessAction {
+    match last_block_height {
+        None => LivenessAction::InitializeTracking(current_block.unwrap_or(0)),
+        Some(last) => {
+            let current = current_block.unwrap_or(0);
+            if current != last {
+                LivenessAction::ResetProgress(current)
+            } else {
+                let last_progress = last_progress_at.unwrap_or(now);
+                let elapsed = now - last_progress;
+                let threshold =
+                    tolerance_duration(deployment_id, active_counts, max_tolerance_days);
+                if elapsed > threshold {
+                    LivenessAction::CancelAndReassess
+                } else {
+                    LivenessAction::WithinTolerance
+                }
+            }
+        }
+    }
+}
+
 /// Query a single indexer's status endpoint for sync progress.
 ///
 /// Returns a map of deployment ID (IPFS hash string) to the latest block height,
@@ -591,7 +634,10 @@ mod tests {
     use time::OffsetDateTime;
     use url::Url;
 
-    use super::{cancel_and_reassess, group_by_indexer_url, record_progress, tolerance_duration};
+    use super::{
+        LivenessAction, cancel_and_reassess, decide_liveness_action, group_by_indexer_url,
+        record_progress, tolerance_duration,
+    };
     use crate::{
         chain_client::{ChainClient, ChainClientError},
         config::LivenessCheckerConfig,
@@ -1065,6 +1111,122 @@ mod tests {
         assert_eq!(config.max_tolerance_days, 4);
         assert_eq!(config.request_timeout, std::time::Duration::from_secs(10));
         assert_eq!(config.batch_size, 500);
+    }
+
+    // ---- decide_liveness_action pure function tests ----
+
+    #[test]
+    fn test_first_check_initializes_with_current_block() {
+        // Arrange
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let counts = HashMap::new();
+        let now = OffsetDateTime::now_utc();
+
+        // Act
+        let action = decide_liveness_action(None, Some(500), None, now, dep, &counts, 4);
+
+        // Assert
+        assert_eq!(action, LivenessAction::InitializeTracking(500));
+    }
+
+    #[test]
+    fn test_first_check_missing_deployment_initializes_at_zero() {
+        // Arrange
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let counts = HashMap::new();
+        let now = OffsetDateTime::now_utc();
+
+        // Act — no block in response (deployment missing)
+        let action = decide_liveness_action(None, None, None, now, dep, &counts, 4);
+
+        // Assert
+        assert_eq!(action, LivenessAction::InitializeTracking(0));
+    }
+
+    #[test]
+    fn test_block_increase_resets_progress() {
+        // Arrange
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let counts = HashMap::new();
+        let now = OffsetDateTime::now_utc();
+
+        // Act
+        let action = decide_liveness_action(Some(100), Some(200), None, now, dep, &counts, 4);
+
+        // Assert
+        assert_eq!(action, LivenessAction::ResetProgress(200));
+    }
+
+    #[test]
+    fn test_block_decrease_resets_progress() {
+        // Arrange — resync scenario: block went backwards
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let counts = HashMap::new();
+        let now = OffsetDateTime::now_utc();
+
+        // Act
+        let action = decide_liveness_action(Some(200), Some(50), None, now, dep, &counts, 4);
+
+        // Assert
+        assert_eq!(action, LivenessAction::ResetProgress(50));
+    }
+
+    #[test]
+    fn test_within_tolerance_no_action() {
+        // Arrange — block unchanged, 12h elapsed, 1-day threshold
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let counts = HashMap::from([(dep, 1usize)]);
+        let now = OffsetDateTime::now_utc();
+        let last_progress = now - time::Duration::hours(12);
+
+        // Act
+        let action = decide_liveness_action(
+            Some(100),
+            Some(100),
+            Some(last_progress),
+            now,
+            dep,
+            &counts,
+            4,
+        );
+
+        // Assert
+        assert_eq!(action, LivenessAction::WithinTolerance);
+    }
+
+    #[test]
+    fn test_stale_triggers_cancel() {
+        // Arrange — block unchanged, 25h elapsed, 1-day threshold
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let counts = HashMap::from([(dep, 1usize)]);
+        let now = OffsetDateTime::now_utc();
+        let last_progress = now - time::Duration::hours(25);
+
+        // Act
+        let action = decide_liveness_action(
+            Some(100),
+            Some(100),
+            Some(last_progress),
+            now,
+            dep,
+            &counts,
+            4,
+        );
+
+        // Assert
+        assert_eq!(action, LivenessAction::CancelAndReassess);
     }
 
     // ---- cancel_and_reassess behavior tests ----
