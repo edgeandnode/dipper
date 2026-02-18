@@ -77,9 +77,9 @@ impl<T: ChainClient + Send + Sync + ?Sized> ChainClient for Arc<T> {
     }
 }
 
-/// Stub implementation that returns unimplemented error.
+/// Stub implementation that returns an error.
 ///
-/// This is used until the real implementation is added.
+/// Used when the chain client is disabled via configuration.
 #[derive(Clone)]
 pub struct StubChainClient;
 

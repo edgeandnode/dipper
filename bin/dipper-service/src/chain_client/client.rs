@@ -118,13 +118,9 @@ impl AlloyChainClient {
         })
     }
 
-    /// Encode the calldata for `cancelIndexingAgreementByPayer(bytes32)`.
+    /// Encode the calldata for `cancelIndexingAgreementByPayer(bytes16)`.
     fn encode_cancel_call(&self, agreement_id: IndexingAgreementId) -> Vec<u8> {
-        let agreement_bytes: FixedBytes<32> = {
-            let mut bytes = [0u8; 32];
-            bytes[..16].copy_from_slice(agreement_id.as_bytes());
-            FixedBytes::from(bytes)
-        };
+        let agreement_bytes = FixedBytes::<16>::from_slice(agreement_id.as_bytes());
 
         ISubgraphService::cancelIndexingAgreementByPayerCall {
             agreementId: agreement_bytes,
@@ -196,7 +192,7 @@ impl AlloyChainClient {
 
         // Build HTTP client with timeout
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(self.inner.rpc_pool.request_timeout())
             .build()
             .map_err(|e| {
                 ChainClientError::ConfigError(format!("Failed to build HTTP client: {e}"))
@@ -233,6 +229,7 @@ impl ChainClient for AlloyChainClient {
 
         // 2. Build initial transaction request
         let tx = TransactionRequest::default()
+            .from(self.inner.signer.address())
             .to(self.inner.subgraph_service_address)
             .input(calldata.into());
 
@@ -322,13 +319,8 @@ mod tests {
 
     #[test]
     fn test_encode_cancel_call() {
-        // Test that the function selector is correct
         let agreement_id = IndexingAgreementId::new();
-        let agreement_bytes: FixedBytes<32> = {
-            let mut bytes = [0u8; 32];
-            bytes[..16].copy_from_slice(agreement_id.as_bytes());
-            FixedBytes::from(bytes)
-        };
+        let agreement_bytes = FixedBytes::<16>::from_slice(agreement_id.as_bytes());
 
         let call = ISubgraphService::cancelIndexingAgreementByPayerCall {
             agreementId: agreement_bytes,
@@ -336,8 +328,7 @@ mod tests {
 
         let encoded = call.abi_encode();
 
-        // Function selector should be first 4 bytes
-        // cancelIndexingAgreementByPayer(bytes32) has a specific selector
-        assert_eq!(encoded.len(), 4 + 32); // 4 byte selector + 32 byte argument
+        // 4-byte selector + bytes16 argument (right-padded to 32 bytes in ABI encoding)
+        assert_eq!(encoded.len(), 4 + 32);
     }
 }

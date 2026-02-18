@@ -16,6 +16,6 @@ sol! {
         /// emits an `IndexingAgreementCanceled` event.
         ///
         /// Can only be called by the original payer of the agreement.
-        function cancelIndexingAgreementByPayer(bytes32 agreementId) external;
+        function cancelIndexingAgreementByPayer(bytes16 agreementId) external;
     }
 }

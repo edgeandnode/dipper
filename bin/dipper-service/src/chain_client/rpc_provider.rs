@@ -93,6 +93,11 @@ impl RpcProviderPool {
         })
     }
 
+    /// Get the configured request timeout.
+    pub fn request_timeout(&self) -> Duration {
+        self.request_timeout
+    }
+
     /// Get the current provider URL.
     pub fn current_url(&self) -> &Url {
         let idx = self.current_index.load(Ordering::Relaxed) % self.providers.len();
@@ -147,7 +152,6 @@ impl RpcProviderPool {
         F: Fn(HttpProvider) -> Fut,
         Fut: Future<Output = Result<T, TransportError>>,
     {
-        let initial_index = self.current_index.load(Ordering::Relaxed);
         let mut last_error: Option<TransportError> = None;
         let mut providers_tried = 0;
 
@@ -208,24 +212,7 @@ impl RpcProviderPool {
                 total_providers = self.providers.len(),
                 "Rotating RPC provider after failures"
             );
-
-            // Safety check: ensure we actually rotated
-            let new_index = self.current_index.load(Ordering::Relaxed);
-            if new_index == initial_index && providers_tried > 0 {
-                break;
-            }
         }
-
-        // Should not reach here, but handle gracefully
-        let err_msg = last_error
-            .map(|e| e.to_string())
-            .unwrap_or_else(|| "unknown error".to_string());
-
-        Err(ChainClientError::RpcError(anyhow::anyhow!(
-            "RPC operation '{}' failed: {}",
-            operation,
-            err_msg
-        )))
     }
 
     /// Check if an error is retryable.
