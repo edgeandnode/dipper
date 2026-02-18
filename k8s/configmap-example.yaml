@@ -63,6 +63,13 @@ data:
         "interval": 90,
         "batch_size": 100
       },
+      "liveness_checker": {
+        "enabled": false,
+        "interval": 300,
+        "max_tolerance_days": 4,
+        "request_timeout": 10,
+        "batch_size": 500
+      },
       "chain_client": {
         "enabled": false,
         "providers": [
