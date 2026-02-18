@@ -1467,3 +1467,144 @@ async fn get_open_indexing_requests_for_reassessment_zero_batch_returns_all() {
     //* Then
     assert_eq!(requests.len(), 3, "Expected all 3 eligible requests");
 }
+
+// =============================================================================
+// Liveness checker DB operation tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_get_accepted_on_chain_agreements() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0002_indexing_agreements.sql"))
+        .await
+        .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let agreements = registry
+        .get_accepted_on_chain_agreements(10)
+        .await
+        .expect("Failed to get AcceptedOnChain agreements");
+
+    //* Then
+    assert_eq!(
+        agreements.len(),
+        1,
+        "Expected exactly 1 AcceptedOnChain agreement"
+    );
+    let agreement = &agreements[0];
+    assert_eq!(
+        agreement.status,
+        IndexingAgreementStatus::AcceptedOnChain,
+        "Status should be AcceptedOnChain"
+    );
+    assert!(
+        agreement.last_block_height.is_none(),
+        "last_block_height should be None before first liveness check"
+    );
+    assert!(
+        agreement.last_progress_at.is_none(),
+        "last_progress_at should be None before first liveness check"
+    );
+}
+
+#[tokio::test]
+async fn test_update_agreement_sync_progress() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0002_indexing_agreements.sql"))
+        .await
+        .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    // AcceptedOnChain agreement from fixture 0002
+    let agreement_id: IndexingAgreementId = uuid!("019300e1-0c52-72b0-ae96-5eed9a9bd77a").into();
+    let now = time::OffsetDateTime::now_utc();
+
+    //* When
+    registry
+        .update_agreement_sync_progress(&agreement_id, 99999, now)
+        .await
+        .expect("Failed to update sync progress");
+
+    //* Then
+    let agreement = registry
+        .get_indexing_agreement_by_id(&agreement_id)
+        .await
+        .expect("Failed to re-fetch agreement")
+        .expect("Agreement not found");
+
+    assert_eq!(
+        agreement.last_block_height,
+        Some(99999),
+        "last_block_height should be updated"
+    );
+    assert!(
+        agreement.last_progress_at.is_some(),
+        "last_progress_at should be set"
+    );
+}
+
+#[tokio::test]
+async fn test_count_active_agreements_by_deployment() {
+    //* Given
+    // Fixture 0002 has 1 Created + 1 AcceptedOnChain for the same deployment
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0002_indexing_agreements.sql"))
+        .await
+        .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let counts = registry
+        .count_active_agreements_by_deployment()
+        .await
+        .expect("Failed to count active agreements by deployment");
+
+    //* Then
+    let deployment: DeploymentId = "QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv"
+        .parse()
+        .unwrap();
+    let count = counts.get(&deployment).copied().unwrap_or(0);
+    assert_eq!(
+        count, 2,
+        "Expected 2 active agreements (1 Created + 1 AcceptedOnChain)"
+    );
+}
+
+#[tokio::test]
+async fn test_mark_as_abandoned_transitions_status() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(&db, include_str!("fixtures/0002_indexing_agreements.sql"))
+        .await
+        .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    // AcceptedOnChain agreement from fixture 0002
+    let agreement_id: IndexingAgreementId = uuid!("019300e1-0c52-72b0-ae96-5eed9a9bd77a").into();
+
+    //* When
+    let abandoned = registry
+        .mark_indexing_agreement_as_abandoned(&agreement_id)
+        .await
+        .expect("Failed to mark agreement as abandoned");
+
+    //* Then
+    assert_eq!(
+        abandoned.status,
+        IndexingAgreementStatus::AbandonedByIndexer,
+        "Status should be AbandonedByIndexer"
+    );
+
+    // Second call must fail — agreement is no longer AcceptedOnChain
+    let err = registry
+        .mark_indexing_agreement_as_abandoned(&agreement_id)
+        .await
+        .expect_err("Expected error on second mark_as_abandoned call");
+    assert!(
+        matches!(err, Error::NoRecordsUpdated),
+        "Expected NoRecordsUpdated, got: {err:?}"
+    );
+}
