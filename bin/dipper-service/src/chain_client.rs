@@ -33,10 +33,6 @@ pub enum ChainClientError {
     #[error("failed to submit transaction: {0}")]
     SubmitFailed(#[source] anyhow::Error),
 
-    /// Transaction was submitted but failed on-chain
-    #[error("transaction reverted: {0}")]
-    TransactionReverted(String),
-
     /// Configuration error
     #[error("configuration error: {0}")]
     ConfigError(String),
