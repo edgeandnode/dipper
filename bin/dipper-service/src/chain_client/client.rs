@@ -203,10 +203,9 @@ impl AlloyChainClient {
             })?;
 
         // Build wallet-enabled provider
-        let reqwest_url: reqwest::Url = url.into();
         let provider = ProviderBuilder::new()
             .wallet(wallet)
-            .connect_reqwest(client, reqwest_url);
+            .connect_reqwest(client, url);
 
         let pending = provider
             .send_transaction(tx.clone())

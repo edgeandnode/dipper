@@ -112,8 +112,7 @@ impl RpcProviderPool {
             })?;
 
         // Build alloy provider using the connect_reqwest method
-        let reqwest_url: reqwest::Url = url.clone().into();
-        let provider = ProviderBuilder::new().connect_reqwest(client, reqwest_url);
+        let provider = ProviderBuilder::new().connect_reqwest(client, url.clone());
 
         Ok(provider)
     }
