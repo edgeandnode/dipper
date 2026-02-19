@@ -12,7 +12,6 @@ use thegraph_core::{
     DeploymentId, IndexerId,
     alloy::primitives::{Address, ChainId, U256},
 };
-use time;
 use url::Url;
 
 // Re-export for tests only
