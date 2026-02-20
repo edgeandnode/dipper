@@ -29,6 +29,22 @@ pub use self::{
     result::{Error, Result},
 };
 
+/// Filter and log conversion errors instead of silently dropping them.
+///
+/// This is a replacement for `.filter_map(filter_map_with_logging)` that logs warnings
+/// when conversions fail, making debugging easier.
+fn filter_map_with_logging<T, E: std::fmt::Display>(
+    result: std::result::Result<T, E>,
+) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(e) => {
+            tracing::warn!(error = %e, "skipping record with conversion error");
+            None
+        }
+    }
+}
+
 /// A service for interacting with the registry.
 ///
 /// This service provides a set of methods for interacting with the registry,
@@ -74,7 +90,7 @@ impl IndexingRequestRegistry for RegistryProvider {
             .await?
             .into_iter()
             .map(IndexingRequest::try_from)
-            .filter_map(Result::ok)
+            .filter_map(filter_map_with_logging)
             .collect())
     }
 
@@ -100,7 +116,7 @@ impl IndexingRequestRegistry for RegistryProvider {
             .await?
             .into_iter()
             .map(IndexingRequest::try_from)
-            .filter_map(Result::ok)
+            .filter_map(filter_map_with_logging)
             .collect())
     }
 
@@ -125,7 +141,7 @@ impl IndexingRequestRegistry for RegistryProvider {
             .await?
             .into_iter()
             .map(IndexingRequest::try_from)
-            .filter_map(Result::ok)
+            .filter_map(filter_map_with_logging)
             .collect())
     }
 }
@@ -154,7 +170,7 @@ impl AgreementRegistry for RegistryProvider {
             .await?
             .into_iter()
             .map(IndexingAgreement::try_from)
-            .filter_map(Result::ok)
+            .filter_map(filter_map_with_logging)
             .collect())
     }
 
@@ -168,7 +184,7 @@ impl AgreementRegistry for RegistryProvider {
             .await?
             .into_iter()
             .map(IndexingAgreement::try_from)
-            .filter_map(Result::ok)
+            .filter_map(filter_map_with_logging)
             .collect())
     }
 
@@ -202,7 +218,7 @@ impl AgreementRegistry for RegistryProvider {
             .await?
             .into_iter()
             .map(IndexingAgreement::try_from)
-            .filter_map(Result::ok)
+            .filter_map(filter_map_with_logging)
             .collect())
     }
     async fn get_active_indexing_agreements_by_indexing_request_id(
@@ -215,7 +231,7 @@ impl AgreementRegistry for RegistryProvider {
             .await?
             .into_iter()
             .map(IndexingAgreement::try_from)
-            .filter_map(Result::ok)
+            .filter_map(filter_map_with_logging)
             .collect())
     }
     async fn register_new_indexing_agreement(
@@ -288,7 +304,7 @@ impl AgreementRegistry for RegistryProvider {
             .await?
             .into_iter()
             .map(IndexingAgreement::try_from)
-            .filter_map(Result::ok)
+            .filter_map(filter_map_with_logging)
             .collect())
     }
 
@@ -322,7 +338,7 @@ impl AgreementRegistry for RegistryProvider {
             .await?
             .into_iter()
             .map(IndexingAgreement::try_from)
-            .filter_map(Result::ok)
+            .filter_map(filter_map_with_logging)
             .collect())
     }
 

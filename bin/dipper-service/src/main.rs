@@ -280,6 +280,7 @@ pub async fn main() -> anyhow::Result<()> {
                 registry: registry.clone(),
                 worker_queue: worker_handle.queue().clone(),
                 chain_client: chain_client.clone(),
+                network: network_provider.clone(),
                 config: lc_conf.clone(),
             };
             let (handle, service) = network::service::liveness_checker::new(ctx);

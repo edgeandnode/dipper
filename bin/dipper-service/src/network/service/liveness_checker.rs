@@ -27,12 +27,17 @@
 //! - Block height increased → reset `last_progress_at`
 //! - Block height decreased (resync) → also reset `last_progress_at`
 //! - Block height unchanged → check elapsed time against threshold
-//! - Indexer unreachable → skip (temporary outage must not trigger cancellation)
+//! - Indexer unreachable → treat as no progress (threshold check still applies)
 //! - Deployment missing from response → treat as no progress
+//!
+//! ## URL Refresh
+//!
+//! Indexer URLs are looked up fresh from the network topology on each cycle,
+//! not read from the stored agreement. This ensures URL changes are detected.
 
 use std::{collections::HashMap, future::Future, time::Duration};
 
-use thegraph_core::DeploymentId;
+use thegraph_core::{DeploymentId, IndexerId};
 use time::OffsetDateTime;
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 use url::Url;
@@ -40,6 +45,7 @@ use url::Url;
 use crate::{
     chain_client::{ChainClient, ChainClientError},
     config::LivenessCheckerConfig,
+    network::api::NetworkProvider,
     registry::{AgreementRegistry, IndexingAgreement, IndexingRequestRegistry},
     worker::service::WorkerQueue,
 };
@@ -62,13 +68,15 @@ impl Handle {
 }
 
 /// Context required by the liveness checker service.
-pub struct Ctx<R, W, C> {
+pub struct Ctx<R, W, C, N> {
     /// Registry for querying and updating agreements.
     pub registry: R,
     /// Worker queue for submitting reassessment jobs.
     pub worker_queue: W,
     /// Chain client for canceling agreements on-chain.
     pub chain_client: C,
+    /// Network provider for looking up fresh indexer URLs.
+    pub network: N,
     /// Service configuration.
     pub config: LivenessCheckerConfig,
 }
@@ -78,11 +86,12 @@ pub struct Ctx<R, W, C> {
 /// Returns a handle for controlling the service and a future that must be spawned
 /// on a runtime. The service periodically polls indexer status endpoints and cancels
 /// agreements where no indexing progress is observed within the tolerance window.
-pub fn new<R, W, C>(ctx: Ctx<R, W, C>) -> (Handle, impl Future<Output = anyhow::Result<()>>)
+pub fn new<R, W, C, N>(ctx: Ctx<R, W, C, N>) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
     R: AgreementRegistry + IndexingRequestRegistry + Send + Sync,
     W: WorkerQueue + Send + Sync,
     C: ChainClient + Send + Sync,
+    N: NetworkProvider + Send + Sync,
 {
     let (tx_stop, mut rx_stop) = mpsc::channel(1);
 
@@ -90,6 +99,7 @@ where
         registry,
         worker_queue,
         chain_client,
+        network,
         config,
     } = ctx;
 
@@ -167,17 +177,42 @@ where
                 "liveness check: checking agreements"
             );
 
-            // 3. Group agreements by indexer URL for batched status queries
-            let groups = group_by_indexer_url(agreements);
+            // 3. Group agreements by indexer ID for batched status queries
+            let groups = group_by_indexer_id(agreements);
 
-            for (indexer_url, group_agreements) in groups {
+            for (indexer_id, group_agreements) in groups {
                 // Check for shutdown between indexer groups
                 if rx_stop.try_recv().is_ok() {
                     tracing::debug!("liveness checker stopping mid-cycle");
                     return Ok(());
                 }
 
-                // 4. Query the indexer status endpoint for all deployments in this group
+                // 4. Look up fresh URL from network topology
+                let indexer_url = match network.get_indexer_by_id(&indexer_id) {
+                    Some(indexer) => indexer.url,
+                    None => {
+                        // Indexer no longer in network registry — treat as unreachable
+                        tracing::warn!(
+                            indexer_id = %indexer_id,
+                            "indexer not found in network registry, treating as unreachable"
+                        );
+                        // Fall through with empty block_heights to trigger threshold checks
+                        process_agreements_with_no_data(
+                            &group_agreements,
+                            &active_counts,
+                            &config,
+                            &registry,
+                            &worker_queue,
+                            &chain_client,
+                            DB_UPDATE_TIMEOUT,
+                            QUEUE_PUSH_TIMEOUT,
+                        )
+                        .await;
+                        continue;
+                    }
+                };
+
+                // 5. Query the indexer status endpoint for all deployments in this group
                 let deployment_ids: Vec<String> = group_agreements
                     .iter()
                     .map(|a| a.voucher.metadata.subgraph_deployment_id.to_string())
@@ -190,14 +225,14 @@ where
                             tracing::warn!(
                                 indexer_url = %indexer_url,
                                 error = %err,
-                                "failed to query indexer status, skipping group"
+                                "failed to query indexer status, treating as unreachable"
                             );
-                            // Unreachable indexer: skip entire group, do not update progress timestamps
-                            continue;
+                            // Unreachable indexer: use empty map so all get current_block = None
+                            HashMap::new()
                         }
                     };
 
-                // 5. Process each agreement in the group
+                // 6. Process each agreement in the group
                 for agreement in group_agreements {
                     let deployment_id_str = agreement
                         .voucher
@@ -282,14 +317,14 @@ where
     (Handle { tx_stop }, service)
 }
 
-/// Group agreements by indexer URL for batched status queries.
-fn group_by_indexer_url(
+/// Group agreements by indexer ID for batched status queries.
+fn group_by_indexer_id(
     agreements: Vec<IndexingAgreement>,
-) -> HashMap<Url, Vec<IndexingAgreement>> {
-    let mut groups: HashMap<Url, Vec<IndexingAgreement>> = HashMap::new();
+) -> HashMap<IndexerId, Vec<IndexingAgreement>> {
+    let mut groups: HashMap<IndexerId, Vec<IndexingAgreement>> = HashMap::new();
     for agreement in agreements {
         groups
-            .entry(agreement.indexer.url.clone())
+            .entry(agreement.indexer.id)
             .or_default()
             .push(agreement);
     }
@@ -307,6 +342,89 @@ fn tolerance_duration(
     let count = active_counts.get(&deployment_id).copied().unwrap_or(1);
     let days = (count as u32).min(max_tolerance_days).max(1);
     time::Duration::days(days as i64)
+}
+
+/// Process agreements when we have no status data (indexer not in registry).
+///
+/// All agreements get `current_block = None`, triggering threshold checks.
+async fn process_agreements_with_no_data<R, W, C>(
+    agreements: &[IndexingAgreement],
+    active_counts: &HashMap<DeploymentId, usize>,
+    config: &LivenessCheckerConfig,
+    registry: &R,
+    worker_queue: &W,
+    chain_client: &C,
+    db_timeout: Duration,
+    queue_timeout: Duration,
+) where
+    R: AgreementRegistry + IndexingRequestRegistry + Send + Sync,
+    W: WorkerQueue + Send + Sync,
+    C: ChainClient + Send + Sync,
+{
+    let now = OffsetDateTime::now_utc();
+
+    for agreement in agreements {
+        let action = decide_liveness_action(
+            agreement.last_block_height,
+            None, // No data available
+            agreement.last_progress_at,
+            now,
+            agreement.voucher.metadata.subgraph_deployment_id,
+            active_counts,
+            config.max_tolerance_days,
+        );
+
+        match action {
+            LivenessAction::InitializeTracking(block) => {
+                // First check with no data — initialize at 0
+                record_progress(registry, agreement, block, now, db_timeout).await;
+            }
+            LivenessAction::ResetProgress(_) => {
+                // Should not happen when current_block is None
+                unreachable!("ResetProgress should not occur with current_block = None");
+            }
+            LivenessAction::WithinTolerance => {
+                let last_progress = agreement.last_progress_at.unwrap_or(now);
+                let elapsed = now - last_progress;
+                let threshold = tolerance_duration(
+                    agreement.voucher.metadata.subgraph_deployment_id,
+                    active_counts,
+                    config.max_tolerance_days,
+                );
+                tracing::debug!(
+                    agreement_id = %agreement.id,
+                    elapsed_hours = elapsed.whole_hours(),
+                    threshold_hours = threshold.whole_hours(),
+                    "indexer unreachable but within tolerance"
+                );
+            }
+            LivenessAction::CancelAndReassess => {
+                let last_progress = agreement.last_progress_at.unwrap_or(now);
+                let elapsed = now - last_progress;
+                let threshold = tolerance_duration(
+                    agreement.voucher.metadata.subgraph_deployment_id,
+                    active_counts,
+                    config.max_tolerance_days,
+                );
+                tracing::warn!(
+                    agreement_id = %agreement.id,
+                    last_block = agreement.last_block_height.unwrap_or(0),
+                    elapsed_hours = elapsed.whole_hours(),
+                    threshold_hours = threshold.whole_hours(),
+                    "indexer unreachable and tolerance exceeded"
+                );
+                cancel_and_reassess(
+                    agreement,
+                    registry,
+                    worker_queue,
+                    chain_client,
+                    db_timeout,
+                    queue_timeout,
+                )
+                .await;
+            }
+        }
+    }
 }
 
 /// Update sync progress for an agreement in the DB.
@@ -513,22 +631,24 @@ pub(crate) fn decide_liveness_action(
     active_counts: &HashMap<DeploymentId, usize>,
     max_tolerance_days: u32,
 ) -> LivenessAction {
-    match last_block_height {
-        None => LivenessAction::InitializeTracking(current_block.unwrap_or(0)),
-        Some(last) => {
-            let current = current_block.unwrap_or(0);
-            if current != last {
-                LivenessAction::ResetProgress(current)
+    match (last_block_height, current_block) {
+        // First check, no prior state — initialize tracking
+        (None, Some(block)) => LivenessAction::InitializeTracking(block),
+        (None, None) => LivenessAction::InitializeTracking(0),
+
+        // Prior state exists, can see current block, block changed — reset progress
+        (Some(last), Some(current)) if current != last => LivenessAction::ResetProgress(current),
+
+        // Prior state exists but can't see current block (unreachable or deployment missing)
+        // OR block unchanged — treat as no progress, check threshold
+        (Some(_), None) | (Some(_), Some(_)) => {
+            let last_progress = last_progress_at.unwrap_or(now);
+            let elapsed = now - last_progress;
+            let threshold = tolerance_duration(deployment_id, active_counts, max_tolerance_days);
+            if elapsed > threshold {
+                LivenessAction::CancelAndReassess
             } else {
-                let last_progress = last_progress_at.unwrap_or(now);
-                let elapsed = now - last_progress;
-                let threshold =
-                    tolerance_duration(deployment_id, active_counts, max_tolerance_days);
-                if elapsed > threshold {
-                    LivenessAction::CancelAndReassess
-                } else {
-                    LivenessAction::WithinTolerance
-                }
+                LivenessAction::WithinTolerance
             }
         }
     }
@@ -635,7 +755,7 @@ mod tests {
     use url::Url;
 
     use super::{
-        LivenessAction, cancel_and_reassess, decide_liveness_action, group_by_indexer_url,
+        LivenessAction, cancel_and_reassess, decide_liveness_action, group_by_indexer_id,
         record_progress, tolerance_duration,
     };
     use crate::{
@@ -652,6 +772,7 @@ mod tests {
     // ---- Test helpers ----
 
     fn make_agreement(
+        indexer_id: IndexerId,
         url: Url,
         deployment_id: DeploymentId,
         last_block_height: Option<u64>,
@@ -664,7 +785,7 @@ mod tests {
             status: IndexingAgreementStatus::AcceptedOnChain,
             indexing_request_id: IndexingRequestId::new(),
             indexer: crate::registry::Indexer {
-                id: IndexerId::from(Address::ZERO),
+                id: indexer_id,
                 url,
             },
             voucher: IndexingAgreementVoucher {
@@ -1085,22 +1206,23 @@ mod tests {
     }
 
     #[test]
-    fn test_group_by_indexer_url() {
-        let url_a: Url = "http://indexer-a.example.com/".parse().unwrap();
-        let url_b: Url = "http://indexer-b.example.com/".parse().unwrap();
+    fn test_group_by_indexer_id() {
+        let indexer_a = IndexerId::from(Address::repeat_byte(0x0a));
+        let indexer_b = IndexerId::from(Address::repeat_byte(0x0b));
+        let url: Url = "http://indexer.example.com/".parse().unwrap();
         let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
             .parse()
             .unwrap();
 
-        let a1 = make_agreement(url_a.clone(), dep, None, None);
-        let a2 = make_agreement(url_a.clone(), dep, None, None);
-        let b1 = make_agreement(url_b.clone(), dep, None, None);
+        let a1 = make_agreement(indexer_a, url.clone(), dep, None, None);
+        let a2 = make_agreement(indexer_a, url.clone(), dep, None, None);
+        let b1 = make_agreement(indexer_b, url.clone(), dep, None, None);
 
-        let groups = group_by_indexer_url(vec![a1, a2, b1]);
+        let groups = group_by_indexer_id(vec![a1, a2, b1]);
 
         assert_eq!(groups.len(), 2);
-        assert_eq!(groups[&url_a].len(), 2);
-        assert_eq!(groups[&url_b].len(), 1);
+        assert_eq!(groups[&indexer_a].len(), 2);
+        assert_eq!(groups[&indexer_b].len(), 1);
     }
 
     #[test]
@@ -1229,6 +1351,56 @@ mod tests {
         assert_eq!(action, LivenessAction::CancelAndReassess);
     }
 
+    #[test]
+    fn test_unreachable_within_tolerance_no_action() {
+        // Arrange — indexer unreachable (current_block = None), but within tolerance
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let counts = HashMap::from([(dep, 1usize)]);
+        let now = OffsetDateTime::now_utc();
+        let last_progress = now - time::Duration::hours(12);
+
+        // Act — prior state exists but can't see current block
+        let action = decide_liveness_action(
+            Some(100),
+            None, // Unreachable
+            Some(last_progress),
+            now,
+            dep,
+            &counts,
+            4,
+        );
+
+        // Assert — should check threshold, not skip
+        assert_eq!(action, LivenessAction::WithinTolerance);
+    }
+
+    #[test]
+    fn test_unreachable_exceeds_tolerance_triggers_cancel() {
+        // Arrange — indexer unreachable and tolerance exceeded
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let counts = HashMap::from([(dep, 1usize)]);
+        let now = OffsetDateTime::now_utc();
+        let last_progress = now - time::Duration::hours(25);
+
+        // Act — prior state exists but can't see current block
+        let action = decide_liveness_action(
+            Some(100),
+            None, // Unreachable
+            Some(last_progress),
+            now,
+            dep,
+            &counts,
+            4,
+        );
+
+        // Assert — should trigger cancellation
+        assert_eq!(action, LivenessAction::CancelAndReassess);
+    }
+
     // ---- cancel_and_reassess behavior tests ----
 
     #[tokio::test]
@@ -1237,8 +1409,15 @@ mod tests {
         let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
             .parse()
             .unwrap();
+        let indexer_id = IndexerId::from(Address::ZERO);
         let url: Url = "http://indexer.example.com/".parse().unwrap();
-        let agreement = make_agreement(url, dep, Some(100), Some(OffsetDateTime::now_utc()));
+        let agreement = make_agreement(
+            indexer_id,
+            url,
+            dep,
+            Some(100),
+            Some(OffsetDateTime::now_utc()),
+        );
         let req_id = agreement.indexing_request_id;
         let agr_id = agreement.id;
 
@@ -1272,8 +1451,15 @@ mod tests {
         let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
             .parse()
             .unwrap();
+        let indexer_id = IndexerId::from(Address::ZERO);
         let url: Url = "http://indexer.example.com/".parse().unwrap();
-        let agreement = make_agreement(url, dep, Some(100), Some(OffsetDateTime::now_utc()));
+        let agreement = make_agreement(
+            indexer_id,
+            url,
+            dep,
+            Some(100),
+            Some(OffsetDateTime::now_utc()),
+        );
         let req_id = agreement.indexing_request_id;
         let agr_id = agreement.id;
 
@@ -1308,8 +1494,15 @@ mod tests {
         let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
             .parse()
             .unwrap();
+        let indexer_id = IndexerId::from(Address::ZERO);
         let url: Url = "http://indexer.example.com/".parse().unwrap();
-        let agreement = make_agreement(url, dep, Some(100), Some(OffsetDateTime::now_utc()));
+        let agreement = make_agreement(
+            indexer_id,
+            url,
+            dep,
+            Some(100),
+            Some(OffsetDateTime::now_utc()),
+        );
         let agr_id = agreement.id;
 
         let calls = MockCalls::default();
@@ -1342,8 +1535,9 @@ mod tests {
         let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
             .parse()
             .unwrap();
+        let indexer_id = IndexerId::from(Address::ZERO);
         let url: Url = "http://indexer.example.com/".parse().unwrap();
-        let agreement = make_agreement(url, dep, None, None);
+        let agreement = make_agreement(indexer_id, url, dep, None, None);
         let agr_id = agreement.id;
 
         let calls = MockCalls::default();
