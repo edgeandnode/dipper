@@ -406,6 +406,35 @@ mod tests {
             self.state.lock().unwrap().marked_rejected.push(*id);
             Ok(())
         }
+
+        async fn get_accepted_on_chain_agreements(
+            &self,
+            _batch_size: i64,
+        ) -> crate::registry::Result<Vec<IndexingAgreement>> {
+            Ok(vec![])
+        }
+
+        async fn update_agreement_sync_progress(
+            &self,
+            _id: &IndexingAgreementId,
+            _block_height: u64,
+            _progress_at: time::OffsetDateTime,
+        ) -> crate::registry::Result<()> {
+            Ok(())
+        }
+
+        async fn count_active_agreements_by_deployment(
+            &self,
+        ) -> crate::registry::Result<std::collections::HashMap<DeploymentId, usize>> {
+            Ok(std::collections::HashMap::new())
+        }
+
+        async fn mark_indexing_agreement_as_abandoned(
+            &self,
+            _id: &IndexingAgreementId,
+        ) -> crate::registry::Result<IndexingAgreement> {
+            Err(crate::registry::Error::NoRecordsUpdated)
+        }
     }
 
     #[async_trait]
@@ -641,6 +670,8 @@ mod tests {
                     chain_id: 1,
                 },
             },
+            last_block_height: None,
+            last_progress_at: None,
         }
     }
 

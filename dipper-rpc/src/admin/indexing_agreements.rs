@@ -142,6 +142,14 @@ pub enum Status {
     /// The indexer rejected the agreement proposal off-chain.
     Rejected,
 
+    /// The liveness checker detected no indexing progress within the tolerance window.
+    ///
+    /// Dipper canceled the agreement via `cancelIndexingAgreementByPayer` and will
+    /// trigger reassignment to find a replacement indexer.
+    ///
+    /// This is a terminal state.
+    AbandonedByIndexer,
+
     /// A fallback for unknown status values.
     Unknown,
 }
@@ -159,6 +167,7 @@ impl serde::Serialize for Status {
             Status::Expired => "EXPIRED",
             Status::AcceptedOnChain => "ACCEPTED_ON_CHAIN",
             Status::Rejected => "REJECTED",
+            Status::AbandonedByIndexer => "ABANDONED_BY_INDEXER",
             Status::Unknown => "UNKNOWN",
         };
         serializer.serialize_str(status)
@@ -179,6 +188,7 @@ impl<'de> serde::Deserialize<'de> for Status {
             "EXPIRED" => Status::Expired,
             "ACCEPTED_ON_CHAIN" => Status::AcceptedOnChain,
             "REJECTED" => Status::Rejected,
+            "ABANDONED_BY_INDEXER" => Status::AbandonedByIndexer,
             _ => Status::Unknown,
         };
         Ok(status)

@@ -161,6 +161,46 @@ pub trait AgreementRegistry {
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;
+
+    /// Get all `AcceptedOnChain` agreements for liveness checking.
+    ///
+    /// Results are ordered by `last_progress_at` ascending (NULLs first) so agreements
+    /// that have never been checked are processed first.
+    async fn get_accepted_on_chain_agreements(
+        &self,
+        batch_size: i64,
+    ) -> RegistryResult<Vec<IndexingAgreement>>;
+
+    /// Update the sync progress for an agreement.
+    ///
+    /// Called when the liveness checker observes the block height has changed
+    /// (either advancing or resetting due to a resync).
+    async fn update_agreement_sync_progress(
+        &self,
+        id: &IndexingAgreementId,
+        block_height: u64,
+        progress_at: time::OffsetDateTime,
+    ) -> RegistryResult<()>;
+
+    /// Count active agreements per deployment.
+    ///
+    /// Returns a map of deployment ID to count of `Created` or `AcceptedOnChain`
+    /// agreements. Used by the liveness checker to determine the tolerance threshold
+    /// for each deployment.
+    async fn count_active_agreements_by_deployment(
+        &self,
+    ) -> RegistryResult<std::collections::HashMap<DeploymentId, usize>>;
+
+    /// Mark an indexing agreement as `ABANDONED_BY_INDEXER`.
+    ///
+    /// Transitions `AcceptedOnChain → AbandonedByIndexer`. Returns the full agreement
+    /// for use in the subsequent reassessment call.
+    /// Returns [`NoRecordsUpdated`](Error::NoRecordsUpdated) if the agreement doesn't
+    /// exist or isn't in `AcceptedOnChain` status.
+    async fn mark_indexing_agreement_as_abandoned(
+        &self,
+        id: &IndexingAgreementId,
+    ) -> RegistryResult<IndexingAgreement>;
 }
 
 /// An Indexing Agreement represents the contract between the DIPs Gateway (Dipper) and the indexer
@@ -191,6 +231,16 @@ pub struct IndexingAgreement {
     ///
     /// It contains the agreement terms and conditions.
     pub voucher: Voucher,
+
+    /// The last observed block height for the subgraph deployment.
+    ///
+    /// `None` until the first liveness check fires for this agreement.
+    pub last_block_height: Option<u64>,
+
+    /// When the block height was last observed to change (progress or resync).
+    ///
+    /// `None` until the first liveness check fires for this agreement.
+    pub last_progress_at: Option<OffsetDateTime>,
 }
 
 /// The _indexing agreement_ indexer information.
@@ -291,6 +341,14 @@ pub enum Status {
     /// The indexer may still accept on-chain before the deadline. If they do,
     /// Dipper will cancel the agreement via `cancelIndexingAgreementByPayer`.
     Rejected,
+
+    /// The liveness checker detected no indexing progress within the tolerance window.
+    ///
+    /// Dipper canceled the agreement via `cancelIndexingAgreementByPayer` and will
+    /// trigger reassignment to find a replacement indexer.
+    ///
+    /// This is a terminal state.
+    AbandonedByIndexer,
 }
 
 impl std::fmt::Display for Status {
@@ -303,6 +361,7 @@ impl std::fmt::Display for Status {
             Status::Expired => "EXPIRED",
             Status::AcceptedOnChain => "ACCEPTED_ON_CHAIN",
             Status::Rejected => "REJECTED",
+            Status::AbandonedByIndexer => "ABANDONED_BY_INDEXER",
         };
         f.write_str(status)
     }
@@ -332,6 +391,9 @@ impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
                     Status::AcceptedOnChain
                 }
                 dipper_pgregistry::IndexingAgreementStatus::Rejected => Status::Rejected,
+                dipper_pgregistry::IndexingAgreementStatus::AbandonedByIndexer => {
+                    Status::AbandonedByIndexer
+                }
                 _ => {
                     return Err(anyhow::anyhow!("Invalid status: {:?}", value.status));
                 }
@@ -339,6 +401,8 @@ impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
             indexing_request_id: value.indexing_request_id,
             indexer: value.indexer.into(),
             voucher: value.voucher.into(),
+            last_block_height: value.last_block_height,
+            last_progress_at: value.last_progress_at,
         })
     }
 }
