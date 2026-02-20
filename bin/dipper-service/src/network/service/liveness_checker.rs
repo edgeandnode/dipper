@@ -347,6 +347,7 @@ fn tolerance_duration(
 /// Process agreements when we have no status data (indexer not in registry).
 ///
 /// All agreements get `current_block = None`, triggering threshold checks.
+#[allow(clippy::too_many_arguments)]
 async fn process_agreements_with_no_data<R, W, C>(
     agreements: &[IndexingAgreement],
     active_counts: &HashMap<DeploymentId, usize>,
