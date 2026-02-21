@@ -1,5 +1,5 @@
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
-use dipper_rpc::indexer::indexer_client::rpc::ProposalResponse;
+use dipper_rpc::indexer::indexer_client::rpc::{ProposalResponse, RejectReason};
 use serde_with::serde_as;
 use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 use url::Url;
@@ -106,40 +106,51 @@ where
         .await;
 
     match response {
-        Ok(ProposalResponse::Accept) => {
-            tracing::debug!(
-                indexing_request_id=%indexing_request_id,
-                agreement_id=%agreement_id,
-                deployment_id=%deployment_id,
-                indexer_url=%indexer_url,
-                "Agreement proposal accepted by indexer"
-            );
-            // Agreement stays in Created, waiting for on-chain acceptance
-        }
-        Ok(ProposalResponse::Reject) => {
-            // TODO: Once indexer-rs returns rejection reasons (Phase 1), extract
-            // the reason from the response. For now, all rejections are treated
-            // as "OTHER" (30-day exclusion window).
-            let rejection_reason: Option<&str> = None;
-            tracing::info!(
-                indexing_request_id=%indexing_request_id,
-                agreement_id=%agreement_id,
-                deployment_id=%deployment_id,
-                indexer_url=%indexer_url,
-                rejection_reason=?rejection_reason,
-                "Agreement proposal rejected by indexer"
-            );
-            // Mark as Rejected and reassess. The indexer may still accept on-chain,
-            // in which case the chain listener will trigger cancellation.
-            mark_rejected_and_reassess(
-                &ctx,
-                agreement_id,
-                indexing_request_id,
-                deployment_id,
-                deployment_chain_id,
-                rejection_reason,
-            )
-            .await?;
+        Ok(resp) => {
+            let proposal_response =
+                ProposalResponse::try_from(resp.response).unwrap_or(ProposalResponse::Reject);
+
+            match proposal_response {
+                ProposalResponse::Accept => {
+                    tracing::debug!(
+                        indexing_request_id=%indexing_request_id,
+                        agreement_id=%agreement_id,
+                        deployment_id=%deployment_id,
+                        indexer_url=%indexer_url,
+                        "Agreement proposal accepted by indexer"
+                    );
+                    // Agreement stays in Created, waiting for on-chain acceptance
+                }
+                ProposalResponse::Reject => {
+                    // Extract rejection reason from the response
+                    let reject_reason = RejectReason::try_from(resp.reject_reason).ok();
+                    let rejection_reason_str = reject_reason.map(|r| match r {
+                        RejectReason::Unspecified => "UNSPECIFIED",
+                        RejectReason::PriceTooLow => "PRICE_TOO_LOW",
+                        RejectReason::Other => "OTHER",
+                    });
+
+                    tracing::info!(
+                        indexing_request_id=%indexing_request_id,
+                        agreement_id=%agreement_id,
+                        deployment_id=%deployment_id,
+                        indexer_url=%indexer_url,
+                        rejection_reason=?rejection_reason_str,
+                        "Agreement proposal rejected by indexer"
+                    );
+                    // Mark as Rejected and reassess. The indexer may still accept on-chain,
+                    // in which case the chain listener will trigger cancellation.
+                    mark_rejected_and_reassess(
+                        &ctx,
+                        agreement_id,
+                        indexing_request_id,
+                        deployment_id,
+                        deployment_chain_id,
+                        rejection_reason_str,
+                    )
+                    .await?;
+                }
+            }
         }
         Err(err) => {
             tracing::error!(
@@ -266,6 +277,7 @@ mod tests {
 
     use async_trait::async_trait;
     use dipper_core::ids::IndexingRequestId;
+    use dipper_rpc::indexer::indexer_client::rpc::SubmitAgreementProposalResponse;
     use thegraph_core::{DeploymentId, IndexerId, deployment_id, indexer_id};
 
     use super::*;
@@ -624,10 +636,16 @@ mod tests {
             _indexer: &Url,
             _indexing_agreement_id: IndexingAgreementId,
             _voucher: IndexingAgreementVoucher,
-        ) -> Result<ProposalResponse, DipsError> {
+        ) -> Result<SubmitAgreementProposalResponse, DipsError> {
             match self.response {
-                MockResponse::Accept => Ok(ProposalResponse::Accept),
-                MockResponse::Reject => Ok(ProposalResponse::Reject),
+                MockResponse::Accept => Ok(SubmitAgreementProposalResponse {
+                    response: ProposalResponse::Accept as i32,
+                    reject_reason: RejectReason::Unspecified as i32,
+                }),
+                MockResponse::Reject => Ok(SubmitAgreementProposalResponse {
+                    response: ProposalResponse::Reject as i32,
+                    reject_reason: RejectReason::Other as i32,
+                }),
                 MockResponse::Fail => Err(DipsError::ConnectionError(
                     "connection failed".to_string().into(),
                 )),
