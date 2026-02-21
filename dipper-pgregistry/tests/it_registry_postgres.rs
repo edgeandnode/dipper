@@ -637,7 +637,7 @@ async fn get_declined_indexers_by_deployment_returns_rejected() {
     //* When
     // Use 30 days lookback (agreements were created "now")
     let result = registry
-        .get_declined_indexers_by_deployment(30)
+        .get_declined_indexers_by_deployment(30, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -681,7 +681,7 @@ async fn get_declined_indexers_by_deployment_empty_when_no_declines() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30)
+        .get_declined_indexers_by_deployment(30, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -707,7 +707,7 @@ async fn get_declined_indexers_by_deployment_respects_lookback() {
     //* When
     // Use 0 days lookback - should exclude everything
     let result = registry
-        .get_declined_indexers_by_deployment(0)
+        .get_declined_indexers_by_deployment(0, 0)
         .await
         .expect("Failed to get declined indexers");
 
@@ -760,7 +760,7 @@ async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
     //* When
     // Use 30 days lookback - should NOT include the 31-day-old rejection
     let result = registry
-        .get_declined_indexers_by_deployment(30)
+        .get_declined_indexers_by_deployment(30, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -793,7 +793,7 @@ async fn mark_indexing_agreement_as_rejected_transitions_created_to_rejected() {
 
     //* When
     let result = registry
-        .mark_indexing_agreement_as_rejected(&agreement_id)
+        .mark_indexing_agreement_as_rejected(&agreement_id, None)
         .await;
 
     //* Then
@@ -828,7 +828,7 @@ async fn mark_indexing_agreement_as_rejected_fails_if_not_created() {
 
     //* When
     let result = registry
-        .mark_indexing_agreement_as_rejected(&agreement_id)
+        .mark_indexing_agreement_as_rejected(&agreement_id, None)
         .await;
 
     //* Then
@@ -847,7 +847,7 @@ async fn mark_indexing_agreement_as_rejected_fails_if_not_found() {
 
     //* When
     let result = registry
-        .mark_indexing_agreement_as_rejected(&agreement_id)
+        .mark_indexing_agreement_as_rejected(&agreement_id, None)
         .await;
 
     //* Then
@@ -884,7 +884,7 @@ async fn get_declined_indexers_includes_rejected_status() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30)
+        .get_declined_indexers_by_deployment(30, 1)
         .await
         .expect("Failed to get declined indexers");
 
