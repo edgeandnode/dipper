@@ -1,11 +1,11 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use dipper_core::ids::IndexingRequestId;
-use dipper_iisa::{CandidateSelection, SelectionError};
+use dipper_iisa::{CandidateSelection, SelectedIndexer, SelectionError};
 use jsonrpsee::core::Serialize;
 use serde::Deserialize;
 use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::ChainId};
@@ -68,17 +68,24 @@ where
     W: WorkerQueue,
     I: CandidateSelection,
 {
-    // Gather load balancing context for IISA
-    let context = gather_selection_context(&ctx.registry, deployment_id).await?;
+    // Gather load balancing context for IISA, including chain/ceiling info
+    let mut context = gather_selection_context(&ctx.registry, deployment_id).await?;
+
+    // Map numeric chain ID to chain name for IISA ceiling/filtering
+    let chain_name = super::process_new_indexing_request::chain_id_to_name(*deployment_chain_id);
+    if let Some(name) = &chain_name {
+        context.chain_id = Some(name.clone());
+        context.max_grt_per_30_days = ctx.agreement_conf.max_grt_per_30_days().get(name).copied();
+    }
 
     // Select the target group of indexers via IISA — no random fallback for reassessment,
     // since canceling good indexers to assign random ones would be destructive
-    let target_ids: HashSet<IndexerId> = match ctx
+    let target_selected: Vec<SelectedIndexer> = match ctx
         .iisa
         .select_indexers(*deployment_id, *num_candidates, &context)
         .await
     {
-        Ok(ids) => ids.into_iter().collect(),
+        Ok(indexers) => indexers,
         Err(SelectionError::IisaServiceUnavailable) => {
             tracing::warn!(
                 indexing_request_id=%indexing_request_id,
@@ -91,6 +98,11 @@ where
         }
         Err(SelectionError::Error(e)) => return Err(JobError::Fatal(e)),
     };
+
+    // Build lookup maps: ID set for diffing, and pricing for new agreements
+    let target_ids: HashSet<IndexerId> = target_selected.iter().map(|s| s.id).collect();
+    let target_pricing: HashMap<IndexerId, &SelectedIndexer> =
+        target_selected.iter().map(|s| (s.id, s)).collect();
 
     // Get current active agreements for this indexing request
     let active_agreements = ctx
@@ -145,14 +157,7 @@ where
         }
     }
 
-    // Look up chain prices once (bail early if missing)
-    let prices = ctx
-        .chain_price
-        .get(deployment_chain_id)
-        .ok_or(JobError::Fatal(anyhow::anyhow!(
-            "Chain prices not found for chain_id: {}",
-            deployment_chain_id
-        )))?;
+    let fallback_prices = ctx.chain_price.get(deployment_chain_id);
 
     // Create agreements for indexers newly in the target group.
     // Continue on per-indexer failures so that a single error does not prevent
@@ -176,9 +181,32 @@ where
             }
         };
 
+        // Use per-indexer pricing from IISA when available, otherwise fall back
+        // to the static pricing_table config
+        let selected = target_pricing
+            .get(indexer_id)
+            .expect("ID from to_add must exist in target_pricing");
+        let (tokens_per_second, tokens_per_entity_per_second) =
+            match super::process_new_indexing_request::resolve_pricing(
+                selected,
+                fallback_prices,
+                deployment_chain_id,
+            ) {
+                Some(prices) => prices,
+                None => {
+                    tracing::warn!(
+                        indexing_request_id=%indexing_request_id,
+                        indexer_id=%indexer_id,
+                        "No pricing available, skipping indexer"
+                    );
+                    add_failures += 1;
+                    continue;
+                }
+            };
+
         let voucher_metadata = IndexingAgreementVoucherMetadata {
-            tokens_per_second: prices.tokens_per_second,
-            tokens_per_entity_per_second: prices.tokens_per_entity_per_second,
+            tokens_per_second,
+            tokens_per_entity_per_second,
             subgraph_deployment_id: *deployment_id,
             protocol_network: ctx.signer.chain_id(),
             chain_id: *deployment_chain_id,

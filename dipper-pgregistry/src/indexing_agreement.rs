@@ -56,6 +56,11 @@ pub struct IndexingAgreement {
     ///
     /// `None` until the first liveness check fires for this agreement.
     pub last_progress_at: Option<OffsetDateTime>,
+
+    /// Reason the agreement was rejected (only set when status is Rejected).
+    ///
+    /// Values: "PRICE_TOO_LOW", "OTHER", or None.
+    pub rejection_reason: Option<String>,
 }
 
 /// The status of the [`IndexingAgreement`].

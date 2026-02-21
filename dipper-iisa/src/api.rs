@@ -32,6 +32,28 @@ pub struct SelectionContext {
     /// Used to avoid re-offering agreements to indexers that recently declined.
     /// Key: Deployment ID, Value: List of indexer IDs that declined.
     pub declined_indexers: HashMap<DeploymentId, Vec<IndexerId>>,
+
+    /// Chain ID of the deployment (e.g., "arbitrum-one").
+    ///
+    /// Used by IISA to filter indexers by supported chain and to look up
+    /// chain-specific price ceilings.
+    pub chain_id: Option<String>,
+
+    /// Maximum GRT per 30 days for this chain (payment ceiling).
+    ///
+    /// Indexers with advertised prices above this ceiling are excluded from selection.
+    pub max_grt_per_30_days: Option<f64>,
+}
+
+/// An indexer selected by IISA with its advertised pricing.
+#[derive(Debug, Clone)]
+pub struct SelectedIndexer {
+    pub id: IndexerId,
+    /// Minimum GRT per 30 days the indexer charges for this chain.
+    /// `None` if the indexer has no advertised price (legacy indexer).
+    pub min_grt_per_30_days: Option<f64>,
+    /// Minimum GRT per million entities per 30 days.
+    pub min_grt_per_million_entities_per_30_days: Option<f64>,
 }
 
 /// The `SelectionError` enum represents the errors that can occur during the candidate selection
@@ -59,7 +81,8 @@ pub enum SelectionError {
 pub trait CandidateSelection {
     /// Select the optimal set of indexers for a deployment.
     ///
-    /// Returns the target state: the set of indexer IDs that SHOULD be assigned.
+    /// Returns the target state: the set of indexers that SHOULD be assigned,
+    /// along with their advertised pricing.
     /// The caller diffs against current assignments to determine adds/cancels.
     ///
     /// # Arguments
@@ -71,5 +94,5 @@ pub trait CandidateSelection {
         deployment_id: DeploymentId,
         num_candidates: usize,
         context: &SelectionContext,
-    ) -> Result<Vec<IndexerId>, SelectionError>;
+    ) -> Result<Vec<SelectedIndexer>, SelectionError>;
 }

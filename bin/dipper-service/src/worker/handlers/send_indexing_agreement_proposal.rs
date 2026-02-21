@@ -117,11 +117,16 @@ where
             // Agreement stays in Created, waiting for on-chain acceptance
         }
         Ok(ProposalResponse::Reject) => {
+            // TODO: Once indexer-rs returns rejection reasons (Phase 1), extract
+            // the reason from the response. For now, all rejections are treated
+            // as "OTHER" (30-day exclusion window).
+            let rejection_reason: Option<&str> = None;
             tracing::info!(
                 indexing_request_id=%indexing_request_id,
                 agreement_id=%agreement_id,
                 deployment_id=%deployment_id,
                 indexer_url=%indexer_url,
+                rejection_reason=?rejection_reason,
                 "Agreement proposal rejected by indexer"
             );
             // Mark as Rejected and reassess. The indexer may still accept on-chain,
@@ -132,6 +137,7 @@ where
                 indexing_request_id,
                 deployment_id,
                 deployment_chain_id,
+                rejection_reason,
             )
             .await?;
         }
@@ -166,6 +172,7 @@ async fn mark_rejected_and_reassess<R, W, C>(
     indexing_request_id: &IndexingRequestId,
     deployment_id: &DeploymentId,
     deployment_chain_id: &ChainId,
+    rejection_reason: Option<&str>,
 ) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry,
@@ -175,10 +182,11 @@ where
     tracing::trace!(
         indexing_request_id=%indexing_request_id,
         agreement_id=%agreement_id,
+        rejection_reason=?rejection_reason,
         "Marking indexing agreement as REJECTED"
     );
     ctx.registry
-        .mark_indexing_agreement_as_rejected(agreement_id)
+        .mark_indexing_agreement_as_rejected(agreement_id, rejection_reason)
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
@@ -325,7 +333,8 @@ mod tests {
 
         async fn get_declined_indexers_by_deployment(
             &self,
-            _lookback_days: i32,
+            _default_lookback_days: i32,
+            _price_lookback_days: i32,
         ) -> crate::registry::Result<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>
         {
             Ok(std::collections::HashMap::new())
@@ -402,6 +411,7 @@ mod tests {
         async fn mark_indexing_agreement_as_rejected(
             &self,
             id: &IndexingAgreementId,
+            _rejection_reason: Option<&str>,
         ) -> crate::registry::Result<()> {
             self.state.lock().unwrap().marked_rejected.push(*id);
             Ok(())
@@ -672,6 +682,7 @@ mod tests {
             },
             last_block_height: None,
             last_progress_at: None,
+            rejection_reason: None,
         }
     }
 

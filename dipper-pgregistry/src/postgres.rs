@@ -165,7 +165,8 @@ impl PgRegistry {
                 indexer_url,
                 voucher,
                 last_block_height,
-                last_progress_at
+                last_progress_at,
+                rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1 AND status IN ($2, $3)
             "#,
@@ -267,7 +268,8 @@ impl PgRegistry {
                 indexer_url,
                 voucher,
                 last_block_height,
-                last_progress_at
+                last_progress_at,
+                rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE id = $1
             "#,
@@ -295,7 +297,8 @@ impl PgRegistry {
                 indexer_url,
                 voucher,
                 last_block_height,
-                last_progress_at
+                last_progress_at,
+                rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE deployment_id = $1
             "#,
@@ -323,7 +326,8 @@ impl PgRegistry {
                 indexer_url,
                 voucher,
                 last_block_height,
-                last_progress_at
+                last_progress_at,
+                rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE indexer_id = $1
             "#,
@@ -378,18 +382,19 @@ impl PgRegistry {
             .collect())
     }
 
-    /// Get declined indexers grouped by deployment within a lookback period.
+    /// Get declined indexers grouped by deployment with differentiated lookback windows.
     ///
     /// Returns indexers with `CanceledByIndexer`, `Expired`, or `Rejected` status
-    /// within the specified number of days, grouped by deployment. This is used to
-    /// avoid re-offering agreements to indexers that recently declined or let the
-    /// deadline pass without accepting.
+    /// within lookback windows that depend on the rejection reason:
+    /// - `PRICE_TOO_LOW` rejections: `price_lookback_days` (shorter, allows retry after IISA refresh)
+    /// - All other statuses/reasons: `default_lookback_days` (standard exclusion)
     ///
     /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
     /// that declined agreements for that deployment.
     pub async fn get_declined_indexers_by_deployment(
         &self,
-        lookback_days: i32,
+        default_lookback_days: i32,
+        price_lookback_days: i32,
     ) -> Result<HashMap<DeploymentId, Vec<IndexerId>>, Error> {
         let rows: Vec<(PgDeploymentId, Vec<PgIndexerId>)> = sqlx::query_as(
             r#"
@@ -398,14 +403,23 @@ impl PgRegistry {
                 array_agg(DISTINCT indexer_id) as indexer_ids
             FROM dipper_reg_indexing_agreements
             WHERE status IN ($1, $2, $3)
-              AND updated_at >= timezone('UTC', now()) - make_interval(days => $4)
+              AND (
+                -- PRICE_TOO_LOW rejections: shorter lookback (until next IISA refresh)
+                (rejection_reason = 'PRICE_TOO_LOW'
+                 AND updated_at >= timezone('UTC', now()) - make_interval(days => $4))
+                OR
+                -- All other rejections/expirations/cancellations: standard lookback
+                (COALESCE(rejection_reason, '') != 'PRICE_TOO_LOW'
+                 AND updated_at >= timezone('UTC', now()) - make_interval(days => $5))
+              )
             GROUP BY deployment_id
             "#,
         )
         .bind(IndexingAgreementStatus::CanceledByIndexer)
         .bind(IndexingAgreementStatus::Expired)
         .bind(IndexingAgreementStatus::Rejected)
-        .bind(lookback_days)
+        .bind(price_lookback_days)
+        .bind(default_lookback_days)
         .fetch_all(&self.pool)
         .await?;
 
@@ -434,7 +448,8 @@ impl PgRegistry {
                 indexer_url,
                 voucher,
                 last_block_height,
-                last_progress_at
+                last_progress_at,
+                rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1
             "#,
@@ -727,7 +742,8 @@ impl PgRegistry {
                 indexer_url,
                 voucher,
                 last_block_height,
-                last_progress_at
+                last_progress_at,
+                rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
               AND CAST(voucher->>'deadline' AS bigint) < EXTRACT(epoch FROM timezone('UTC', now()))
@@ -783,13 +799,15 @@ impl PgRegistry {
     pub async fn mark_indexing_agreement_as_rejected(
         &self,
         agreement_id: &IndexingAgreementId,
+        rejection_reason: Option<&str>,
     ) -> Result<(), Error> {
         let record: Option<(IndexingAgreementId,)> = sqlx::query_as(
             r#"
             UPDATE dipper_reg_indexing_agreements
             SET
                 status = $1,
-                updated_at = timezone('UTC', now())
+                updated_at = timezone('UTC', now()),
+                rejection_reason = $4
             WHERE id = $2 AND status = $3
             RETURNING id
             "#,
@@ -797,6 +815,7 @@ impl PgRegistry {
         .bind(IndexingAgreementStatus::Rejected)
         .bind(agreement_id)
         .bind(IndexingAgreementStatus::Created)
+        .bind(rejection_reason)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -832,7 +851,8 @@ impl PgRegistry {
                 indexer_url,
                 voucher,
                 last_block_height,
-                last_progress_at
+                last_progress_at,
+                rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
             ORDER BY last_progress_at ASC NULLS FIRST
@@ -930,7 +950,8 @@ impl PgRegistry {
                 indexer_url,
                 voucher,
                 last_block_height,
-                last_progress_at
+                last_progress_at,
+                rejection_reason
             "#,
         )
         .bind(IndexingAgreementStatus::AbandonedByIndexer)

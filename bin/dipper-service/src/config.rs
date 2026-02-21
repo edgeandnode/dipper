@@ -549,11 +549,42 @@ pub struct DipsAgreementConfig {
     pub deadline_seconds: u64,
 
     /// Per-chain pricing table.
+    ///
+    /// Deprecated: When IISA returns per-indexer prices, this table is only used as
+    /// fallback for indexers without advertised prices.
+    #[serde(default)]
     pub pricing_table: BTreeMap<ChainId, ChainPrices>,
+
+    /// Maximum GRT per 30 days Dipper will pay, per network (by chain name).
+    ///
+    /// Used as a ceiling when requesting indexers from IISA. Indexers asking
+    /// more than the ceiling for their chain are excluded from selection.
+    /// Keys are chain names (e.g. "arbitrum-one", "mainnet").
+    #[serde(default = "default_max_grt_per_30_days")]
+    pub max_grt_per_30_days: BTreeMap<String, f64>,
+
+    /// Maximum GRT per million entities per 30 days.
+    #[serde(default = "default_max_grt_per_million_entities_per_30_days")]
+    pub max_grt_per_million_entities_per_30_days: f64,
 }
 
 fn default_deadline_seconds() -> u64 {
     300 // 5 minutes
+}
+
+/// Default ceiling: 10x the indexer-rs minimum defaults.
+fn default_max_grt_per_30_days() -> BTreeMap<String, f64> {
+    BTreeMap::from([
+        ("arbitrum-one".to_string(), 4500.0),
+        ("mainnet".to_string(), 450.0),
+        ("base".to_string(), 2000.0),
+        ("optimism".to_string(), 1500.0),
+        ("matic".to_string(), 3000.0),
+    ])
+}
+
+fn default_max_grt_per_million_entities_per_30_days() -> f64 {
+    2.0
 }
 
 /// Per-chain pricing for indexing agreements.
@@ -683,6 +714,10 @@ pub struct IndexingAgreementConfig {
     pub duration_seconds: u64,
     /// Deadline duration in seconds.
     pub deadline_seconds: u64,
+    /// Payment ceiling per chain (GRT per 30 days).
+    pub max_grt_per_30_days: BTreeMap<String, f64>,
+    /// Payment ceiling for entity pricing (GRT per million entities per 30 days).
+    pub max_grt_per_million_entities_per_30_days: f64,
 }
 
 /// Per-chain pricing for indexing agreements (runtime).
@@ -726,6 +761,14 @@ impl IndexingAgreementConfig {
     pub fn deadline_seconds(&self) -> u64 {
         self.deadline_seconds
     }
+
+    pub fn max_grt_per_30_days(&self) -> &BTreeMap<String, f64> {
+        &self.max_grt_per_30_days
+    }
+
+    pub fn max_grt_per_million_entities_per_30_days(&self) -> f64 {
+        self.max_grt_per_million_entities_per_30_days
+    }
 }
 
 impl From<DipsAgreementConfig>
@@ -744,6 +787,9 @@ impl From<DipsAgreementConfig>
             min_seconds_per_collection: value.min_seconds_per_collection,
             duration_seconds: value.duration_seconds.unwrap_or(u64::MAX),
             deadline_seconds: value.deadline_seconds,
+            max_grt_per_30_days: value.max_grt_per_30_days,
+            max_grt_per_million_entities_per_30_days: value
+                .max_grt_per_million_entities_per_30_days,
         };
         let prices = value
             .pricing_table

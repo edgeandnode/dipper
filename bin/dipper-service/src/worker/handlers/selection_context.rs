@@ -8,11 +8,17 @@ use crate::{
     worker::result::{JobError, JobResult},
 };
 
-/// Number of days to look back for declined indexers.
+/// Number of days to look back for declined indexers (standard exclusion).
 ///
 /// Indexers that declined an agreement within this period will be excluded
 /// from selection for that deployment.
 const DECLINED_INDEXER_LOOKBACK_DAYS: i32 = 30;
+
+/// Number of days to look back for PRICE_TOO_LOW rejections.
+///
+/// Shorter window because IISA refreshes price data daily. Once new prices
+/// are available, the indexer should be reconsidered.
+const PRICE_REJECTION_LOOKBACK_DAYS: i32 = 1;
 
 /// Gather load balancing context for IISA selection.
 ///
@@ -46,9 +52,14 @@ where
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
-    // Get indexers that declined agreements within the lookback period
+    // Get indexers that declined agreements within their respective lookback periods:
+    // - PRICE_TOO_LOW: 1-day window (until next IISA price refresh)
+    // - Other rejections: 30-day window (standard exclusion)
     let declined_indexers = registry
-        .get_declined_indexers_by_deployment(DECLINED_INDEXER_LOOKBACK_DAYS)
+        .get_declined_indexers_by_deployment(
+            DECLINED_INDEXER_LOOKBACK_DAYS,
+            PRICE_REJECTION_LOOKBACK_DAYS,
+        )
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
@@ -63,6 +74,9 @@ where
         pending_agreements,
         declined_indexers,
         indexer_denylist,
+        // chain_id and max_grt_per_30_days are set by the caller after gathering
+        // the base context, since they depend on the deployment's chain ID.
+        ..Default::default()
     })
 }
 
