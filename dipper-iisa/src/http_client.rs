@@ -106,7 +106,7 @@ struct SelectionResponse {
 ///
 /// Supports both formats:
 /// - Legacy: a plain string ID like `"0xABC..."`
-/// - New: an object like `{"id": "0xABC...", "min_grt_per_30_days": "450"}`
+/// - New: an object like `{"id": "0xABC...", "min_grt_per_30_days": 450.0}`
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum IndexerEntry {
@@ -125,11 +125,12 @@ enum IndexerEntry {
 /// Retries on:
 /// - `is_timeout()`: Request timed out waiting for response
 /// - `is_connect()`: Failed to establish TCP connection
+/// - `is_body()`: Error reading response body (connection reset, chunked encoding errors)
 /// - `is_request()`: Request building/sending failed. While these are often deterministic
 ///   (e.g., serialization errors), we include them defensively to handle transient cases
 ///   like system resource pressure. These errors are rare in practice.
 fn is_retryable_error(err: &reqwest::Error) -> bool {
-    err.is_timeout() || err.is_connect() || err.is_request()
+    err.is_timeout() || err.is_connect() || err.is_body() || err.is_request()
 }
 
 /// Check if an HTTP status code is retryable (5xx server errors).
