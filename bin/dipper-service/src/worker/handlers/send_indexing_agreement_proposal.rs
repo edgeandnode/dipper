@@ -122,7 +122,13 @@ where
                     // Agreement stays in Created, waiting for on-chain acceptance
                 }
                 ProposalResponse::Reject => {
-                    // Extract rejection reason from the response
+                    // Extract rejection reason from the response.
+                    //
+                    // The rejection reason controls the declined indexer lookback window:
+                    // - PRICE_TOO_LOW: 1-day exclusion (allows retry after IISA price refresh)
+                    // - OTHER: 30-day exclusion (standard)
+                    // - UNSPECIFIED: treated as OTHER (30-day exclusion) since we cannot
+                    //   assume the rejection was price-related without explicit confirmation
                     let reject_reason = RejectReason::try_from(resp.reject_reason).ok();
                     let rejection_reason_str = reject_reason.map(|r| match r {
                         RejectReason::Unspecified => "UNSPECIFIED",
