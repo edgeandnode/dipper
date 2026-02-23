@@ -207,6 +207,7 @@ fn into_indexing_agreement(agreement: IndexingAgreementRecord) -> IndexingAgreem
         indexer_url: agreement.indexer.url,
         deadline: agreement.voucher.deadline,
         ends_at: agreement.voucher.ends_at,
+        rejection_reason: agreement.rejection_reason,
     }
 }
 
