@@ -8,28 +8,25 @@ use crate::{
     worker::result::{JobError, JobResult},
 };
 
-/// Number of days to look back for declined indexers (standard exclusion).
-///
-/// Indexers that declined an agreement within this period will be excluded
-/// from selection for that deployment.
-const DECLINED_INDEXER_LOOKBACK_DAYS: i32 = 30;
-
-/// Number of days to look back for PRICE_TOO_LOW rejections.
-///
-/// Shorter window because IISA refreshes price data daily. Once new prices
-/// are available, the indexer should be reconsidered.
-const PRICE_REJECTION_LOOKBACK_DAYS: i32 = 1;
-
 /// Gather load balancing context for IISA selection.
 ///
 /// This function queries the registry to build context about:
 /// - Which indexers already have active agreements for this deployment
 /// - What pending agreements exist across all deployments
-/// - Which indexers have recently declined agreements (within 30 days)
+/// - Which indexers have recently declined agreements (within lookback windows)
 /// - Which indexers are on the denylist and should be excluded entirely
+///
+/// # Parameters
+///
+/// - `declined_indexer_lookback_days`: Standard exclusion window for declined indexers
+///   (CanceledByIndexer, Expired, Rejected with OTHER/UNSPECIFIED reason)
+/// - `price_rejection_lookback_days`: Shorter window for PRICE_TOO_LOW rejections
+///   (allows retry after IISA price refresh)
 pub async fn gather_selection_context<R>(
     registry: &R,
     deployment_id: &DeploymentId,
+    declined_indexer_lookback_days: i32,
+    price_rejection_lookback_days: i32,
 ) -> JobResult<SelectionContext>
 where
     R: AgreementRegistry + IndexerDenylistRegistry,
@@ -53,12 +50,12 @@ where
         .map_err(|err| JobError::Fatal(err.into()))?;
 
     // Get indexers that declined agreements within their respective lookback periods:
-    // - PRICE_TOO_LOW: 1-day window (until next IISA price refresh)
-    // - Other rejections: 30-day window (standard exclusion)
+    // - PRICE_TOO_LOW: price_rejection_lookback_days (until next IISA price refresh)
+    // - Other rejections: declined_indexer_lookback_days (standard exclusion)
     let declined_indexers = registry
         .get_declined_indexers_by_deployment(
-            DECLINED_INDEXER_LOOKBACK_DAYS,
-            PRICE_REJECTION_LOOKBACK_DAYS,
+            declined_indexer_lookback_days,
+            price_rejection_lookback_days,
         )
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;

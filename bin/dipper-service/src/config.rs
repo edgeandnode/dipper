@@ -566,6 +566,21 @@ pub struct DipsAgreementConfig {
     /// Maximum GRT per million entities per 30 days.
     #[serde(default = "default_max_grt_per_million_entities_per_30_days")]
     pub max_grt_per_million_entities_per_30_days: f64,
+
+    /// Number of days to look back for declined indexers (standard exclusion).
+    ///
+    /// Indexers that declined an agreement (CanceledByIndexer, Expired, or Rejected
+    /// with reason OTHER/UNSPECIFIED) within this period will be excluded from
+    /// selection for that deployment. Default: 30 days.
+    #[serde(default = "default_declined_indexer_lookback_days")]
+    pub declined_indexer_lookback_days: i32,
+
+    /// Number of days to look back for PRICE_TOO_LOW rejections.
+    ///
+    /// Shorter window because IISA refreshes price data daily. Once new prices
+    /// are available, the indexer should be reconsidered. Default: 1 day.
+    #[serde(default = "default_price_rejection_lookback_days")]
+    pub price_rejection_lookback_days: i32,
 }
 
 fn default_deadline_seconds() -> u64 {
@@ -585,6 +600,14 @@ fn default_max_grt_per_30_days() -> BTreeMap<String, f64> {
 
 fn default_max_grt_per_million_entities_per_30_days() -> f64 {
     2.0
+}
+
+fn default_declined_indexer_lookback_days() -> i32 {
+    30
+}
+
+fn default_price_rejection_lookback_days() -> i32 {
+    1
 }
 
 /// Per-chain pricing for indexing agreements.
@@ -718,6 +741,10 @@ pub struct IndexingAgreementConfig {
     pub max_grt_per_30_days: BTreeMap<String, f64>,
     /// Payment ceiling for entity pricing (GRT per million entities per 30 days).
     pub max_grt_per_million_entities_per_30_days: f64,
+    /// Number of days to look back for declined indexers (standard exclusion).
+    pub declined_indexer_lookback_days: i32,
+    /// Number of days to look back for PRICE_TOO_LOW rejections.
+    pub price_rejection_lookback_days: i32,
 }
 
 /// Per-chain pricing for indexing agreements (runtime).
@@ -769,6 +796,14 @@ impl IndexingAgreementConfig {
     pub fn max_grt_per_million_entities_per_30_days(&self) -> f64 {
         self.max_grt_per_million_entities_per_30_days
     }
+
+    pub fn declined_indexer_lookback_days(&self) -> i32 {
+        self.declined_indexer_lookback_days
+    }
+
+    pub fn price_rejection_lookback_days(&self) -> i32 {
+        self.price_rejection_lookback_days
+    }
 }
 
 impl From<DipsAgreementConfig>
@@ -790,6 +825,8 @@ impl From<DipsAgreementConfig>
             max_grt_per_30_days: value.max_grt_per_30_days,
             max_grt_per_million_entities_per_30_days: value
                 .max_grt_per_million_entities_per_30_days,
+            declined_indexer_lookback_days: value.declined_indexer_lookback_days,
+            price_rejection_lookback_days: value.price_rejection_lookback_days,
         };
         let prices = value
             .pricing_table

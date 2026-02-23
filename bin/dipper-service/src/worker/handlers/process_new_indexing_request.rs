@@ -68,7 +68,13 @@ where
     I: CandidateSelection,
 {
     // Gather load balancing context for IISA, including chain/ceiling info
-    let mut context = gather_selection_context(&ctx.registry, deployment_id).await?;
+    let mut context = gather_selection_context(
+        &ctx.registry,
+        deployment_id,
+        ctx.agreement_conf.declined_indexer_lookback_days(),
+        ctx.agreement_conf.price_rejection_lookback_days(),
+    )
+    .await?;
 
     // Map numeric chain ID to chain name for IISA ceiling/filtering
     let chain_name = chain_id_to_name(*deployment_chain_id);
