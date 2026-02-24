@@ -5,7 +5,7 @@ use std::{
 };
 
 use dipper_core::ids::IndexingRequestId;
-use dipper_iisa::{CandidateSelection, SelectedIndexer, SelectionError};
+use dipper_iisa::{CandidateSelection, FallbackFilter, SelectedIndexer, SelectionError};
 use rand::seq::IndexedRandom;
 use thegraph_core::{
     DeploymentId, IndexerId,
@@ -35,6 +35,7 @@ pub struct Ctx<R, N, W, I> {
     pub network: N,
     pub queue: W,
     pub iisa: I,
+    pub fallback_filter: Arc<FallbackFilter>,
 }
 
 /// Given a new indexing request, run the IISA and get a list of indexers that
@@ -95,11 +96,11 @@ where
         {
             Ok(indexers) => indexers,
             Err(SelectionError::IisaServiceUnavailable) => {
-                // IISA unavailable for 6+ hours, fall back to random selection from network
+                // IISA unavailable for 6+ hours, fall back to filtered selection from network
                 tracing::warn!(
                     indexing_request_id=%indexing_request_id,
                     age_hours=%((time::OffsetDateTime::now_utc() - job_meta.created_at).whole_hours()),
-                    "IISA unavailable for 6+ hours, using random selection fallback"
+                    "IISA unavailable for 6+ hours, using fallback selection"
                 );
 
                 // Build exclusion set from denylist, declined indexers, and pending agreements
@@ -116,23 +117,50 @@ where
                     excluded.extend(indexers.iter().copied());
                 }
 
-                let available_indexers: Vec<IndexerId> = ctx
+                // Get candidates with URLs for direct /dips/info fetching
+                let candidates: Vec<_> = ctx
                     .network
                     .get_indexers_not_indexing_a_deployment_id(deployment_id)
                     .into_iter()
-                    .map(|i| i.id)
-                    .filter(|id| !excluded.contains(id))
+                    .filter(|i| !excluded.contains(&i.id))
+                    .map(|i| (i.id, i.url))
                     .collect();
 
+                let candidate_count = candidates.len();
+
+                // Filter by chain support and pricing via direct /dips/info fetch
+                let filtered = if let Some(ref name) = chain_name {
+                    ctx.fallback_filter
+                        .filter_indexers(candidates, name, context.max_grt_per_30_days)
+                        .await
+                } else {
+                    // No chain mapping - can't filter, convert to SelectedIndexer without pricing
+                    tracing::warn!(
+                        chain_id=%deployment_chain_id,
+                        "No chain name mapping, skipping fallback filter"
+                    );
+                    candidates
+                        .into_iter()
+                        .map(|(id, _)| SelectedIndexer {
+                            id,
+                            min_grt_per_30_days: None,
+                            min_grt_per_billion_entities_per_30_days: None,
+                        })
+                        .collect()
+                };
+
+                tracing::info!(
+                    indexing_request_id=%indexing_request_id,
+                    candidates=%candidate_count,
+                    filtered=%filtered.len(),
+                    "Fallback selection filtered candidates"
+                );
+
+                // Random selection from filtered candidates
                 let mut rng = rand::rng();
-                available_indexers
+                filtered
                     .choose_multiple(&mut rng, *num_candidates)
-                    .copied()
-                    .map(|id| SelectedIndexer {
-                        id,
-                        min_grt_per_30_days: None,
-                        min_grt_per_billion_entities_per_30_days: None,
-                    })
+                    .cloned()
                     .collect()
             }
             Err(SelectionError::Error(e)) => return Err(JobError::Fatal(e)),
