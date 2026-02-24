@@ -92,9 +92,9 @@ struct SelectionRequest {
 /// (list of objects with pricing).
 #[derive(Debug, Deserialize)]
 struct SelectionResponse {
-    /// The deployment ID (echoed back)
-    #[allow(dead_code)]
-    deployment_id: String,
+    /// The deployment ID (echoed back, not used by client)
+    #[serde(rename = "deployment_id")]
+    _deployment_id: String,
 
     /// Full list of selected indexers.
     ///
