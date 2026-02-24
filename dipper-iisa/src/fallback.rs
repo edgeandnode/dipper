@@ -71,6 +71,7 @@ impl FallbackFilter {
             return Vec::new();
         }
 
+        let candidate_count = candidates.len();
         let semaphore = Semaphore::new(self.max_concurrent);
         let chain_name = chain_name.to_string();
 
@@ -136,7 +137,8 @@ impl FallbackFilter {
         }
 
         tracing::info!(
-            candidates_checked = results.len(),
+            candidates_checked = candidate_count,
+            candidates_passed = results.len(),
             "Fallback filter completed"
         );
 
