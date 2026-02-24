@@ -101,12 +101,29 @@ where
                     age_hours=%((time::OffsetDateTime::now_utc() - job_meta.created_at).whole_hours()),
                     "IISA unavailable for 6+ hours, using random selection fallback"
                 );
+
+                // Build exclusion set from denylist, declined indexers, and pending agreements
+                let mut excluded: std::collections::HashSet<IndexerId> =
+                    context.indexer_denylist.iter().copied().collect();
+
+                // Add indexers that recently declined this deployment
+                if let Some(declined) = context.declined_indexers.get(deployment_id) {
+                    excluded.extend(declined.iter().copied());
+                }
+
+                // Add indexers with pending agreements (to avoid overloading)
+                for indexers in context.pending_agreements.values() {
+                    excluded.extend(indexers.iter().copied());
+                }
+
                 let available_indexers: Vec<IndexerId> = ctx
                     .network
                     .get_indexers_not_indexing_a_deployment_id(deployment_id)
                     .into_iter()
                     .map(|i| i.id)
+                    .filter(|id| !excluded.contains(id))
                     .collect();
+
                 let mut rng = rand::rng();
                 available_indexers
                     .choose_multiple(&mut rng, *num_candidates)

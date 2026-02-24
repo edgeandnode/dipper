@@ -396,6 +396,8 @@ impl PgRegistry {
         default_lookback_days: i32,
         price_lookback_days: i32,
     ) -> Result<HashMap<DeploymentId, Vec<IndexerId>>, Error> {
+        use crate::rejection_reason::PRICE_TOO_LOW;
+
         let rows: Vec<(PgDeploymentId, Vec<PgIndexerId>)> = sqlx::query_as(
             r#"
             SELECT
@@ -405,11 +407,11 @@ impl PgRegistry {
             WHERE status IN ($1, $2, $3)
               AND (
                 -- PRICE_TOO_LOW rejections: shorter lookback (until next IISA refresh)
-                (rejection_reason = 'PRICE_TOO_LOW'
+                (rejection_reason = $6
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $4))
                 OR
                 -- All other rejections/expirations/cancellations: standard lookback
-                (COALESCE(rejection_reason, '') != 'PRICE_TOO_LOW'
+                (COALESCE(rejection_reason, '') != $6
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $5))
               )
             GROUP BY deployment_id
@@ -420,6 +422,7 @@ impl PgRegistry {
         .bind(IndexingAgreementStatus::Rejected)
         .bind(price_lookback_days)
         .bind(default_lookback_days)
+        .bind(PRICE_TOO_LOW)
         .fetch_all(&self.pool)
         .await?;
 

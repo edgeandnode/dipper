@@ -1,4 +1,5 @@
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
+use dipper_pgregistry::rejection_reason;
 use dipper_rpc::indexer::indexer_client::rpc::{ProposalResponse, RejectReason};
 use serde_with::serde_as;
 use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
@@ -131,9 +132,9 @@ where
                     //   assume the rejection was price-related without explicit confirmation
                     let reject_reason = RejectReason::try_from(resp.reject_reason).ok();
                     let rejection_reason_str = reject_reason.map(|r| match r {
-                        RejectReason::Unspecified => "UNSPECIFIED",
-                        RejectReason::PriceTooLow => "PRICE_TOO_LOW",
-                        RejectReason::Other => "OTHER",
+                        RejectReason::Unspecified => rejection_reason::UNSPECIFIED,
+                        RejectReason::PriceTooLow => rejection_reason::PRICE_TOO_LOW,
+                        RejectReason::Other => rejection_reason::OTHER,
                     });
 
                     tracing::info!(
@@ -304,7 +305,7 @@ mod tests {
     struct MockRegistryState {
         agreement: Option<IndexingAgreement>,
         request: Option<IndexingRequest>,
-        marked_rejected: Vec<IndexingAgreementId>,
+        marked_rejected: Vec<(IndexingAgreementId, Option<String>)>,
         marked_failed: Vec<IndexingAgreementId>,
     }
 
@@ -429,9 +430,13 @@ mod tests {
         async fn mark_indexing_agreement_as_rejected(
             &self,
             id: &IndexingAgreementId,
-            _rejection_reason: Option<&str>,
+            rejection_reason: Option<&str>,
         ) -> crate::registry::Result<()> {
-            self.state.lock().unwrap().marked_rejected.push(*id);
+            self.state
+                .lock()
+                .unwrap()
+                .marked_rejected
+                .push((*id, rejection_reason.map(|s| s.to_string())));
             Ok(())
         }
 
@@ -608,6 +613,7 @@ mod tests {
     enum MockResponse {
         Accept,
         Reject,
+        RejectPriceTooLow,
         Fail,
     }
 
@@ -625,6 +631,12 @@ mod tests {
         fn rejecting() -> Self {
             Self {
                 response: MockResponse::Reject,
+            }
+        }
+
+        fn rejecting_price_too_low() -> Self {
+            Self {
+                response: MockResponse::RejectPriceTooLow,
             }
         }
 
@@ -651,6 +663,10 @@ mod tests {
                 MockResponse::Reject => Ok(SubmitAgreementProposalResponse {
                     response: ProposalResponse::Reject as i32,
                     reject_reason: RejectReason::Other as i32,
+                }),
+                MockResponse::RejectPriceTooLow => Ok(SubmitAgreementProposalResponse {
+                    response: ProposalResponse::Reject as i32,
+                    reject_reason: RejectReason::PriceTooLow as i32,
                 }),
                 MockResponse::Fail => Err(DipsError::ConnectionError(
                     "connection failed".to_string().into(),
@@ -777,7 +793,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reject_response_marks_rejected_and_reassesses() {
+    async fn test_reject_response_marks_rejected_with_other_reason() {
         let agreement_id = IndexingAgreementId::new();
         let request_id = IndexingRequestId::new();
 
@@ -808,10 +824,62 @@ mod tests {
         let result = handle(ctx, &message, test_job_meta()).await;
 
         assert!(result.is_ok());
-        // Should mark as rejected
+        // Should mark as rejected with OTHER reason
         let state = registry_state.lock().unwrap();
         assert_eq!(state.marked_rejected.len(), 1);
-        assert_eq!(state.marked_rejected[0], agreement_id);
+        assert_eq!(state.marked_rejected[0].0, agreement_id);
+        assert_eq!(
+            state.marked_rejected[0].1,
+            Some(rejection_reason::OTHER.to_string())
+        );
+        assert!(state.marked_failed.is_empty());
+        drop(state);
+        // Should queue reassessment
+        let qstate = queue_state.lock().unwrap();
+        assert_eq!(qstate.reassess_calls.len(), 1);
+        assert_eq!(qstate.reassess_calls[0].0, request_id);
+    }
+
+    #[tokio::test]
+    async fn test_reject_price_too_low_marks_with_correct_reason() {
+        let agreement_id = IndexingAgreementId::new();
+        let request_id = IndexingRequestId::new();
+
+        let registry_state = Arc::new(Mutex::new(MockRegistryState {
+            agreement: Some(make_test_agreement(
+                agreement_id,
+                IndexingAgreementStatus::Created,
+            )),
+            request: Some(make_test_request(request_id)),
+            ..Default::default()
+        }));
+        let queue_state = Arc::new(Mutex::new(MockQueueState::default()));
+
+        let ctx = Ctx {
+            registry: MockRegistry::new(registry_state.clone()),
+            queue: MockQueue::new(queue_state.clone()),
+            indexer_client: MockIndexerClient::rejecting_price_too_low(),
+        };
+
+        let message = Message {
+            indexer_url: "https://indexer.example.com".parse().unwrap(),
+            agreement_id,
+            indexing_request_id: request_id,
+            deployment_id: deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv"),
+            deployment_chain_id: 1,
+        };
+
+        let result = handle(ctx, &message, test_job_meta()).await;
+
+        assert!(result.is_ok());
+        // Should mark as rejected with PRICE_TOO_LOW reason
+        let state = registry_state.lock().unwrap();
+        assert_eq!(state.marked_rejected.len(), 1);
+        assert_eq!(state.marked_rejected[0].0, agreement_id);
+        assert_eq!(
+            state.marked_rejected[0].1,
+            Some(rejection_reason::PRICE_TOO_LOW.to_string())
+        );
         assert!(state.marked_failed.is_empty());
         drop(state);
         // Should queue reassessment
