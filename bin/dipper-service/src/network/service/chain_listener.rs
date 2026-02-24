@@ -60,7 +60,7 @@ pub struct Ctx<R, W, E> {
 
 /// State persisted in the database
 pub struct ChainListenerState {
-    pub chain_id: u64,
+    pub _chain_id: u64,
     pub last_processed_block: u64,
 }
 

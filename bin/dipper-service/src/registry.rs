@@ -427,7 +427,7 @@ impl crate::network::service::chain_listener::ChainListenerStateRegistry for Reg
         Ok(self.inner.get_chain_listener_state(chain_id).await?.map(
             |(chain_id, last_processed_block)| {
                 crate::network::service::chain_listener::ChainListenerState {
-                    chain_id,
+                    _chain_id: chain_id,
                     last_processed_block,
                 }
             },

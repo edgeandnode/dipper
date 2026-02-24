@@ -75,11 +75,6 @@ pub struct DipsIndexerClient {
 }
 
 impl DipsIndexerClient {
-    /// Create a new indexer client with default timeouts.
-    pub fn new(signer: Arc<PrivateKeyEip712Signer>) -> Self {
-        Self::with_config(signer, IndexerClientConfig::default())
-    }
-
     /// Create a new indexer client with custom configuration.
     pub fn with_config(signer: Arc<PrivateKeyEip712Signer>, config: IndexerClientConfig) -> Self {
         Self {
