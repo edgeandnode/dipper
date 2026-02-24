@@ -24,7 +24,7 @@ data:
           "optimism": 1500,
           "matic": 3000
         },
-        "max_grt_per_million_entities_per_30_days": 2.0
+        "max_grt_per_billion_entities_per_30_days": 2000
       },
       "admin_rpc": {
         "listen_addr": "0.0.0.0:8545",

@@ -53,7 +53,7 @@ pub struct SelectedIndexer {
     /// `None` if the indexer has no advertised price (legacy indexer).
     pub min_grt_per_30_days: Option<f64>,
     /// Minimum GRT per million entities per 30 days.
-    pub min_grt_per_million_entities_per_30_days: Option<f64>,
+    pub min_grt_per_billion_entities_per_30_days: Option<f64>,
 }
 
 /// The `SelectionError` enum represents the errors that can occur during the candidate selection
