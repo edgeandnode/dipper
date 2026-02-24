@@ -115,7 +115,7 @@ enum IndexerEntry {
         #[serde(default)]
         min_grt_per_30_days: Option<f64>,
         #[serde(default)]
-        min_grt_per_million_entities_per_30_days: Option<f64>,
+        min_grt_per_billion_entities_per_30_days: Option<f64>,
     },
     LegacyId(String),
 }
@@ -392,11 +392,11 @@ impl CandidateSelection for HttpIisaClient {
                 IndexerEntry::WithPricing {
                     id,
                     min_grt_per_30_days,
-                    min_grt_per_million_entities_per_30_days,
+                    min_grt_per_billion_entities_per_30_days,
                 } => (
                     id,
                     min_grt_per_30_days,
-                    min_grt_per_million_entities_per_30_days,
+                    min_grt_per_billion_entities_per_30_days,
                 ),
                 IndexerEntry::LegacyId(id) => (id, None, None),
             };
@@ -404,7 +404,7 @@ impl CandidateSelection for HttpIisaClient {
                 Ok(id) => selected.push(SelectedIndexer {
                     id,
                     min_grt_per_30_days: min_grt,
-                    min_grt_per_million_entities_per_30_days: min_entity_grt,
+                    min_grt_per_billion_entities_per_30_days: min_entity_grt,
                 }),
                 Err(e) => {
                     tracing::warn!("Failed to parse indexer ID '{}': {}", id_str, e);

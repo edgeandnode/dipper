@@ -131,7 +131,7 @@ where
                     .map(|id| SelectedIndexer {
                         id,
                         min_grt_per_30_days: None,
-                        min_grt_per_million_entities_per_30_days: None,
+                        min_grt_per_billion_entities_per_30_days: None,
                     })
                     .collect()
             }
@@ -280,10 +280,10 @@ fn grt_per_30_days_to_wei_per_second(grt: f64) -> U256 {
     U256::from(wei_per_second)
 }
 
-/// Convert GRT per million entities per 30 days to wei per entity per second.
-fn grt_per_million_entities_per_30_days_to_wei_per_entity_per_second(grt: f64) -> U256 {
-    // 1 million entities = 1_000_000
-    let total_wei = (grt * WEI_PER_GRT as f64 / 1_000_000.0) as u128;
+/// Convert GRT per billion entities per 30 days to wei per entity per second.
+fn grt_per_billion_entities_per_30_days_to_wei_per_entity_per_second(grt: f64) -> U256 {
+    // 1 billion entities = 1_000_000_000
+    let total_wei = (grt * WEI_PER_GRT as f64 / 1_000_000_000.0) as u128;
     let wei_per_second = total_wei.div_ceil(SECONDS_PER_30_DAYS);
     U256::from(wei_per_second)
 }
@@ -301,8 +301,8 @@ pub(crate) fn resolve_pricing(
     if let Some(grt_per_30d) = selected.min_grt_per_30_days {
         let tokens_per_second = grt_per_30_days_to_wei_per_second(grt_per_30d);
         let tokens_per_entity_per_second = selected
-            .min_grt_per_million_entities_per_30_days
-            .map(grt_per_million_entities_per_30_days_to_wei_per_entity_per_second)
+            .min_grt_per_billion_entities_per_30_days
+            .map(grt_per_billion_entities_per_30_days_to_wei_per_entity_per_second)
             .unwrap_or(U256::ZERO);
         return Some((tokens_per_second, tokens_per_entity_per_second));
     }
