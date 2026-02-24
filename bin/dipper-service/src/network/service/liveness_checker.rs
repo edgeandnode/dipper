@@ -809,6 +809,7 @@ mod tests {
             },
             last_block_height,
             last_progress_at,
+            rejection_reason: None,
         }
     }
 
@@ -896,7 +897,8 @@ mod tests {
         }
         async fn get_declined_indexers_by_deployment(
             &self,
-            _days: i32,
+            _default_lookback_days: i32,
+            _price_lookback_days: i32,
         ) -> RegistryResult<HashMap<DeploymentId, Vec<IndexerId>>> {
             unimplemented!()
         }
@@ -961,6 +963,7 @@ mod tests {
         async fn mark_indexing_agreement_as_rejected(
             &self,
             _id: &IndexingAgreementId,
+            _rejection_reason: Option<&str>,
         ) -> RegistryResult<()> {
             unimplemented!()
         }

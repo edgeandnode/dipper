@@ -18,7 +18,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use thegraph_core::{DeploymentId, IndexerId};
 
-use crate::api::{CandidateSelection, SelectionContext, SelectionError};
+use crate::api::{CandidateSelection, SelectedIndexer, SelectionContext, SelectionError};
 
 /// Configuration for the HTTP client.
 #[derive(Debug, Clone)]
@@ -76,17 +76,48 @@ struct SelectionRequest {
     /// Declined indexers: deployment ID -> list of indexer IDs that recently declined
     #[serde(skip_serializing_if = "Option::is_none")]
     declined_indexers: Option<HashMap<String, Vec<String>>>,
+
+    /// Chain ID (e.g. "arbitrum-one") for filtering by supported networks
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chain_id: Option<String>,
+
+    /// Payment ceiling: maximum GRT per 30 days
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_grt_per_30_days: Option<f64>,
 }
 
 /// Response from the /select-indexers endpoint.
+///
+/// Supports both legacy format (flat list of indexer ID strings) and new format
+/// (list of objects with pricing).
 #[derive(Debug, Deserialize)]
 struct SelectionResponse {
-    /// The deployment ID (echoed back)
-    #[allow(dead_code)]
-    deployment_id: String,
+    /// The deployment ID (echoed back, not used by client)
+    #[serde(rename = "deployment_id")]
+    _deployment_id: String,
 
-    /// Full list of indexer IDs that should be assigned
-    indexers: Vec<String>,
+    /// Full list of selected indexers.
+    ///
+    /// Each entry is either a plain string (legacy) or an object with pricing fields.
+    indexers: Vec<IndexerEntry>,
+}
+
+/// An indexer entry in the IISA response.
+///
+/// Supports both formats:
+/// - Legacy: a plain string ID like `"0xABC..."`
+/// - New: an object like `{"id": "0xABC...", "min_grt_per_30_days": 450.0}`
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum IndexerEntry {
+    WithPricing {
+        id: String,
+        #[serde(default)]
+        min_grt_per_30_days: Option<f64>,
+        #[serde(default)]
+        min_grt_per_million_entities_per_30_days: Option<f64>,
+    },
+    LegacyId(String),
 }
 
 /// Check if an HTTP error is retryable.
@@ -94,11 +125,12 @@ struct SelectionResponse {
 /// Retries on:
 /// - `is_timeout()`: Request timed out waiting for response
 /// - `is_connect()`: Failed to establish TCP connection
+/// - `is_body()`: Error reading response body (connection reset, chunked encoding errors)
 /// - `is_request()`: Request building/sending failed. While these are often deterministic
 ///   (e.g., serialization errors), we include them defensively to handle transient cases
 ///   like system resource pressure. These errors are rare in practice.
 fn is_retryable_error(err: &reqwest::Error) -> bool {
-    err.is_timeout() || err.is_connect() || err.is_request()
+    err.is_timeout() || err.is_connect() || err.is_body() || err.is_request()
 }
 
 /// Check if an HTTP status code is retryable (5xx server errors).
@@ -334,7 +366,7 @@ impl CandidateSelection for HttpIisaClient {
         deployment_id: DeploymentId,
         num_candidates: usize,
         context: &SelectionContext,
-    ) -> Result<Vec<IndexerId>, SelectionError> {
+    ) -> Result<Vec<SelectedIndexer>, SelectionError> {
         if num_candidates == 0 {
             return Ok(Vec::new());
         }
@@ -346,16 +378,34 @@ impl CandidateSelection for HttpIisaClient {
             num_candidates,
             blocklist: Self::format_blocklist(context),
             declined_indexers: Self::format_declined_indexers(context),
+            chain_id: context.chain_id.clone(),
+            max_grt_per_30_days: context.max_grt_per_30_days,
         };
 
         let url = format!("{}select-indexers", self.endpoint);
         let result: SelectionResponse = self.post_with_retry(&url, &request).await?;
 
-        // Parse returned indexer ID strings into IndexerId types
+        // Parse returned indexer entries into SelectedIndexer types
         let mut selected = Vec::with_capacity(result.indexers.len());
-        for id_str in result.indexers {
+        for entry in result.indexers {
+            let (id_str, min_grt, min_entity_grt) = match entry {
+                IndexerEntry::WithPricing {
+                    id,
+                    min_grt_per_30_days,
+                    min_grt_per_million_entities_per_30_days,
+                } => (
+                    id,
+                    min_grt_per_30_days,
+                    min_grt_per_million_entities_per_30_days,
+                ),
+                IndexerEntry::LegacyId(id) => (id, None, None),
+            };
             match id_str.parse::<IndexerId>() {
-                Ok(id) => selected.push(id),
+                Ok(id) => selected.push(SelectedIndexer {
+                    id,
+                    min_grt_per_30_days: min_grt,
+                    min_grt_per_million_entities_per_30_days: min_entity_grt,
+                }),
                 Err(e) => {
                     tracing::warn!("Failed to parse indexer ID '{}': {}", id_str, e);
                 }

@@ -102,6 +102,11 @@ pub struct IndexingAgreement {
     pub deadline: u64,
     /// When the agreement expires (unix timestamp).
     pub ends_at: u64,
+    /// Reason the agreement was rejected (only set when status is Rejected).
+    ///
+    /// Values: "PRICE_TOO_LOW", "OTHER", or None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<String>,
 }
 
 /// The status of the [`IndexingAgreement`].

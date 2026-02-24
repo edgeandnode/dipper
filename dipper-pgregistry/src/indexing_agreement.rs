@@ -11,6 +11,24 @@
 //! Algorithm (IISA)* and finds an indexer to fulfill the *indexing request*.
 
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
+
+/// Rejection reason string constants.
+///
+/// These are stored in the database and used in SQL queries. Keeping them as constants
+/// ensures consistency across the codebase and prevents silent breakage if the enum
+/// values in indexer-rs ever change.
+pub mod rejection_reason {
+    /// The indexer rejected because the offered price was below their minimum.
+    /// This triggers a shorter lookback window (1 day) to allow retry after IISA price refresh.
+    pub const PRICE_TOO_LOW: &str = "PRICE_TOO_LOW";
+
+    /// The indexer rejected for reasons other than price (e.g., unsupported network,
+    /// signature issues, capacity limits). This triggers the standard lookback window (30 days).
+    pub const OTHER: &str = "OTHER";
+
+    /// The rejection reason was not specified. Treated the same as OTHER for lookback purposes.
+    pub const UNSPECIFIED: &str = "UNSPECIFIED";
+}
 use thegraph_core::{
     DeploymentId, IndexerId,
     alloy::primitives::{Address, ChainId, U256},
@@ -56,6 +74,11 @@ pub struct IndexingAgreement {
     ///
     /// `None` until the first liveness check fires for this agreement.
     pub last_progress_at: Option<OffsetDateTime>,
+
+    /// Reason the agreement was rejected (only set when status is Rejected).
+    ///
+    /// Values: "PRICE_TOO_LOW", "OTHER", or None.
+    pub rejection_reason: Option<String>,
 }
 
 /// The status of the [`IndexingAgreement`].

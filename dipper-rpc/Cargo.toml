@@ -11,7 +11,9 @@ indexer-rpc = ["dep:indexer-dips", "indexer-dips/rpc", "dep:thegraph-core"]
 
 [dependencies]
 dipper-core = { version = "0.1.0", path = "../dipper-core", features = ["serde"], optional = true }
-indexer-dips = { git = "https://github.com/graphprotocol/indexer-rs.git", rev = "96634f4", default-features = false, optional = true }
+# Points to WIP branch with RejectReason support (PR #954)
+# TODO: Update to merged commit once PR is approved
+indexer-dips = { git = "https://github.com/graphprotocol/indexer-rs.git", rev = "37f9228", default-features = false, optional = true }
 jsonrpsee = { workspace = true, features = ["client", "macros", "server"], optional = true }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }

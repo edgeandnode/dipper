@@ -16,7 +16,15 @@ data:
         "min_seconds_per_collection": 86400,
         "duration_seconds": null,
         "deadline_seconds": 300,
-        "pricing_table": {}
+        "pricing_table": {},
+        "max_grt_per_30_days": {
+          "arbitrum-one": 4500,
+          "mainnet": 450,
+          "base": 2000,
+          "optimism": 1500,
+          "matic": 3000
+        },
+        "max_grt_per_million_entities_per_30_days": 2.0
       },
       "admin_rpc": {
         "listen_addr": "0.0.0.0:8545",

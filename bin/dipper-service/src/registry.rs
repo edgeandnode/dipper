@@ -200,11 +200,12 @@ impl AgreementRegistry for RegistryProvider {
 
     async fn get_declined_indexers_by_deployment(
         &self,
-        lookback_days: i32,
+        default_lookback_days: i32,
+        price_lookback_days: i32,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>> {
         Ok(self
             .inner
-            .get_declined_indexers_by_deployment(lookback_days)
+            .get_declined_indexers_by_deployment(default_lookback_days, price_lookback_days)
             .await?)
     }
 
@@ -321,9 +322,10 @@ impl AgreementRegistry for RegistryProvider {
     async fn mark_indexing_agreement_as_rejected(
         &self,
         id: &IndexingAgreementId,
+        rejection_reason: Option<&str>,
     ) -> RegistryResult<()> {
         self.inner
-            .mark_indexing_agreement_as_rejected(id)
+            .mark_indexing_agreement_as_rejected(id, rejection_reason)
             .await
             .map_err(Into::into)
     }
@@ -425,7 +427,7 @@ impl crate::network::service::chain_listener::ChainListenerStateRegistry for Reg
         Ok(self.inner.get_chain_listener_state(chain_id).await?.map(
             |(chain_id, last_processed_block)| {
                 crate::network::service::chain_listener::ChainListenerState {
-                    chain_id,
+                    _chain_id: chain_id,
                     last_processed_block,
                 }
             },

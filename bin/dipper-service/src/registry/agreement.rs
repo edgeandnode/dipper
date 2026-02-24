@@ -55,18 +55,19 @@ pub trait AgreementRegistry {
         indexer_ids: &[IndexerId],
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>;
 
-    /// Get declined indexers grouped by deployment within a lookback period.
+    /// Get declined indexers grouped by deployment with differentiated lookback windows.
     ///
     /// Returns indexers with `CanceledByIndexer`, `Expired`, or `Rejected` status
-    /// within the specified number of days, grouped by deployment. This is used to
-    /// avoid re-offering agreements to indexers that recently declined, let the
-    /// deadline pass without accepting, or rejected the proposal off-chain.
+    /// within lookback windows that depend on the rejection reason:
+    /// - `PRICE_TOO_LOW` rejections: `price_lookback_days` (shorter window)
+    /// - All other statuses/reasons: `default_lookback_days` (standard exclusion)
     ///
     /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
     /// that declined agreements for that deployment.
     async fn get_declined_indexers_by_deployment(
         &self,
-        lookback_days: i32,
+        default_lookback_days: i32,
+        price_lookback_days: i32,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>;
 
     /// Get all agreements by associated indexing request ID.
@@ -151,15 +152,20 @@ pub trait AgreementRegistry {
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;
 
-    /// Mark an indexing agreement as `REJECTED`.
+    /// Mark an indexing agreement as `REJECTED` with an optional reason.
     ///
     /// The indexer rejected the proposal off-chain. The indexer may still accept on-chain
     /// before the deadline, in which case Dipper will cancel via `cancelIndexingAgreementByPayer`.
     /// If there is no indexing agreement with the given ID, or if the agreement is not in the
     /// `CREATED` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
+    ///
+    /// The `rejection_reason` controls the lookback window for declined indexer exclusion:
+    /// - `Some("PRICE_TOO_LOW")`: 1-day exclusion (until next IISA price refresh)
+    /// - `Some("OTHER")` or `None`: 30-day exclusion (standard)
     async fn mark_indexing_agreement_as_rejected(
         &self,
         id: &IndexingAgreementId,
+        rejection_reason: Option<&str>,
     ) -> RegistryResult<()>;
 
     /// Get all `AcceptedOnChain` agreements for liveness checking.
@@ -241,6 +247,9 @@ pub struct IndexingAgreement {
     ///
     /// `None` until the first liveness check fires for this agreement.
     pub last_progress_at: Option<OffsetDateTime>,
+
+    /// Reason the agreement was rejected (only set when status is Rejected).
+    pub rejection_reason: Option<String>,
 }
 
 /// The _indexing agreement_ indexer information.
@@ -403,6 +412,7 @@ impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
             voucher: value.voucher.into(),
             last_block_height: value.last_block_height,
             last_progress_at: value.last_progress_at,
+            rejection_reason: value.rejection_reason,
         })
     }
 }

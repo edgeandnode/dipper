@@ -60,7 +60,7 @@ pub struct Ctx<R, W, E> {
 
 /// State persisted in the database
 pub struct ChainListenerState {
-    pub chain_id: u64,
+    pub _chain_id: u64,
     pub last_processed_block: u64,
 }
 
@@ -530,6 +530,7 @@ mod tests {
                 updated_at: OffsetDateTime::now_utc(),
                 last_block_height: None,
                 last_progress_at: None,
+                rejection_reason: None,
             };
             self.state.lock().unwrap().agreements.insert(id, agreement);
         }
@@ -591,7 +592,8 @@ mod tests {
 
         async fn get_declined_indexers_by_deployment(
             &self,
-            _lookback_days: i32,
+            _default_lookback_days: i32,
+            _price_lookback_days: i32,
         ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>> {
             Ok(std::collections::HashMap::new())
         }
@@ -681,6 +683,7 @@ mod tests {
         async fn mark_indexing_agreement_as_rejected(
             &self,
             _id: &IndexingAgreementId,
+            _rejection_reason: Option<&str>,
         ) -> RegistryResult<()> {
             Ok(())
         }

@@ -19,6 +19,7 @@ impl sqlx::FromRow<'_, PgRow> for IndexingAgreement {
         let sqlx::types::Json(voucher) = row.try_get("voucher")?;
         let last_block_height: Option<i64> = row.try_get("last_block_height")?;
         let last_progress_at = row.try_get("last_progress_at")?;
+        let rejection_reason: Option<String> = row.try_get("rejection_reason")?;
 
         Ok(Self {
             id,
@@ -30,6 +31,7 @@ impl sqlx::FromRow<'_, PgRow> for IndexingAgreement {
             voucher,
             last_block_height: last_block_height.map(|v| v as u64),
             last_progress_at,
+            rejection_reason,
         })
     }
 }
