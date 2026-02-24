@@ -1,7 +1,26 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
+use serde::Deserialize;
 use thegraph_core::{DeploymentId, IndexerId};
+
+/// Response from indexer's /dips/info endpoint.
+///
+/// This mirrors the structure returned by indexer-rs to allow direct
+/// querying of indexer pricing and chain support during fallback selection.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DipsInfoResponse {
+    pub pricing: DipsInfoPricing,
+    pub supported_networks: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DipsInfoPricing {
+    /// Minimum GRT per 30 days, keyed by chain name (e.g., "arbitrum-one").
+    pub min_grt_per_30_days: BTreeMap<String, String>,
+    /// Minimum GRT per billion entities per 30 days.
+    pub min_grt_per_billion_entities_per_30_days: String,
+}
 
 /// Context for load balancing during indexer selection.
 ///

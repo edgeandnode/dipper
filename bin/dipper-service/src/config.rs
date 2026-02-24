@@ -103,6 +103,47 @@ pub struct IisaConfig {
     /// For example, `max_retries = 3` means up to 4 total attempts (1 initial + 3 retries).
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
+
+    /// Fallback filter configuration (used when IISA is unavailable for 6+ hours).
+    #[serde(default)]
+    pub fallback: FallbackFilterConfig,
+}
+
+/// Configuration for the fallback filter used when IISA is unavailable.
+///
+/// When IISA has been unavailable for 6+ hours, the dipper falls back to random
+/// selection from the network subgraph. The fallback filter fetches /dips/info
+/// directly from candidate indexers to verify chain support and pricing.
+#[serde_as]
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct FallbackFilterConfig {
+    /// Request timeout per indexer in seconds (default: 5).
+    ///
+    /// Short timeout since we're hitting many endpoints concurrently.
+    #[serde(default = "default_fallback_request_timeout")]
+    #[serde_as(as = "serde_with::DurationSeconds")]
+    pub request_timeout: Duration,
+
+    /// Maximum concurrent requests to indexers (default: 20).
+    #[serde(default = "default_fallback_max_concurrent")]
+    pub max_concurrent: usize,
+}
+
+fn default_fallback_request_timeout() -> Duration {
+    Duration::from_secs(5)
+}
+
+fn default_fallback_max_concurrent() -> usize {
+    20
+}
+
+impl Default for FallbackFilterConfig {
+    fn default() -> Self {
+        Self {
+            request_timeout: default_fallback_request_timeout(),
+            max_concurrent: default_fallback_max_concurrent(),
+        }
+    }
 }
 
 fn default_request_timeout() -> Duration {

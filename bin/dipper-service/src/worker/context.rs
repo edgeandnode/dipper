@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use dipper_core::state::FromState;
+use dipper_iisa::FallbackFilter;
 use thegraph_core::alloy::primitives::ChainId;
 
 use super::handlers::{
@@ -45,6 +46,9 @@ pub struct Ctx<Q, R, N, C, I, T> {
 
     /// The chain client for on-chain transactions
     pub chain_client: T,
+
+    /// The fallback filter for direct indexer /dips/info queries
+    pub fallback_filter: Arc<FallbackFilter>,
 }
 
 /// The inner worker context.
@@ -78,6 +82,9 @@ pub(super) struct InnerCtx<R, N, W, C, I, T> {
 
     /// The chain client for on-chain transactions
     pub chain_client: T,
+
+    /// The fallback filter for direct indexer /dips/info queries
+    pub fallback_filter: Arc<FallbackFilter>,
 }
 
 impl<R, N, W, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
@@ -150,6 +157,7 @@ where
             network: state.network.clone(),
             queue: state.worker.clone(),
             iisa: state.iisa.clone(),
+            fallback_filter: state.fallback_filter.clone(),
         }
     }
 }
