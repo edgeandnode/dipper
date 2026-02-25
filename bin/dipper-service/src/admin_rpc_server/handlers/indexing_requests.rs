@@ -21,6 +21,28 @@ use crate::{
     worker::service::WorkerQueue,
 };
 
+impl From<IndexingRequestRecordStatus> for IndexingRequestStatus {
+    fn from(status: IndexingRequestRecordStatus) -> Self {
+        match status {
+            IndexingRequestRecordStatus::Open => Self::Open,
+            IndexingRequestRecordStatus::Canceled => Self::Canceled,
+        }
+    }
+}
+
+impl From<IndexingRequestRecord> for IndexingRequest {
+    fn from(request: IndexingRequestRecord) -> Self {
+        Self {
+            id: request.id,
+            created_at: request.created_at,
+            updated_at: request.updated_at,
+            status: request.status.into(),
+            requested_by: request.requested_by,
+            deployment_id: request.deployment_id,
+        }
+    }
+}
+
 /// The substate for the [`IndexingRequestsRpc`] handler
 ///
 /// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
@@ -52,7 +74,7 @@ where
 {
     async fn get_all_indexing_requests(&self) -> RpcResult<Vec<IndexingRequest>> {
         let indexing_requests = match self.registry.get_all_indexing_requests().await {
-            Ok(res) => res.into_iter().map(into_indexing_request).collect(),
+            Ok(res) => res.into_iter().map(Into::into).collect(),
             Err(err) => {
                 tracing::error!(error=?err, "Failed to get all indexing requests");
                 return Err(ErrorObject::borrowed(503, "Service unavailable", None));
@@ -67,7 +89,7 @@ where
         id: IndexingRequestId,
     ) -> RpcResult<IndexingRequest> {
         let indexing_request = match self.registry.get_indexing_request_by_id(&id).await {
-            Ok(Some(res)) => into_indexing_request(res),
+            Ok(Some(res)) => res.into(),
             Ok(None) => {
                 return Err(ErrorObject::borrowed(404, "Not found", None));
             }
@@ -89,7 +111,7 @@ where
             .get_indexing_requests_by_deployment_id(&deployment_id)
             .await
         {
-            Ok(res) => res.into_iter().map(into_indexing_request).collect(),
+            Ok(res) => res.into_iter().map(Into::into).collect(),
             Err(err) => {
                 tracing::error!(error=?err, "Failed to get indexing request by id");
                 return Err(ErrorObject::borrowed(503, "Service unavailable", None));
@@ -239,23 +261,5 @@ impl<R, W> std::ops::Deref for RpcServerImpl<R, W> {
 
     fn deref(&self) -> &Self::Target {
         &self.0
-    }
-}
-
-fn into_indexing_request(request: IndexingRequestRecord) -> IndexingRequest {
-    IndexingRequest {
-        id: request.id,
-        created_at: request.created_at,
-        updated_at: request.updated_at,
-        status: into_indexing_request_status(request.status),
-        requested_by: request.requested_by,
-        deployment_id: request.deployment_id,
-    }
-}
-
-fn into_indexing_request_status(status: IndexingRequestRecordStatus) -> IndexingRequestStatus {
-    match status {
-        IndexingRequestRecordStatus::Open => IndexingRequestStatus::Open,
-        IndexingRequestRecordStatus::Canceled => IndexingRequestStatus::Canceled,
     }
 }

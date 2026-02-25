@@ -24,6 +24,38 @@ use crate::{
     worker::service::WorkerQueue,
 };
 
+impl From<IndexingAgreementRecordStatus> for IndexingAgreementStatus {
+    fn from(status: IndexingAgreementRecordStatus) -> Self {
+        match status {
+            IndexingAgreementRecordStatus::Created => Self::Created,
+            IndexingAgreementRecordStatus::DeliveryFailed => Self::DeliveryFailed,
+            IndexingAgreementRecordStatus::CanceledByRequester => Self::CanceledByRequester,
+            IndexingAgreementRecordStatus::CanceledByIndexer => Self::CanceledByIndexer,
+            IndexingAgreementRecordStatus::Expired => Self::Expired,
+            IndexingAgreementRecordStatus::AcceptedOnChain => Self::AcceptedOnChain,
+            IndexingAgreementRecordStatus::Rejected => Self::Rejected,
+            IndexingAgreementRecordStatus::AbandonedByIndexer => Self::AbandonedByIndexer,
+        }
+    }
+}
+
+impl From<IndexingAgreementRecord> for IndexingAgreement {
+    fn from(agreement: IndexingAgreementRecord) -> Self {
+        Self {
+            id: agreement.id,
+            created_at: agreement.created_at,
+            updated_at: agreement.updated_at,
+            status: agreement.status.into(),
+            indexing_request_id: agreement.indexing_request_id,
+            indexer_id: agreement.indexer.id,
+            indexer_url: agreement.indexer.url,
+            deadline: agreement.voucher.deadline,
+            ends_at: agreement.voucher.ends_at,
+            rejection_reason: agreement.rejection_reason,
+        }
+    }
+}
+
 /// The substate for the [`IndexingAgreementsRpc`] handler
 ///
 /// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
@@ -69,7 +101,7 @@ where
             .get_indexing_agreement_by_id(&agreement_id)
             .await
         {
-            Ok(Some(res)) => into_indexing_agreement(res),
+            Ok(Some(res)) => res.into(),
             Ok(None) => {
                 return Err(ErrorObject::borrowed(404, "Not found", None));
             }
@@ -91,7 +123,7 @@ where
             .get_indexing_agreements_by_deployment_id(&deployment_id)
             .await
         {
-            Ok(res) => res.into_iter().map(into_indexing_agreement).collect(),
+            Ok(res) => res.into_iter().map(Into::into).collect(),
             Err(err) => {
                 tracing::error!(error=?err, "Failed to get indexing agreements by deployment id");
                 return Err(ErrorObject::borrowed(503, "Internal error", None));
@@ -110,7 +142,7 @@ where
             .get_indexing_agreements_by_indexer_id(&indexer_id)
             .await
         {
-            Ok(res) => res.into_iter().map(into_indexing_agreement).collect(),
+            Ok(res) => res.into_iter().map(Into::into).collect(),
             Err(err) => {
                 tracing::error!(error=?err, "Failed to get indexing agreements by indexer id");
                 return Err(ErrorObject::borrowed(503, "Internal error", None));
@@ -129,7 +161,7 @@ where
             .get_indexing_agreements_by_indexing_request_id(&request_id)
             .await
         {
-            Ok(res) => res.into_iter().map(into_indexing_agreement).collect(),
+            Ok(res) => res.into_iter().map(Into::into).collect(),
             Err(err) => {
                 tracing::error!(error=?err, "Failed to get indexing agreements by indexer id");
                 return Err(ErrorObject::borrowed(503, "Internal error", None));
@@ -192,43 +224,5 @@ where
         };
 
         Ok(())
-    }
-}
-
-#[inline]
-fn into_indexing_agreement(agreement: IndexingAgreementRecord) -> IndexingAgreement {
-    IndexingAgreement {
-        id: agreement.id,
-        created_at: agreement.created_at,
-        updated_at: agreement.updated_at,
-        status: into_indexing_agreement_status(agreement.status),
-        indexing_request_id: agreement.indexing_request_id,
-        indexer_id: agreement.indexer.id,
-        indexer_url: agreement.indexer.url,
-        deadline: agreement.voucher.deadline,
-        ends_at: agreement.voucher.ends_at,
-        rejection_reason: agreement.rejection_reason,
-    }
-}
-
-#[inline]
-fn into_indexing_agreement_status(
-    status: IndexingAgreementRecordStatus,
-) -> IndexingAgreementStatus {
-    match status {
-        IndexingAgreementRecordStatus::Created => IndexingAgreementStatus::Created,
-        IndexingAgreementRecordStatus::DeliveryFailed => IndexingAgreementStatus::DeliveryFailed,
-        IndexingAgreementRecordStatus::CanceledByRequester => {
-            IndexingAgreementStatus::CanceledByRequester
-        }
-        IndexingAgreementRecordStatus::CanceledByIndexer => {
-            IndexingAgreementStatus::CanceledByIndexer
-        }
-        IndexingAgreementRecordStatus::Expired => IndexingAgreementStatus::Expired,
-        IndexingAgreementRecordStatus::AcceptedOnChain => IndexingAgreementStatus::AcceptedOnChain,
-        IndexingAgreementRecordStatus::Rejected => IndexingAgreementStatus::Rejected,
-        IndexingAgreementRecordStatus::AbandonedByIndexer => {
-            IndexingAgreementStatus::AbandonedByIndexer
-        }
     }
 }
