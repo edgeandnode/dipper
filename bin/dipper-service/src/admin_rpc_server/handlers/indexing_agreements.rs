@@ -15,6 +15,7 @@ use dipper_rpc::admin::{
 use jsonrpsee::{core::RpcResult, types::ErrorObject};
 use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::Address};
 
+use super::error_handling::{handle_list_result, handle_optional_result, require_exists};
 use crate::{
     registry::{
         AgreementRegistry, IndexingAgreement as IndexingAgreementRecord,
@@ -64,79 +65,52 @@ where
         &self,
         agreement_id: IndexingAgreementId,
     ) -> RpcResult<IndexingAgreement> {
-        let indexing_agreement = match self
-            .registry
-            .get_indexing_agreement_by_id(&agreement_id)
-            .await
-        {
-            Ok(Some(res)) => into_indexing_agreement(res),
-            Ok(None) => {
-                return Err(ErrorObject::borrowed(404, "Not found", None));
-            }
-            Err(err) => {
-                tracing::error!(error=?err, "Failed to get indexing agreement by id");
-                return Err(ErrorObject::borrowed(503, "Internal error", None));
-            }
-        };
-
-        Ok(indexing_agreement)
+        handle_optional_result(
+            self.registry
+                .get_indexing_agreement_by_id(&agreement_id)
+                .await,
+            "Failed to get indexing agreement by id",
+            into_indexing_agreement,
+        )
     }
 
     async fn get_agreements_by_deployment_id(
         &self,
         deployment_id: DeploymentId,
     ) -> RpcResult<Vec<IndexingAgreement>> {
-        let indexing_agreements = match self
-            .registry
-            .get_indexing_agreements_by_deployment_id(&deployment_id)
-            .await
-        {
-            Ok(res) => res.into_iter().map(into_indexing_agreement).collect(),
-            Err(err) => {
-                tracing::error!(error=?err, "Failed to get indexing agreements by deployment id");
-                return Err(ErrorObject::borrowed(503, "Internal error", None));
-            }
-        };
-
-        Ok(indexing_agreements)
+        handle_list_result(
+            self.registry
+                .get_indexing_agreements_by_deployment_id(&deployment_id)
+                .await,
+            "Failed to get indexing agreements by deployment id",
+            into_indexing_agreement,
+        )
     }
 
     async fn get_agreements_by_indexer_id(
         &self,
         indexer_id: IndexerId,
     ) -> RpcResult<Vec<IndexingAgreement>> {
-        let indexing_agreements = match self
-            .registry
-            .get_indexing_agreements_by_indexer_id(&indexer_id)
-            .await
-        {
-            Ok(res) => res.into_iter().map(into_indexing_agreement).collect(),
-            Err(err) => {
-                tracing::error!(error=?err, "Failed to get indexing agreements by indexer id");
-                return Err(ErrorObject::borrowed(503, "Internal error", None));
-            }
-        };
-
-        Ok(indexing_agreements)
+        handle_list_result(
+            self.registry
+                .get_indexing_agreements_by_indexer_id(&indexer_id)
+                .await,
+            "Failed to get indexing agreements by indexer id",
+            into_indexing_agreement,
+        )
     }
 
     async fn get_agreements_by_indexing_request_id(
         &self,
         request_id: IndexingRequestId,
     ) -> RpcResult<Vec<IndexingAgreement>> {
-        let indexing_agreements = match self
-            .registry
-            .get_indexing_agreements_by_indexing_request_id(&request_id)
-            .await
-        {
-            Ok(res) => res.into_iter().map(into_indexing_agreement).collect(),
-            Err(err) => {
-                tracing::error!(error=?err, "Failed to get indexing agreements by indexer id");
-                return Err(ErrorObject::borrowed(503, "Internal error", None));
-            }
-        };
-
-        Ok(indexing_agreements)
+        handle_list_result(
+            self.registry
+                .get_indexing_agreements_by_indexing_request_id(&request_id)
+                .await,
+            "Failed to get indexing agreements by indexing request id",
+            into_indexing_agreement,
+        )
     }
 
     async fn cancel_indexing_agreement(
@@ -160,23 +134,12 @@ where
         tracing::debug!(%agreement_id, %requested_by, "Canceling indexing agreement");
 
         // Check if the agreement exists
-        let agreement = match self
-            .registry
-            .get_indexing_agreement_by_id(&agreement_id)
-            .await
-        {
-            Ok(None) => {
-                return Err(ErrorObject::borrowed(404, "Not found", None));
-            }
-            Err(err) => {
-                tracing::error!(error=?err, "Failed to get indexing agreement");
-                return Err(ErrorObject::borrowed(503, "Internal error", None));
-            }
-            Ok(Some(agreement)) => {
-                // The agreement exists, proceed with cancellation
-                agreement
-            }
-        };
+        let agreement = require_exists(
+            self.registry
+                .get_indexing_agreement_by_id(&agreement_id)
+                .await,
+            "Failed to get indexing agreement",
+        )?;
 
         // Process the indexing request cancellation
         if let Err(err) = self

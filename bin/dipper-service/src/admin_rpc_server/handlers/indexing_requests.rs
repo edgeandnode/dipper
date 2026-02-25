@@ -12,6 +12,7 @@ use dipper_rpc::admin::{
 use jsonrpsee::{core::RpcResult, types::ErrorObject};
 use thegraph_core::{DeploymentId, alloy::primitives::Address};
 
+use super::error_handling::{handle_list_result, handle_optional_result};
 use crate::{
     registry::{
         Error as RegistryError, IndexingRequest as IndexingRequestRecord, IndexingRequestRegistry,
@@ -51,52 +52,35 @@ where
     W: WorkerQueue + Clone + Send + Sync + 'static,
 {
     async fn get_all_indexing_requests(&self) -> RpcResult<Vec<IndexingRequest>> {
-        let indexing_requests = match self.registry.get_all_indexing_requests().await {
-            Ok(res) => res.into_iter().map(into_indexing_request).collect(),
-            Err(err) => {
-                tracing::error!(error=?err, "Failed to get all indexing requests");
-                return Err(ErrorObject::borrowed(503, "Service unavailable", None));
-            }
-        };
-
-        Ok(indexing_requests)
+        handle_list_result(
+            self.registry.get_all_indexing_requests().await,
+            "Failed to get all indexing requests",
+            into_indexing_request,
+        )
     }
 
     async fn get_indexing_request_by_id(
         &self,
         id: IndexingRequestId,
     ) -> RpcResult<IndexingRequest> {
-        let indexing_request = match self.registry.get_indexing_request_by_id(&id).await {
-            Ok(Some(res)) => into_indexing_request(res),
-            Ok(None) => {
-                return Err(ErrorObject::borrowed(404, "Not found", None));
-            }
-            Err(err) => {
-                tracing::error!(error=?err, "Failed to get indexing request by id");
-                return Err(ErrorObject::borrowed(503, "Service unavailable", None));
-            }
-        };
-
-        Ok(indexing_request)
+        handle_optional_result(
+            self.registry.get_indexing_request_by_id(&id).await,
+            "Failed to get indexing request by id",
+            into_indexing_request,
+        )
     }
 
     async fn get_indexing_requests_by_deployment_id(
         &self,
         deployment_id: DeploymentId,
     ) -> RpcResult<Vec<IndexingRequest>> {
-        let indexing_request = match self
-            .registry
-            .get_indexing_requests_by_deployment_id(&deployment_id)
-            .await
-        {
-            Ok(res) => res.into_iter().map(into_indexing_request).collect(),
-            Err(err) => {
-                tracing::error!(error=?err, "Failed to get indexing request by id");
-                return Err(ErrorObject::borrowed(503, "Service unavailable", None));
-            }
-        };
-
-        Ok(indexing_request)
+        handle_list_result(
+            self.registry
+                .get_indexing_requests_by_deployment_id(&deployment_id)
+                .await,
+            "Failed to get indexing requests by deployment id",
+            into_indexing_request,
+        )
     }
 
     async fn register_new_indexing_request(
