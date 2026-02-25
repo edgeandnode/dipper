@@ -15,6 +15,46 @@ use crate::{
     signing::eip712::PrivateKeyEip712Signer,
 };
 
+/// Generates a `FromState<InnerCtx<...>>` impl for a handler context type.
+///
+/// The macro maps InnerCtx fields to handler context fields, supporting field renaming.
+///
+/// Syntax: `impl_from_state!(TargetType<generics> { field_mappings })`
+///
+/// Field mappings can be:
+/// - `field` - maps `state.field` to `self.field`
+/// - `target_field: source_field` - maps `state.source_field` to `self.target_field`
+macro_rules! impl_from_state {
+    (
+        $target:ident < $($gen:ident),* > {
+            $( $field:ident $(: $source:ident)? ),* $(,)?
+        }
+    ) => {
+        impl<R, N, W, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
+            for $target < $($gen),* >
+        where
+            $( $gen: Clone, )*
+        {
+            #[inline]
+            fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
+                Self {
+                    $( $field: impl_from_state!(@clone state, $field $(, $source)?), )*
+                }
+            }
+        }
+    };
+
+    // Clone from a renamed source field
+    (@clone $state:ident, $field:ident, $source:ident) => {
+        $state.$source.clone()
+    };
+
+    // Clone from a field with the same name
+    (@clone $state:ident, $field:ident) => {
+        $state.$field.clone()
+    };
+}
+
 /// The worker context
 ///
 /// This is a input context for the worker service
@@ -87,124 +127,49 @@ pub(super) struct InnerCtx<R, N, W, C, I, T> {
     pub fallback_filter: Arc<FallbackFilter>,
 }
 
-impl<R, N, W, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
-    for ReassessIndexingRequestCtx<R, N, W, I>
-where
-    R: Clone,
-    N: Clone,
-    W: Clone,
-    I: Clone,
-{
-    #[inline]
-    fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
-        Self {
-            signer: state.signer.clone(),
-            agreement_conf: state.agreement_conf.clone(),
-            chain_price: state.pricing_table.clone(),
-            registry: state.registry.clone(),
-            network: state.network.clone(),
-            queue: state.worker.clone(),
-            iisa: state.iisa.clone(),
-        }
-    }
-}
+impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I> {
+    signer,
+    agreement_conf,
+    chain_price: pricing_table,
+    registry,
+    network,
+    queue: worker,
+    iisa,
+});
 
-impl<R, N, W, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
-    for SendIndexingAgreementCancellationCtx<R, C>
-where
-    R: Clone,
-    C: Clone,
-{
-    #[inline]
-    fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
-        Self {
-            registry: state.registry.clone(),
-            indexer_client: state.client.clone(),
-        }
-    }
-}
+impl_from_state!(SendIndexingAgreementCancellationCtx<R, C> {
+    registry,
+    indexer_client: client,
+});
 
-impl<R, N, W, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
-    for ProcessIndexingRequestCancellationCtx<R, W>
-where
-    R: Clone,
-    W: Clone,
-{
-    #[inline]
-    fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
-        Self {
-            registry: state.registry.clone(),
-            queue: state.worker.clone(),
-        }
-    }
-}
+impl_from_state!(ProcessIndexingRequestCancellationCtx<R, W> {
+    registry,
+    queue: worker,
+});
 
-impl<W, N, R, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
-    for ProcessNewIndexingRequestCtx<R, N, W, I>
-where
-    R: Clone,
-    N: Clone,
-    W: Clone,
-    I: Clone,
-{
-    #[inline]
-    fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
-        Self {
-            signer: state.signer.clone(),
-            agreement_conf: state.agreement_conf.clone(),
-            chain_price: state.pricing_table.clone(),
-            registry: state.registry.clone(),
-            network: state.network.clone(),
-            queue: state.worker.clone(),
-            iisa: state.iisa.clone(),
-            fallback_filter: state.fallback_filter.clone(),
-        }
-    }
-}
+impl_from_state!(ProcessNewIndexingRequestCtx<R, N, W, I> {
+    signer,
+    agreement_conf,
+    chain_price: pricing_table,
+    registry,
+    network,
+    queue: worker,
+    iisa,
+    fallback_filter,
+});
 
-impl<R, N, W, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
-    for SendIndexingAgreementProposalCtx<R, W, C>
-where
-    R: Clone,
-    W: Clone,
-    C: Clone,
-{
-    #[inline]
-    fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
-        Self {
-            registry: state.registry.clone(),
-            queue: state.worker.clone(),
-            indexer_client: state.client.clone(),
-        }
-    }
-}
+impl_from_state!(SendIndexingAgreementProposalCtx<R, W, C> {
+    registry,
+    queue: worker,
+    indexer_client: client,
+});
 
-impl<R, N, W, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
-    for ProcessIndexingAgreementCancellationCtx<R, W>
-where
-    R: Clone,
-    W: Clone,
-{
-    #[inline]
-    fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
-        Self {
-            queue: state.worker.clone(),
-            registry: state.registry.clone(),
-        }
-    }
-}
+impl_from_state!(ProcessIndexingAgreementCancellationCtx<R, W> {
+    queue: worker,
+    registry,
+});
 
-impl<R, N, W, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
-    for CancelRejectedAgreementOnChainCtx<R, T>
-where
-    R: Clone,
-    T: Clone,
-{
-    #[inline]
-    fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
-        Self {
-            registry: state.registry.clone(),
-            chain_client: state.chain_client.clone(),
-        }
-    }
-}
+impl_from_state!(CancelRejectedAgreementOnChainCtx<R, T> {
+    registry,
+    chain_client,
+});
