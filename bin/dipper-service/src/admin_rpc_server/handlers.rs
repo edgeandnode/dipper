@@ -9,6 +9,7 @@ use crate::{
     worker::service::WorkerQueue,
 };
 
+mod error_handling;
 mod indexing_agreements;
 mod indexing_requests;
 
