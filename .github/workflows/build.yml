@@ -23,6 +23,7 @@ jobs:
       with:
         images: ghcr.io/edgeandnode/dipper-service
         tags: |
+          type=raw,value=latest,enable={{is_default_branch}}
           type=ref,event=tag
           type=sha
 
@@ -55,6 +56,7 @@ jobs:
       with:
         images: ghcr.io/edgeandnode/dipper-cli
         tags: |
+          type=raw,value=latest,enable={{is_default_branch}}
           type=ref,event=tag
           type=sha
 
