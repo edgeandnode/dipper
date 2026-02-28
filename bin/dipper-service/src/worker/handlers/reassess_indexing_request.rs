@@ -6,6 +6,7 @@ use std::{
 
 use dipper_core::ids::IndexingRequestId;
 use dipper_iisa::{CandidateSelection, SelectedIndexer, SelectionError};
+use graph_networks_registry::NetworksRegistry;
 use jsonrpsee::core::Serialize;
 use serde::Deserialize;
 use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::ChainId};
@@ -33,6 +34,8 @@ pub struct Ctx<R, N, W, I> {
     pub network: N,
     pub queue: W,
     pub iisa: I,
+    pub networks_registry: Arc<NetworksRegistry>,
+    pub additional_networks: Arc<BTreeMap<ChainId, String>>,
 }
 
 /// Reassess an indexing request against the current IISA target state.
@@ -78,7 +81,11 @@ where
     .await?;
 
     // Map numeric chain ID to chain name for IISA ceiling/filtering
-    let chain_name = super::process_new_indexing_request::chain_id_to_name(*deployment_chain_id);
+    let chain_name = super::process_new_indexing_request::resolve_chain_name(
+        *deployment_chain_id,
+        &ctx.networks_registry,
+        &ctx.additional_networks,
+    );
     if let Some(name) = &chain_name {
         context.chain_id = Some(name.clone());
         context.max_grt_per_30_days = ctx.agreement_conf.max_grt_per_30_days().get(name).copied();

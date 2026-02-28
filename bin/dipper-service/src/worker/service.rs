@@ -52,6 +52,8 @@ where
         iisa,
         chain_client,
         fallback_filter,
+        networks_registry,
+        additional_networks,
     } = state.into();
 
     let (tx_stop, rx_stop) = mpsc::channel(1);
@@ -71,6 +73,8 @@ where
             iisa,
             chain_client,
             fallback_filter,
+            networks_registry,
+            additional_networks,
             worker: WorkerQueueHandle::new(queue.clone()),
         };
 

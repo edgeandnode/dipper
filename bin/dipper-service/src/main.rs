@@ -178,6 +178,20 @@ pub async fn main() -> anyhow::Result<()> {
     }
     tracing::info!(endpoint=%conf.iisa.endpoint, "IISA service is healthy");
 
+    //- The graph networks registry (maps chain IDs to canonical network names)
+    let networks_registry = Arc::new(
+        graph_networks_registry::NetworksRegistry::from_latest_version()
+            .await
+            .expect("Failed to fetch graph networks registry"),
+    );
+    tracing::info!(
+        version=%networks_registry.version,
+        networks=%networks_registry.networks.len(),
+        "loaded graph networks registry"
+    );
+
+    let additional_networks = Arc::new(conf.additional_networks);
+
     //- The fallback filter (for when IISA is unavailable)
     let fallback_filter = Arc::new(FallbackFilter::new(FallbackFilterConfig {
         request_timeout: conf.iisa.fallback.request_timeout,
@@ -224,6 +238,8 @@ pub async fn main() -> anyhow::Result<()> {
             iisa: iisa_client.clone(),
             chain_client: chain_client.clone(),
             fallback_filter,
+            networks_registry,
+            additional_networks,
         };
         worker::service::new(ctx)
     };

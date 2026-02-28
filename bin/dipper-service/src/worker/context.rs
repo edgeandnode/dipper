@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use dipper_core::state::FromState;
 use dipper_iisa::FallbackFilter;
+use graph_networks_registry::NetworksRegistry;
 use thegraph_core::alloy::primitives::ChainId;
 
 use super::handlers::{
@@ -89,6 +90,12 @@ pub struct Ctx<Q, R, N, C, I, T> {
 
     /// The fallback filter for direct indexer /dips/info queries
     pub fallback_filter: Arc<FallbackFilter>,
+
+    /// The graph networks registry (maps chain IDs to network names)
+    pub networks_registry: Arc<NetworksRegistry>,
+
+    /// Additional chain ID to network name mappings for dev/test chains
+    pub additional_networks: Arc<BTreeMap<ChainId, String>>,
 }
 
 /// The inner worker context.
@@ -125,6 +132,12 @@ pub(super) struct InnerCtx<R, N, W, C, I, T> {
 
     /// The fallback filter for direct indexer /dips/info queries
     pub fallback_filter: Arc<FallbackFilter>,
+
+    /// The graph networks registry (maps chain IDs to network names)
+    pub networks_registry: Arc<NetworksRegistry>,
+
+    /// Additional chain ID to network name mappings for dev/test chains
+    pub additional_networks: Arc<BTreeMap<ChainId, String>>,
 }
 
 impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I> {
@@ -135,6 +148,8 @@ impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I> {
     network,
     queue: worker,
     iisa,
+    networks_registry,
+    additional_networks,
 });
 
 impl_from_state!(SendIndexingAgreementCancellationCtx<R, C> {
@@ -156,6 +171,8 @@ impl_from_state!(ProcessNewIndexingRequestCtx<R, N, W, I> {
     queue: worker,
     iisa,
     fallback_filter,
+    networks_registry,
+    additional_networks,
 });
 
 impl_from_state!(SendIndexingAgreementProposalCtx<R, W, C> {

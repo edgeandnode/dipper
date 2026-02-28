@@ -6,6 +6,7 @@ use std::{
 
 use dipper_core::ids::IndexingRequestId;
 use dipper_iisa::{CandidateSelection, FallbackFilter, SelectedIndexer, SelectionError};
+use graph_networks_registry::NetworksRegistry;
 use rand::seq::IndexedRandom;
 use thegraph_core::{
     DeploymentId, IndexerId,
@@ -36,6 +37,8 @@ pub struct Ctx<R, N, W, I> {
     pub queue: W,
     pub iisa: I,
     pub fallback_filter: Arc<FallbackFilter>,
+    pub networks_registry: Arc<NetworksRegistry>,
+    pub additional_networks: Arc<BTreeMap<ChainId, String>>,
 }
 
 /// Given a new indexing request, run the IISA and get a list of indexers that
@@ -78,7 +81,11 @@ where
     .await?;
 
     // Map numeric chain ID to chain name for IISA ceiling/filtering
-    let chain_name = chain_id_to_name(*deployment_chain_id);
+    let chain_name = resolve_chain_name(
+        *deployment_chain_id,
+        &ctx.networks_registry,
+        &ctx.additional_networks,
+    );
     if let Some(name) = &chain_name {
         context.chain_id = Some(name.clone());
         context.max_grt_per_30_days = ctx.agreement_conf.max_grt_per_30_days().get(name).copied();
@@ -351,20 +358,23 @@ pub(crate) fn resolve_pricing(
     None
 }
 
-/// Map well-known EIP-155 chain IDs to human-readable chain names.
+/// Resolve a numeric chain ID to the canonical network name used by The Graph ecosystem.
 ///
-/// These names match the keys used in indexer-rs's `min_grt_per_30_days` config
-/// and in the IISA `dips_supported_networks` field.
-pub(crate) fn chain_id_to_name(chain_id: ChainId) -> Option<String> {
-    match chain_id {
-        1 => Some("mainnet".to_string()),
-        42161 => Some("arbitrum-one".to_string()),
-        8453 => Some("base".to_string()),
-        10 => Some("optimism".to_string()),
-        137 => Some("matic".to_string()),
-        _ => {
-            tracing::debug!(chain_id=%chain_id, "Unknown chain ID, no name mapping");
-            None
-        }
+/// Looks up the chain in the official graph-networks-registry first (using CAIP-2 format
+/// `eip155:{chain_id}`), then falls back to the `additional_networks` config map for
+/// dev/test chains not in the registry (e.g. `1337` -> `"hardhat"`).
+pub(crate) fn resolve_chain_name(
+    chain_id: ChainId,
+    registry: &NetworksRegistry,
+    additional_networks: &BTreeMap<ChainId, String>,
+) -> Option<String> {
+    let caip2 = format!("eip155:{chain_id}");
+    if let Some(network) = registry.get_network_by_caip2_id(&caip2) {
+        return Some(network.id.clone());
     }
+    if let Some(name) = additional_networks.get(&chain_id) {
+        return Some(name.clone());
+    }
+    tracing::debug!(chain_id=%chain_id, "No network name found in registry or additional_networks");
+    None
 }
