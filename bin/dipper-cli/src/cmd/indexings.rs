@@ -135,7 +135,7 @@ pub async fn register(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
         .get_one::<ChainId>("CHAIN_ID")
         .ok_or_else(|| anyhow::anyhow!("No chain ID provided"))?;
 
-    let num_candidates = matches.get_one::<usize>("NUM_CANDIDATES").copied();
+    let num_candidates = matches.get_one::<usize>("num-candidates").copied();
 
     let req = signed_message::sign(
         &signer,
