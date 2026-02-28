@@ -83,7 +83,8 @@ pub async fn main() -> anyhow::Result<()> {
     let db_conn = db::connect(&conf.db).await?;
     tracing::info!(db_url=%conf.db.url, "initialized DB connection pool");
 
-    db::run_migrations(&db_conn).await?;
+    dipper_pgmq::run_db_migrations(&db_conn).await?;
+    dipper_pgregistry::run_db_migrations(&db_conn).await?;
     tracing::info!("applied DB migrations");
 
     //- The message queue component

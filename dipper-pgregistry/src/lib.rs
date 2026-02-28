@@ -29,6 +29,8 @@ where
     A: Acquire<'a>,
     <A::Connection as std::ops::Deref>::Target: Migrate,
 {
-    sqlx::migrate!("./migrations").run(conn).await?;
+    let mut migrator = sqlx::migrate!("./migrations");
+    migrator.set_ignore_missing(true);
+    migrator.run(conn).await?;
     Ok(())
 }

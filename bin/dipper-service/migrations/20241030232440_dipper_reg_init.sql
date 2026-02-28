@@ -1,1 +1,0 @@
-../../../dipper-pgregistry/migrations/20241030232440_dipper_reg_init.sql
