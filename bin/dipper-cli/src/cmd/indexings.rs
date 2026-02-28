@@ -135,12 +135,15 @@ pub async fn register(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
         .get_one::<ChainId>("CHAIN_ID")
         .ok_or_else(|| anyhow::anyhow!("No chain ID provided"))?;
 
+    let num_candidates = matches.get_one::<usize>("NUM_CANDIDATES").copied();
+
     let req = signed_message::sign(
         &signer,
         &signer_eip712_domain,
         NewIndexingRequest {
             deployment_id: *request_deployment_id,
             chain_id: *request_chain_id,
+            num_candidates,
         },
     )
     .map_err(|err| anyhow::anyhow!("Failed to sign RPC request: {err}"))?;
@@ -218,6 +221,9 @@ pub(super) fn cmd() -> Command {
                     arg!(<CHAIN_ID> "The ID of the chain indexed by the subgraph")
                         .value_parser(value_parser!(ChainId))
                         .required(true),
+                    arg!(--"num-candidates" <N> "Number of indexers to assign (defaults to server maximum)")
+                        .value_parser(value_parser!(usize))
+                        .required(false),
                 ]),
             command!("cancel")
                 .about("Cancel an existing indexing request")

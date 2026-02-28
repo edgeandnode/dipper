@@ -53,6 +53,9 @@ pub struct NewIndexingRequest {
     pub deployment_id: DeploymentId,
     /// The chain ID the subgraph is indexing
     pub chain_id: ChainId,
+    /// The desired number of indexers to assign. Defaults to the server-side maximum when omitted.
+    #[serde(default)]
+    pub num_candidates: Option<usize>,
 }
 
 impl ToSolStruct<NewIndexingRequestSol> for NewIndexingRequest {
