@@ -637,7 +637,7 @@ async fn get_declined_indexers_by_deployment_returns_rejected() {
     //* When
     // Use 30 days lookback (agreements were created "now")
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 
@@ -681,7 +681,7 @@ async fn get_declined_indexers_by_deployment_empty_when_no_declines() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 
@@ -707,7 +707,7 @@ async fn get_declined_indexers_by_deployment_respects_lookback() {
     //* When
     // Use 0 days lookback - should exclude everything
     let result = registry
-        .get_declined_indexers_by_deployment(0, 0)
+        .get_declined_indexers_by_deployment(0, 0, 0)
         .await
         .expect("Failed to get declined indexers");
 
@@ -760,7 +760,7 @@ async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
     //* When
     // Use 30 days lookback - should NOT include the 31-day-old rejection
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 
@@ -884,7 +884,7 @@ async fn get_declined_indexers_includes_rejected_status() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 
@@ -1728,7 +1728,7 @@ async fn get_declined_indexers_price_too_low_excluded_after_1_day() {
     // With 30-day default lookback and 1-day price lookback, the 2-day-old PRICE_TOO_LOW
     // rejection should NOT be included (it's outside the 1-day window)
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 
@@ -1773,7 +1773,7 @@ async fn get_declined_indexers_price_too_low_included_within_1_day() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 
@@ -1824,7 +1824,7 @@ async fn get_declined_indexers_other_reason_uses_30_day_window() {
     //* When
     // With 30-day default lookback, the 15-day-old OTHER rejection should be included
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 
@@ -1885,7 +1885,7 @@ async fn get_declined_indexers_other_reason_excluded_after_30_days() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 

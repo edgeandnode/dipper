@@ -387,6 +387,7 @@ impl PgRegistry {
     /// Returns indexers with `CanceledByIndexer`, `Expired`, or `Rejected` status
     /// within lookback windows that depend on the rejection reason:
     /// - `PRICE_TOO_LOW` rejections: `price_lookback_days` (shorter, allows retry after IISA refresh)
+    /// - `SIGNER_NOT_AUTHORISED` rejections: `signer_lookback_minutes` (very short, transient auth issue)
     /// - All other statuses/reasons: `default_lookback_days` (standard exclusion)
     ///
     /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
@@ -395,8 +396,9 @@ impl PgRegistry {
         &self,
         default_lookback_days: i32,
         price_lookback_days: i32,
+        signer_lookback_minutes: i32,
     ) -> Result<HashMap<DeploymentId, Vec<IndexerId>>, Error> {
-        use crate::rejection_reason::PRICE_TOO_LOW;
+        use crate::rejection_reason::{PRICE_TOO_LOW, SIGNER_NOT_AUTHORISED};
 
         let rows: Vec<(PgDeploymentId, Vec<PgIndexerId>)> = sqlx::query_as(
             r#"
@@ -410,8 +412,12 @@ impl PgRegistry {
                 (rejection_reason = $6
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $4))
                 OR
+                -- SIGNER_NOT_AUTHORISED rejections: very short lookback (transient auth issue)
+                (rejection_reason = $7
+                 AND updated_at >= timezone('UTC', now()) - make_interval(mins => $8))
+                OR
                 -- All other rejections/expirations/cancellations: standard lookback
-                (COALESCE(rejection_reason, '') != $6
+                (COALESCE(rejection_reason, '') NOT IN ($6, $7)
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $5))
               )
             GROUP BY deployment_id
@@ -423,6 +429,8 @@ impl PgRegistry {
         .bind(price_lookback_days)
         .bind(default_lookback_days)
         .bind(PRICE_TOO_LOW)
+        .bind(SIGNER_NOT_AUTHORISED)
+        .bind(signer_lookback_minutes)
         .fetch_all(&self.pool)
         .await?;
 

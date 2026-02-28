@@ -60,6 +60,7 @@ pub trait AgreementRegistry {
     /// Returns indexers with `CanceledByIndexer`, `Expired`, or `Rejected` status
     /// within lookback windows that depend on the rejection reason:
     /// - `PRICE_TOO_LOW` rejections: `price_lookback_days` (shorter window)
+    /// - `SIGNER_NOT_AUTHORISED` rejections: `signer_lookback_minutes` (very short window)
     /// - All other statuses/reasons: `default_lookback_days` (standard exclusion)
     ///
     /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
@@ -68,6 +69,7 @@ pub trait AgreementRegistry {
         &self,
         default_lookback_days: i32,
         price_lookback_days: i32,
+        signer_lookback_minutes: i32,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>;
 
     /// Get all agreements by associated indexing request ID.

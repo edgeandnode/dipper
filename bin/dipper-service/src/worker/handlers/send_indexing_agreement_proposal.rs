@@ -134,6 +134,9 @@ where
                     let rejection_reason_str = reject_reason.map(|r| match r {
                         RejectReason::Unspecified => rejection_reason::UNSPECIFIED,
                         RejectReason::PriceTooLow => rejection_reason::PRICE_TOO_LOW,
+                        RejectReason::SignerNotAuthorised => {
+                            rejection_reason::SIGNER_NOT_AUTHORISED
+                        }
                         RejectReason::Other => rejection_reason::OTHER,
                     });
 
@@ -354,6 +357,7 @@ mod tests {
             &self,
             _default_lookback_days: i32,
             _price_lookback_days: i32,
+            _signer_lookback_minutes: i32,
         ) -> crate::registry::Result<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>
         {
             Ok(std::collections::HashMap::new())

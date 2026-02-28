@@ -77,6 +77,7 @@ where
         deployment_id,
         ctx.agreement_conf.declined_indexer_lookback_days(),
         ctx.agreement_conf.price_rejection_lookback_days(),
+        ctx.agreement_conf.signer_rejection_lookback_minutes(),
     )
     .await?;
 

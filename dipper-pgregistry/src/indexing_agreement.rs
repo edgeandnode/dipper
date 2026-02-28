@@ -22,8 +22,13 @@ pub mod rejection_reason {
     /// This triggers a shorter lookback window (1 day) to allow retry after IISA price refresh.
     pub const PRICE_TOO_LOW: &str = "PRICE_TOO_LOW";
 
+    /// The proposal signer is not authorised on the escrow contract.
+    /// This triggers a very short lookback window (5 minutes) because signer authorization
+    /// is a transient configuration issue that resolves once the operator registers the signer.
+    pub const SIGNER_NOT_AUTHORISED: &str = "SIGNER_NOT_AUTHORISED";
+
     /// The indexer rejected for reasons other than price (e.g., unsupported network,
-    /// signature issues, capacity limits). This triggers the standard lookback window (30 days).
+    /// capacity limits). This triggers the standard lookback window (30 days).
     pub const OTHER: &str = "OTHER";
 
     /// The rejection reason was not specified. Treated the same as OTHER for lookback purposes.
