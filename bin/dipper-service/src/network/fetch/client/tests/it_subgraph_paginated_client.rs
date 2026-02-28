@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use reqwest::Url;
 use serde::Deserialize;
-use thegraph_core::{BlockPointer, SubgraphId};
+use thegraph_core::SubgraphId;
 use tracing_subscriber::{EnvFilter, fmt::TestWriter};
 
 use crate::network::fetch::client::{
@@ -130,46 +130,6 @@ async fn send_subgraph_page_query_request() {
 
     // Assert the results are present and the correct size.
     assert_eq!(page_response.results.len(), PAGE_REQUEST_BATCH_SIZE);
-}
-
-#[test_with::env(IT_TEST_ARBITRUM_GATEWAY_URL, IT_TEST_ARBITRUM_GATEWAY_AUTH)]
-#[tokio::test]
-async fn client_send_query() {
-    init_test_tracing();
-
-    //* Given
-    let subgraph_url = test_subgraph_url(GRAPH_NETWORK_ARBITRUM_SUBGRAPH_ID);
-    let auth_token = test_auth_token();
-
-    let http_client = reqwest::Client::new();
-    let client = Client::new(http_client, subgraph_url, auth_token);
-
-    // Subgraph meta query
-    const SUBGRAPH_META_QUERY_DOCUMENT: &str = r#"{ meta: _meta { block { number hash } } }"#;
-
-    #[derive(Debug, Deserialize)]
-    struct Meta {
-        block: BlockPointer,
-    }
-
-    #[derive(Debug, Deserialize)]
-    struct SubgraphMetaQueryResponse {
-        meta: Meta,
-    }
-
-    //* When
-    let res = tokio::time::timeout(
-        Duration::from_secs(20),
-        client.query::<SubgraphMetaQueryResponse>(SUBGRAPH_META_QUERY_DOCUMENT),
-    )
-    .await
-    .expect("Timeout on subgraph meta query");
-
-    //* Then
-    // Assert the query succeeded, and we get a non-empty block number and hash.
-    let response = res.expect("Failed to fetch subgraph meta");
-    assert!(response.meta.block.number > 0);
-    assert!(!response.meta.block.hash.is_empty());
 }
 
 #[test_with::env(IT_TEST_ARBITRUM_GATEWAY_URL, IT_TEST_ARBITRUM_GATEWAY_AUTH)]

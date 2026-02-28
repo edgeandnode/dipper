@@ -5,11 +5,9 @@ pub mod fetch;
 pub mod provider;
 pub mod service;
 
-#[allow(unused_imports)]
-pub use api::{Allocation, Indexer, NetworkProvider};
+pub use api::NetworkProvider;
 
 #[cfg(test)]
 mod tests {
-    mod it_fetch_subgraph_epoch_data;
     mod it_fetch_subgraph_topology_data;
 }

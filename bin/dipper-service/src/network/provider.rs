@@ -1,23 +1,17 @@
 use std::collections::BTreeSet;
 
-use thegraph_core::{AllocationId, DeploymentId, IndexerId, alloy::primitives::Address};
+use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::Address};
 
 use super::{
-    Allocation,
     api::{Indexer, NetworkProvider},
     service,
 };
 
 #[derive(Clone)]
 pub struct NetworkProviderService {
-    /// The network provider epoch service handler
-    epoch: service::epoch::Handle,
-
     /// The network provider topology service handler
     topology: service::topology::Handle,
 
-    /// The network provider service handler.
-    ///
     /// The indexers allowlist.
     ///
     /// This list contains all the indexers that are allowed to interact with the
@@ -29,12 +23,10 @@ pub struct NetworkProviderService {
 impl NetworkProviderService {
     /// Creates a new network provider service instance.
     pub fn new(
-        epoch: service::epoch::Handle,
         topology: service::topology::Handle,
         allowlist: impl Into<BTreeSet<IndexerId>>,
     ) -> Self {
         Self {
-            epoch,
             topology,
             allowlist: allowlist.into(),
         }
@@ -42,22 +34,6 @@ impl NetworkProviderService {
 }
 
 impl NetworkProvider for NetworkProviderService {
-    fn get_allocation_by_id(&self, allocation_id: &AllocationId) -> Option<Allocation> {
-        self.topology
-            .snapshot()
-            .get_allocation(allocation_id)
-            .map(|allocation| Allocation {
-                id: allocation.id,
-                opened_at: allocation.created_at,
-                closed_at: allocation.closed_at,
-                indexer_id: allocation.indexer,
-                deployment_id: allocation.deployment,
-                subgraph_id: allocation.subgraph,
-                allocated_tokens: allocation.allocated_tokens,
-                proof_of_indexing: allocation.proof_of_indexing,
-            })
-    }
-
     fn get_indexers_not_indexing_a_deployment_id(
         &self,
         deployment_id: &DeploymentId,
@@ -92,9 +68,5 @@ impl NetworkProvider for NetworkProviderService {
             .indexers_iter()
             .find(|indexer| indexer.operators.contains(operator_address))
             .map(|indexer| indexer.id)
-    }
-
-    fn get_current_epoch(&self) -> u32 {
-        self.epoch.snapshot().epoch().number
     }
 }

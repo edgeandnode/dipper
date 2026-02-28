@@ -28,21 +28,6 @@ where
     Ok(res)
 }
 
-pub async fn send_subgraph_query<T>(
-    client: &reqwest::Client,
-    subgraph_url: reqwest::Url,
-    auth: Option<&str>,
-    query: impl IntoRequestParameters + Send,
-) -> Result<T, String>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    send_query(client, subgraph_url, auth, query)
-        .await
-        .map_err(|err| format!("Error sending subgraph graphql query: {}", err))?
-        .map_err(|err| err.to_string())
-}
-
 /// Subgraphs sometimes fall behind, be it due to failing or the Graph Node may be having issues.
 /// The `_meta` field can now be added to any query so that it is possible to determine against
 /// which block the query was effectively executed.

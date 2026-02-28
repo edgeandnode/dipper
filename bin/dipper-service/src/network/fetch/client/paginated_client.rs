@@ -2,15 +2,12 @@ use std::sync::{Arc, atomic::AtomicU64};
 
 use serde::de::Deserialize;
 use thegraph_core::{BlockPointer, alloy::primitives::BlockNumber};
-use thegraph_graphql_http::{
-    graphql::IntoDocument, http::request::IntoRequestParameters, http_client::ResponseError,
-};
+use thegraph_graphql_http::{graphql::IntoDocument, http_client::ResponseError};
 use tracing::{Instrument, instrument};
 
 use super::queries::{
     meta::send_bootstrap_meta_query,
     page::{BlockHeight, SubgraphPageQueryResponseOpaqueEntry, send_subgraph_page_query},
-    send_subgraph_query,
 };
 
 /// Error message returned by the indexer typically when a reorg happens.
@@ -201,20 +198,6 @@ impl Client {
         self.latest_block
             .fetch_max(new_value, std::sync::atomic::Ordering::Relaxed)
             .max(new_value)
-    }
-
-    /// Send a query to the subgraph.
-    pub async fn query<T: for<'de> Deserialize<'de>>(
-        &self,
-        query: impl IntoRequestParameters + Send,
-    ) -> Result<T, String> {
-        send_subgraph_query::<T>(
-            &self.http_client,
-            self.subgraph_url.clone(),
-            self.auth_token.as_deref(),
-            query,
-        )
-        .await
     }
 
     /// Send a paginated query to the subgraph.

@@ -55,8 +55,6 @@ pub struct Config {
     pub network: NetworkConfig,
     /// The signer configuration
     pub signer: SignerConfig,
-    /// The TAP signer configuration
-    pub tap_signer: TapSignerConfig,
     /// The IISA (Indexing Indexer Selection Algorithm) service configuration
     pub iisa: IisaConfig,
     /// The indexer gRPC client configuration (for sending RCA proposals)
@@ -749,21 +747,6 @@ pub struct SignerConfig {
 
     /// The signer chain ID (protocol chain), e.g. `eip155:42161` (Arbitrum One)
     pub chain_id: ChainId,
-}
-
-/// The configuration for the TAP signer
-#[serde_as]
-#[derive(Debug, serde::Deserialize)]
-pub struct TapSignerConfig {
-    /// The signing key to use for authentication
-    #[serde_as(as = "HiddenSecretKeyAsHexStr")]
-    pub secret_key: Hidden<SecretKey>,
-
-    /// The signer chain ID (protocol chain)
-    pub chain_id: ChainId,
-
-    /// The verifier contract address
-    pub verifier: Address,
 }
 
 /// Runtime indexing agreement configuration.

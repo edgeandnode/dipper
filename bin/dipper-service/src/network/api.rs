@@ -1,7 +1,5 @@
 use reqwest::Url;
-use thegraph_core::{
-    AllocationId, DeploymentId, IndexerId, ProofOfIndexing, SubgraphId, alloy::primitives::Address,
-};
+use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::Address};
 
 /// An indexer.
 pub struct Indexer {
@@ -11,34 +9,11 @@ pub struct Indexer {
     pub url: Url,
 }
 
-/// A network allocation.
-pub struct Allocation {
-    /// The allocation ID
-    pub id: AllocationId,
-    /// The epoch when the allocation was made
-    pub opened_at: u32,
-    /// The epoch when the allocation was closed
-    pub closed_at: Option<u32>,
-    /// The indexer ID
-    pub indexer_id: IndexerId,
-    /// The deployment ID
-    pub deployment_id: DeploymentId,
-    /// The subgraph ID
-    pub subgraph_id: SubgraphId,
-    /// The amount of tokens staked by the indexer for the allocation
-    pub allocated_tokens: u128,
-    /// The allocation proof of indexing
-    pub proof_of_indexing: Option<ProofOfIndexing>,
-}
-
 /// The network provider
 ///
 /// Provides a set of methods to interact with the network provider abstracting the
 /// access to the Graph network snapshot.
 pub trait NetworkProvider {
-    /// Get allocation by [`AllocationId`].
-    fn get_allocation_by_id(&self, allocation_id: &AllocationId) -> Option<Allocation>;
-
     /// Get a list of indexers not indexing the subgraph [`DeploymentId`].
     fn get_indexers_not_indexing_a_deployment_id(
         &self,
@@ -50,10 +25,4 @@ pub trait NetworkProvider {
 
     /// Get [`IndexerId`] for operator address
     fn get_indexer_id_for_operator_address(&self, operator_address: &Address) -> Option<IndexerId>;
-
-    /// Get the latest epoch
-    ///
-    /// This is the latest known epoch in the network. If the network snapshot fails to
-    /// update, this epoch may be outdated.
-    fn get_current_epoch(&self) -> u32;
 }
