@@ -11,9 +11,7 @@ use thegraph_core::{
 use tonic::{Request, Response, Status};
 
 use crate::{
-    network::NetworkProvider,
-    registry::{AgreementRegistry, ReceiptRegistry},
-    signing::{eip712::PrivateKeyEip712Signer, tap::ReceiptSigner},
+    network::NetworkProvider, registry::AgreementRegistry, signing::eip712::PrivateKeyEip712Signer,
     worker::service::WorkerQueue,
 };
 
@@ -22,9 +20,6 @@ use crate::{
 pub struct Ctx<R, N, W> {
     /// The EIP-712 signer
     pub signer: Arc<PrivateKeyEip712Signer>,
-
-    /// The TAP receipt signer
-    pub tap_signer: Arc<ReceiptSigner>,
 
     /// The allowlist of indexers that allowed to make requests to the DIPs gateway Network API
     pub allowlist: Arc<BTreeSet<IndexerId>>,
@@ -54,7 +49,7 @@ impl<R, N, W> RpcServiceImpl<R, N, W> {
 #[async_trait]
 impl<R, N, W> rpc::GatewayDipsService for RpcServiceImpl<R, N, W>
 where
-    R: AgreementRegistry + ReceiptRegistry + Clone + Send + Sync + 'static,
+    R: AgreementRegistry + Clone + Send + Sync + 'static,
     N: NetworkProvider + Clone + Send + Sync + 'static,
     W: WorkerQueue + Clone + Send + Sync + 'static,
 {

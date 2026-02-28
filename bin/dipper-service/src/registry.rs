@@ -1,16 +1,15 @@
 mod agreement;
 mod indexer_denylist;
 mod indexing_request;
-mod receipt;
 mod result;
 
 use async_trait::async_trait;
-use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
+use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_pgregistry::PgRegistry;
 use sqlx::{Pool, Postgres};
 use thegraph_core::{
     DeploymentId, IndexerId,
-    alloy::primitives::{Address, ChainId, U256},
+    alloy::primitives::{Address, ChainId},
 };
 use url::Url;
 
@@ -25,7 +24,6 @@ pub use self::{
     },
     indexer_denylist::IndexerDenylistRegistry,
     indexing_request::{IndexingRequest, IndexingRequestRegistry, Status as IndexingRequestStatus},
-    receipt::{IndexingReceipt, ReceiptRegistry, ReportedWork},
     result::{Error, Result},
 };
 
@@ -374,40 +372,6 @@ impl AgreementRegistry for RegistryProvider {
         // AbandonedByIndexer, this cannot fail in practice.
         IndexingAgreement::try_from(raw)
             .map_err(|_| dipper_pgregistry::Error::NoRecordsUpdated.into())
-    }
-}
-
-#[async_trait]
-impl ReceiptRegistry for RegistryProvider {
-    async fn register_new_indexing_receipt(
-        &self,
-        agreement_id: IndexingAgreementId,
-        indexer_id: IndexerId,
-        indexer_operator_id: Address,
-        reported_work: ReportedWork,
-        amount: U256,
-    ) -> RegistryResult<IndexingReceiptId> {
-        self.inner
-            .register_new_indexing_receipt(
-                agreement_id,
-                indexer_id,
-                indexer_operator_id,
-                reported_work.into(),
-                amount,
-            )
-            .await
-            .map_err(Into::into)
-    }
-
-    async fn get_last_receipt_for_agreement_id(
-        &self,
-        agreement_id: &IndexingAgreementId,
-    ) -> RegistryResult<Option<IndexingReceipt>> {
-        Ok(self
-            .inner
-            .get_last_receipt_for_agreement_id(agreement_id)
-            .await?
-            .map(Into::into))
     }
 }
 

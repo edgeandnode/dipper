@@ -8,9 +8,7 @@ use tokio::task::JoinSet;
 use tracing_subscriber::EnvFilter;
 
 use self::{
-    config::DEFAULT_MAX_CANDIDATES,
-    registry::RegistryProvider,
-    signing::{eip712::Eip712Signer, tap::ReceiptSigner},
+    config::DEFAULT_MAX_CANDIDATES, registry::RegistryProvider, signing::eip712::Eip712Signer,
     worker::queue::QueueImpl,
 };
 
@@ -66,19 +64,6 @@ pub async fn main() -> anyhow::Result<()> {
     };
     tracing::info!(address=%signer.address(), "Signer wallet imported");
 
-    //- The TAP signer component
-    let tap_signer = {
-        let private_key_signer =
-            PrivateKeySigner::from_signing_key(conf.tap_signer.secret_key.as_ref().into());
-
-        Arc::new(ReceiptSigner::new(
-            private_key_signer,
-            conf.tap_signer.chain_id,
-            conf.tap_signer.verifier,
-        ))
-    };
-    tracing::info!(address=%tap_signer.address(), "TAP Signer wallet imported");
-
     //- DB connect and run migrations
     let db_conn = db::connect(&conf.db).await?;
     tracing::info!(db_url=%conf.db.url, "initialized DB connection pool");
@@ -98,10 +83,7 @@ pub async fn main() -> anyhow::Result<()> {
         indexer_rpc_client::DipsIndexerClient::with_config(signer.clone(), conf.indexer_client);
 
     //- The network services
-    let (
-        (network_epoch_handle, network_epoch_service),
-        (network_topology_handle, network_topology_service),
-    ) = {
+    let (network_topology_handle, network_topology_service) = {
         let network_subgraph_url = conf
             .network
             .gateway_url
@@ -117,30 +99,20 @@ pub async fn main() -> anyhow::Result<()> {
             conf.network.api_key.into_inner(),
         );
 
-        // Fetch the initial network snapshots, a successful fetch is required to start the service
-        let epoch_init_snapshot =
-            network::service::epoch::fetch_snapshot(&network_subgraph_client).await?;
+        // Fetch the initial topology snapshot, a successful fetch is required to start the service
         let topology_init_snapshot =
             network::service::topology::fetch_snapshot(&network_subgraph_client).await?;
 
-        (
-            network::service::epoch::new(
-                network_subgraph_client.clone(),
-                conf.network.update_interval,
-                epoch_init_snapshot,
-            ),
-            network::service::topology::new(
-                network_subgraph_client,
-                conf.network.update_interval,
-                topology_init_snapshot,
-            ),
+        network::service::topology::new(
+            network_subgraph_client,
+            conf.network.update_interval,
+            topology_init_snapshot,
         )
     };
     tracing::info!("initialized Graph network service");
 
     //- The network provider component
     let network_provider = network::provider::NetworkProviderService::new(
-        network_epoch_handle.clone(),
         network_topology_handle.clone(),
         conf.indexer_rpc.allowlist.clone(),
     );
@@ -344,7 +316,6 @@ pub async fn main() -> anyhow::Result<()> {
 
         let ctx = indexer_rpc_server::Ctx {
             signer,
-            tap_signer,
             allowlist: Arc::new(conf.indexer_rpc.allowlist),
             registry,
             network: network_provider,
@@ -357,9 +328,6 @@ pub async fn main() -> anyhow::Result<()> {
 
     // Construct the task tree
     let mut task_tree = JoinSet::new();
-
-    let network_epoch_task_handle = task_tree.spawn(network_epoch_service);
-    tracing::debug!(task_id=%network_epoch_task_handle.id(), "Graph network epoch service started");
 
     let network_topology_task_handle = task_tree.spawn(network_topology_service);
     tracing::debug!(task_id=%network_topology_task_handle.id(), "Graph network topology service started");
@@ -465,7 +433,6 @@ pub async fn main() -> anyhow::Result<()> {
         tracing::trace!("stopped Worker service");
 
         tracing::trace!("stopping Graph network service");
-        network_epoch_handle.stop().await;
         network_topology_handle.stop().await;
         tracing::trace!("stopped Graph network service");
 

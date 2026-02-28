@@ -19,9 +19,7 @@ use std::{
 };
 
 use anyhow::Context;
-use thegraph_core::{
-    AllocationId, DeploymentId, IndexerId, ProofOfIndexing, SubgraphId, alloy::primitives::Address,
-};
+use thegraph_core::{DeploymentId, IndexerId, SubgraphId, alloy::primitives::Address};
 use tokio::{
     sync::{mpsc, watch, watch::Ref},
     time::MissedTickBehavior,
@@ -177,10 +175,6 @@ pub struct Snapshot {
     ///
     /// See [Deployment] for more information
     deployments: BTreeMap<DeploymentId, Deployment>,
-    /// The active allocations table
-    ///
-    /// See [Allocation] for more information
-    allocations: BTreeMap<AllocationId, Allocation>,
 }
 
 impl Snapshot {
@@ -192,7 +186,6 @@ impl Snapshot {
             indexers: Default::default(),
             subgraphs: Default::default(),
             deployments: Default::default(),
-            allocations: Default::default(),
         }
     }
 
@@ -211,32 +204,6 @@ impl Snapshot {
     /// Get an [Indexer] by its [IndexerId].
     pub fn get_indexer(&self, id: &IndexerId) -> Option<&Indexer> {
         self.indexers.get(id)
-    }
-
-    /// Get a [Deployment] by its [DeploymentId].
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - The ID of the deployment to retrieve
-    ///
-    /// # Returns
-    ///
-    /// A reference to the deployment if found, or None if not found.
-    pub fn get_deployment(&self, id: &DeploymentId) -> Option<&Deployment> {
-        self.deployments.get(id)
-    }
-
-    /// Get an [Allocation] by its [AllocationId].
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - The ID of the allocation to retrieve
-    ///
-    /// # Returns
-    ///
-    /// A reference to the allocation if found, or None if not found.
-    pub fn get_allocation(&self, id: &AllocationId) -> Option<&Allocation> {
-        self.allocations.get(id)
     }
 }
 
@@ -284,11 +251,6 @@ impl Extend<indexer_subgraphs::types::Subgraph> for Snapshot {
                     });
 
                 for allocation in sub_version.subgraph_deployment.allocations {
-                    let allocation_id = allocation.id;
-                    let allocation_created_at = allocation.created_at_epoch;
-                    let allocation_closed_at = allocation.closed_at_epoch;
-                    let allocation_allocated_tokens = allocation.allocated_tokens;
-                    let allocation_proof_of_indexing = allocation.poi;
                     let indexer_id = allocation.indexer.id;
 
                     // Skip indexers without URL
@@ -322,20 +284,6 @@ impl Extend<indexer_subgraphs::types::Subgraph> for Snapshot {
                         .entry(deployment_id)
                         .and_modify(|deployment| {
                             deployment.indexings.insert(indexer_id);
-                        });
-
-                    // Add the allocation to the network snapshot table
-                    self.allocations
-                        .entry(allocation_id)
-                        .or_insert_with(|| Allocation {
-                            id: allocation_id,
-                            created_at: allocation_created_at,
-                            closed_at: allocation_closed_at,
-                            indexer: indexer_id,
-                            deployment: deployment_id,
-                            subgraph: deployment_subgraph_id,
-                            allocated_tokens: allocation_allocated_tokens,
-                            proof_of_indexing: allocation_proof_of_indexing,
                         });
                 }
             }
@@ -455,45 +403,4 @@ pub struct Deployment {
     ///
     /// The indexers are stored in a BTreeSet to ensure that they are unique.
     pub indexings: BTreeSet<IndexerId>,
-}
-
-/// An allocation in the network.
-///
-/// Allocations represent tokens staked by indexers on specific deployments.
-/// Indexers create allocations to signal their commitment to indexing a deployment
-/// and to earn rewards for doing so.
-#[derive(Debug, Clone)]
-pub struct Allocation {
-    /// The allocation ID
-    ///
-    /// A unique identifier for the allocation.
-    pub id: AllocationId,
-    /// The epoch when the allocation was made
-    ///
-    /// The network epoch when the allocation was created.
-    pub created_at: u32,
-    /// The epoch when the allocation was closed
-    ///
-    /// The network epoch when the allocation was closed, if it has been closed.
-    pub closed_at: Option<u32>,
-    /// The indexer ID
-    ///
-    /// The ID of the indexer that created the allocation.
-    pub indexer: IndexerId,
-    /// The deployment ID
-    ///
-    /// The ID of the deployment that the allocation is for.
-    pub deployment: DeploymentId,
-    /// The subgraph ID
-    ///
-    /// The ID of the subgraph that the deployment belongs to.
-    pub subgraph: SubgraphId,
-    /// The amount of tokens staked by the indexer for the allocation
-    ///
-    /// The number of tokens that the indexer has staked on this allocation.
-    pub allocated_tokens: u128,
-    /// The proof of indexing for the allocation
-    ///
-    /// A cryptographic proof that the indexer is correctly indexing the deployment.
-    pub proof_of_indexing: Option<ProofOfIndexing>,
 }
