@@ -102,17 +102,15 @@ where
         let NewIndexingRequest {
             deployment_id,
             chain_id,
+            num_candidates,
         } = req.into_message();
+
+        let num_candidates = num_candidates.unwrap_or(self.max_candidates);
 
         // Register the new indexing request
         let indexing_request_id = match self
             .registry
-            .register_new_indexing_request(
-                requested_by,
-                deployment_id,
-                chain_id,
-                self.max_candidates,
-            )
+            .register_new_indexing_request(requested_by, deployment_id, chain_id, num_candidates)
             .await
         {
             Ok(indexing_request_id) => indexing_request_id,
@@ -129,7 +127,7 @@ where
                 indexing_request_id,
                 deployment_id,
                 chain_id,
-                self.max_candidates,
+                num_candidates,
             )
             .await
         {

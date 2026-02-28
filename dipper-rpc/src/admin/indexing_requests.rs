@@ -53,12 +53,17 @@ pub struct NewIndexingRequest {
     pub deployment_id: DeploymentId,
     /// The chain ID the subgraph is indexing
     pub chain_id: ChainId,
+    /// The desired number of indexers to assign. Defaults to the server-side maximum when omitted.
+    #[serde(default)]
+    pub num_candidates: Option<usize>,
 }
 
 impl ToSolStruct<NewIndexingRequestSol> for NewIndexingRequest {
     fn to_sol_struct(&self) -> NewIndexingRequestSol {
         NewIndexingRequestSol {
             deployment_id: self.deployment_id.into(),
+            chain_id: self.chain_id,
+            num_candidates: self.num_candidates.unwrap_or(0) as u64,
         }
     }
 }
@@ -69,6 +74,8 @@ thegraph_core::alloy::sol! {
     /// See: [`NewIndexingRequest::to_sol_struct(...)`](struct.NewIndexingRequest.html#method.to_sol_struct)
     struct NewIndexingRequestSol {
         bytes32 deployment_id;
+        uint64 chain_id;
+        uint64 num_candidates;
     }
 }
 
