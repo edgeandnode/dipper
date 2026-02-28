@@ -74,6 +74,13 @@ pub struct Config {
     /// The liveness checker service configuration (detects silent agreement abandonment)
     #[serde(default)]
     pub liveness_checker: Option<LivenessCheckerConfig>,
+    /// Additional chain ID to network name mappings for dev/test chains.
+    ///
+    /// Production chains are resolved via the graph-networks-registry crate.
+    /// This map supplements the registry with chains that aren't in the official
+    /// registry (e.g. `1337 = "hardhat"` for local development).
+    #[serde(default)]
+    pub additional_networks: BTreeMap<ChainId, String>,
     /// The chain client configuration (for sending on-chain transactions)
     #[serde(default)]
     pub chain_client: Option<ChainClientConfig>,
