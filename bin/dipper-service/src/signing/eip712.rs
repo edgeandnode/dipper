@@ -204,10 +204,7 @@ mod tests {
     #[test]
     fn test_sign_rca_msg() {
         use dipper_rpc::indexer::{indexer_client::sol, rca_eip712_domain};
-        use thegraph_core::{
-            alloy::primitives::{FixedBytes, U256},
-            signed_message::recover_signer_address,
-        };
+        use thegraph_core::{alloy::primitives::U256, signed_message::recover_signer_address};
 
         //* Arrange
         let signer = wallet();
@@ -227,9 +224,8 @@ mod tests {
 
         // Build a RecurringCollectionAgreement with known values
         let rca = sol::RecurringCollectionAgreement {
-            agreementId: FixedBytes::<16>::from([1u8; 16]),
-            deadline: U256::from(1234567890u64),
-            endsAt: U256::from(9876543210u64),
+            deadline: 1234567890u64,
+            endsAt: 9876543210u64,
             payer: address!("0000000000000000000000000000000000000001"),
             dataService: address!("0000000000000000000000000000000000000002"),
             serviceProvider: address!("0000000000000000000000000000000000000003"),
@@ -237,6 +233,7 @@ mod tests {
             maxOngoingTokensPerSecond: U256::from(100u64),
             minSecondsPerCollection: 60,
             maxSecondsPerCollection: 3600,
+            nonce: U256::from(1u64),
             metadata: Default::default(),
         };
 
