@@ -127,6 +127,7 @@ where
                     //
                     // The rejection reason controls the declined indexer lookback window:
                     // - PRICE_TOO_LOW: 1-day exclusion (allows retry after IISA price refresh)
+                    // - SIGNER_NOT_AUTHORISED: 5-minute exclusion (transient on-chain auth issue)
                     // - OTHER: 30-day exclusion (standard)
                     // - UNSPECIFIED: treated as OTHER (30-day exclusion) since we cannot
                     //   assume the rejection was price-related without explicit confirmation
@@ -618,6 +619,7 @@ mod tests {
         Accept,
         Reject,
         RejectPriceTooLow,
+        RejectSignerNotAuthorised,
         Fail,
     }
 
@@ -641,6 +643,12 @@ mod tests {
         fn rejecting_price_too_low() -> Self {
             Self {
                 response: MockResponse::RejectPriceTooLow,
+            }
+        }
+
+        fn rejecting_signer_not_authorised() -> Self {
+            Self {
+                response: MockResponse::RejectSignerNotAuthorised,
             }
         }
 
@@ -672,6 +680,12 @@ mod tests {
                     response: ProposalResponse::Reject as i32,
                     reject_reason: RejectReason::PriceTooLow as i32,
                 }),
+                MockResponse::RejectSignerNotAuthorised => {
+                    Ok(SubmitAgreementProposalResponse {
+                        response: ProposalResponse::Reject as i32,
+                        reject_reason: RejectReason::SignerNotAuthorised as i32,
+                    })
+                }
                 MockResponse::Fail => Err(DipsError::ConnectionError(
                     "connection failed".to_string().into(),
                 )),
@@ -883,6 +897,54 @@ mod tests {
         assert_eq!(
             state.marked_rejected[0].1,
             Some(rejection_reason::PRICE_TOO_LOW.to_string())
+        );
+        assert!(state.marked_failed.is_empty());
+        drop(state);
+        // Should queue reassessment
+        let qstate = queue_state.lock().unwrap();
+        assert_eq!(qstate.reassess_calls.len(), 1);
+        assert_eq!(qstate.reassess_calls[0].0, request_id);
+    }
+
+    #[tokio::test]
+    async fn test_reject_signer_not_authorised_marks_with_correct_reason() {
+        let agreement_id = IndexingAgreementId::new();
+        let request_id = IndexingRequestId::new();
+
+        let registry_state = Arc::new(Mutex::new(MockRegistryState {
+            agreement: Some(make_test_agreement(
+                agreement_id,
+                IndexingAgreementStatus::Created,
+            )),
+            request: Some(make_test_request(request_id)),
+            ..Default::default()
+        }));
+        let queue_state = Arc::new(Mutex::new(MockQueueState::default()));
+
+        let ctx = Ctx {
+            registry: MockRegistry::new(registry_state.clone()),
+            queue: MockQueue::new(queue_state.clone()),
+            indexer_client: MockIndexerClient::rejecting_signer_not_authorised(),
+        };
+
+        let message = Message {
+            indexer_url: "https://indexer.example.com".parse().unwrap(),
+            agreement_id,
+            indexing_request_id: request_id,
+            deployment_id: deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv"),
+            deployment_chain_id: 1,
+        };
+
+        let result = handle(ctx, &message, test_job_meta()).await;
+
+        assert!(result.is_ok());
+        // Should mark as rejected with SIGNER_NOT_AUTHORISED reason
+        let state = registry_state.lock().unwrap();
+        assert_eq!(state.marked_rejected.len(), 1);
+        assert_eq!(state.marked_rejected[0].0, agreement_id);
+        assert_eq!(
+            state.marked_rejected[0].1,
+            Some(rejection_reason::SIGNER_NOT_AUTHORISED.to_string())
         );
         assert!(state.marked_failed.is_empty());
         drop(state);
