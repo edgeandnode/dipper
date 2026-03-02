@@ -637,7 +637,7 @@ async fn get_declined_indexers_by_deployment_returns_rejected() {
     //* When
     // Use 30 days lookback (agreements were created "now")
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 
@@ -681,7 +681,7 @@ async fn get_declined_indexers_by_deployment_empty_when_no_declines() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 
@@ -707,7 +707,7 @@ async fn get_declined_indexers_by_deployment_respects_lookback() {
     //* When
     // Use 0 days lookback - should exclude everything
     let result = registry
-        .get_declined_indexers_by_deployment(0, 0)
+        .get_declined_indexers_by_deployment(0, 0, 0)
         .await
         .expect("Failed to get declined indexers");
 
@@ -760,7 +760,7 @@ async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
     //* When
     // Use 30 days lookback - should NOT include the 31-day-old rejection
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 
@@ -884,7 +884,7 @@ async fn get_declined_indexers_includes_rejected_status() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 
@@ -1728,7 +1728,7 @@ async fn get_declined_indexers_price_too_low_excluded_after_1_day() {
     // With 30-day default lookback and 1-day price lookback, the 2-day-old PRICE_TOO_LOW
     // rejection should NOT be included (it's outside the 1-day window)
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 
@@ -1773,7 +1773,7 @@ async fn get_declined_indexers_price_too_low_included_within_1_day() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 
@@ -1824,7 +1824,7 @@ async fn get_declined_indexers_other_reason_uses_30_day_window() {
     //* When
     // With 30-day default lookback, the 15-day-old OTHER rejection should be included
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 
@@ -1885,7 +1885,7 @@ async fn get_declined_indexers_other_reason_excluded_after_30_days() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5)
         .await
         .expect("Failed to get declined indexers");
 
@@ -1894,5 +1894,101 @@ async fn get_declined_indexers_other_reason_excluded_after_30_days() {
     assert!(
         result.is_empty(),
         "31-day-old OTHER rejection should not be in declined list (outside 30-day window)"
+    );
+}
+
+#[tokio::test]
+async fn get_declined_indexers_signer_not_authorised_included_within_5_minutes() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // Mark an agreement as rejected with SIGNER_NOT_AUTHORISED (just now, within 5-min window)
+    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = 7, rejection_reason = 'SIGNER_NOT_AUTHORISED', updated_at = timezone('UTC', now())
+        WHERE id = $1
+        "#,
+    )
+    .bind(agreement_id)
+    .execute(&db)
+    .await
+    .expect("Failed to update agreement");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_declined_indexers_by_deployment(30, 1, 5)
+        .await
+        .expect("Failed to get declined indexers");
+
+    //* Then
+    // The SIGNER_NOT_AUTHORISED rejection is fresh (within the 5-minute window)
+    let deployment_1a: DeploymentId = "QmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1a"
+        .parse()
+        .unwrap();
+    let indexer_a = indexer_id!("1111111111111111111111111111111111111111");
+    assert!(
+        result.contains_key(&deployment_1a),
+        "Fresh SIGNER_NOT_AUTHORISED rejection should be in declined list"
+    );
+    let declined = result.get(&deployment_1a).expect("Deployment not found");
+    assert!(
+        declined.contains(&indexer_a),
+        "Indexer A should be in declined list for deployment 1a"
+    );
+}
+
+#[tokio::test]
+async fn get_declined_indexers_signer_not_authorised_excluded_after_5_minutes() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // Mark an agreement as rejected with SIGNER_NOT_AUTHORISED, set updated_at to 10 minutes ago
+    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = 7, rejection_reason = 'SIGNER_NOT_AUTHORISED', updated_at = timezone('UTC', now()) - interval '10 minutes'
+        WHERE id = $1
+        "#,
+    )
+    .bind(agreement_id)
+    .execute(&db)
+    .await
+    .expect("Failed to update agreement");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    // With 5-minute signer lookback, the 10-minute-old SIGNER_NOT_AUTHORISED
+    // rejection should NOT be included (it's outside the 5-minute window)
+    let result = registry
+        .get_declined_indexers_by_deployment(30, 1, 5)
+        .await
+        .expect("Failed to get declined indexers");
+
+    //* Then
+    // The SIGNER_NOT_AUTHORISED rejection is 10 minutes old, outside the 5-minute window
+    let deployment_1a: DeploymentId = "QmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1a"
+        .parse()
+        .unwrap();
+    assert!(
+        !result.contains_key(&deployment_1a),
+        "10-minute-old SIGNER_NOT_AUTHORISED rejection should not be in declined list (outside 5-minute window)"
     );
 }

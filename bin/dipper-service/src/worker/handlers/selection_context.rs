@@ -22,11 +22,14 @@ use crate::{
 ///   (CanceledByIndexer, Expired, Rejected with OTHER/UNSPECIFIED reason)
 /// - `price_rejection_lookback_days`: Shorter window for PRICE_TOO_LOW rejections
 ///   (allows retry after IISA price refresh)
+/// - `signer_rejection_lookback_minutes`: Very short window for SIGNER_NOT_AUTHORISED
+///   rejections (transient escrow signer configuration issue)
 pub async fn gather_selection_context<R>(
     registry: &R,
     deployment_id: &DeploymentId,
     declined_indexer_lookback_days: i32,
     price_rejection_lookback_days: i32,
+    signer_rejection_lookback_minutes: i32,
 ) -> JobResult<SelectionContext>
 where
     R: AgreementRegistry + IndexerDenylistRegistry,
@@ -51,11 +54,13 @@ where
 
     // Get indexers that declined agreements within their respective lookback periods:
     // - PRICE_TOO_LOW: price_rejection_lookback_days (until next IISA price refresh)
+    // - SIGNER_NOT_AUTHORISED: signer_rejection_lookback_minutes (transient auth issue)
     // - Other rejections: declined_indexer_lookback_days (standard exclusion)
     let declined_indexers = registry
         .get_declined_indexers_by_deployment(
             declined_indexer_lookback_days,
             price_rejection_lookback_days,
+            signer_rejection_lookback_minutes,
         )
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
