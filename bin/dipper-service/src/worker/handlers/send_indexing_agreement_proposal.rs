@@ -680,12 +680,10 @@ mod tests {
                     response: ProposalResponse::Reject as i32,
                     reject_reason: RejectReason::PriceTooLow as i32,
                 }),
-                MockResponse::RejectSignerNotAuthorised => {
-                    Ok(SubmitAgreementProposalResponse {
-                        response: ProposalResponse::Reject as i32,
-                        reject_reason: RejectReason::SignerNotAuthorised as i32,
-                    })
-                }
+                MockResponse::RejectSignerNotAuthorised => Ok(SubmitAgreementProposalResponse {
+                    response: ProposalResponse::Reject as i32,
+                    reject_reason: RejectReason::SignerNotAuthorised as i32,
+                }),
                 MockResponse::Fail => Err(DipsError::ConnectionError(
                     "connection failed".to_string().into(),
                 )),
