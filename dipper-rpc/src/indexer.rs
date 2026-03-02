@@ -48,12 +48,11 @@ pub mod indexer_client {
             /// The on-chain RecurringCollectionAgreement type.
             ///
             /// Matches `IRecurringCollector.RecurringCollectionAgreement` exactly.
+            /// The agreement ID is derived on-chain via
+            /// `bytes16(keccak256(abi.encode(payer, dataService, serviceProvider, deadline, nonce)))`.
             struct RecurringCollectionAgreement {
-                bytes16 agreementId;
-                // NB: The on-chain struct declares these as uint64 for storage efficiency,
-                // but the EIP-712 typehash uses uint256. We must match the typehash.
-                uint256 deadline;
-                uint256 endsAt;
+                uint64 deadline;
+                uint64 endsAt;
                 address payer;
                 address dataService;
                 address serviceProvider;
@@ -61,6 +60,7 @@ pub mod indexer_client {
                 uint256 maxOngoingTokensPerSecond;
                 uint32 minSecondsPerCollection;
                 uint32 maxSecondsPerCollection;
+                uint256 nonce;
                 bytes metadata;
             }
 
@@ -95,6 +95,30 @@ pub mod indexer_client {
     pub use indexer_dips::dips_cancellation_eip712_domain;
 }
 
+/// Derive the on-chain agreement ID from the RCA fields.
+///
+/// The contract computes:
+///   `bytes16(keccak256(abi.encode(payer, dataService, serviceProvider, deadline, nonce)))`
+///
+/// This replicates that derivation so dipper can predict the agreement ID
+/// without waiting for an on-chain event.
+pub fn derive_agreement_id(rca: &indexer_client::sol::RecurringCollectionAgreement) -> [u8; 16] {
+    use thegraph_core::alloy::{primitives::keccak256, sol_types::SolValue};
+
+    let encoded = (
+        rca.payer,
+        rca.dataService,
+        rca.serviceProvider,
+        rca.deadline,
+        rca.nonce,
+    )
+        .abi_encode();
+    let hash = keccak256(&encoded);
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&hash[..16]);
+    id
+}
+
 /// EIP-712 domain for the RecurringCollector contract.
 ///
 /// Used to sign `RecurringCollectionAgreement` messages. The `verifying_contract`
@@ -115,22 +139,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_derive_agreement_id() {
+        use thegraph_core::alloy::{
+            primitives::{U256, address, keccak256},
+            sol_types::SolValue,
+        };
+
+        let rca = indexer_client::sol::RecurringCollectionAgreement {
+            deadline: 1000,
+            endsAt: 2000,
+            payer: address!("0000000000000000000000000000000000000001"),
+            dataService: address!("0000000000000000000000000000000000000002"),
+            serviceProvider: address!("0000000000000000000000000000000000000003"),
+            maxInitialTokens: U256::from(100),
+            maxOngoingTokensPerSecond: U256::from(10),
+            minSecondsPerCollection: 60,
+            maxSecondsPerCollection: 3600,
+            nonce: U256::from(42),
+            metadata: Default::default(),
+        };
+
+        let id = derive_agreement_id(&rca);
+
+        // Verify it matches the on-chain derivation:
+        // bytes16(keccak256(abi.encode(payer, dataService, serviceProvider, deadline, nonce)))
+        let expected_hash = keccak256(
+            (
+                rca.payer,
+                rca.dataService,
+                rca.serviceProvider,
+                rca.deadline,
+                rca.nonce,
+            )
+                .abi_encode(),
+        );
+        assert_eq!(id, expected_hash[..16]);
+    }
+
+    #[test]
     fn test_rca_eip712_typehash() {
-        use thegraph_core::alloy::primitives::{FixedBytes, U256};
+        use thegraph_core::alloy::primitives::U256;
 
         // The canonical EIP-712 type string for RecurringCollectionAgreement.
-        // This matches the hardcoded typehash in RecurringCollector.sol at line 27-30.
+        // This matches the hardcoded typehash in RecurringCollector.sol.
         // If this test fails, it means the sol! struct definition has drifted from
         // the on-chain contract's EIP-712 typehash.
-        const EXPECTED_TYPE_STRING: &[u8] = b"RecurringCollectionAgreement(bytes16 agreementId,uint256 deadline,uint256 endsAt,address payer,address dataService,address serviceProvider,uint256 maxInitialTokens,uint256 maxOngoingTokensPerSecond,uint32 minSecondsPerCollection,uint32 maxSecondsPerCollection,bytes metadata)";
+        const EXPECTED_TYPE_STRING: &[u8] = b"RecurringCollectionAgreement(uint64 deadline,uint64 endsAt,address payer,address dataService,address serviceProvider,uint256 maxInitialTokens,uint256 maxOngoingTokensPerSecond,uint32 minSecondsPerCollection,uint32 maxSecondsPerCollection,uint256 nonce,bytes metadata)";
 
         let expected_typehash = keccak256(EXPECTED_TYPE_STRING);
 
         // Create a dummy RCA to call the instance method
         let dummy_rca = indexer_client::sol::RecurringCollectionAgreement {
-            agreementId: FixedBytes::default(),
-            deadline: U256::ZERO,
-            endsAt: U256::ZERO,
+            deadline: 0,
+            endsAt: 0,
             payer: Address::ZERO,
             dataService: Address::ZERO,
             serviceProvider: Address::ZERO,
@@ -138,6 +199,7 @@ mod tests {
             maxOngoingTokensPerSecond: U256::ZERO,
             minSecondsPerCollection: 0,
             maxSecondsPerCollection: 0,
+            nonce: U256::ZERO,
             metadata: Default::default(),
         };
 
@@ -146,8 +208,7 @@ mod tests {
         assert_eq!(
             actual_typehash, expected_typehash,
             "RecurringCollectionAgreement EIP-712 typehash mismatch. \
-             This likely means the sol! struct definition does not match the on-chain contract. \
-             Verify that all field types (especially deadline and endsAt as uint256) match the contract's typehash."
+             This likely means the sol! struct definition does not match the on-chain contract."
         );
     }
 }

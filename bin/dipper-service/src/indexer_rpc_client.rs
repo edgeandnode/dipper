@@ -285,15 +285,19 @@ fn into_sol_rca(
     // Build the acceptance metadata (ABI-encoded into the RCA metadata field)
     let metadata = sol::AcceptIndexingAgreementMetadata {
         subgraphDeploymentId: B256::from(voucher.metadata.subgraph_deployment_id),
-        version: 0, // IndexingAgreementVersion::V1
+        version: 1, // must match indexer-rs expected metadata version
         terms: terms.into(),
     }
     .abi_encode();
 
+    // Derive nonce from the agreement UUID (16-byte UUID -> U256)
+    let mut nonce_bytes = [0u8; 32];
+    nonce_bytes[16..].copy_from_slice(agreement_id.as_bytes());
+    let nonce = U256::from_be_bytes(nonce_bytes);
+
     sol::RecurringCollectionAgreement {
-        agreementId: agreement_id.as_bytes().into(),
-        deadline: U256::from(voucher.deadline),
-        endsAt: U256::from(voucher.ends_at),
+        deadline: voucher.deadline,
+        endsAt: voucher.ends_at,
         payer: voucher.payer,
         dataService: voucher.data_service,
         serviceProvider: voucher.service_provider,
@@ -301,6 +305,7 @@ fn into_sol_rca(
         maxOngoingTokensPerSecond: voucher.max_ongoing_tokens_per_second,
         minSecondsPerCollection: voucher.min_seconds_per_collection,
         maxSecondsPerCollection: voucher.max_seconds_per_collection,
+        nonce,
         metadata: metadata.into(),
     }
 }
@@ -366,22 +371,8 @@ mod tests {
 
         //* Assert
         // Verify top-level fields
-        use thegraph_core::alloy::primitives::FixedBytes;
-        assert_eq!(
-            rca.agreementId,
-            FixedBytes::<16>::from(*agreement_id.as_bytes()),
-            "agreementId mismatch"
-        );
-        assert_eq!(
-            rca.deadline,
-            U256::from(deadline),
-            "deadline should be converted to U256"
-        );
-        assert_eq!(
-            rca.endsAt,
-            U256::from(ends_at),
-            "endsAt should be converted to U256"
-        );
+        assert_eq!(rca.deadline, deadline, "deadline mismatch");
+        assert_eq!(rca.endsAt, ends_at, "endsAt mismatch");
         assert_eq!(rca.payer, payer, "payer mismatch");
         assert_eq!(rca.dataService, data_service, "dataService mismatch");
         assert_eq!(
@@ -415,8 +406,8 @@ mod tests {
             "subgraphDeploymentId in metadata mismatch"
         );
         assert_eq!(
-            decoded_metadata.version, 0,
-            "version should be 0 (IndexingAgreementVersion::V1)"
+            decoded_metadata.version, 1,
+            "version should be 1 (IndexingAgreementVersion::V1)"
         );
 
         // Verify nested terms
