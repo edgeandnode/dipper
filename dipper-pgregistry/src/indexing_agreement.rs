@@ -19,16 +19,39 @@ use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 /// values in indexer-rs ever change.
 pub mod rejection_reason {
     /// The indexer rejected because the offered price was below their minimum.
-    /// This triggers a shorter lookback window (1 day) to allow retry after IISA price refresh.
+    /// Lookback: 1 day (retry after IISA price refresh).
     pub const PRICE_TOO_LOW: &str = "PRICE_TOO_LOW";
 
     /// The proposal signer is not authorised on the escrow contract.
-    /// This triggers a very short lookback window (5 minutes) because signer authorization
-    /// is a transient configuration issue that resolves once the operator registers the signer.
+    /// Lookback: 5 minutes (transient on-chain auth issue).
     pub const SIGNER_NOT_AUTHORISED: &str = "SIGNER_NOT_AUTHORISED";
 
-    /// The indexer rejected for reasons other than price (e.g., unsupported network,
-    /// capacity limits). This triggers the standard lookback window (30 days).
+    /// The proposal deadline had already passed when it reached the indexer.
+    /// Lookback: 5 minutes (transient, retry with fresh deadline).
+    pub const DEADLINE_EXPIRED: &str = "DEADLINE_EXPIRED";
+
+    /// The subgraph manifest could not be fetched from IPFS.
+    /// Lookback: 5 minutes (not the indexer's fault -- IPFS issue).
+    pub const SUBGRAPH_MANIFEST_UNAVAILABLE: &str = "SUBGRAPH_MANIFEST_UNAVAILABLE";
+
+    /// The subgraph's network is not supported by this indexer.
+    /// Lookback: 30 days (persistent config issue).
+    pub const UNSUPPORTED_NETWORK: &str = "UNSUPPORTED_NETWORK";
+
+    /// The RCA service provider does not match this indexer's address.
+    /// Lookback: 5 minutes (dipper-side data issue, not the indexer's fault).
+    pub const UNEXPECTED_SERVICE_PROVIDER: &str = "UNEXPECTED_SERVICE_PROVIDER";
+
+    /// The agreement end time has already passed.
+    /// Lookback: 5 minutes (dipper-side timing issue, not the indexer's fault).
+    pub const AGREEMENT_EXPIRED: &str = "AGREEMENT_EXPIRED";
+
+    /// The metadata version is not supported by this indexer.
+    /// Lookback: 5 minutes (transient version mismatch).
+    pub const UNSUPPORTED_METADATA_VERSION: &str = "UNSUPPORTED_METADATA_VERSION";
+
+    /// Any other rejection reason not covered above.
+    /// Lookback: 30 days (standard).
     pub const OTHER: &str = "OTHER";
 
     /// The rejection reason was not specified. Treated the same as OTHER for lookback purposes.
@@ -82,7 +105,7 @@ pub struct IndexingAgreement {
 
     /// Reason the agreement was rejected (only set when status is Rejected).
     ///
-    /// Values: "PRICE_TOO_LOW", "OTHER", or None.
+    /// Values from the `rejection_reason` module constants, or None.
     pub rejection_reason: Option<String>,
 }
 

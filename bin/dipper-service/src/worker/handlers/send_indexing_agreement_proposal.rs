@@ -126,17 +126,30 @@ where
                     // Extract rejection reason from the response.
                     //
                     // The rejection reason controls the declined indexer lookback window:
-                    // - PRICE_TOO_LOW: 1-day exclusion (allows retry after IISA price refresh)
-                    // - SIGNER_NOT_AUTHORISED: 5-minute exclusion (transient on-chain auth issue)
-                    // - OTHER: 30-day exclusion (standard)
-                    // - UNSPECIFIED: treated as OTHER (30-day exclusion) since we cannot
-                    //   assume the rejection was price-related without explicit confirmation
+                    // - PRICE_TOO_LOW: 1-day exclusion (retry after IISA price refresh)
+                    // - SIGNER_NOT_AUTHORISED, DEADLINE_EXPIRED, SUBGRAPH_MANIFEST_UNAVAILABLE,
+                    //   UNEXPECTED_SERVICE_PROVIDER, AGREEMENT_EXPIRED,
+                    //   UNSUPPORTED_METADATA_VERSION: 5-minute exclusion (transient or
+                    //   not the indexer's fault)
+                    // - UNSUPPORTED_NETWORK, OTHER, UNSPECIFIED: 30-day exclusion
                     let reject_reason = RejectReason::try_from(resp.reject_reason).ok();
                     let rejection_reason_str = reject_reason.map(|r| match r {
                         RejectReason::Unspecified => rejection_reason::UNSPECIFIED,
                         RejectReason::PriceTooLow => rejection_reason::PRICE_TOO_LOW,
                         RejectReason::SignerNotAuthorised => {
                             rejection_reason::SIGNER_NOT_AUTHORISED
+                        }
+                        RejectReason::DeadlineExpired => rejection_reason::DEADLINE_EXPIRED,
+                        RejectReason::UnsupportedNetwork => rejection_reason::UNSUPPORTED_NETWORK,
+                        RejectReason::SubgraphManifestUnavailable => {
+                            rejection_reason::SUBGRAPH_MANIFEST_UNAVAILABLE
+                        }
+                        RejectReason::UnexpectedServiceProvider => {
+                            rejection_reason::UNEXPECTED_SERVICE_PROVIDER
+                        }
+                        RejectReason::AgreementExpired => rejection_reason::AGREEMENT_EXPIRED,
+                        RejectReason::UnsupportedMetadataVersion => {
+                            rejection_reason::UNSUPPORTED_METADATA_VERSION
                         }
                         RejectReason::Other => rejection_reason::OTHER,
                     });

@@ -386,8 +386,10 @@ impl PgRegistry {
     ///
     /// Returns indexers with `CanceledByIndexer`, `Expired`, or `Rejected` status
     /// within lookback windows that depend on the rejection reason:
-    /// - `PRICE_TOO_LOW` rejections: `price_lookback_days` (shorter, allows retry after IISA refresh)
-    /// - `SIGNER_NOT_AUTHORISED` rejections: `signer_lookback_minutes` (very short, transient auth issue)
+    /// - `PRICE_TOO_LOW`: `price_lookback_days` (short, retry after IISA price refresh)
+    /// - `SIGNER_NOT_AUTHORISED`, `DEADLINE_EXPIRED`, `SUBGRAPH_MANIFEST_UNAVAILABLE`,
+    ///   `UNEXPECTED_SERVICE_PROVIDER`, `AGREEMENT_EXPIRED`, `UNSUPPORTED_METADATA_VERSION`:
+    ///   `signer_lookback_minutes` (transient or not the indexer's fault)
     /// - All other statuses/reasons: `default_lookback_days` (standard exclusion)
     ///
     /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
@@ -398,7 +400,11 @@ impl PgRegistry {
         price_lookback_days: i32,
         signer_lookback_minutes: i32,
     ) -> Result<HashMap<DeploymentId, Vec<IndexerId>>, Error> {
-        use crate::rejection_reason::{PRICE_TOO_LOW, SIGNER_NOT_AUTHORISED};
+        use crate::rejection_reason::{
+            AGREEMENT_EXPIRED, DEADLINE_EXPIRED, PRICE_TOO_LOW, SIGNER_NOT_AUTHORISED,
+            SUBGRAPH_MANIFEST_UNAVAILABLE, UNEXPECTED_SERVICE_PROVIDER,
+            UNSUPPORTED_METADATA_VERSION,
+        };
 
         let rows: Vec<(PgDeploymentId, Vec<PgIndexerId>)> = sqlx::query_as(
             r#"
@@ -408,29 +414,34 @@ impl PgRegistry {
             FROM dipper_reg_indexing_agreements
             WHERE status IN ($1, $2, $3)
               AND (
-                -- PRICE_TOO_LOW rejections: shorter lookback (until next IISA refresh)
+                -- PRICE_TOO_LOW: shorter lookback (until next IISA refresh)
                 (rejection_reason = $6
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $4))
                 OR
-                -- SIGNER_NOT_AUTHORISED rejections: very short lookback (transient auth issue)
-                (rejection_reason = $7
+                -- Transient / not-indexer's-fault: very short lookback
+                (rejection_reason IN ($7, $9, $10, $11, $12, $13)
                  AND updated_at >= timezone('UTC', now()) - make_interval(mins => $8))
                 OR
                 -- All other rejections/expirations/cancellations: standard lookback
-                (COALESCE(rejection_reason, '') NOT IN ($6, $7)
+                (COALESCE(rejection_reason, '') NOT IN ($6, $7, $9, $10, $11, $12, $13)
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $5))
               )
             GROUP BY deployment_id
             "#,
         )
-        .bind(IndexingAgreementStatus::CanceledByIndexer)
-        .bind(IndexingAgreementStatus::Expired)
-        .bind(IndexingAgreementStatus::Rejected)
-        .bind(price_lookback_days)
-        .bind(default_lookback_days)
-        .bind(PRICE_TOO_LOW)
-        .bind(SIGNER_NOT_AUTHORISED)
-        .bind(signer_lookback_minutes)
+        .bind(IndexingAgreementStatus::CanceledByIndexer) // $1
+        .bind(IndexingAgreementStatus::Expired) // $2
+        .bind(IndexingAgreementStatus::Rejected) // $3
+        .bind(price_lookback_days) // $4
+        .bind(default_lookback_days) // $5
+        .bind(PRICE_TOO_LOW) // $6
+        .bind(SIGNER_NOT_AUTHORISED) // $7
+        .bind(signer_lookback_minutes) // $8
+        .bind(DEADLINE_EXPIRED) // $9
+        .bind(SUBGRAPH_MANIFEST_UNAVAILABLE) // $10
+        .bind(UNEXPECTED_SERVICE_PROVIDER) // $11
+        .bind(AGREEMENT_EXPIRED) // $12
+        .bind(UNSUPPORTED_METADATA_VERSION) // $13
         .fetch_all(&self.pool)
         .await?;
 
