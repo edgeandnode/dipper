@@ -99,9 +99,27 @@ pub async fn main() -> anyhow::Result<()> {
             conf.network.api_key.into_inner(),
         );
 
-        // Fetch the initial topology snapshot, a successful fetch is required to start the service
-        let topology_init_snapshot =
-            network::service::topology::fetch_snapshot(&network_subgraph_client).await?;
+        // Fetch the initial topology snapshot, retrying with exponential backoff.
+        // The gateway may be temporarily unavailable (e.g. during a chain halt).
+        let topology_init_snapshot = {
+            let mut attempt: u32 = 0;
+            loop {
+                match network::service::topology::fetch_snapshot(&network_subgraph_client).await {
+                    Ok(s) => break s,
+                    Err(err) => {
+                        attempt += 1;
+                        let delay = std::time::Duration::from_secs(2u64.pow(attempt.min(5)));
+                        tracing::info!(
+                            attempt,
+                            delay_secs = delay.as_secs(),
+                            error = %err,
+                            "initial topology fetch failed, retrying"
+                        );
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            }
+        };
 
         network::service::topology::new(
             network_subgraph_client,
