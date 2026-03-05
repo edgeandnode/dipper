@@ -270,7 +270,7 @@ where
             "Creating agreement with pricing"
         );
 
-        let agreement_id = ctx
+        let agreement_id = match ctx
             .registry
             .register_new_indexing_agreement(
                 *indexing_request_id,
@@ -280,7 +280,24 @@ where
                 voucher,
             )
             .await
-            .map_err(|err| JobError::Fatal(err.into()))?;
+        {
+            Ok(id) => id,
+            Err(err) => {
+                // Unique constraint violation (23505) on the active-agreement-per-indexer-deployment
+                // index means IISA selected an indexer that already has an active agreement for this
+                // deployment. This is a benign race condition -- log and skip to the next candidate.
+                if is_unique_constraint_violation(&err) {
+                    tracing::warn!(
+                        indexing_request_id=%indexing_request_id,
+                        indexer_id=%indexer.id,
+                        deployment_id=%deployment_id,
+                        "skipping candidate: active agreement already exists for this indexer+deployment"
+                    );
+                    continue;
+                }
+                return Err(JobError::Fatal(err.into()));
+            }
+        };
 
         if let Err(err) = ctx
             .queue
@@ -357,6 +374,18 @@ pub(crate) fn resolve_pricing(
         "No pricing from IISA and no fallback in pricing_table"
     );
     None
+}
+
+/// Check whether a registry error is a Postgres unique constraint violation (error code 23505).
+fn is_unique_constraint_violation(err: &crate::registry::Error) -> bool {
+    if let crate::registry::Error::BackendError(pg_err) = err {
+        if let dipper_pgregistry::Error::DbError(sqlx_err) = pg_err {
+            if let Some(db_err) = sqlx_err.as_database_error() {
+                return db_err.code().as_deref() == Some("23505");
+            }
+        }
+    }
+    false
 }
 
 /// Resolve a numeric chain ID to the canonical network name used by The Graph ecosystem.
