@@ -378,12 +378,11 @@ pub(crate) fn resolve_pricing(
 
 /// Check whether a registry error is a Postgres unique constraint violation (error code 23505).
 fn is_unique_constraint_violation(err: &crate::registry::Error) -> bool {
-    if let crate::registry::Error::BackendError(pg_err) = err {
-        if let dipper_pgregistry::Error::DbError(sqlx_err) = pg_err {
-            if let Some(db_err) = sqlx_err.as_database_error() {
-                return db_err.code().as_deref() == Some("23505");
-            }
-        }
+    if let crate::registry::Error::BackendError(pg_err) = err
+        && let dipper_pgregistry::Error::DbError(sqlx_err) = pg_err
+        && let Some(db_err) = sqlx_err.as_database_error()
+    {
+        return db_err.code().as_deref() == Some("23505");
     }
     false
 }
