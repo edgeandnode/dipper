@@ -5,9 +5,11 @@ pub(super) const GRAPHQL_QUERY_FRAGMENT: &str = indoc::indoc! {r#"
         first: $first
         where: {
             id_gt: $last
+            url_not: ""
         }
     ) {
         id
+        url
         account {
             operators(
                 first: 100
@@ -35,6 +37,7 @@ pub(in crate::network) mod types {
     #[derive(Debug, Clone, serde::Deserialize)]
     pub struct Indexer {
         pub id: IndexerId,
+        pub url: Option<String>,
         pub account: Account,
     }
 

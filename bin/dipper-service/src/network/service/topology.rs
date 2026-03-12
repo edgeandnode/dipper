@@ -292,28 +292,46 @@ impl Extend<indexer_subgraphs::types::Subgraph> for Snapshot {
 }
 
 impl Extend<indexer_operators::types::Indexer> for Snapshot {
-    /// Extend the network snapshot with indexer-operator relationships.
+    /// Extend the network snapshot with indexer data and operator relationships.
     ///
-    /// This method updates the snapshot with information about which operators
-    /// are associated with which indexers.
+    /// Creates indexer entries for any registered indexer with a valid URL,
+    /// regardless of whether they have active allocations. This ensures idle
+    /// indexers are visible to the proposal pipeline.
     fn extend<T>(&mut self, iter: T)
     where
         T: IntoIterator<Item = indexer_operators::types::Indexer>,
     {
-        let iter = iter.into_iter().flat_map(|indexer| {
-            let indexer_id = indexer.id;
-            indexer
+        for indexer_data in iter {
+            let indexer_id = indexer_data.id;
+
+            // Parse and validate the indexer URL
+            let indexer_url = match indexer_data.url {
+                Some(url) => url,
+                None => continue,
+            };
+            let indexer_url = match indexer_url.parse::<Url>() {
+                Ok(url) if url.scheme().starts_with("http") && url.has_host() => url,
+                _ => continue,
+            };
+
+            let operators: BTreeSet<Address> = indexer_data
                 .account
                 .operators
                 .into_iter()
-                .map(move |operator| (indexer_id, operator.id))
-        });
+                .map(|op| op.id)
+                .collect();
 
-        for (indexer_id, operator_address) in iter {
-            // Insert the address into the indexer's operators addresses set
-            self.indexers.entry(indexer_id).and_modify(|indexer| {
-                indexer.operators.insert(operator_address);
-            });
+            self.indexers
+                .entry(indexer_id)
+                .and_modify(|indexer| {
+                    indexer.operators.extend(operators.iter().copied());
+                })
+                .or_insert_with(|| Indexer {
+                    id: indexer_id,
+                    url: indexer_url,
+                    indexings: BTreeSet::new(),
+                    operators,
+                });
         }
     }
 }
