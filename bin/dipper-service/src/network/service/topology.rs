@@ -28,6 +28,15 @@ use url::Url;
 
 use crate::network::fetch::{Client as SubgraphClient, indexer_operators, indexer_subgraphs};
 
+/// Parse and validate an indexer URL.
+///
+/// Returns `Some(Url)` if the URL is present, parses successfully, uses an HTTP(S)
+/// scheme, and has a host component. Returns `None` otherwise.
+fn parse_indexer_url(raw: Option<String>) -> Option<Url> {
+    let url = raw?.parse::<Url>().ok()?;
+    (url.scheme().starts_with("http") && url.has_host()).then_some(url)
+}
+
 /// Fetches the latest network topology snapshot from the subgraph
 pub async fn fetch_snapshot(client: &SubgraphClient) -> anyhow::Result<Snapshot> {
     let subgraphs = client
@@ -253,17 +262,9 @@ impl Extend<indexer_subgraphs::types::Subgraph> for Snapshot {
                 for allocation in sub_version.subgraph_deployment.allocations {
                     let indexer_id = allocation.indexer.id;
 
-                    // Skip indexers without URL
-                    let indexer_url = match allocation.indexer.url {
+                    let indexer_url = match parse_indexer_url(allocation.indexer.url) {
                         Some(url) => url,
                         None => continue,
-                    };
-
-                    // Parse indexer URL and check if it is valid, i.e., not empty,
-                    // starts with "http://" (or "https://") and has a host part
-                    let indexer_url = match indexer_url.parse::<Url>() {
-                        Ok(url) if url.scheme().starts_with("http") && url.has_host() => url,
-                        _ => continue,
                     };
 
                     // Add the indexer to the network snapshot indexers table
@@ -304,14 +305,9 @@ impl Extend<indexer_operators::types::Indexer> for Snapshot {
         for indexer_data in iter {
             let indexer_id = indexer_data.id;
 
-            // Parse and validate the indexer URL
-            let indexer_url = match indexer_data.url {
+            let indexer_url = match parse_indexer_url(indexer_data.url) {
                 Some(url) => url,
                 None => continue,
-            };
-            let indexer_url = match indexer_url.parse::<Url>() {
-                Ok(url) if url.scheme().starts_with("http") && url.has_host() => url,
-                _ => continue,
             };
 
             let operators: BTreeSet<Address> = indexer_data
@@ -320,6 +316,12 @@ impl Extend<indexer_operators::types::Indexer> for Snapshot {
                 .into_iter()
                 .map(|op| op.id)
                 .collect();
+
+            // Only create new entries for indexers that have operators,
+            // since proposals require an operator to sign.
+            if operators.is_empty() && !self.indexers.contains_key(&indexer_id) {
+                continue;
+            }
 
             self.indexers
                 .entry(indexer_id)
