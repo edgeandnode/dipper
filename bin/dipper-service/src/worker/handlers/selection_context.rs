@@ -102,9 +102,7 @@ where
 /// entity rates from on-chain collection events (currently a stub returning
 /// empty). The result tells IISA how much fee revenue each indexer is expected
 /// to earn, so `stake_to_fees` can differentiate before on-chain claims.
-async fn compute_optimistic_dips_fees<R>(
-    registry: &R,
-) -> JobResult<HashMap<IndexerId, f64>>
+async fn compute_optimistic_dips_fees<R>(registry: &R) -> JobResult<HashMap<IndexerId, f64>>
 where
     R: AgreementRegistry,
 {

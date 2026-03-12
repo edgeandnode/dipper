@@ -1018,18 +1018,20 @@ impl PgRegistry {
     pub async fn get_optimistic_dips_fees_per_indexer(
         &self,
     ) -> Result<HashMap<IndexerId, f64>, Error> {
-        let rows: Vec<(PgIndexerId, sqlx::types::Json<super::indexing_agreement::Voucher>)> =
-            sqlx::query_as(
-                r#"
+        let rows: Vec<(
+            PgIndexerId,
+            sqlx::types::Json<super::indexing_agreement::Voucher>,
+        )> = sqlx::query_as(
+            r#"
                 SELECT indexer_id, voucher
                 FROM dipper_reg_indexing_agreements
                 WHERE status IN ($1, $2)
                 "#,
-            )
-            .bind(IndexingAgreementStatus::Created)
-            .bind(IndexingAgreementStatus::AcceptedOnChain)
-            .fetch_all(&self.pool)
-            .await?;
+        )
+        .bind(IndexingAgreementStatus::Created)
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
+        .fetch_all(&self.pool)
+        .await?;
 
         let mut fees: HashMap<IndexerId, f64> = HashMap::new();
         for (pg_indexer_id, voucher_json) in rows {
