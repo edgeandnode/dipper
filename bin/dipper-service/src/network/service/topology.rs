@@ -28,6 +28,15 @@ use url::Url;
 
 use crate::network::fetch::{Client as SubgraphClient, indexer_operators, indexer_subgraphs};
 
+/// Parse and validate an indexer URL.
+///
+/// Returns `Some(Url)` if the URL is present, parses successfully, uses an HTTP(S)
+/// scheme, and has a host component. Returns `None` otherwise.
+fn parse_indexer_url(raw: Option<String>) -> Option<Url> {
+    let url = raw?.parse::<Url>().ok()?;
+    (url.scheme().starts_with("http") && url.has_host()).then_some(url)
+}
+
 /// Fetches the latest network topology snapshot from the subgraph
 pub async fn fetch_snapshot(client: &SubgraphClient) -> anyhow::Result<Snapshot> {
     let subgraphs = client
@@ -253,17 +262,9 @@ impl Extend<indexer_subgraphs::types::Subgraph> for Snapshot {
                 for allocation in sub_version.subgraph_deployment.allocations {
                     let indexer_id = allocation.indexer.id;
 
-                    // Skip indexers without URL
-                    let indexer_url = match allocation.indexer.url {
+                    let indexer_url = match parse_indexer_url(allocation.indexer.url) {
                         Some(url) => url,
                         None => continue,
-                    };
-
-                    // Parse indexer URL and check if it is valid, i.e., not empty,
-                    // starts with "http://" (or "https://") and has a host part
-                    let indexer_url = match indexer_url.parse::<Url>() {
-                        Ok(url) if url.scheme().starts_with("http") && url.has_host() => url,
-                        _ => continue,
                     };
 
                     // Add the indexer to the network snapshot indexers table
@@ -292,28 +293,47 @@ impl Extend<indexer_subgraphs::types::Subgraph> for Snapshot {
 }
 
 impl Extend<indexer_operators::types::Indexer> for Snapshot {
-    /// Extend the network snapshot with indexer-operator relationships.
+    /// Extend the network snapshot with indexer data and operator relationships.
     ///
-    /// This method updates the snapshot with information about which operators
-    /// are associated with which indexers.
+    /// Creates indexer entries for any registered indexer with a valid URL,
+    /// regardless of whether they have active allocations. This ensures idle
+    /// indexers are visible to the proposal pipeline.
     fn extend<T>(&mut self, iter: T)
     where
         T: IntoIterator<Item = indexer_operators::types::Indexer>,
     {
-        let iter = iter.into_iter().flat_map(|indexer| {
-            let indexer_id = indexer.id;
-            indexer
+        for indexer_data in iter {
+            let indexer_id = indexer_data.id;
+
+            let indexer_url = match parse_indexer_url(indexer_data.url) {
+                Some(url) => url,
+                None => continue,
+            };
+
+            let operators: BTreeSet<Address> = indexer_data
                 .account
                 .operators
                 .into_iter()
-                .map(move |operator| (indexer_id, operator.id))
-        });
+                .map(|op| op.id)
+                .collect();
 
-        for (indexer_id, operator_address) in iter {
-            // Insert the address into the indexer's operators addresses set
-            self.indexers.entry(indexer_id).and_modify(|indexer| {
-                indexer.operators.insert(operator_address);
-            });
+            // Only create new entries for indexers that have operators,
+            // since proposals require an operator to sign.
+            if operators.is_empty() && !self.indexers.contains_key(&indexer_id) {
+                continue;
+            }
+
+            self.indexers
+                .entry(indexer_id)
+                .and_modify(|indexer| {
+                    indexer.operators.extend(operators.iter().copied());
+                })
+                .or_insert_with(|| Indexer {
+                    id: indexer_id,
+                    url: indexer_url,
+                    indexings: BTreeSet::new(),
+                    operators,
+                });
         }
     }
 }

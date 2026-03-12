@@ -3621,7 +3621,7 @@ dependencies = [
 [[package]]
 name = "indexer-dips"
 version = "0.1.0"
-source = "git+https://github.com/graphprotocol/indexer-rs.git?rev=86ec0c6#86ec0c6484a18221d4d54bc332e4411169ee29cc"
+source = "git+https://github.com/graphprotocol/indexer-rs.git?rev=3c7a771#3c7a77116949fac6e32a182e0ab91b63f8b78963"
 dependencies = [
  "anyhow",
  "async-trait",
