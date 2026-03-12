@@ -120,7 +120,10 @@ where
         .into_iter()
         .map(|(id, base_tps_wei)| {
             let entity_tps_wei = entity_rates.get(&id).copied().unwrap_or(0.0);
-            (id, wei_per_second_to_grt_per_30d(base_tps_wei + entity_tps_wei))
+            (
+                id,
+                wei_per_second_to_grt_per_30d(base_tps_wei + entity_tps_wei),
+            )
         })
         .collect();
 
