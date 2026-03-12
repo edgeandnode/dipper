@@ -84,6 +84,10 @@ struct SelectionRequest {
     /// Payment ceiling: maximum GRT per 30 days
     #[serde(skip_serializing_if = "Option::is_none")]
     max_grt_per_30_days: Option<f64>,
+
+    /// Expected DIPs fees per indexer in GRT per 30 days from accepted agreements
+    #[serde(skip_serializing_if = "Option::is_none")]
+    optimistic_dips_fees: Option<HashMap<String, f64>>,
 }
 
 /// Response from the /select-indexers endpoint.
@@ -334,6 +338,24 @@ impl HttpIisaClient {
         }
     }
 
+    /// Format optimistic DIPs fees from context for the HTTP request.
+    ///
+    /// Converts `IndexerId` keys to lowercase hex strings.
+    /// Returns `None` if the map is empty to skip serialization.
+    fn format_optimistic_dips_fees(context: &SelectionContext) -> Option<HashMap<String, f64>> {
+        if context.optimistic_dips_fees.is_empty() {
+            None
+        } else {
+            Some(
+                context
+                    .optimistic_dips_fees
+                    .iter()
+                    .map(|(id, fee)| (format!("{:#x}", id), *fee))
+                    .collect(),
+            )
+        }
+    }
+
     /// Format declined indexers from context for the HTTP request.
     ///
     /// Returns `None` if the map is empty to skip serialization.
@@ -380,6 +402,7 @@ impl CandidateSelection for HttpIisaClient {
             declined_indexers: Self::format_declined_indexers(context),
             chain_id: context.chain_id.clone(),
             max_grt_per_30_days: context.max_grt_per_30_days,
+            optimistic_dips_fees: Self::format_optimistic_dips_fees(context),
         };
 
         let url = format!("{}select-indexers", self.endpoint);

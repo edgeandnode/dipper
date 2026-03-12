@@ -1007,6 +1007,57 @@ impl PgRegistry {
     }
 
     // =========================================================================
+    // Optimistic DIPs fees
+    // =========================================================================
+
+    /// Get the sum of base tokens_per_second (in wei) across active agreements per indexer.
+    ///
+    /// Queries all `Created` or `AcceptedOnChain` agreements and sums the
+    /// `voucher.metadata.tokens_per_second` field per indexer. Returns wei/second
+    /// as f64 — the caller converts to GRT/30d.
+    pub async fn get_optimistic_dips_fees_per_indexer(
+        &self,
+    ) -> Result<HashMap<IndexerId, f64>, Error> {
+        let rows: Vec<(PgIndexerId, sqlx::types::Json<super::indexing_agreement::Voucher>)> =
+            sqlx::query_as(
+                r#"
+                SELECT indexer_id, voucher
+                FROM dipper_reg_indexing_agreements
+                WHERE status IN ($1, $2)
+                "#,
+            )
+            .bind(IndexingAgreementStatus::Created)
+            .bind(IndexingAgreementStatus::AcceptedOnChain)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut fees: HashMap<IndexerId, f64> = HashMap::new();
+        for (pg_indexer_id, voucher_json) in rows {
+            let tps_wei = voucher_json.0.metadata.tokens_per_second;
+            let tps_f64 = tps_wei.to::<u128>() as f64;
+            *fees.entry(pg_indexer_id.0).or_default() += tps_f64;
+        }
+
+        Ok(fees)
+    }
+
+    /// Get per-indexer entity fee rates derived from on-chain collection events.
+    ///
+    /// Returns entity tokens_per_second (in wei) per indexer, derived from
+    /// `IndexingFeesCollectedV1` events: `entity_rate = (tokensCollected / collectionSeconds) - base_tps`.
+    ///
+    /// Currently returns an empty HashMap — no subgraph indexes these events yet.
+    /// When a DIPs collection subgraph exists, this method will query it for
+    /// per-agreement `tokensCollected` and `collectionSeconds`, from which the
+    /// entity rate can be derived.
+    pub async fn get_entity_rates_per_indexer(&self) -> Result<HashMap<IndexerId, f64>, Error> {
+        // TODO: query DIPs collection subgraph for IndexingFeesCollectedV1 events.
+        // Per-agreement data needed: tokensCollected, collectionSeconds.
+        // entity_rate = (tokensCollected / collectionSeconds) - base_tps
+        Ok(HashMap::new())
+    }
+
+    // =========================================================================
     // Chain listener state operations
     // =========================================================================
 

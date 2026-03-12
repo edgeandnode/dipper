@@ -1,12 +1,20 @@
 //! Shared utilities for gathering IISA selection context.
 
+use std::collections::HashMap;
+
 use dipper_iisa::SelectionContext;
-use thegraph_core::DeploymentId;
+use thegraph_core::{DeploymentId, IndexerId};
 
 use crate::{
     registry::{AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementStatus},
     worker::result::{JobError, JobResult},
 };
+
+/// Seconds in 30 days.
+const SECONDS_PER_30_DAYS: f64 = 86400.0 * 30.0;
+
+/// 1 GRT = 10^18 wei.
+const WEI_PER_GRT: f64 = 1e18;
 
 /// Gather load balancing context for IISA selection.
 ///
@@ -15,6 +23,7 @@ use crate::{
 /// - What pending agreements exist across all deployments
 /// - Which indexers have recently declined agreements (within lookback windows)
 /// - Which indexers are on the denylist and should be excluded entirely
+/// - Optimistic DIPs fees from accepted agreement vouchers
 ///
 /// # Parameters
 ///
@@ -71,15 +80,61 @@ where
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
+    // Compute optimistic DIPs fees: sum of base tokens_per_second from active
+    // agreement vouchers, plus entity rates from on-chain collection events.
+    let optimistic_dips_fees = compute_optimistic_dips_fees(registry).await?;
+
     Ok(SelectionContext {
         existing_indexers,
         pending_agreements,
         declined_indexers,
         indexer_denylist,
+        optimistic_dips_fees,
         // chain_id and max_grt_per_30_days are set by the caller after gathering
         // the base context, since they depend on the deployment's chain ID.
         ..Default::default()
     })
+}
+
+/// Compute optimistic DIPs fees per indexer in GRT per 30 days.
+///
+/// Combines the base rate from agreement vouchers (`tokens_per_second`) with
+/// entity rates from on-chain collection events (currently a stub returning
+/// empty). The result tells IISA how much fee revenue each indexer is expected
+/// to earn, so `stake_to_fees` can differentiate before on-chain claims.
+async fn compute_optimistic_dips_fees<R>(
+    registry: &R,
+) -> JobResult<HashMap<IndexerId, f64>>
+where
+    R: AgreementRegistry,
+{
+    let base_fees = registry
+        .get_optimistic_dips_fees_per_indexer()
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
+
+    let entity_rates = registry
+        .get_entity_rates_per_indexer()
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
+
+    let optimistic_dips_fees: HashMap<IndexerId, f64> = base_fees
+        .into_iter()
+        .map(|(id, base_tps_wei)| {
+            let entity_tps_wei = entity_rates.get(&id).copied().unwrap_or(0.0);
+            let grt_per_30d = (base_tps_wei + entity_tps_wei) * SECONDS_PER_30_DAYS / WEI_PER_GRT;
+            (id, grt_per_30d)
+        })
+        .collect();
+
+    if !optimistic_dips_fees.is_empty() {
+        tracing::debug!(
+            indexer_count = optimistic_dips_fees.len(),
+            "computed optimistic DIPs fees for IISA"
+        );
+    }
+
+    Ok(optimistic_dips_fees)
 }
 
 /// Check if an agreement status represents an active agreement.

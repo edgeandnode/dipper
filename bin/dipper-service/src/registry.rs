@@ -378,6 +378,24 @@ impl AgreementRegistry for RegistryProvider {
         IndexingAgreement::try_from(raw)
             .map_err(|_| dipper_pgregistry::Error::NoRecordsUpdated.into())
     }
+
+    async fn get_optimistic_dips_fees_per_indexer(
+        &self,
+    ) -> RegistryResult<std::collections::HashMap<IndexerId, f64>> {
+        self.inner
+            .get_optimistic_dips_fees_per_indexer()
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn get_entity_rates_per_indexer(
+        &self,
+    ) -> RegistryResult<std::collections::HashMap<IndexerId, f64>> {
+        self.inner
+            .get_entity_rates_per_indexer()
+            .await
+            .map_err(Into::into)
+    }
 }
 
 #[async_trait]

@@ -486,6 +486,18 @@ mod tests {
         ) -> crate::registry::Result<IndexingAgreement> {
             Err(crate::registry::Error::NoRecordsUpdated)
         }
+
+        async fn get_optimistic_dips_fees_per_indexer(
+            &self,
+        ) -> crate::registry::Result<std::collections::HashMap<IndexerId, f64>> {
+            Ok(std::collections::HashMap::new())
+        }
+
+        async fn get_entity_rates_per_indexer(
+            &self,
+        ) -> crate::registry::Result<std::collections::HashMap<IndexerId, f64>> {
+            Ok(std::collections::HashMap::new())
+        }
     }
 
     #[async_trait]
