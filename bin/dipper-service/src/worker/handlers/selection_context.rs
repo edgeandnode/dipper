@@ -120,8 +120,7 @@ where
         .into_iter()
         .map(|(id, base_tps_wei)| {
             let entity_tps_wei = entity_rates.get(&id).copied().unwrap_or(0.0);
-            let grt_per_30d = (base_tps_wei + entity_tps_wei) * SECONDS_PER_30_DAYS / WEI_PER_GRT;
-            (id, grt_per_30d)
+            (id, wei_per_second_to_grt_per_30d(base_tps_wei + entity_tps_wei))
         })
         .collect();
 
@@ -135,6 +134,11 @@ where
     Ok(optimistic_dips_fees)
 }
 
+/// Convert wei/second to GRT per 30 days.
+fn wei_per_second_to_grt_per_30d(wei_per_second: f64) -> f64 {
+    wei_per_second * SECONDS_PER_30_DAYS / WEI_PER_GRT
+}
+
 /// Check if an agreement status represents an active agreement.
 ///
 /// Active agreements are those that are either pending on-chain acceptance (Created)
@@ -144,4 +148,26 @@ fn is_active_agreement(status: &IndexingAgreementStatus) -> bool {
         status,
         IndexingAgreementStatus::Created | IndexingAgreementStatus::AcceptedOnChain
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wei_per_second_to_grt_per_30d() {
+        // 1 GRT/second = 2,592,000 GRT/30d
+        let one_grt_per_sec = 1e18; // 1 GRT in wei
+        let result = wei_per_second_to_grt_per_30d(one_grt_per_sec);
+        assert!((result - 2_592_000.0).abs() < 0.01);
+
+        // ~3.858 wei/second ~ 10 GRT/30d
+        // 10 GRT/30d = 10 * 1e18 / (86400 * 30) = 3_858_024_691_358.025 wei/sec
+        let wei_per_sec = 10.0 * 1e18 / (86400.0 * 30.0);
+        let result = wei_per_second_to_grt_per_30d(wei_per_sec);
+        assert!((result - 10.0).abs() < 1e-6);
+
+        // Zero in, zero out
+        assert_eq!(wei_per_second_to_grt_per_30d(0.0), 0.0);
+    }
 }
