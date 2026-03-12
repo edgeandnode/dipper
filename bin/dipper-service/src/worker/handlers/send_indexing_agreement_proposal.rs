@@ -492,12 +492,6 @@ mod tests {
         ) -> crate::registry::Result<std::collections::HashMap<IndexerId, f64>> {
             Ok(std::collections::HashMap::new())
         }
-
-        async fn get_entity_rates_per_indexer(
-            &self,
-        ) -> crate::registry::Result<std::collections::HashMap<IndexerId, f64>> {
-            Ok(std::collections::HashMap::new())
-        }
     }
 
     #[async_trait]

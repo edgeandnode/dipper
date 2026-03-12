@@ -1043,22 +1043,6 @@ impl PgRegistry {
         Ok(fees)
     }
 
-    /// Get per-indexer entity fee rates derived from on-chain collection events.
-    ///
-    /// Returns entity tokens_per_second (in wei) per indexer, derived from
-    /// `IndexingFeesCollectedV1` events: `entity_rate = (tokensCollected / collectionSeconds) - base_tps`.
-    ///
-    /// Currently returns an empty HashMap — no subgraph indexes these events yet.
-    /// When a DIPs collection subgraph exists, this method will query it for
-    /// per-agreement `tokensCollected` and `collectionSeconds`, from which the
-    /// entity rate can be derived.
-    pub async fn get_entity_rates_per_indexer(&self) -> Result<HashMap<IndexerId, f64>, Error> {
-        // TODO: query DIPs collection subgraph for IndexingFeesCollectedV1 events.
-        // Per-agreement data needed: tokensCollected, collectionSeconds.
-        // entity_rate = (tokensCollected / collectionSeconds) - base_tps
-        Ok(HashMap::new())
-    }
-
     // =========================================================================
     // Chain listener state operations
     // =========================================================================

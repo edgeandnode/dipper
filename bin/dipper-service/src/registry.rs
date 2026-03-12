@@ -387,15 +387,6 @@ impl AgreementRegistry for RegistryProvider {
             .await
             .map_err(Into::into)
     }
-
-    async fn get_entity_rates_per_indexer(
-        &self,
-    ) -> RegistryResult<std::collections::HashMap<IndexerId, f64>> {
-        self.inner
-            .get_entity_rates_per_indexer()
-            .await
-            .map_err(Into::into)
-    }
 }
 
 #[async_trait]

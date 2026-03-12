@@ -81,7 +81,7 @@ where
         .map_err(|err| JobError::Fatal(err.into()))?;
 
     // Compute optimistic DIPs fees: sum of base tokens_per_second from active
-    // agreement vouchers, plus entity rates from on-chain collection events.
+    // agreement vouchers, converted to GRT/30d.
     let optimistic_dips_fees = compute_optimistic_dips_fees(registry).await?;
 
     Ok(SelectionContext {
@@ -98,10 +98,10 @@ where
 
 /// Compute optimistic DIPs fees per indexer in GRT per 30 days.
 ///
-/// Combines the base rate from agreement vouchers (`tokens_per_second`) with
-/// entity rates from on-chain collection events (currently a stub returning
-/// empty). The result tells IISA how much fee revenue each indexer is expected
-/// to earn, so `stake_to_fees` can differentiate before on-chain claims.
+/// Sums the base rate (`tokens_per_second`) from accepted agreement vouchers
+/// per indexer and converts wei/second to GRT/30d. The result tells IISA how
+/// much fee revenue each indexer is expected to earn, so `stake_to_fees` can
+/// differentiate before on-chain claims.
 async fn compute_optimistic_dips_fees<R>(registry: &R) -> JobResult<HashMap<IndexerId, f64>>
 where
     R: AgreementRegistry,
@@ -111,20 +111,9 @@ where
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
-    let entity_rates = registry
-        .get_entity_rates_per_indexer()
-        .await
-        .map_err(|err| JobError::Fatal(err.into()))?;
-
     let optimistic_dips_fees: HashMap<IndexerId, f64> = base_fees
         .into_iter()
-        .map(|(id, base_tps_wei)| {
-            let entity_tps_wei = entity_rates.get(&id).copied().unwrap_or(0.0);
-            (
-                id,
-                wei_per_second_to_grt_per_30d(base_tps_wei + entity_tps_wei),
-            )
-        })
+        .map(|(id, tps_wei)| (id, wei_per_second_to_grt_per_30d(tps_wei)))
         .collect();
 
     if !optimistic_dips_fees.is_empty() {

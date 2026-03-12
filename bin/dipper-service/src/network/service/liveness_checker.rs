@@ -1007,12 +1007,6 @@ mod tests {
         ) -> RegistryResult<std::collections::HashMap<IndexerId, f64>> {
             Ok(std::collections::HashMap::new())
         }
-
-        async fn get_entity_rates_per_indexer(
-            &self,
-        ) -> RegistryResult<std::collections::HashMap<IndexerId, f64>> {
-            Ok(std::collections::HashMap::new())
-        }
     }
 
     #[async_trait]

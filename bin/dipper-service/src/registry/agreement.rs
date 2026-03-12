@@ -218,14 +218,6 @@ pub trait AgreementRegistry {
     async fn get_optimistic_dips_fees_per_indexer(
         &self,
     ) -> RegistryResult<std::collections::HashMap<IndexerId, f64>>;
-
-    /// Get per-indexer entity fee rates from on-chain collection events.
-    ///
-    /// Returns entity `tokens_per_second` (in wei) per indexer. Currently a stub
-    /// returning an empty map — no subgraph indexes `IndexingFeesCollectedV1` events yet.
-    async fn get_entity_rates_per_indexer(
-        &self,
-    ) -> RegistryResult<std::collections::HashMap<IndexerId, f64>>;
 }
 
 /// An Indexing Agreement represents the contract between the DIPs Gateway (Dipper) and the indexer
