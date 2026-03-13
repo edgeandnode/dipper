@@ -62,6 +62,14 @@ pub struct SelectionContext {
     ///
     /// Indexers with advertised prices above this ceiling are excluded from selection.
     pub max_grt_per_30_days: Option<f64>,
+
+    /// Expected DIPs fees per indexer in GRT per 30 days.
+    ///
+    /// Derived from the base rate (`tokens_per_second`) in accepted agreement vouchers,
+    /// plus entity rates from on-chain collection events when available. IISA adds
+    /// these to Redpanda-derived query fees so `stake_to_fees` can differentiate
+    /// indexers before on-chain payment claims appear.
+    pub optimistic_dips_fees: HashMap<IndexerId, f64>,
 }
 
 /// An indexer selected by IISA with its advertised pricing.

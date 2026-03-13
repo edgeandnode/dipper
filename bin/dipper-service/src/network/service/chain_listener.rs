@@ -717,6 +717,12 @@ mod tests {
         ) -> RegistryResult<IndexingAgreement> {
             Err(crate::registry::Error::NoRecordsUpdated)
         }
+
+        async fn get_optimistic_dips_fees_per_indexer(
+            &self,
+        ) -> RegistryResult<std::collections::HashMap<IndexerId, f64>> {
+            Ok(std::collections::HashMap::new())
+        }
     }
 
     // Mock worker queue

@@ -843,7 +843,6 @@ mod tests {
         calls: MockCalls,
         mark_abandoned_result: Arc<Mutex<Option<RegistryResult<IndexingAgreement>>>>,
         get_request_result: Arc<Mutex<Option<RegistryResult<Option<IndexingRequest>>>>>,
-        agreement: IndexingAgreement,
     }
 
     impl MockRegistry {
@@ -858,7 +857,6 @@ mod tests {
                 calls,
                 mark_abandoned_result: Arc::new(Mutex::new(Some(Ok(abandoned_agreement)))),
                 get_request_result: Arc::new(Mutex::new(Some(Ok(Some(request))))),
-                agreement,
             }
         }
 
@@ -1002,6 +1000,12 @@ mod tests {
                 .unwrap()
                 .take()
                 .expect("mark_abandoned called more than once")
+        }
+
+        async fn get_optimistic_dips_fees_per_indexer(
+            &self,
+        ) -> RegistryResult<std::collections::HashMap<IndexerId, f64>> {
+            Ok(std::collections::HashMap::new())
         }
     }
 

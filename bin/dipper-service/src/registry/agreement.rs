@@ -209,6 +209,15 @@ pub trait AgreementRegistry {
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<IndexingAgreement>;
+
+    /// Get the sum of base `tokens_per_second` (in wei) across active agreements per indexer.
+    ///
+    /// Used for optimistic DIPs fee estimation: the caller converts wei/second to
+    /// GRT/30d and sends it to IISA so `stake_to_fees` can differentiate indexers
+    /// before on-chain payment claims appear.
+    async fn get_optimistic_dips_fees_per_indexer(
+        &self,
+    ) -> RegistryResult<std::collections::HashMap<IndexerId, f64>>;
 }
 
 /// An Indexing Agreement represents the contract between the DIPs Gateway (Dipper) and the indexer
