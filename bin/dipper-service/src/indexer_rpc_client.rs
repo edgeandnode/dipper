@@ -275,20 +275,31 @@ fn into_sol_rca(
     agreement_id: IndexingAgreementId,
     voucher: IndexingAgreementVoucher,
 ) -> sol::RecurringCollectionAgreement {
-    // Build the V1 pricing terms
+    // Build the V1 pricing terms.
+    // IndexingAgreementTermsV1 is a static struct (two uint256 fields), so abi_encode
+    // produces just the field values without any outer offset.
     let terms = sol::IndexingAgreementTermsV1 {
         tokensPerSecond: voucher.metadata.tokens_per_second,
         tokensPerEntityPerSecond: voucher.metadata.tokens_per_entity_per_second,
     }
     .abi_encode();
 
-    // Build the acceptance metadata (ABI-encoded into the RCA metadata field)
+    // Build the acceptance metadata, matching Solidity's abi.encode(AcceptIndexingAgreementMetadata).
+    //
+    // Alloy's SolValue::abi_encode() on a struct with dynamic fields (bytes) wraps the
+    // encoding with a 32-byte outer tuple offset (0x20 prefix). Solidity's abi.encode()
+    // does NOT add this prefix -- it produces the struct fields directly. The SubgraphService
+    // contract decodes the metadata via abi.decode(rca.metadata, (AcceptIndexingAgreementMetadata)),
+    // which expects the Solidity format without the outer offset.
+    //
+    // We use abi_encode_params() which produces the "inner" encoding matching Solidity's
+    // abi.encode output: struct fields directly, no outer offset.
     let metadata = sol::AcceptIndexingAgreementMetadata {
         subgraphDeploymentId: B256::from(voucher.metadata.subgraph_deployment_id),
-        version: 1, // must match indexer-rs expected metadata version
+        version: 1, // IndexingAgreementVersion.V1
         terms: terms.into(),
     }
-    .abi_encode();
+    .abi_encode_params();
 
     // Derive nonce from the agreement UUID (16-byte UUID -> U256)
     let mut nonce_bytes = [0u8; 32];
@@ -396,9 +407,10 @@ mod tests {
             "maxSecondsPerCollection mismatch"
         );
 
-        //* Assert - Verify nested metadata ABI encoding
-        let decoded_metadata = sol::AcceptIndexingAgreementMetadata::abi_decode(&rca.metadata)
-            .expect("metadata should be valid ABI-encoded AcceptIndexingAgreementMetadata");
+        //* Assert - Verify nested metadata ABI encoding (params format, no outer offset)
+        let decoded_metadata =
+            sol::AcceptIndexingAgreementMetadata::abi_decode_params(&rca.metadata)
+                .expect("metadata should be valid ABI-encoded AcceptIndexingAgreementMetadata");
 
         assert_eq!(
             decoded_metadata.subgraphDeploymentId,
@@ -421,6 +433,57 @@ mod tests {
         assert_eq!(
             decoded_terms.tokensPerEntityPerSecond, tokens_per_entity_per_second,
             "tokensPerEntityPerSecond in nested terms mismatch"
+        );
+    }
+
+    #[test]
+    fn test_metadata_encoding_matches_solidity() {
+        // Verify that into_sol_rca produces metadata matching Solidity's abi.encode format.
+        // Solidity's abi.encode(AcceptIndexingAgreementMetadata) produces 6 words (192 bytes)
+        // starting directly with the struct fields (no outer offset).
+        // Alloy's abi_encode() adds a 0x20 outer offset (7 words, 224 bytes).
+        // We use abi_encode_params() to match Solidity's format.
+        use thegraph_core::{DeploymentId, alloy::primitives::address};
+
+        let agreement_id = IndexingAgreementId::new();
+        let deployment_id =
+            DeploymentId::from_str("QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9").unwrap();
+
+        let voucher = IndexingAgreementVoucher {
+            payer: address!("0000000000000000000000000000000000000001"),
+            service_provider: address!("0000000000000000000000000000000000000002"),
+            data_service: address!("0000000000000000000000000000000000000003"),
+            deadline: 1234567890,
+            ends_at: 9876543210,
+            max_initial_tokens: U256::from(1000u64),
+            max_ongoing_tokens_per_second: U256::from(100u64),
+            min_seconds_per_collection: 60,
+            max_seconds_per_collection: 3600,
+            metadata: IndexingAgreementVoucherMetadata {
+                tokens_per_second: U256::from(100u64),
+                tokens_per_entity_per_second: U256::from(0u64),
+                subgraph_deployment_id: deployment_id,
+                protocol_network: 42161,
+                chain_id: 1,
+            },
+        };
+
+        let rca = into_sol_rca(agreement_id, voucher);
+
+        // Metadata should be 192 bytes (6 words), NOT 224 (7 words with outer offset).
+        assert_eq!(
+            rca.metadata.len(),
+            192,
+            "metadata should be 192 bytes (Solidity abi.encode format without outer offset), got {}",
+            rca.metadata.len()
+        );
+
+        // First word should be the subgraphDeploymentId, not 0x20
+        let first_word = U256::from_be_slice(&rca.metadata[0..32]);
+        assert_ne!(
+            first_word,
+            U256::from(0x20u64),
+            "metadata should NOT start with 0x20 outer offset"
         );
     }
 
