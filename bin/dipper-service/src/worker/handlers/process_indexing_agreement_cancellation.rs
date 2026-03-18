@@ -1,7 +1,7 @@
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 
 use crate::{
-    registry::{AgreementRegistry, IndexingRequestRegistry},
+    registry::{AgreementRegistry, IndexingRequestRegistry, PendingCancellationRegistry},
     worker::{
         result::{JobError, JobMeta, JobResult},
         service::WorkerQueue,
@@ -35,7 +35,7 @@ pub async fn handle_indexer_cancellation<R, W>(
     _job_meta: JobMeta,
 ) -> JobResult<()>
 where
-    R: IndexingRequestRegistry + AgreementRegistry,
+    R: IndexingRequestRegistry + AgreementRegistry + PendingCancellationRegistry,
     W: WorkerQueue,
 {
     tracing::trace!(
@@ -68,6 +68,20 @@ where
             );
             JobError::Fatal(err.into())
         })?;
+
+    // Clean up pending cancellations: if this cancelled agreement was a
+    // replacement, the old agreement it was replacing should stay active.
+    if let Err(err) = ctx
+        .registry
+        .delete_pending_cancellations_by_new_agreement(agreement.id)
+        .await
+    {
+        tracing::warn!(
+            %agreement_id,
+            error=%err,
+            "Failed to clean up pending cancellations for indexer-cancelled agreement"
+        );
+    }
 
     // Get the indexing request associated with the agreement
     let Some(indexing_request) = ctx
@@ -115,7 +129,7 @@ pub async fn handle_requester_cancellation<R, W>(
     _job_meta: JobMeta,
 ) -> JobResult<()>
 where
-    R: IndexingRequestRegistry + AgreementRegistry,
+    R: IndexingRequestRegistry + AgreementRegistry + PendingCancellationRegistry,
     W: WorkerQueue,
 {
     tracing::trace!(
@@ -151,6 +165,20 @@ where
             );
             JobError::Fatal(err.into())
         })?;
+
+    // Clean up pending cancellations: if this cancelled agreement was a
+    // replacement, the old agreement it was replacing should stay active.
+    if let Err(err) = ctx
+        .registry
+        .delete_pending_cancellations_by_new_agreement(agreement.id)
+        .await
+    {
+        tracing::warn!(
+            %agreement_id,
+            error=%err,
+            "Failed to clean up pending cancellations for requester-cancelled agreement"
+        );
+    }
 
     // Send the indexing agreement cancellation notification to the indexer
     ctx.queue

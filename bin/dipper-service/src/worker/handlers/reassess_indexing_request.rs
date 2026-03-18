@@ -17,7 +17,7 @@ use crate::{
     network::NetworkProvider,
     registry::{
         AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementVoucher,
-        IndexingAgreementVoucherMetadata, IndexingRequestRegistry,
+        IndexingAgreementVoucherMetadata, IndexingRequestRegistry, PendingCancellationRegistry,
     },
     signing::eip712::PrivateKeyEip712Signer,
     worker::{
@@ -66,7 +66,10 @@ pub async fn handle<R, N, W, I>(
     _job_meta: JobMeta,
 ) -> JobResult<()>
 where
-    R: IndexingRequestRegistry + AgreementRegistry + IndexerDenylistRegistry,
+    R: IndexingRequestRegistry
+        + AgreementRegistry
+        + IndexerDenylistRegistry
+        + PendingCancellationRegistry,
     N: NetworkProvider,
     W: WorkerQueue,
     I: CandidateSelection,
@@ -143,45 +146,29 @@ where
         return Ok(());
     }
 
-    // Cancel agreements for indexers no longer in the target group
-    for agreement in &active_agreements {
-        if !to_cancel.contains(&agreement.indexer.id) {
-            continue;
-        }
-
-        ctx.registry
-            .mark_indexing_agreement_as_canceled_by_requester(&agreement.id)
-            .await
-            .map_err(|err| JobError::Fatal(err.into()))?;
-
-        if let Err(err) = ctx
-            .queue
-            .send_indexing_agreement_cancellation(
-                agreement.indexer.url.clone(),
-                *indexing_request_id,
-                agreement.id,
-            )
-            .await
-        {
-            tracing::error!(
-                error=%err,
-                agreement_id=%agreement.id,
-                "Failed to queue task: 'send_indexing_agreement_cancellation'"
-            );
-        }
-    }
-
     let fallback_prices = ctx.chain_price.get(deployment_chain_id);
 
-    // Create agreements for indexers newly in the target group.
-    // Continue on per-indexer failures so that a single error does not prevent
-    // the remaining additions from being processed.
+    // --- Add new agreements FIRST ---
+    // We add before cancelling to prevent under-allocation. Old agreements
+    // stay active until the chain_listener confirms the replacement is
+    // accepted on-chain (see pending cancellations below).
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock before UNIX epoch")
         .as_secs();
 
+    // Pre-compute old agreements to cancel so we can pair replacements
+    // atomically during registration.
+    let old_to_cancel: Vec<_> = active_agreements
+        .iter()
+        .filter(|a| to_cancel.contains(&a.indexer.id))
+        .collect();
+    let old_to_cancel_len = old_to_cancel.len();
+    let mut old_iter = old_to_cancel.into_iter();
+
+    let mut successful_new_ids: Vec<dipper_core::ids::IndexingAgreementId> = vec![];
     let mut add_failures = 0u32;
+    let mut pending_recorded = 0u32;
     for indexer_id in &to_add {
         let candidate = match ctx.network.get_indexer_by_id(indexer_id) {
             Some(indexer) => indexer,
@@ -239,26 +226,58 @@ where
             metadata: voucher_metadata,
         };
 
-        let agreement_id = match ctx
-            .registry
-            .register_new_indexing_agreement(
-                *indexing_request_id,
-                *deployment_id,
-                candidate.id,
-                candidate.url.clone(),
-                voucher,
-            )
-            .await
-        {
-            Ok(id) => id,
-            Err(err) => {
-                add_failures += 1;
-                tracing::error!(
-                    error=%err,
-                    indexer_id=%indexer_id,
-                    "Failed to register new indexing agreement, skipping indexer"
-                );
-                continue;
+        // If this add replaces an old agreement, register both atomically
+        // so a crash cannot leave an agreement without its pending cancellation.
+        let agreement_id = if let Some(old_agreement) = old_iter.next() {
+            match ctx
+                .registry
+                .register_agreement_with_pending_cancellation(
+                    *indexing_request_id,
+                    *deployment_id,
+                    candidate.id,
+                    candidate.url.clone(),
+                    voucher,
+                    old_agreement.id,
+                )
+                .await
+            {
+                Ok(id) => {
+                    pending_recorded += 1;
+                    id
+                }
+                Err(err) => {
+                    add_failures += 1;
+                    tracing::error!(
+                        error=%err,
+                        indexer_id=%indexer_id,
+                        old_agreement_id=%old_agreement.id,
+                        "Failed to register replacement agreement, skipping indexer"
+                    );
+                    continue;
+                }
+            }
+        } else {
+            match ctx
+                .registry
+                .register_new_indexing_agreement(
+                    *indexing_request_id,
+                    *deployment_id,
+                    candidate.id,
+                    candidate.url.clone(),
+                    voucher,
+                )
+                .await
+            {
+                Ok(id) => id,
+                Err(err) => {
+                    add_failures += 1;
+                    tracing::error!(
+                        error=%err,
+                        indexer_id=%indexer_id,
+                        "Failed to register new indexing agreement, skipping indexer"
+                    );
+                    continue;
+                }
             }
         };
 
@@ -278,6 +297,8 @@ where
                 error=%err,
                 "Failed to queue task: 'send_indexing_agreement_proposal'"
             );
+        } else {
+            successful_new_ids.push(agreement_id);
         }
     }
 
@@ -292,8 +313,9 @@ where
     tracing::info!(
         indexing_request_id=%indexing_request_id,
         deployment_id=%deployment_id,
-        added = to_add.len(),
-        canceled = to_cancel.len(),
+        added = successful_new_ids.len(),
+        pending_cancellations = pending_recorded,
+        unlinked_old = old_to_cancel_len.saturating_sub(successful_new_ids.len()),
         "reassessment complete"
     );
 

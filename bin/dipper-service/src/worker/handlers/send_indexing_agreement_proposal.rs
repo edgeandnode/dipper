@@ -8,7 +8,10 @@ use url::Url;
 use crate::{
     config::DEFAULT_MAX_CANDIDATES,
     indexer_rpc_client::IndexerClient,
-    registry::{AgreementRegistry, IndexingAgreementStatus, IndexingRequestRegistry},
+    registry::{
+        AgreementRegistry, IndexingAgreementStatus, IndexingRequestRegistry,
+        PendingCancellationRegistry,
+    },
     worker::{
         result::{JobError, JobMeta, JobResult},
         service::WorkerQueue,
@@ -54,7 +57,7 @@ pub async fn handle<R, W, C>(
     _job_meta: JobMeta,
 ) -> JobResult<()>
 where
-    R: IndexingRequestRegistry + AgreementRegistry,
+    R: IndexingRequestRegistry + AgreementRegistry + PendingCancellationRegistry,
     W: WorkerQueue,
     C: IndexerClient,
 {
@@ -210,7 +213,7 @@ async fn mark_rejected_and_reassess<R, W, C>(
     rejection_reason: Option<&str>,
 ) -> JobResult<()>
 where
-    R: IndexingRequestRegistry + AgreementRegistry,
+    R: IndexingRequestRegistry + AgreementRegistry + PendingCancellationRegistry,
     W: WorkerQueue,
     C: IndexerClient,
 {
@@ -222,6 +225,13 @@ where
     );
     ctx.registry
         .mark_indexing_agreement_as_rejected(agreement_id, rejection_reason)
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
+
+    // Clean up pending cancellations: the replacement failed, so the old
+    // agreement should stay active (not be cancelled).
+    ctx.registry
+        .delete_pending_cancellations_by_new_agreement(*agreement_id)
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
@@ -237,7 +247,7 @@ async fn mark_failed_and_reassess<R, W, C>(
     deployment_chain_id: &ChainId,
 ) -> JobResult<()>
 where
-    R: IndexingRequestRegistry + AgreementRegistry,
+    R: IndexingRequestRegistry + AgreementRegistry + PendingCancellationRegistry,
     W: WorkerQueue,
     C: IndexerClient,
 {
@@ -248,6 +258,12 @@ where
     );
     ctx.registry
         .mark_indexing_agreement_as_delivery_failed(agreement_id)
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
+
+    // Clean up pending cancellations: delivery failed, old agreement stays active.
+    ctx.registry
+        .delete_pending_cancellations_by_new_agreement(*agreement_id)
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
@@ -262,7 +278,7 @@ async fn queue_reassessment<R, W, C>(
     deployment_chain_id: &ChainId,
 ) -> JobResult<()>
 where
-    R: IndexingRequestRegistry + AgreementRegistry,
+    R: IndexingRequestRegistry + AgreementRegistry + PendingCancellationRegistry,
     W: WorkerQueue,
     C: IndexerClient,
 {
@@ -324,6 +340,7 @@ mod tests {
         request: Option<IndexingRequest>,
         marked_rejected: Vec<(IndexingAgreementId, Option<String>)>,
         marked_failed: Vec<IndexingAgreementId>,
+        pending_cancellations_deleted: bool,
     }
 
     struct MockRegistry {
@@ -398,6 +415,18 @@ mod tests {
             _indexer_id: IndexerId,
             _indexer_url: Url,
             _voucher: IndexingAgreementVoucher,
+        ) -> crate::registry::Result<IndexingAgreementId> {
+            Ok(IndexingAgreementId::new())
+        }
+
+        async fn register_agreement_with_pending_cancellation(
+            &self,
+            _request_id: IndexingRequestId,
+            _deployment_id: DeploymentId,
+            _indexer_id: IndexerId,
+            _indexer_url: Url,
+            _voucher: IndexingAgreementVoucher,
+            _old_agreement_id: IndexingAgreementId,
         ) -> crate::registry::Result<IndexingAgreementId> {
             Ok(IndexingAgreementId::new())
         }
@@ -537,6 +566,30 @@ mod tests {
             _batch_size: i64,
         ) -> crate::registry::Result<Vec<IndexingRequest>> {
             Ok(vec![])
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PendingCancellationRegistry for MockRegistry {
+        async fn get_pending_cancellations_by_new_agreement(
+            &self,
+            _new_agreement_id: IndexingAgreementId,
+        ) -> crate::registry::Result<Vec<crate::registry::PendingCancellation>> {
+            Ok(vec![])
+        }
+        async fn delete_pending_cancellations_by_new_agreement(
+            &self,
+            _new_agreement_id: IndexingAgreementId,
+        ) -> crate::registry::Result<()> {
+            self.state.lock().unwrap().pending_cancellations_deleted = true;
+            Ok(())
+        }
+        async fn delete_pending_cancellation(
+            &self,
+            _new_agreement_id: IndexingAgreementId,
+            _old_agreement_id: IndexingAgreementId,
+        ) -> crate::registry::Result<()> {
+            Ok(())
         }
     }
 
