@@ -285,7 +285,7 @@ fn into_sol_rca(
     // Build the acceptance metadata (ABI-encoded into the RCA metadata field)
     let metadata = sol::AcceptIndexingAgreementMetadata {
         subgraphDeploymentId: B256::from(voucher.metadata.subgraph_deployment_id),
-        version: 1, // must match indexer-rs expected metadata version
+        version: 0, // IndexingAgreementVersion.V1 = 0 (first enum variant in Solidity)
         terms: terms.into(),
     }
     .abi_encode();
@@ -406,7 +406,7 @@ mod tests {
             "subgraphDeploymentId in metadata mismatch"
         );
         assert_eq!(
-            decoded_metadata.version, 1,
+            decoded_metadata.version, 0,
             "version should be 1 (IndexingAgreementVersion::V1)"
         );
 
