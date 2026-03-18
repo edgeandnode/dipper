@@ -96,6 +96,22 @@ pub trait AgreementRegistry {
         voucher: Voucher,
     ) -> RegistryResult<IndexingAgreementId>;
 
+    /// Register a new agreement and record a pending cancellation atomically.
+    ///
+    /// Used when the new agreement is replacing an old one. Both the agreement
+    /// row and the pending cancellation record are created in a single
+    /// transaction, so a crash cannot leave an agreement without its
+    /// corresponding pending cancellation.
+    async fn register_agreement_with_pending_cancellation(
+        &self,
+        request_id: IndexingRequestId,
+        deployment_id: DeploymentId,
+        indexer_id: IndexerId,
+        indexer_url: Url,
+        voucher: Voucher,
+        old_agreement_id: IndexingAgreementId,
+    ) -> RegistryResult<IndexingAgreementId>;
+
     /// Mark an indexing agreement as `DELIVERY_FAILED`.
     ///
     /// If there is no indexing agreement with the given ID, or if the agreement is not in the

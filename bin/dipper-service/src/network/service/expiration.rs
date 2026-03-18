@@ -11,7 +11,7 @@ use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::{
     config::ExpirationConfig,
-    registry::{AgreementRegistry, IndexingRequestRegistry},
+    registry::{AgreementRegistry, IndexingRequestRegistry, PendingCancellationRegistry},
     worker::service::WorkerQueue,
 };
 
@@ -50,7 +50,7 @@ pub struct Ctx<R, W> {
 /// their deadline, marks them as `Expired`, and queues reassessment jobs.
 pub fn new<R, W>(ctx: Ctx<R, W>) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
-    R: AgreementRegistry + IndexingRequestRegistry + Send + Sync,
+    R: AgreementRegistry + IndexingRequestRegistry + PendingCancellationRegistry + Send + Sync,
     W: WorkerQueue + Send + Sync,
 {
     let (tx_stop, mut rx_stop) = mpsc::channel(1);
@@ -139,6 +139,18 @@ where
                             indexing_request_id = %agreement.indexing_request_id,
                             "marked agreement as expired"
                         );
+                        // Clean up pending cancellations: the replacement expired
+                        // before on-chain acceptance, so old agreements stay active.
+                        if let Err(err) = registry
+                            .delete_pending_cancellations_by_new_agreement(agreement.id)
+                            .await
+                        {
+                            tracing::warn!(
+                                agreement_id = %agreement.id,
+                                error = %err,
+                                "failed to clean up pending cancellations for expired agreement"
+                            );
+                        }
                     }
                     Ok(Err(err)) => {
                         tracing::warn!(

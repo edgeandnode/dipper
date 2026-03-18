@@ -1,6 +1,7 @@
 mod agreement;
 mod indexer_denylist;
 mod indexing_request;
+mod pending_cancellation;
 mod result;
 
 use async_trait::async_trait;
@@ -24,6 +25,7 @@ pub use self::{
     },
     indexer_denylist::IndexerDenylistRegistry,
     indexing_request::{IndexingRequest, IndexingRequestRegistry, Status as IndexingRequestStatus},
+    pending_cancellation::{PendingCancellation, PendingCancellationRegistry},
     result::{Error, Result},
 };
 
@@ -258,6 +260,28 @@ impl AgreementRegistry for RegistryProvider {
             .map_err(Into::into)
     }
 
+    async fn register_agreement_with_pending_cancellation(
+        &self,
+        request_id: IndexingRequestId,
+        deployment_id: DeploymentId,
+        indexer_id: IndexerId,
+        indexer_url: Url,
+        voucher: IndexingAgreementVoucher,
+        old_agreement_id: IndexingAgreementId,
+    ) -> RegistryResult<IndexingAgreementId> {
+        self.inner
+            .register_agreement_with_pending_cancellation(
+                request_id,
+                deployment_id,
+                indexer_id,
+                indexer_url,
+                voucher.into(),
+                old_agreement_id,
+            )
+            .await
+            .map_err(Into::into)
+    }
+
     async fn mark_indexing_agreement_as_delivery_failed(
         &self,
         id: &IndexingAgreementId,
@@ -393,6 +417,49 @@ impl AgreementRegistry for RegistryProvider {
 impl IndexerDenylistRegistry for RegistryProvider {
     async fn get_indexer_denylist(&self) -> RegistryResult<Vec<IndexerId>> {
         self.inner.get_indexer_denylist().await.map_err(Into::into)
+    }
+}
+
+#[async_trait]
+impl PendingCancellationRegistry for RegistryProvider {
+    async fn get_pending_cancellations_by_new_agreement(
+        &self,
+        new_agreement_id: IndexingAgreementId,
+    ) -> RegistryResult<Vec<PendingCancellation>> {
+        let rows = self
+            .inner
+            .get_pending_cancellations_by_new_agreement(new_agreement_id)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(old_agreement_id, indexing_request_id)| PendingCancellation {
+                    old_agreement_id,
+                    indexing_request_id,
+                },
+            )
+            .collect())
+    }
+
+    async fn delete_pending_cancellations_by_new_agreement(
+        &self,
+        new_agreement_id: IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        self.inner
+            .delete_pending_cancellations_by_new_agreement(new_agreement_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn delete_pending_cancellation(
+        &self,
+        new_agreement_id: IndexingAgreementId,
+        old_agreement_id: IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        self.inner
+            .delete_pending_cancellation(new_agreement_id, old_agreement_id)
+            .await
+            .map_err(Into::into)
     }
 }
 

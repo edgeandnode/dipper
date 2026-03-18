@@ -1093,4 +1093,127 @@ impl PgRegistry {
 
         Ok(())
     }
+
+    // -- Pending cancellations --
+
+    /// Register a new agreement and record a pending cancellation in a single
+    /// transaction. Guarantees that if the agreement row exists, the pending
+    /// cancellation linking it to the old agreement also exists.
+    pub async fn register_agreement_with_pending_cancellation(
+        &self,
+        request_id: IndexingRequestId,
+        deployment_id: DeploymentId,
+        indexer_id: IndexerId,
+        indexer_url: Url,
+        voucher: Voucher,
+        old_agreement_id: IndexingAgreementId,
+    ) -> Result<IndexingAgreementId, Error> {
+        let mut tx = self.pool.begin().await?;
+
+        let (new_id,): (IndexingAgreementId,) = sqlx::query_as(
+            r#"
+            INSERT INTO dipper_reg_indexing_agreements (
+                id,
+                created_at,
+                updated_at,
+                status,
+                indexing_request_id,
+                deployment_id,
+                indexer_id,
+                indexer_url,
+                voucher
+            )
+            VALUES (
+                $1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, $5,
+                $6, $7
+            )
+            RETURNING id
+            "#,
+        )
+        .bind(IndexingAgreementId::new())
+        .bind(IndexingAgreementStatus::default())
+        .bind(request_id)
+        .bind(PgDeploymentId(deployment_id))
+        .bind(PgIndexerId(indexer_id))
+        .bind(PgUrl(indexer_url))
+        .bind(Json(voucher))
+        .fetch_one(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO dipper_pending_cancellations
+                (new_agreement_id, old_agreement_id, indexing_request_id)
+            VALUES ($1, $2, $3)
+            ON CONFLICT DO NOTHING
+            "#,
+        )
+        .bind(new_id)
+        .bind(old_agreement_id)
+        .bind(request_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(new_id)
+    }
+
+    /// Get all pending cancellations linked to a new agreement.
+    pub async fn get_pending_cancellations_by_new_agreement(
+        &self,
+        new_agreement_id: IndexingAgreementId,
+    ) -> Result<Vec<(IndexingAgreementId, IndexingRequestId)>, Error> {
+        let rows: Vec<(IndexingAgreementId, IndexingRequestId)> = sqlx::query_as(
+            r#"
+            SELECT old_agreement_id, indexing_request_id
+            FROM dipper_pending_cancellations
+            WHERE new_agreement_id = $1
+            "#,
+        )
+        .bind(new_agreement_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    /// Delete all pending cancellation records for a new agreement.
+    /// Called when the new agreement fails (old agreements stay active).
+    pub async fn delete_pending_cancellations_by_new_agreement(
+        &self,
+        new_agreement_id: IndexingAgreementId,
+    ) -> Result<(), Error> {
+        sqlx::query(
+            r#"
+            DELETE FROM dipper_pending_cancellations
+            WHERE new_agreement_id = $1
+            "#,
+        )
+        .bind(new_agreement_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Delete a single pending cancellation record after it has been processed.
+    pub async fn delete_pending_cancellation(
+        &self,
+        new_agreement_id: IndexingAgreementId,
+        old_agreement_id: IndexingAgreementId,
+    ) -> Result<(), Error> {
+        sqlx::query(
+            r#"
+            DELETE FROM dipper_pending_cancellations
+            WHERE new_agreement_id = $1 AND old_agreement_id = $2
+            "#,
+        )
+        .bind(new_agreement_id)
+        .bind(old_agreement_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
 }

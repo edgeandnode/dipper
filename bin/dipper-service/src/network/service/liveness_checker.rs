@@ -46,7 +46,9 @@ use crate::{
     chain_client::{ChainClient, ChainClientError},
     config::LivenessCheckerConfig,
     network::api::NetworkProvider,
-    registry::{AgreementRegistry, IndexingAgreement, IndexingRequestRegistry},
+    registry::{
+        AgreementRegistry, IndexingAgreement, IndexingRequestRegistry, PendingCancellationRegistry,
+    },
     worker::service::WorkerQueue,
 };
 
@@ -88,7 +90,7 @@ pub struct Ctx<R, W, C, N> {
 /// agreements where no indexing progress is observed within the tolerance window.
 pub fn new<R, W, C, N>(ctx: Ctx<R, W, C, N>) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
-    R: AgreementRegistry + IndexingRequestRegistry + Send + Sync,
+    R: AgreementRegistry + IndexingRequestRegistry + PendingCancellationRegistry + Send + Sync,
     W: WorkerQueue + Send + Sync,
     C: ChainClient + Send + Sync,
     N: NetworkProvider + Send + Sync,
@@ -358,7 +360,7 @@ async fn process_agreements_with_no_data<R, W, C>(
     db_timeout: Duration,
     queue_timeout: Duration,
 ) where
-    R: AgreementRegistry + IndexingRequestRegistry + Send + Sync,
+    R: AgreementRegistry + IndexingRequestRegistry + PendingCancellationRegistry + Send + Sync,
     W: WorkerQueue + Send + Sync,
     C: ChainClient + Send + Sync,
 {
@@ -479,7 +481,7 @@ async fn cancel_and_reassess<R, W, C>(
     db_timeout: Duration,
     queue_timeout: Duration,
 ) where
-    R: AgreementRegistry + IndexingRequestRegistry + Send + Sync,
+    R: AgreementRegistry + IndexingRequestRegistry + PendingCancellationRegistry + Send + Sync,
     W: WorkerQueue + Send + Sync,
     C: ChainClient + Send + Sync,
 {
@@ -537,6 +539,19 @@ async fn cancel_and_reassess<R, W, C>(
             return;
         }
     };
+
+    // Clean up pending cancellations: if this abandoned agreement was a
+    // replacement, the old agreement it was replacing should stay active.
+    if let Err(err) = registry
+        .delete_pending_cancellations_by_new_agreement(agreement.id)
+        .await
+    {
+        tracing::warn!(
+            agreement_id = %agreement.id,
+            error = %err,
+            "failed to clean up pending cancellations for abandoned agreement"
+        );
+    }
 
     // 3. Fetch the indexing request for num_candidates
     let request = match tokio::time::timeout(
@@ -765,7 +780,7 @@ mod tests {
         registry::{
             AgreementRegistry, IndexingAgreement, IndexingAgreementStatus,
             IndexingAgreementVoucher, IndexingAgreementVoucherMetadata, IndexingRequest,
-            IndexingRequestRegistry, Result as RegistryResult,
+            IndexingRequestRegistry, PendingCancellationRegistry, Result as RegistryResult,
         },
         worker::service::WorkerQueue,
     };
@@ -923,6 +938,17 @@ mod tests {
         ) -> RegistryResult<IndexingAgreementId> {
             unimplemented!()
         }
+        async fn register_agreement_with_pending_cancellation(
+            &self,
+            _req_id: IndexingRequestId,
+            _dep_id: DeploymentId,
+            _idx_id: IndexerId,
+            _url: Url,
+            _voucher: crate::registry::IndexingAgreementVoucher,
+            _old_agreement_id: IndexingAgreementId,
+        ) -> RegistryResult<IndexingAgreementId> {
+            unimplemented!()
+        }
         async fn mark_indexing_agreement_as_delivery_failed(
             &self,
             _id: &IndexingAgreementId,
@@ -1051,6 +1077,29 @@ mod tests {
             _batch: i64,
         ) -> RegistryResult<Vec<IndexingRequest>> {
             unimplemented!()
+        }
+    }
+
+    #[async_trait]
+    impl PendingCancellationRegistry for MockRegistry {
+        async fn get_pending_cancellations_by_new_agreement(
+            &self,
+            _new_agreement_id: IndexingAgreementId,
+        ) -> RegistryResult<Vec<crate::registry::PendingCancellation>> {
+            Ok(vec![])
+        }
+        async fn delete_pending_cancellations_by_new_agreement(
+            &self,
+            _new_agreement_id: IndexingAgreementId,
+        ) -> RegistryResult<()> {
+            Ok(())
+        }
+        async fn delete_pending_cancellation(
+            &self,
+            _new_agreement_id: IndexingAgreementId,
+            _old_agreement_id: IndexingAgreementId,
+        ) -> RegistryResult<()> {
+            Ok(())
         }
     }
 
