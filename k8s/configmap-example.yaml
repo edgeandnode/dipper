@@ -66,10 +66,25 @@ data:
         "connect_timeout": 10,
         "max_retries": 3
       },
+      "reassignment": {
+        "enabled": true,
+        "interval": 86400,
+        "run_at_utc_hour": 10,
+        "batch_size": 100,
+        "min_request_age": 86400
+      },
       "expiration": {
         "enabled": true,
         "interval": 90,
         "batch_size": 100
+      },
+      "chain_listener": {
+        "enabled": true,
+        "subgraph_endpoint": "REPLACE_ME",
+        "chain_id": 42161,
+        "poll_interval": 30,
+        "request_timeout": 30,
+        "max_retries": 3
       },
       "liveness_checker": {
         "enabled": false,
