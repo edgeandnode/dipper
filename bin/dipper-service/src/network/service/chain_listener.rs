@@ -436,6 +436,12 @@ where
             }
         }
 
+        // DB cancellation succeeded — remove the pending record before
+        // attempting the best-effort notification to the indexer.
+        registry
+            .delete_pending_cancellation(event.agreement_id, cancellation.old_agreement_id)
+            .await?;
+
         if let Err(err) = worker_queue
             .send_indexing_agreement_cancellation(
                 old_agreement.indexer.url,
@@ -456,11 +462,6 @@ where
                 "Cancelled old agreement after replacement confirmed on-chain"
             );
         }
-
-        // Cancellation succeeded — remove the record
-        registry
-            .delete_pending_cancellation(event.agreement_id, cancellation.old_agreement_id)
-            .await?;
     }
 
     if transient_failures > 0 {
@@ -671,11 +672,7 @@ mod tests {
             indexing_request_id: IndexingRequestId,
         ) {
             let pc = crate::registry::PendingCancellation {
-                new_agreement_id,
                 old_agreement_id,
-                deployment_id: "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
-                    .parse()
-                    .unwrap(),
                 indexing_request_id,
             };
             self.state

@@ -12,17 +12,13 @@
 CREATE TABLE IF NOT EXISTS dipper_pending_cancellations (
     new_agreement_id UUID NOT NULL REFERENCES dipper_reg_indexing_agreements(id),
     old_agreement_id UUID NOT NULL REFERENCES dipper_reg_indexing_agreements(id),
-    deployment_id TEXT NOT NULL,
     indexing_request_id UUID NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (new_agreement_id, old_agreement_id)
 );
 
--- Index for chain_listener lookups: find pending cancellations by new agreement
-CREATE INDEX idx_pending_cancellations_new_agreement
-    ON dipper_pending_cancellations(new_agreement_id);
-
--- Index for reverse lookups: find pending cancellations targeting an old agreement
--- (used to detect duplicates across reassessment cycles and for cleanup)
+-- Reverse lookups: find pending cancellations targeting an old agreement
+-- (used to detect duplicates across reassessment cycles and for cleanup).
+-- The PK already covers lookups by new_agreement_id (leading column).
 CREATE INDEX idx_pending_cancellations_old_agreement
     ON dipper_pending_cancellations(old_agreement_id);

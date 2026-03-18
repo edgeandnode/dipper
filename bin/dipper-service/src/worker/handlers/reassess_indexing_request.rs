@@ -163,7 +163,6 @@ where
         .iter()
         .filter(|a| to_cancel.contains(&a.indexer.id))
         .collect();
-    let old_to_cancel_len = old_to_cancel.len();
     let mut old_iter = old_to_cancel.into_iter();
 
     let mut successful_new_ids: Vec<dipper_core::ids::IndexingAgreementId> = vec![];
@@ -302,6 +301,43 @@ where
         }
     }
 
+    // Cancel old agreements that have no replacement to pair with.
+    // These indexers are leaving the target group with nothing taking
+    // their place, so there is no on-chain acceptance to wait for.
+    let mut directly_cancelled = 0u32;
+    for old_agreement in old_iter {
+        if let Err(err) = ctx
+            .registry
+            .mark_indexing_agreement_as_canceled_by_requester(&old_agreement.id)
+            .await
+        {
+            tracing::error!(
+                error=%err,
+                agreement_id=%old_agreement.id,
+                "Failed to cancel unpaired old agreement"
+            );
+            continue;
+        }
+
+        if let Err(err) = ctx
+            .queue
+            .send_indexing_agreement_cancellation(
+                old_agreement.indexer.url.clone(),
+                *indexing_request_id,
+                old_agreement.id,
+            )
+            .await
+        {
+            tracing::error!(
+                error=%err,
+                agreement_id=%old_agreement.id,
+                "Failed to queue cancellation notification for unpaired old agreement"
+            );
+        }
+
+        directly_cancelled += 1;
+    }
+
     if add_failures > 0 {
         tracing::warn!(
             indexing_request_id=%indexing_request_id,
@@ -315,7 +351,7 @@ where
         deployment_id=%deployment_id,
         added = successful_new_ids.len(),
         pending_cancellations = pending_recorded,
-        unlinked_old = old_to_cancel_len.saturating_sub(successful_new_ids.len()),
+        directly_cancelled = directly_cancelled,
         "reassessment complete"
     );
 

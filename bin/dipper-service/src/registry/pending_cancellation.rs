@@ -6,7 +6,6 @@
 
 use async_trait::async_trait;
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
-use thegraph_core::DeploymentId;
 
 use super::result::Result as RegistryResult;
 
@@ -14,9 +13,7 @@ use super::result::Result as RegistryResult;
 /// to the old agreement it should replace once accepted on-chain.
 #[derive(Debug, Clone)]
 pub struct PendingCancellation {
-    pub new_agreement_id: IndexingAgreementId,
     pub old_agreement_id: IndexingAgreementId,
-    pub deployment_id: DeploymentId,
     pub indexing_request_id: IndexingRequestId,
 }
 

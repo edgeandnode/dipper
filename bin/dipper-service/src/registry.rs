@@ -430,21 +430,15 @@ impl PendingCancellationRegistry for RegistryProvider {
             .inner
             .get_pending_cancellations_by_new_agreement(new_agreement_id)
             .await?;
-        rows.into_iter()
+        Ok(rows
+            .into_iter()
             .map(
-                |(old_agreement_id, indexing_request_id, deployment_id_str)| {
-                    let deployment_id = deployment_id_str
-                        .parse::<DeploymentId>()
-                        .expect("invalid deployment_id in pending_cancellations table");
-                    Ok(PendingCancellation {
-                        new_agreement_id,
-                        old_agreement_id,
-                        deployment_id,
-                        indexing_request_id,
-                    })
+                |(old_agreement_id, indexing_request_id)| PendingCancellation {
+                    old_agreement_id,
+                    indexing_request_id,
                 },
             )
-            .collect()
+            .collect())
     }
 
     async fn delete_pending_cancellations_by_new_agreement(
