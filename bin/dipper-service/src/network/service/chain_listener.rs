@@ -114,18 +114,55 @@ where
             }
         };
 
-        let mut timer = tokio::time::interval(config.poll_interval);
+        // Adaptive polling: fast (5s) when Created agreements exist, slow (5min) when idle.
+        let fast_interval = config.poll_interval;
+        let slow_interval = Duration::from_secs(300);
+        let mut timer = tokio::time::interval(fast_interval);
         timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut using_fast_interval = true;
 
         // Track consecutive failures for adaptive backoff
         let mut consecutive_failures: u32 = 0;
         const MAX_CONSECUTIVE_FAILURES: u32 = 10;
         const FAILURE_BACKOFF_BASE: Duration = Duration::from_secs(5);
 
+        // Observability: heartbeat and stall detection
+        let mut polls_since_last_event: u64 = 0;
+        let mut last_subgraph_head: u64 = 0;
+        let mut stall_count: u32 = 0;
+        const STALL_WARN_THRESHOLD: u32 = 5;
+        const STALL_ERROR_THRESHOLD: u32 = 15;
+        const HEARTBEAT_POLLS: u64 = 60; // ~5min at fast rate, every poll at slow rate
+
         loop {
             tokio::select! {
                 _ = rx_stop.recv() => break,
                 _ = timer.tick() => {},
+            }
+
+            // Adaptive interval: check if there are Created agreements awaiting acceptance
+            let has_pending = registry
+                .count_active_agreements_by_deployment()
+                .await
+                .map(|m| !m.is_empty())
+                .unwrap_or(false);
+
+            let want_fast = has_pending;
+            if want_fast != using_fast_interval {
+                let new_interval = if want_fast {
+                    fast_interval
+                } else {
+                    slow_interval
+                };
+                timer = tokio::time::interval(new_interval);
+                timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                timer.tick().await; // consume the immediate first tick
+                using_fast_interval = want_fast;
+                tracing::info!(
+                    interval_secs = new_interval.as_secs(),
+                    has_pending_agreements = has_pending,
+                    "Chain listener polling interval changed"
+                );
             }
 
             // Apply adaptive backoff on consecutive failures
@@ -187,12 +224,44 @@ where
                 .min(canceled_result.latest_block);
             let total_events = accepted_result.events.len() + canceled_result.events.len();
 
-            if new_block <= last_block && total_events == 0 {
-                tracing::debug!(
-                    latest_block = new_block,
-                    last_block,
-                    "No new blocks or events"
+            // Stall detection: subgraph head not advancing
+            if new_block == last_subgraph_head && new_block > 0 {
+                stall_count += 1;
+                if stall_count == STALL_ERROR_THRESHOLD {
+                    tracing::error!(
+                        subgraph_head = new_block,
+                        stall_polls = stall_count,
+                        "Subgraph appears stalled — on-chain events may be delayed"
+                    );
+                } else if stall_count == STALL_WARN_THRESHOLD {
+                    tracing::warn!(
+                        subgraph_head = new_block,
+                        stall_polls = stall_count,
+                        "Subgraph has not advanced, may be paused or behind"
+                    );
+                }
+            } else if stall_count > 0 && new_block > last_subgraph_head {
+                tracing::info!(
+                    previous_head = last_subgraph_head,
+                    new_head = new_block,
+                    stall_polls = stall_count,
+                    "Subgraph recovered from stall"
                 );
+                stall_count = 0;
+            }
+            last_subgraph_head = new_block;
+
+            if new_block <= last_block && total_events == 0 {
+                polls_since_last_event += 1;
+                if polls_since_last_event.is_multiple_of(HEARTBEAT_POLLS) || !using_fast_interval {
+                    tracing::info!(
+                        last_processed_block = last_block,
+                        subgraph_head = new_block,
+                        polls_idle = polls_since_last_event,
+                        fast_mode = using_fast_interval,
+                        "chain listener heartbeat"
+                    );
+                }
                 continue;
             }
 
@@ -259,6 +328,7 @@ where
                     errors,
                     "Processed chain events"
                 );
+                polls_since_last_event = 0;
             }
 
             // Update last processed block
