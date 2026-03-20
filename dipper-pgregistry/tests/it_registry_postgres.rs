@@ -931,7 +931,7 @@ async fn get_expired_created_agreements_returns_past_deadline() {
 
     //* When
     let result = registry
-        .get_expired_created_agreements(100)
+        .get_expired_created_agreements(100, 1800000000)
         .await
         .expect("Failed to get expired agreements");
 
@@ -985,7 +985,7 @@ async fn get_expired_created_agreements_excludes_future_deadline() {
 
     //* When
     let result = registry
-        .get_expired_created_agreements(100)
+        .get_expired_created_agreements(100, 1800000000)
         .await
         .expect("Failed to get expired agreements");
 
@@ -1018,7 +1018,7 @@ async fn get_expired_created_agreements_respects_batch_size() {
 
     //* When
     let result = registry
-        .get_expired_created_agreements(1) // Only request 1
+        .get_expired_created_agreements(1, 1800000000) // Only request 1
         .await
         .expect("Failed to get expired agreements");
 
@@ -1044,7 +1044,7 @@ async fn get_expired_created_agreements_excludes_non_created_status() {
 
     //* When
     let result = registry
-        .get_expired_created_agreements(100)
+        .get_expired_created_agreements(100, 1800000000)
         .await
         .expect("Failed to get expired agreements");
 
@@ -1164,7 +1164,7 @@ async fn update_chain_listener_state_creates_new_record() {
 
     //* When
     registry
-        .update_chain_listener_state(42161, 12345678)
+        .update_chain_listener_state(42161, 12345678, Some(1700000000))
         .await
         .expect("Should create state");
 
@@ -1174,8 +1174,16 @@ async fn update_chain_listener_state_creates_new_record() {
         .await
         .expect("Should not error")
         .expect("State should exist");
-    assert_eq!(state.0, 42161, "Chain ID should match");
-    assert_eq!(state.1, 12345678, "Block number should match");
+    assert_eq!(state.chain_id, 42161, "Chain ID should match");
+    assert_eq!(
+        state.last_processed_block, 12345678,
+        "Block number should match"
+    );
+    assert_eq!(
+        state.last_processed_block_timestamp,
+        Some(1700000000),
+        "Timestamp should match"
+    );
 }
 
 #[tokio::test]
@@ -1186,13 +1194,13 @@ async fn update_chain_listener_state_upserts_existing() {
 
     // Create initial state
     registry
-        .update_chain_listener_state(42161, 1000)
+        .update_chain_listener_state(42161, 1000, Some(1700000000))
         .await
         .expect("Should create state");
 
     //* When
     registry
-        .update_chain_listener_state(42161, 2000)
+        .update_chain_listener_state(42161, 2000, Some(1700001000))
         .await
         .expect("Should update state");
 
@@ -1202,7 +1210,15 @@ async fn update_chain_listener_state_upserts_existing() {
         .await
         .expect("Should not error")
         .expect("State should exist");
-    assert_eq!(state.1, 2000, "Block number should be updated");
+    assert_eq!(
+        state.last_processed_block, 2000,
+        "Block number should be updated"
+    );
+    assert_eq!(
+        state.last_processed_block_timestamp,
+        Some(1700001000),
+        "Timestamp should be updated"
+    );
 }
 
 // =============================================================================

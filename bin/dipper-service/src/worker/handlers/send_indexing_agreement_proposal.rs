@@ -463,6 +463,7 @@ mod tests {
         async fn get_expired_created_agreements(
             &self,
             _batch_size: i64,
+            _chain_timestamp: u64,
         ) -> crate::registry::Result<Vec<IndexingAgreement>> {
             Ok(vec![])
         }

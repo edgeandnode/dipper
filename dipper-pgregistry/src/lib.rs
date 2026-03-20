@@ -18,7 +18,7 @@ pub use indexing_agreement::{
 };
 pub use indexing_receipt::{IndexingReceipt, ReportedWork as IndexingReceiptReportedWork};
 pub use indexing_request::{IndexingRequest, Status as IndexingRequestStatus};
-pub use postgres::PgRegistry;
+pub use postgres::{ChainListenerStateRow, PgRegistry};
 pub use result::{Error, Result};
 
 /// Run the DB migrations.

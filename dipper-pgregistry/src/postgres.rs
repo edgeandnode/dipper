@@ -27,6 +27,14 @@ mod indexing_agreement;
 mod indexing_receipt;
 mod indexing_request;
 
+/// Chain listener state row from the database.
+#[derive(Debug, Clone)]
+pub struct ChainListenerStateRow {
+    pub chain_id: u64,
+    pub last_processed_block: u64,
+    pub last_processed_block_timestamp: Option<u64>,
+}
+
 /// A registry that stores indexing requests, agreements, and receipts in a PostgreSQL database.
 #[derive(Clone)]
 pub struct PgRegistry {
@@ -569,19 +577,22 @@ impl PgRegistry {
         &self,
         agreement_id: &IndexingAgreementId,
     ) -> Result<(), Error> {
+        // Allows Created -> AcceptedOnChain (normal) and Expired -> AcceptedOnChain
+        // (recovery -- the contract enforces the deadline, so the acceptance is valid).
         let record: Option<(IndexingAgreementId,)> = sqlx::query_as(
             r#"
             UPDATE dipper_reg_indexing_agreements
             SET
                 status = $1,
                 updated_at = timezone('UTC', now())
-            WHERE id = $2 AND status = $3
+            WHERE id = $2 AND status IN ($3, $4)
             RETURNING id
             "#,
         )
         .bind(IndexingAgreementStatus::AcceptedOnChain)
         .bind(agreement_id)
         .bind(IndexingAgreementStatus::Created)
+        .bind(IndexingAgreementStatus::Expired)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -744,12 +755,11 @@ impl PgRegistry {
 
     /// Get `Created` agreements whose RCA deadline has passed.
     ///
-    /// The deadline is stored in the `voucher` JSONB column. Once the deadline passes,
-    /// the indexer can no longer accept on-chain, so we mark these as `Expired`.
-    /// Results are ordered by deadline ascending (oldest first).
+    /// Compares `voucher.deadline` against `chain_timestamp` (block time).
     pub async fn get_expired_created_agreements(
         &self,
         batch_size: i64,
+        chain_timestamp: u64,
     ) -> Result<Vec<IndexingAgreement>, Error> {
         sqlx::query_as(
             r#"
@@ -768,13 +778,14 @@ impl PgRegistry {
                 rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
-              AND CAST(voucher->>'deadline' AS bigint) < EXTRACT(epoch FROM timezone('UTC', now()))
+              AND CAST(voucher->>'deadline' AS bigint) < $3
             ORDER BY CAST(voucher->>'deadline' AS bigint) ASC
             LIMIT CASE WHEN $2 > 0 THEN $2 ELSE NULL END
             "#,
         )
         .bind(IndexingAgreementStatus::Created)
         .bind(batch_size)
+        .bind(chain_timestamp as i64)
         .fetch_all(&self.pool)
         .await
         .map_err(Into::into)
@@ -1048,15 +1059,14 @@ impl PgRegistry {
     // =========================================================================
 
     /// Get the chain listener state for a given chain ID.
-    ///
     /// Returns `None` if no state exists for the chain (first run).
     pub async fn get_chain_listener_state(
         &self,
         chain_id: u64,
-    ) -> Result<Option<(u64, u64)>, Error> {
-        let row: Option<(i64, i64)> = sqlx::query_as(
+    ) -> Result<Option<ChainListenerStateRow>, Error> {
+        let row: Option<(i64, i64, Option<i64>)> = sqlx::query_as(
             r#"
-            SELECT chain_id, last_processed_block
+            SELECT chain_id, last_processed_block, last_processed_block_timestamp
             FROM dipper_chain_listener_state
             WHERE chain_id = $1
             "#,
@@ -1065,7 +1075,11 @@ impl PgRegistry {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|(chain_id, block)| (chain_id as u64, block as u64)))
+        Ok(row.map(|(chain_id, block, ts)| ChainListenerStateRow {
+            chain_id: chain_id as u64,
+            last_processed_block: block as u64,
+            last_processed_block_timestamp: ts.map(|t| t as u64),
+        }))
     }
 
     /// Update the chain listener state for a given chain ID.
@@ -1075,19 +1089,23 @@ impl PgRegistry {
         &self,
         chain_id: u64,
         last_processed_block: u64,
+        last_processed_block_timestamp: Option<u64>,
     ) -> Result<(), Error> {
         sqlx::query(
             r#"
-            INSERT INTO dipper_chain_listener_state (chain_id, last_processed_block, updated_at)
-            VALUES ($1, $2, timezone('UTC', now()))
+            INSERT INTO dipper_chain_listener_state
+                (chain_id, last_processed_block, last_processed_block_timestamp, updated_at)
+            VALUES ($1, $2, $3, timezone('UTC', now()))
             ON CONFLICT (chain_id)
             DO UPDATE SET
                 last_processed_block = EXCLUDED.last_processed_block,
+                last_processed_block_timestamp = EXCLUDED.last_processed_block_timestamp,
                 updated_at = EXCLUDED.updated_at
             "#,
         )
         .bind(chain_id as i64)
         .bind(last_processed_block as i64)
+        .bind(last_processed_block_timestamp.map(|t| t as i64))
         .execute(&self.pool)
         .await?;
 

@@ -144,20 +144,19 @@ pub trait AgreementRegistry {
     /// Mark an indexing agreement as `ACCEPTED_ON_CHAIN`.
     ///
     /// The on-chain `IndexingAgreementAccepted` event was observed for this agreement.
-    /// If there is no indexing agreement with the given ID, or if the agreement is not in the
-    /// `CREATED` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
+    /// Transitions from `Created` (normal) or `Expired` (recovery -- the contract
+    /// enforces the deadline, so the acceptance is valid). Returns
+    /// [`NoRecordUpdated`](Error::NoRecordsUpdated) for any other status.
     async fn mark_indexing_agreement_as_accepted_on_chain(
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;
 
-    /// Get `Created` agreements whose RCA deadline has passed.
-    ///
-    /// These agreements are eligible for expiration since the indexer can no longer
-    /// accept on-chain. Results are ordered by deadline ascending (oldest first).
+    /// Get `Created` agreements whose deadline has passed (by block timestamp).
     async fn get_expired_created_agreements(
         &self,
         batch_size: i64,
+        chain_timestamp: u64,
     ) -> RegistryResult<Vec<IndexingAgreement>>;
 
     /// Mark an indexing agreement as `EXPIRED`.
