@@ -59,9 +59,12 @@ pub struct Ctx<R, W, E> {
 }
 
 /// State persisted in the database
+#[derive(Clone)]
 pub struct ChainListenerState {
     pub _chain_id: u64,
     pub last_processed_block: u64,
+    /// Block timestamp (epoch seconds). Used by the expiration service.
+    pub last_processed_block_timestamp: Option<u64>,
 }
 
 /// Create a new chain listener service
@@ -214,6 +217,7 @@ where
                     super::chain_events::CanceledEventsResult {
                         events: vec![],
                         latest_block: accepted_result.latest_block,
+                        latest_block_timestamp: accepted_result.latest_block_timestamp,
                     }
                 }
             };
@@ -222,6 +226,14 @@ where
             let new_block = accepted_result
                 .latest_block
                 .min(canceled_result.latest_block);
+            // Use the minimum timestamp (conservative: if one source is behind, use the older time)
+            let new_timestamp = match (
+                accepted_result.latest_block_timestamp,
+                canceled_result.latest_block_timestamp,
+            ) {
+                (Some(a), Some(c)) => Some(a.min(c)),
+                (t, None) | (None, t) => t,
+            };
             let total_events = accepted_result.events.len() + canceled_result.events.len();
 
             // Stall detection: subgraph head not advancing
@@ -331,10 +343,10 @@ where
                 polls_since_last_event = 0;
             }
 
-            // Update last processed block
+            // Update last processed block and timestamp
             if new_block > last_block {
                 if let Err(err) = registry
-                    .update_chain_listener_state(chain_id, new_block)
+                    .update_chain_listener_state(chain_id, new_block, new_timestamp)
                     .await
                 {
                     tracing::error!(error = %err, "Failed to update chain listener state");
@@ -405,6 +417,22 @@ where
                 agreement_id = %event.agreement_id,
                 "Re-processing AcceptedOnChain event (crash recovery)"
             );
+
+            execute_pending_cancellations(event, registry, worker_queue).await?;
+        }
+        IndexingAgreementStatus::Expired => {
+            // The expiration service marked this as expired, but the indexer
+            // did accept on-chain (the contract enforces the deadline). Should
+            // not happen with chain-time expiration; the WARN log will surface
+            // it if it does.
+            tracing::warn!(
+                agreement_id = %event.agreement_id,
+                indexer = %event.indexer,
+                "Recovering expired agreement with on-chain acceptance"
+            );
+            registry
+                .mark_indexing_agreement_as_accepted_on_chain(&event.agreement_id)
+                .await?;
 
             execute_pending_cancellations(event, registry, worker_queue).await?;
         }
@@ -640,6 +668,7 @@ pub trait ChainListenerStateRegistry {
         &self,
         chain_id: u64,
         last_processed_block: u64,
+        last_processed_block_timestamp: Option<u64>,
     ) -> Result<(), crate::registry::Error>;
 }
 
@@ -921,6 +950,7 @@ mod tests {
         async fn get_expired_created_agreements(
             &self,
             _batch_size: i64,
+            _chain_timestamp: u64,
         ) -> RegistryResult<Vec<IndexingAgreement>> {
             Ok(vec![])
         }
@@ -1182,6 +1212,41 @@ mod tests {
         assert!(result.is_ok());
         assert!(!registry.was_marked_accepted_on_chain(&agreement_id));
         assert!(!worker_queue.was_cancellation_queued(&agreement_id));
+    }
+
+    #[tokio::test]
+    async fn test_process_accepted_event_recovers_expired_agreement() {
+        let registry = MockRegistry::new();
+        let worker_queue = MockWorkerQueue::default();
+        let agreement_id = IndexingAgreementId::new();
+        let old_agreement_id = IndexingAgreementId::new();
+        let request_id = IndexingRequestId::new();
+
+        // Agreement was marked Expired by the expiration service before the
+        // chain_listener saw the on-chain acceptance. The contract guarantees
+        // the acceptance was within the RCA deadline, so we should recover.
+        registry.add_agreement(agreement_id, IndexingAgreementStatus::Expired);
+        registry.add_agreement(old_agreement_id, IndexingAgreementStatus::AcceptedOnChain);
+        registry.add_pending_cancellation(agreement_id, old_agreement_id, request_id);
+
+        let event = AcceptedAgreementEvent {
+            agreement_id,
+            indexer: "0x1234567890123456789012345678901234567890"
+                .parse()
+                .unwrap(),
+            allocation_id: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+                .parse()
+                .unwrap(),
+            block_number: 100,
+        };
+
+        let result = process_accepted_event(&event, &registry, &worker_queue).await;
+
+        assert!(result.is_ok());
+        assert!(registry.was_marked_accepted_on_chain(&agreement_id));
+        // Verify execute_pending_cancellations ran
+        assert!(registry.was_marked_canceled_by_requester(&old_agreement_id));
+        assert!(registry.was_pending_cancellation_deleted(&agreement_id, &old_agreement_id));
     }
 
     #[tokio::test]

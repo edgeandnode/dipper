@@ -92,6 +92,8 @@ pub struct AcceptedEventsResult {
     pub events: Vec<AcceptedAgreementEvent>,
     /// The latest block number processed (use this for next query)
     pub latest_block: u64,
+    /// The timestamp of the latest block (seconds since epoch), if available
+    pub latest_block_timestamp: Option<u64>,
 }
 
 /// Result of fetching canceled agreement events.
@@ -100,6 +102,8 @@ pub struct CanceledEventsResult {
     pub events: Vec<CanceledAgreementEvent>,
     /// The latest block number processed (use this for next query)
     pub latest_block: u64,
+    /// The timestamp of the latest block (seconds since epoch), if available
+    pub latest_block_timestamp: Option<u64>,
 }
 
 /// Trait for fetching on-chain indexing agreement events.
@@ -196,6 +200,7 @@ struct SubgraphMeta {
 #[derive(Debug, Deserialize)]
 struct SubgraphBlock {
     number: u64,
+    timestamp: Option<u64>,
 }
 
 /// GraphQL response for canceled agreements query.
@@ -371,6 +376,7 @@ impl ChainEventSource for SubgraphEventSource {
                 _meta {
                     block {
                         number
+                        timestamp
                     }
                 }
             }
@@ -404,6 +410,7 @@ impl ChainEventSource for SubgraphEventSource {
         Ok(AcceptedEventsResult {
             events,
             latest_block: response.meta.block.number,
+            latest_block_timestamp: response.meta.block.timestamp,
         })
     }
 
@@ -428,6 +435,7 @@ impl ChainEventSource for SubgraphEventSource {
                 _meta {
                     block {
                         number
+                        timestamp
                     }
                 }
             }
@@ -461,6 +469,7 @@ impl ChainEventSource for SubgraphEventSource {
         Ok(CanceledEventsResult {
             events,
             latest_block: response.meta.block.number,
+            latest_block_timestamp: response.meta.block.timestamp,
         })
     }
 }
@@ -512,6 +521,7 @@ pub mod mock {
         accepted_events: Arc<Mutex<Vec<AcceptedAgreementEvent>>>,
         canceled_events: Arc<Mutex<Vec<CanceledAgreementEvent>>>,
         latest_block: Arc<Mutex<u64>>,
+        latest_block_timestamp: Arc<Mutex<Option<u64>>>,
         accepted_error: Arc<Mutex<Option<ChainEventError>>>,
         canceled_error: Arc<Mutex<Option<ChainEventError>>>,
     }
@@ -522,6 +532,7 @@ pub mod mock {
                 accepted_events: Arc::new(Mutex::new(Vec::new())),
                 canceled_events: Arc::new(Mutex::new(Vec::new())),
                 latest_block: Arc::new(Mutex::new(0)),
+                latest_block_timestamp: Arc::new(Mutex::new(None)),
                 accepted_error: Arc::new(Mutex::new(None)),
                 canceled_error: Arc::new(Mutex::new(None)),
             }
@@ -540,6 +551,11 @@ pub mod mock {
         /// Set the latest block number.
         pub fn set_latest_block(&self, block: u64) {
             *self.latest_block.lock().unwrap() = block;
+        }
+
+        /// Set the latest block timestamp.
+        pub fn set_latest_block_timestamp(&self, timestamp: Option<u64>) {
+            *self.latest_block_timestamp.lock().unwrap() = timestamp;
         }
 
         /// Set an error to return on next accepted query.
@@ -580,10 +596,12 @@ pub mod mock {
                 .collect();
 
             let latest_block = *self.latest_block.lock().unwrap();
+            let latest_block_timestamp = *self.latest_block_timestamp.lock().unwrap();
 
             Ok(AcceptedEventsResult {
                 events,
                 latest_block,
+                latest_block_timestamp,
             })
         }
 
@@ -606,10 +624,12 @@ pub mod mock {
                 .collect();
 
             let latest_block = *self.latest_block.lock().unwrap();
+            let latest_block_timestamp = *self.latest_block_timestamp.lock().unwrap();
 
             Ok(CanceledEventsResult {
                 events,
                 latest_block,
+                latest_block_timestamp,
             })
         }
     }

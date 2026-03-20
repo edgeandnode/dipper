@@ -976,6 +976,7 @@ mod tests {
         async fn get_expired_created_agreements(
             &self,
             _limit: i64,
+            _chain_timestamp: u64,
         ) -> RegistryResult<Vec<IndexingAgreement>> {
             unimplemented!()
         }

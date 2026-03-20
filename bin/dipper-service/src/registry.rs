@@ -325,10 +325,11 @@ impl AgreementRegistry for RegistryProvider {
     async fn get_expired_created_agreements(
         &self,
         batch_size: i64,
+        chain_timestamp: u64,
     ) -> RegistryResult<Vec<IndexingAgreement>> {
         Ok(self
             .inner
-            .get_expired_created_agreements(batch_size)
+            .get_expired_created_agreements(batch_size, chain_timestamp)
             .await?
             .into_iter()
             .map(IndexingAgreement::try_from)
@@ -469,23 +470,31 @@ impl crate::network::service::chain_listener::ChainListenerStateRegistry for Reg
         &self,
         chain_id: u64,
     ) -> RegistryResult<Option<crate::network::service::chain_listener::ChainListenerState>> {
-        Ok(self.inner.get_chain_listener_state(chain_id).await?.map(
-            |(chain_id, last_processed_block)| {
-                crate::network::service::chain_listener::ChainListenerState {
-                    _chain_id: chain_id,
-                    last_processed_block,
-                }
-            },
-        ))
+        Ok(self
+            .inner
+            .get_chain_listener_state(chain_id)
+            .await?
+            .map(
+                |row| crate::network::service::chain_listener::ChainListenerState {
+                    _chain_id: row.chain_id,
+                    last_processed_block: row.last_processed_block,
+                    last_processed_block_timestamp: row.last_processed_block_timestamp,
+                },
+            ))
     }
 
     async fn update_chain_listener_state(
         &self,
         chain_id: u64,
         last_processed_block: u64,
+        last_processed_block_timestamp: Option<u64>,
     ) -> RegistryResult<()> {
         self.inner
-            .update_chain_listener_state(chain_id, last_processed_block)
+            .update_chain_listener_state(
+                chain_id,
+                last_processed_block,
+                last_processed_block_timestamp,
+            )
             .await
             .map_err(Into::into)
     }

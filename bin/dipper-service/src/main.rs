@@ -256,6 +256,7 @@ pub async fn main() -> anyhow::Result<()> {
                 registry: registry.clone(),
                 worker_queue: worker_handle.queue().clone(),
                 config: expiration_conf.clone(),
+                chain_id: conf.chain_listener.as_ref().map(|c| c.chain_id),
             };
             let (handle, service) = network::service::expiration::new(ctx);
             Some((handle, service))
