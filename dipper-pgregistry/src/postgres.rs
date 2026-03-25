@@ -1021,8 +1021,8 @@ impl PgRegistry {
     // Optimistic DIPs fees
     // =========================================================================
 
-    /// Returns (indexer_id, deployment_id, base_tps_wei, entity_tps_wei) per
-    /// active agreement for optimistic fee estimation.
+    /// Returns (indexer_id, deployment_id, base_rate_wei, entity_rate_wei)
+    /// per active agreement for optimistic fee estimation.
     ///
     /// Queries all `Created` or `AcceptedOnChain` agreements and extracts
     /// both rate fields from the voucher metadata.

@@ -107,8 +107,8 @@ where
 ///
 /// For each active agreement, computes the expected fee rate:
 /// - If entity counts are available from the subgraph:
-///   `fee_tps = base_tps + entity_tps * entities`
-/// - Otherwise: `fee_tps = base_tps` (base rate only)
+///   `fee_rate = base_rate + entity_rate * entities`
+/// - Otherwise: `fee_rate = base_rate` (base rate only)
 ///
 /// Sums per indexer and converts wei/second to GRT/30d.
 async fn compute_optimistic_dips_fees<R>(
@@ -152,7 +152,7 @@ where
 /// Sum fee rates per indexer and convert to GRT per 30 days.
 ///
 /// When entity counts are available for a deployment, includes the
-/// entity component: `fee_tps = base_tps + entity_tps * entities`.
+/// entity component: `fee_rate = base_rate + entity_rate * entities`.
 /// Otherwise uses base rate only.
 fn sum_fee_rates(
     rates: &[crate::registry::AgreementFeeRate],
@@ -160,15 +160,15 @@ fn sum_fee_rates(
 ) -> HashMap<IndexerId, f64> {
     let mut fees: HashMap<IndexerId, f64> = HashMap::new();
     for rate in rates {
-        let fee_tps = if let Some(&entities) = entity_counts.get(&rate.deployment_id) {
+        let fee_rate = if let Some(&entities) = entity_counts.get(&rate.deployment_id) {
             rate.tokens_per_second + rate.tokens_per_entity_per_second * entities as f64
         } else {
             rate.tokens_per_second
         };
-        *fees.entry(rate.indexer_id).or_default() += fee_tps;
+        *fees.entry(rate.indexer_id).or_default() += fee_rate;
     }
     fees.into_iter()
-        .map(|(id, tps_wei)| (id, wei_per_second_to_grt_per_30d(tps_wei)))
+        .map(|(id, wei_per_sec)| (id, wei_per_second_to_grt_per_30d(wei_per_sec)))
         .collect()
 }
 
@@ -275,7 +275,7 @@ mod tests {
 
         let fees = sum_fee_rates(&rates, &entity_counts);
 
-        // fee_tps = 1e18 + 1e15 * 1000 = 1e18 + 1e18 = 2e18
+        // fee_rate = 1e18 + 1e15 * 1000 = 1e18 + 1e18 = 2e18
         // 2 GRT/sec * 2,592,000 = 5,184,000 GRT/30d
         assert!((fees[&indexer_a] - 5_184_000.0).abs() < 1.0);
     }

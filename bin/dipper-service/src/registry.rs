@@ -411,11 +411,11 @@ impl AgreementRegistry for RegistryProvider {
             .map(|rows| {
                 rows.into_iter()
                     .map(
-                        |(indexer_id, deployment_id, tps, entity_tps)| AgreementFeeRate {
+                        |(indexer_id, deployment_id, base_rate, entity_rate)| AgreementFeeRate {
                             indexer_id,
                             deployment_id,
-                            tokens_per_second: tps,
-                            tokens_per_entity_per_second: entity_tps,
+                            tokens_per_second: base_rate,
+                            tokens_per_entity_per_second: entity_rate,
                         },
                     )
                     .collect()
