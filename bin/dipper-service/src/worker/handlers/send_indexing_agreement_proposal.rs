@@ -324,8 +324,8 @@ mod tests {
     use crate::{
         indexer_rpc_client::DipsError,
         registry::{
-            IndexingAgreement, IndexingAgreementVoucher, IndexingAgreementVoucherMetadata,
-            IndexingRequest, IndexingRequestStatus,
+            AgreementFeeRate, IndexingAgreement, IndexingAgreementVoucher,
+            IndexingAgreementVoucherMetadata, IndexingRequest, IndexingRequestStatus,
         },
         worker::queue::JobId,
     };
@@ -517,10 +517,8 @@ mod tests {
             Err(crate::registry::Error::NoRecordsUpdated)
         }
 
-        async fn get_optimistic_dips_fees_per_indexer(
-            &self,
-        ) -> crate::registry::Result<std::collections::HashMap<IndexerId, f64>> {
-            Ok(std::collections::HashMap::new())
+        async fn get_agreement_fee_rates(&self) -> crate::registry::Result<Vec<AgreementFeeRate>> {
+            Ok(vec![])
         }
     }
 

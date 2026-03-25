@@ -1026,9 +1026,11 @@ impl PgRegistry {
     /// Queries all `Created` or `AcceptedOnChain` agreements and sums the
     /// `voucher.metadata.tokens_per_second` field per indexer. Returns wei/second
     /// as f64 — the caller converts to GRT/30d.
-    pub async fn get_optimistic_dips_fees_per_indexer(
+    /// Returns (indexer_id, deployment_id, base_tps_wei, entity_tps_wei) per
+    /// active agreement for optimistic fee estimation.
+    pub async fn get_agreement_fee_rates(
         &self,
-    ) -> Result<HashMap<IndexerId, f64>, Error> {
+    ) -> Result<Vec<(IndexerId, DeploymentId, f64, f64)>, Error> {
         let rows: Vec<(
             PgIndexerId,
             sqlx::types::Json<super::indexing_agreement::Voucher>,
@@ -1044,14 +1046,20 @@ impl PgRegistry {
         .fetch_all(&self.pool)
         .await?;
 
-        let mut fees: HashMap<IndexerId, f64> = HashMap::new();
-        for (pg_indexer_id, voucher_json) in rows {
-            let tps_wei = voucher_json.0.metadata.tokens_per_second;
-            let tps_f64 = tps_wei.to::<u128>() as f64;
-            *fees.entry(pg_indexer_id.0).or_default() += tps_f64;
-        }
+        let rates = rows
+            .into_iter()
+            .map(|(pg_indexer_id, voucher_json)| {
+                let meta = &voucher_json.0.metadata;
+                (
+                    pg_indexer_id.0,
+                    meta.subgraph_deployment_id,
+                    meta.tokens_per_second.to::<u128>() as f64,
+                    meta.tokens_per_entity_per_second.to::<u128>() as f64,
+                )
+            })
+            .collect();
 
-        Ok(fees)
+        Ok(rates)
     }
 
     // =========================================================================
