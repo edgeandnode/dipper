@@ -123,10 +123,10 @@ where
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
-    // Fetch entity counts from the subgraph if available.
+    // Fetch claimed entity counts from the subgraph if available.
     let entity_counts = if let Some(url) = entity_count_subgraph_url {
-        let deployment_ids: Vec<DeploymentId> = rates.iter().map(|r| r.deployment_id).collect();
-        fetch_entity_counts(url, &deployment_ids, ENTITY_COUNT_QUERY_TIMEOUT).await
+        let agreement_ids: Vec<_> = rates.iter().map(|r| r.agreement_id).collect();
+        fetch_entity_counts(url, &agreement_ids, ENTITY_COUNT_QUERY_TIMEOUT).await
     } else {
         HashMap::new()
     };
@@ -136,7 +136,7 @@ where
     if !optimistic_dips_fees.is_empty() {
         let enriched = rates
             .iter()
-            .filter(|r| entity_counts.contains_key(&r.deployment_id))
+            .filter(|r| entity_counts.contains_key(&r.agreement_id))
             .count();
         tracing::debug!(
             indexer_count = optimistic_dips_fees.len(),
@@ -151,16 +151,17 @@ where
 
 /// Sum fee rates per indexer and convert to GRT per 30 days.
 ///
-/// When entity counts are available for a deployment, includes the
-/// entity component: `fee_rate = base_rate + entity_rate * entities`.
+/// When the indexer has claimed entity counts for an agreement,
+/// includes the entity component:
+/// `fee_rate = base_rate + entity_rate * claimed_entities`.
 /// Otherwise uses base rate only.
 fn sum_fee_rates(
     rates: &[crate::registry::AgreementFeeRate],
-    entity_counts: &HashMap<DeploymentId, u64>,
+    entity_counts: &HashMap<dipper_core::ids::IndexingAgreementId, u64>,
 ) -> HashMap<IndexerId, f64> {
     let mut fees: HashMap<IndexerId, f64> = HashMap::new();
     for rate in rates {
-        let fee_rate = if let Some(&entities) = entity_counts.get(&rate.deployment_id) {
+        let fee_rate = if let Some(&entities) = entity_counts.get(&rate.agreement_id) {
             rate.tokens_per_second + rate.tokens_per_entity_per_second * entities as f64
         } else {
             rate.tokens_per_second
@@ -210,6 +211,10 @@ mod tests {
         assert_eq!(wei_per_second_to_grt_per_30d(0.0), 0.0);
     }
 
+    fn test_agreement_id(n: u8) -> dipper_core::ids::IndexingAgreementId {
+        dipper_core::ids::IndexingAgreementId::from_bytes([n; 16])
+    }
+
     #[test]
     fn test_sum_fee_rates_base_only() {
         let indexer_a: IndexerId = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -225,18 +230,21 @@ mod tests {
 
         let rates = vec![
             AgreementFeeRate {
+                agreement_id: test_agreement_id(1),
                 indexer_id: indexer_a,
                 deployment_id: deployment,
                 tokens_per_second: 1e18,
                 tokens_per_entity_per_second: 5e14,
             },
             AgreementFeeRate {
+                agreement_id: test_agreement_id(2),
                 indexer_id: indexer_a,
                 deployment_id: deployment,
                 tokens_per_second: 2e18,
                 tokens_per_entity_per_second: 0.0,
             },
             AgreementFeeRate {
+                agreement_id: test_agreement_id(3),
                 indexer_id: indexer_b,
                 deployment_id: deployment,
                 tokens_per_second: 0.5e18,
@@ -262,8 +270,10 @@ mod tests {
             "0x0000000000000000000000000000000000000000000000000000000000000001"
                 .parse()
                 .unwrap();
+        let agr_id = test_agreement_id(1);
 
         let rates = vec![AgreementFeeRate {
+            agreement_id: agr_id,
             indexer_id: indexer_a,
             deployment_id: deployment,
             tokens_per_second: 1e18,            // 1 GRT/sec base
@@ -271,7 +281,7 @@ mod tests {
         }];
 
         let mut entity_counts = HashMap::new();
-        entity_counts.insert(deployment, 1000u64);
+        entity_counts.insert(agr_id, 1000u64);
 
         let fees = sum_fee_rates(&rates, &entity_counts);
 
