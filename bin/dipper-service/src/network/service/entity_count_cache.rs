@@ -101,8 +101,19 @@ async fn refresh_cache(cache: &EntityCountCache, endpoint: &Url) {
     tracing::debug!("refreshing entity count cache");
 
     let counts = fetch_all_entity_counts(endpoint).await;
-    let count = counts.len();
 
+    if counts.is_empty() {
+        let stale_count = cache.read().await.len();
+        if stale_count > 0 {
+            tracing::warn!(
+                stale_entries = stale_count,
+                "entity count cache refresh returned empty, retaining stale data"
+            );
+        }
+        return;
+    }
+
+    let count = counts.len();
     let mut guard = cache.write().await;
     *guard = counts;
     drop(guard);
