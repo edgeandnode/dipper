@@ -36,6 +36,7 @@ pub struct Ctx<R, N, W, I> {
     pub iisa: I,
     pub networks_registry: Arc<NetworksRegistry>,
     pub additional_networks: Arc<BTreeMap<ChainId, String>>,
+    pub entity_count_subgraph_url: Option<url::Url>,
 }
 
 /// Reassess an indexing request against the current IISA target state.
@@ -81,6 +82,7 @@ where
         ctx.agreement_conf.declined_indexer_lookback_days(),
         ctx.agreement_conf.price_rejection_lookback_days(),
         ctx.agreement_conf.signer_rejection_lookback_minutes(),
+        ctx.entity_count_subgraph_url.as_ref(),
     )
     .await?;
 

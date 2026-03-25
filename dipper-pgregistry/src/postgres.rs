@@ -1021,13 +1021,11 @@ impl PgRegistry {
     // Optimistic DIPs fees
     // =========================================================================
 
-    /// Get the sum of base tokens_per_second (in wei) across active agreements per indexer.
-    ///
-    /// Queries all `Created` or `AcceptedOnChain` agreements and sums the
-    /// `voucher.metadata.tokens_per_second` field per indexer. Returns wei/second
-    /// as f64 — the caller converts to GRT/30d.
     /// Returns (indexer_id, deployment_id, base_tps_wei, entity_tps_wei) per
     /// active agreement for optimistic fee estimation.
+    ///
+    /// Queries all `Created` or `AcceptedOnChain` agreements and extracts
+    /// both rate fields from the voucher metadata.
     pub async fn get_agreement_fee_rates(
         &self,
     ) -> Result<Vec<(IndexerId, DeploymentId, f64, f64)>, Error> {
