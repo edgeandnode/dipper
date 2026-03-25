@@ -154,14 +154,10 @@ async fn fetch_all_entity_counts(endpoint: &Url) -> HashMap<EntityCountKey, u64>
         let page_size = data.indexer_deployment_latests.len();
 
         for entry in data.indexer_deployment_latests {
-            if let (Some(indexer_id), Some(deployment_id), Ok(entities)) = (
-                parse_address(&entry.indexer),
-                parse_deployment_id(&entry.subgraph_deployment_id),
-                entry.entities.parse::<u64>(),
-            ) {
-                result.insert((indexer_id, deployment_id), entities);
+            last_id = entry.id.clone();
+            if let Some((key, entities)) = parse_entity_entry(&entry) {
+                result.insert(key, entities);
             }
-            last_id = entry.id;
         }
 
         if page_size < 1000 {
@@ -172,12 +168,13 @@ async fn fetch_all_entity_counts(endpoint: &Url) -> HashMap<EntityCountKey, u64>
     result
 }
 
-fn parse_address(hex: &str) -> Option<IndexerId> {
-    hex.parse().ok()
-}
-
-fn parse_deployment_id(hex: &str) -> Option<DeploymentId> {
-    hex.parse().ok()
+/// Parse a single entity entry into a cache key-value pair.
+/// Returns None if any field fails to parse (entry is skipped).
+fn parse_entity_entry(entry: &LatestEntity) -> Option<(EntityCountKey, u64)> {
+    let indexer_id: IndexerId = entry.indexer.parse().ok()?;
+    let deployment_id: DeploymentId = entry.subgraph_deployment_id.parse().ok()?;
+    let entities: u64 = entry.entities.parse().ok()?;
+    Some(((indexer_id, deployment_id), entities))
 }
 
 const PAGINATED_QUERY: &str = r#"
@@ -226,6 +223,51 @@ mod tests {
         let cache = new_cache();
         let guard = cache.try_read().unwrap();
         assert!(guard.is_empty());
+    }
+
+    #[test]
+    fn test_parse_entity_entry_valid() {
+        let entry = LatestEntity {
+            id: "0x01-0x02".to_string(),
+            indexer: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            subgraph_deployment_id:
+                "0x0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+            entities: "5000".to_string(),
+        };
+        let result = parse_entity_entry(&entry);
+        assert!(result.is_some());
+        let ((indexer, deployment), entities) = result.unwrap();
+        assert_eq!(
+            indexer,
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .parse::<IndexerId>()
+                .unwrap()
+        );
+        assert_eq!(entities, 5000);
+    }
+
+    #[test]
+    fn test_parse_entity_entry_invalid_indexer() {
+        let entry = LatestEntity {
+            id: "x".to_string(),
+            indexer: "not-an-address".to_string(),
+            subgraph_deployment_id:
+                "0x0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+            entities: "100".to_string(),
+        };
+        assert!(parse_entity_entry(&entry).is_none());
+    }
+
+    #[test]
+    fn test_parse_entity_entry_invalid_entities() {
+        let entry = LatestEntity {
+            id: "x".to_string(),
+            indexer: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            subgraph_deployment_id:
+                "0x0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+            entities: "not-a-number".to_string(),
+        };
+        assert!(parse_entity_entry(&entry).is_none());
     }
 
     #[tokio::test]
