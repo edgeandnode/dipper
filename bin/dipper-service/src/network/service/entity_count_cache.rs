@@ -154,6 +154,8 @@ async fn fetch_all_entity_counts(endpoint: &Url) -> HashMap<EntityCountKey, u64>
         let page_size = data.indexer_deployment_latests.len();
 
         for entry in data.indexer_deployment_latests {
+            // Advance cursor unconditionally so pagination continues even
+            // if this entry fails to parse.
             last_id = entry.id.clone();
             if let Some((key, entities)) = parse_entity_entry(&entry) {
                 result.insert(key, entities);
