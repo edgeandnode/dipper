@@ -11,8 +11,8 @@ use crate::{
     worker::result::{JobError, JobResult},
 };
 
-/// Seconds in 30 days.
-const SECONDS_PER_30_DAYS: f64 = 86400.0 * 30.0;
+/// Seconds in 28 days (aligned with IISA's Redpanda replay window).
+const SECONDS_PER_28_DAYS: f64 = 86400.0 * 28.0;
 
 /// 1 GRT = 10^18 wei.
 const WEI_PER_GRT: f64 = 1e18;
@@ -83,14 +83,14 @@ where
     })
 }
 
-/// Compute optimistic DIPs fees per indexer in GRT per 30 days.
+/// Compute optimistic DIPs fees per indexer in GRT per 28 days.
 ///
 /// For each active agreement, computes the expected fee rate:
 /// - If entity counts are available in the cache:
 ///   `fee_rate = base_rate + entity_rate * entities`
 /// - Otherwise: `fee_rate = base_rate` (base rate only)
 ///
-/// Sums per indexer and converts wei/second to GRT/30d.
+/// Sums per indexer and converts wei/second to GRT/28d.
 async fn compute_optimistic_dips_fees<R>(
     registry: &R,
     entity_count_cache: &EntityCountCache,
@@ -123,7 +123,7 @@ where
     Ok(optimistic_dips_fees)
 }
 
-/// Sum fee rates per indexer and convert to GRT per 30 days.
+/// Sum fee rates per indexer and convert to GRT per 28 days.
 ///
 /// When the cache has entity counts for an (indexer, deployment) pair,
 /// includes the entity component:
@@ -144,13 +144,13 @@ fn sum_fee_rates(
         *fees.entry(rate.indexer_id).or_default() += fee_rate;
     }
     fees.into_iter()
-        .map(|(id, wei_per_sec)| (id, wei_per_second_to_grt_per_30d(wei_per_sec)))
+        .map(|(id, wei_per_sec)| (id, wei_per_second_to_grt_per_28d(wei_per_sec)))
         .collect()
 }
 
-/// Convert wei/second to GRT per 30 days.
-fn wei_per_second_to_grt_per_30d(wei_per_second: f64) -> f64 {
-    wei_per_second * SECONDS_PER_30_DAYS / WEI_PER_GRT
+/// Convert wei/second to GRT per 28 days.
+fn wei_per_second_to_grt_per_28d(wei_per_second: f64) -> f64 {
+    wei_per_second * SECONDS_PER_28_DAYS / WEI_PER_GRT
 }
 
 /// Check if an agreement status represents an active agreement.
@@ -171,16 +171,16 @@ mod tests {
     }
 
     #[test]
-    fn test_wei_per_second_to_grt_per_30d() {
+    fn test_wei_per_second_to_grt_per_28d() {
         let one_grt_per_sec = 1e18;
-        let result = wei_per_second_to_grt_per_30d(one_grt_per_sec);
-        assert!((result - 2_592_000.0).abs() < 0.01);
+        let result = wei_per_second_to_grt_per_28d(one_grt_per_sec);
+        assert!((result - 2_419_200.0).abs() < 0.01);
 
-        let wei_per_sec = 10.0 * 1e18 / (86400.0 * 30.0);
-        let result = wei_per_second_to_grt_per_30d(wei_per_sec);
+        let wei_per_sec = 10.0 * 1e18 / (86400.0 * 28.0);
+        let result = wei_per_second_to_grt_per_28d(wei_per_sec);
         assert!((result - 10.0).abs() < 1e-6);
 
-        assert_eq!(wei_per_second_to_grt_per_30d(0.0), 0.0);
+        assert_eq!(wei_per_second_to_grt_per_28d(0.0), 0.0);
     }
 
     #[test]
@@ -222,8 +222,10 @@ mod tests {
 
         let fees = sum_fee_rates(&rates, &HashMap::new());
 
-        assert!((fees[&indexer_a] - 7_776_000.0).abs() < 1.0);
-        assert!((fees[&indexer_b] - 1_296_000.0).abs() < 1.0);
+        // indexer_a: (1 + 2) GRT/sec * 2,419,200 = 7,257,600 GRT/28d
+        assert!((fees[&indexer_a] - 7_257_600.0).abs() < 1.0);
+        // indexer_b: 0.5 GRT/sec * 2,419,200 = 1,209,600 GRT/28d
+        assert!((fees[&indexer_b] - 1_209_600.0).abs() < 1.0);
     }
 
     #[test]
@@ -250,8 +252,8 @@ mod tests {
         let fees = sum_fee_rates(&rates, &entity_counts);
 
         // fee_rate = 1e18 + 1e15 * 1000 = 2e18
-        // 2 GRT/sec * 2,592,000 = 5,184,000 GRT/30d
-        assert!((fees[&indexer_a] - 5_184_000.0).abs() < 1.0);
+        // 2 GRT/sec * 2,419,200 = 4,838,400 GRT/28d
+        assert!((fees[&indexer_a] - 4_838_400.0).abs() < 1.0);
     }
 
     #[test]
