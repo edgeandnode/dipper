@@ -230,6 +230,10 @@ pub async fn main() -> anyhow::Result<()> {
             fallback_filter,
             networks_registry,
             additional_networks,
+            entity_count_subgraph_url: conf
+                .chain_listener
+                .as_ref()
+                .map(|cl| cl.subgraph_endpoint.clone()),
         };
         worker::service::new(ctx)
     };

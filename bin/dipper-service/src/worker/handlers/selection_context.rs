@@ -1,14 +1,19 @@
 //! Shared utilities for gathering IISA selection context.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use dipper_iisa::SelectionContext;
 use thegraph_core::{DeploymentId, IndexerId};
+use url::Url;
 
 use crate::{
+    network::service::entity_counts::fetch_entity_counts,
     registry::{AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementStatus},
     worker::result::{JobError, JobResult},
 };
+
+/// Timeout for entity count subgraph queries.
+const ENTITY_COUNT_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Seconds in 30 days.
 const SECONDS_PER_30_DAYS: f64 = 86400.0 * 30.0;
@@ -39,6 +44,7 @@ pub async fn gather_selection_context<R>(
     declined_indexer_lookback_days: i32,
     price_rejection_lookback_days: i32,
     signer_rejection_lookback_minutes: i32,
+    entity_count_subgraph_url: Option<&Url>,
 ) -> JobResult<SelectionContext>
 where
     R: AgreementRegistry + IndexerDenylistRegistry,
@@ -80,9 +86,10 @@ where
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
-    // Compute optimistic DIPs fees: sum of base tokens_per_second from active
-    // agreement vouchers, converted to GRT/30d.
-    let optimistic_dips_fees = compute_optimistic_dips_fees(registry).await?;
+    // Compute optimistic DIPs fees from active agreement vouchers. When
+    // the entity count subgraph URL is available, entity fees are included.
+    let optimistic_dips_fees =
+        compute_optimistic_dips_fees(registry, entity_count_subgraph_url).await?;
 
     Ok(SelectionContext {
         existing_indexers,
@@ -98,11 +105,16 @@ where
 
 /// Compute optimistic DIPs fees per indexer in GRT per 30 days.
 ///
-/// Sums the base rate (`tokens_per_second`) from active agreement vouchers
-/// per indexer and converts wei/second to GRT/30d. Entity fees
-/// (`tokens_per_entity_per_second`) are not yet included — they require
-/// entity counts from the indexing-payments subgraph (future work).
-async fn compute_optimistic_dips_fees<R>(registry: &R) -> JobResult<HashMap<IndexerId, f64>>
+/// For each active agreement, computes the expected fee rate:
+/// - If entity counts are available from the subgraph:
+///   `fee_tps = base_tps + entity_tps * entities`
+/// - Otherwise: `fee_tps = base_tps` (base rate only)
+///
+/// Sums per indexer and converts wei/second to GRT/30d.
+async fn compute_optimistic_dips_fees<R>(
+    registry: &R,
+    entity_count_subgraph_url: Option<&Url>,
+) -> JobResult<HashMap<IndexerId, f64>>
 where
     R: AgreementRegistry,
 {
@@ -111,10 +123,24 @@ where
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
+    // Fetch entity counts from the subgraph if available.
+    let entity_counts = if let Some(url) = entity_count_subgraph_url {
+        let deployment_ids: Vec<DeploymentId> = rates.iter().map(|r| r.deployment_id).collect();
+        fetch_entity_counts(url, &deployment_ids, ENTITY_COUNT_QUERY_TIMEOUT).await
+    } else {
+        HashMap::new()
+    };
+
     let mut fees: HashMap<IndexerId, f64> = HashMap::new();
+    let mut enriched_count = 0u32;
     for rate in &rates {
-        // TODO: include entity fees once subgraph entity counts are available
-        *fees.entry(rate.indexer_id).or_default() += rate.tokens_per_second;
+        let fee_tps = if let Some(&entities) = entity_counts.get(&rate.deployment_id) {
+            enriched_count += 1;
+            rate.tokens_per_second + rate.tokens_per_entity_per_second * entities as f64
+        } else {
+            rate.tokens_per_second
+        };
+        *fees.entry(rate.indexer_id).or_default() += fee_tps;
     }
 
     let optimistic_dips_fees: HashMap<IndexerId, f64> = fees
@@ -126,7 +152,8 @@ where
         tracing::debug!(
             indexer_count = optimistic_dips_fees.len(),
             agreement_count = rates.len(),
-            "computed optimistic DIPs fees for IISA (base rate only)"
+            enriched_with_entities = enriched_count,
+            "computed optimistic DIPs fees for IISA"
         );
     }
 

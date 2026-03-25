@@ -4,6 +4,7 @@ use dipper_core::state::FromState;
 use dipper_iisa::FallbackFilter;
 use graph_networks_registry::NetworksRegistry;
 use thegraph_core::alloy::primitives::ChainId;
+use url::Url;
 
 use super::handlers::{
     CancelRejectedAgreementOnChainCtx, ProcessIndexingAgreementCancellationCtx,
@@ -96,6 +97,9 @@ pub struct Ctx<Q, R, N, C, I, T> {
 
     /// Additional chain ID to network name mappings for dev/test chains
     pub additional_networks: Arc<BTreeMap<ChainId, String>>,
+
+    /// Indexing-payments subgraph URL for entity count queries (optional)
+    pub entity_count_subgraph_url: Option<Url>,
 }
 
 /// The inner worker context.
@@ -138,6 +142,9 @@ pub(super) struct InnerCtx<R, N, W, C, I, T> {
 
     /// Additional chain ID to network name mappings for dev/test chains
     pub additional_networks: Arc<BTreeMap<ChainId, String>>,
+
+    /// Indexing-payments subgraph URL for entity count queries (optional)
+    pub entity_count_subgraph_url: Option<Url>,
 }
 
 impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I> {
@@ -150,6 +157,7 @@ impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I> {
     iisa,
     networks_registry,
     additional_networks,
+    entity_count_subgraph_url,
 });
 
 impl_from_state!(SendIndexingAgreementCancellationCtx<R, C> {
@@ -173,6 +181,7 @@ impl_from_state!(ProcessNewIndexingRequestCtx<R, N, W, I> {
     fallback_filter,
     networks_registry,
     additional_networks,
+    entity_count_subgraph_url,
 });
 
 impl_from_state!(SendIndexingAgreementProposalCtx<R, W, C> {
