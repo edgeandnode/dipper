@@ -125,6 +125,10 @@ async fn refresh_cache(cache: &EntityCountCache, endpoint: &Url) {
 async fn fetch_all_entity_counts(endpoint: &Url) -> HashMap<EntityCountKey, u64> {
     let mut result = HashMap::new();
     let mut last_id = String::new();
+    let client = reqwest::Client::builder()
+        .timeout(QUERY_TIMEOUT)
+        .build()
+        .unwrap_or_default();
 
     loop {
         let body = serde_json::json!({
@@ -133,11 +137,6 @@ async fn fetch_all_entity_counts(endpoint: &Url) -> HashMap<EntityCountKey, u64>
                 "lastId": last_id,
             },
         });
-
-        let client = reqwest::Client::builder()
-            .timeout(QUERY_TIMEOUT)
-            .build()
-            .unwrap_or_default();
 
         let response = match client.post(endpoint.as_str()).json(&body).send().await {
             Ok(resp) => resp,
