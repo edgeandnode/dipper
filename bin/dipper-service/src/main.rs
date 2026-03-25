@@ -215,6 +215,23 @@ pub async fn main() -> anyhow::Result<()> {
         }
     };
 
+    //- The entity count cache (shared with worker jobs for optimistic fee estimation)
+    let entity_count_cache = network::service::entity_count_cache::new_cache();
+    let entity_count_handle = match conf.chain_listener {
+        Some(ref cl_conf) if cl_conf.enabled => {
+            let (handle, fut) = network::service::entity_count_cache::new(
+                network::service::entity_count_cache::Ctx {
+                    cache: entity_count_cache.clone(),
+                    endpoint: cl_conf.subgraph_endpoint.clone(),
+                    interval: std::time::Duration::from_secs(3600),
+                },
+            );
+            tokio::spawn(fut);
+            Some(handle)
+        }
+        _ => None,
+    };
+
     //- The worker service
     let (worker_handle, worker_service) = {
         let ctx = worker::Ctx {
@@ -230,6 +247,7 @@ pub async fn main() -> anyhow::Result<()> {
             fallback_filter,
             networks_registry,
             additional_networks,
+            entity_count_cache,
         };
         worker::service::new(ctx)
     };
@@ -445,6 +463,13 @@ pub async fn main() -> anyhow::Result<()> {
             tracing::trace!("stopping Chain listener service");
             handle.stop().await;
             tracing::trace!("stopped Chain listener service");
+        }
+
+        // Stop entity count cache service
+        if let Some(handle) = entity_count_handle {
+            tracing::trace!("stopping Entity count cache service");
+            handle.stop().await;
+            tracing::trace!("stopped Entity count cache service");
         }
 
         tracing::trace!("stopping Worker service");

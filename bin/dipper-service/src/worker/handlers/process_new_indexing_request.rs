@@ -16,7 +16,7 @@ use thegraph_core::{
 use super::selection_context::gather_selection_context;
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
-    network::NetworkProvider,
+    network::{NetworkProvider, service::entity_count_cache::EntityCountCache},
     registry::{
         AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementVoucher,
         IndexingAgreementVoucherMetadata, IndexingRequestRegistry,
@@ -39,6 +39,7 @@ pub struct Ctx<R, N, W, I> {
     pub fallback_filter: Arc<FallbackFilter>,
     pub networks_registry: Arc<NetworksRegistry>,
     pub additional_networks: Arc<BTreeMap<ChainId, String>>,
+    pub entity_count_cache: EntityCountCache,
 }
 
 /// Given a new indexing request, run the IISA and get a list of indexers that
@@ -78,6 +79,7 @@ where
         ctx.agreement_conf.declined_indexer_lookback_days(),
         ctx.agreement_conf.price_rejection_lookback_days(),
         ctx.agreement_conf.signer_rejection_lookback_minutes(),
+        &ctx.entity_count_cache,
     )
     .await?;
 

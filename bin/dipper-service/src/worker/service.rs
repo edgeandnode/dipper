@@ -63,6 +63,7 @@ where
         fallback_filter,
         networks_registry,
         additional_networks,
+        entity_count_cache,
     } = state.into();
 
     let (tx_stop, rx_stop) = mpsc::channel(1);
@@ -84,6 +85,7 @@ where
             fallback_filter,
             networks_registry,
             additional_networks,
+            entity_count_cache,
             worker: WorkerQueueHandle::new(queue.clone()),
         };
 

@@ -13,6 +13,7 @@ use super::handlers::{
 };
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
+    network::service::entity_count_cache::EntityCountCache,
     signing::eip712::PrivateKeyEip712Signer,
 };
 
@@ -96,6 +97,9 @@ pub struct Ctx<Q, R, N, C, I, T> {
 
     /// Additional chain ID to network name mappings for dev/test chains
     pub additional_networks: Arc<BTreeMap<ChainId, String>>,
+
+    /// Shared entity count cache for optimistic fee estimation
+    pub entity_count_cache: EntityCountCache,
 }
 
 /// The inner worker context.
@@ -138,6 +142,9 @@ pub(super) struct InnerCtx<R, N, W, C, I, T> {
 
     /// Additional chain ID to network name mappings for dev/test chains
     pub additional_networks: Arc<BTreeMap<ChainId, String>>,
+
+    /// Shared entity count cache for optimistic fee estimation
+    pub entity_count_cache: EntityCountCache,
 }
 
 impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I> {
@@ -150,6 +157,7 @@ impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I> {
     iisa,
     networks_registry,
     additional_networks,
+    entity_count_cache,
 });
 
 impl_from_state!(SendIndexingAgreementCancellationCtx<R, C> {
@@ -173,6 +181,7 @@ impl_from_state!(ProcessNewIndexingRequestCtx<R, N, W, I> {
     fallback_filter,
     networks_registry,
     additional_networks,
+    entity_count_cache,
 });
 
 impl_from_state!(SendIndexingAgreementProposalCtx<R, W, C> {
