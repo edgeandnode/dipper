@@ -411,9 +411,8 @@ impl AgreementRegistry for RegistryProvider {
             .map(|rows| {
                 rows.into_iter()
                     .map(
-                        |(agreement_id, indexer_id, deployment_id, base_rate, entity_rate)| {
+                        |(_agreement_id, indexer_id, deployment_id, base_rate, entity_rate)| {
                             AgreementFeeRate {
-                                agreement_id,
                                 indexer_id,
                                 deployment_id,
                                 tokens_per_second: base_rate,

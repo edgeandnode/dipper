@@ -237,7 +237,6 @@ pub trait AgreementRegistry {
 /// Per-agreement fee rate data for optimistic fee estimation.
 #[derive(Debug, Clone)]
 pub struct AgreementFeeRate {
-    pub agreement_id: dipper_core::ids::IndexingAgreementId,
     pub indexer_id: IndexerId,
     pub deployment_id: DeploymentId,
     /// Base rate in wei GRT per second.

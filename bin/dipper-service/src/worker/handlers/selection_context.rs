@@ -166,10 +166,6 @@ mod tests {
     use super::*;
     use crate::registry::AgreementFeeRate;
 
-    fn test_agreement_id(n: u8) -> dipper_core::ids::IndexingAgreementId {
-        dipper_core::ids::IndexingAgreementId::from_bytes([n; 16])
-    }
-
     #[test]
     fn test_wei_per_second_to_grt_per_28d() {
         let one_grt_per_sec = 1e18;
@@ -198,21 +194,18 @@ mod tests {
 
         let rates = vec![
             AgreementFeeRate {
-                agreement_id: test_agreement_id(1),
                 indexer_id: indexer_a,
                 deployment_id: deployment,
                 tokens_per_second: 1e18,
                 tokens_per_entity_per_second: 5e14,
             },
             AgreementFeeRate {
-                agreement_id: test_agreement_id(2),
                 indexer_id: indexer_a,
                 deployment_id: deployment,
                 tokens_per_second: 2e18,
                 tokens_per_entity_per_second: 0.0,
             },
             AgreementFeeRate {
-                agreement_id: test_agreement_id(3),
                 indexer_id: indexer_b,
                 deployment_id: deployment,
                 tokens_per_second: 0.5e18,
@@ -239,7 +232,6 @@ mod tests {
                 .unwrap();
 
         let rates = vec![AgreementFeeRate {
-            agreement_id: test_agreement_id(1),
             indexer_id: indexer_a,
             deployment_id: deployment,
             tokens_per_second: 1e18,
