@@ -98,20 +98,26 @@ where
 
 /// Compute optimistic DIPs fees per indexer in GRT per 30 days.
 ///
-/// Sums the base rate (`tokens_per_second`) from accepted agreement vouchers
-/// per indexer and converts wei/second to GRT/30d. The result tells IISA how
-/// much fee revenue each indexer is expected to earn, so `stake_to_fees` can
-/// differentiate before on-chain claims.
+/// Sums the base rate (`tokens_per_second`) from active agreement vouchers
+/// per indexer and converts wei/second to GRT/30d. Entity fees
+/// (`tokens_per_entity_per_second`) are not yet included — they require
+/// entity counts from the indexing-payments subgraph (future work).
 async fn compute_optimistic_dips_fees<R>(registry: &R) -> JobResult<HashMap<IndexerId, f64>>
 where
     R: AgreementRegistry,
 {
-    let base_fees = registry
-        .get_optimistic_dips_fees_per_indexer()
+    let rates = registry
+        .get_agreement_fee_rates()
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
-    let optimistic_dips_fees: HashMap<IndexerId, f64> = base_fees
+    let mut fees: HashMap<IndexerId, f64> = HashMap::new();
+    for rate in &rates {
+        // TODO: include entity fees once subgraph entity counts are available
+        *fees.entry(rate.indexer_id).or_default() += rate.tokens_per_second;
+    }
+
+    let optimistic_dips_fees: HashMap<IndexerId, f64> = fees
         .into_iter()
         .map(|(id, tps_wei)| (id, wei_per_second_to_grt_per_30d(tps_wei)))
         .collect();
@@ -119,7 +125,8 @@ where
     if !optimistic_dips_fees.is_empty() {
         tracing::debug!(
             indexer_count = optimistic_dips_fees.len(),
-            "computed optimistic DIPs fees for IISA"
+            agreement_count = rates.len(),
+            "computed optimistic DIPs fees for IISA (base rate only)"
         );
     }
 

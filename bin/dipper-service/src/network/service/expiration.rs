@@ -310,8 +310,8 @@ mod tests {
     use crate::{
         network::service::chain_listener::ChainListenerState,
         registry::{
-            IndexingAgreement, IndexingAgreementVoucher, IndexingRequest, PendingCancellation,
-            Result as RegistryResult,
+            AgreementFeeRate, IndexingAgreement, IndexingAgreementVoucher, IndexingRequest,
+            PendingCancellation, Result as RegistryResult,
         },
         worker::{queue::JobId, service::WorkerQueue},
     };
@@ -521,9 +521,7 @@ mod tests {
         ) -> RegistryResult<IndexingAgreement> {
             unimplemented!()
         }
-        async fn get_optimistic_dips_fees_per_indexer(
-            &self,
-        ) -> RegistryResult<std::collections::HashMap<IndexerId, f64>> {
+        async fn get_agreement_fee_rates(&self) -> RegistryResult<Vec<AgreementFeeRate>> {
             unimplemented!()
         }
     }

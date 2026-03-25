@@ -683,7 +683,7 @@ mod tests {
 
     use super::*;
     use crate::registry::{
-        Indexer, IndexingAgreement, IndexingAgreementVoucher as Voucher,
+        AgreementFeeRate, Indexer, IndexingAgreement, IndexingAgreementVoucher as Voucher,
         IndexingAgreementVoucherMetadata as VoucherMetadata, Result as RegistryResult,
     };
 
@@ -999,10 +999,8 @@ mod tests {
             Err(crate::registry::Error::NoRecordsUpdated)
         }
 
-        async fn get_optimistic_dips_fees_per_indexer(
-            &self,
-        ) -> RegistryResult<std::collections::HashMap<IndexerId, f64>> {
-            Ok(std::collections::HashMap::new())
+        async fn get_agreement_fee_rates(&self) -> RegistryResult<Vec<AgreementFeeRate>> {
+            Ok(vec![])
         }
     }
 

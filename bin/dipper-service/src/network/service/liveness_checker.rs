@@ -778,7 +778,7 @@ mod tests {
         chain_client::{ChainClient, ChainClientError},
         config::LivenessCheckerConfig,
         registry::{
-            AgreementRegistry, IndexingAgreement, IndexingAgreementStatus,
+            AgreementFeeRate, AgreementRegistry, IndexingAgreement, IndexingAgreementStatus,
             IndexingAgreementVoucher, IndexingAgreementVoucherMetadata, IndexingRequest,
             IndexingRequestRegistry, PendingCancellationRegistry, Result as RegistryResult,
         },
@@ -1029,10 +1029,8 @@ mod tests {
                 .expect("mark_abandoned called more than once")
         }
 
-        async fn get_optimistic_dips_fees_per_indexer(
-            &self,
-        ) -> RegistryResult<std::collections::HashMap<IndexerId, f64>> {
-            Ok(std::collections::HashMap::new())
+        async fn get_agreement_fee_rates(&self) -> RegistryResult<Vec<AgreementFeeRate>> {
+            Ok(vec![])
         }
     }
 

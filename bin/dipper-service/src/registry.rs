@@ -20,7 +20,7 @@ pub use self::agreement::Indexer;
 use self::result::Result as RegistryResult;
 pub use self::{
     agreement::{
-        AgreementRegistry, IndexingAgreement, Status as IndexingAgreementStatus,
+        AgreementFeeRate, AgreementRegistry, IndexingAgreement, Status as IndexingAgreementStatus,
         Voucher as IndexingAgreementVoucher, VoucherMetadata as IndexingAgreementVoucherMetadata,
     },
     indexer_denylist::IndexerDenylistRegistry,
@@ -404,12 +404,22 @@ impl AgreementRegistry for RegistryProvider {
             .map_err(|_| dipper_pgregistry::Error::NoRecordsUpdated.into())
     }
 
-    async fn get_optimistic_dips_fees_per_indexer(
-        &self,
-    ) -> RegistryResult<std::collections::HashMap<IndexerId, f64>> {
+    async fn get_agreement_fee_rates(&self) -> RegistryResult<Vec<AgreementFeeRate>> {
         self.inner
-            .get_optimistic_dips_fees_per_indexer()
+            .get_agreement_fee_rates()
             .await
+            .map(|rows| {
+                rows.into_iter()
+                    .map(
+                        |(indexer_id, deployment_id, tps, entity_tps)| AgreementFeeRate {
+                            indexer_id,
+                            deployment_id,
+                            tokens_per_second: tps,
+                            tokens_per_entity_per_second: entity_tps,
+                        },
+                    )
+                    .collect()
+            })
             .map_err(Into::into)
     }
 }
