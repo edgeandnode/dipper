@@ -37,6 +37,7 @@ pub async fn gather_selection_context<R>(
 where
     R: AgreementRegistry + IndexerDenylistRegistry,
 {
+    // Get indexers that already have active agreements for this deployment
     let existing_indexers = registry
         .get_indexing_agreements_by_deployment_id(deployment_id)
         .await
@@ -46,11 +47,13 @@ where
         .map(|a| a.indexer.id)
         .collect::<Vec<_>>();
 
+    // Get pending agreements across all deployments
     let pending_agreements = registry
         .get_pending_agreement_indexers_by_deployment(&existing_indexers)
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
+    // Get indexers that declined within their respective lookback periods
     let declined_indexers = registry
         .get_declined_indexers_by_deployment(
             declined_indexer_lookback_days,
@@ -60,11 +63,14 @@ where
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
+    // Get denied indexers that should be excluded from selection
     let indexer_denylist = registry
         .get_indexer_denylist()
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
+    // Compute optimistic DIPs fees from active agreements, enriched with
+    // entity counts from the shared cache when available.
     let optimistic_dips_fees = compute_optimistic_dips_fees(registry, entity_count_cache).await?;
 
     Ok(SelectionContext {
