@@ -101,13 +101,6 @@ async fn run(
 }
 
 async fn refresh_cache(cache: &EntityCountCache, endpoint: &Url) {
-    // Fetch all IndexerDeploymentLatest entities. We pass an empty
-    // list which the fetch function treats as "fetch all" (no filter).
-    // TODO: the current fetch_entity_counts takes agreement IDs, not
-    // indexer addresses. We need to update it to support fetching all
-    // entities or querying by indexer_in. For now, this is a
-    // placeholder — the actual pagination query will be implemented
-    // when we wire this into the worker context.
     tracing::debug!("refreshing entity count cache");
 
     let counts = fetch_all_entity_counts(endpoint).await;
