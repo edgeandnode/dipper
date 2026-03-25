@@ -10,9 +10,6 @@ use thegraph_core::{DeploymentId, IndexerId};
 use tokio::sync::{RwLock, mpsc};
 use url::Url;
 
-/// Default refresh interval for entity counts.
-const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(3600);
-
 /// Timeout for subgraph queries.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 
