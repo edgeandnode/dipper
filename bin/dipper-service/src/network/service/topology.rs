@@ -108,6 +108,10 @@ pub fn new(
         let mut timer = tokio::time::interval(update_interval);
         timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        let mut prev_indexers: usize = 0;
+        let mut prev_deployments: usize = 0;
+        let mut prev_allocations: usize = 0;
+
         loop {
             tokio::select! {
                 _ = rx_stop.recv() => break,
@@ -144,6 +148,45 @@ pub fn new(
                     continue;
                 }
             }
+
+            // Log topology summary on every successful refresh.
+            let cur_indexers = snapshot.indexers.len();
+            let cur_deployments = snapshot.deployments.len();
+            let cur_allocations: usize = snapshot
+                .deployments
+                .values()
+                .map(|d| d.indexings.len())
+                .sum();
+
+            tracing::info!(
+                indexers = cur_indexers,
+                deployments = cur_deployments,
+                allocations = cur_allocations,
+                "topology refresh completed"
+            );
+
+            // Log deltas when any count changed since the last successful refresh.
+            if prev_indexers != cur_indexers
+                || prev_deployments != cur_deployments
+                || prev_allocations != cur_allocations
+            {
+                tracing::info!(
+                    "topology updated: indexers {}->{} ({:+}), deployments {}->{} ({:+}), allocations {}->{} ({:+})",
+                    prev_indexers,
+                    cur_indexers,
+                    cur_indexers as isize - prev_indexers as isize,
+                    prev_deployments,
+                    cur_deployments,
+                    cur_deployments as isize - prev_deployments as isize,
+                    prev_allocations,
+                    cur_allocations,
+                    cur_allocations as isize - prev_allocations as isize,
+                );
+            }
+
+            prev_indexers = cur_indexers;
+            prev_deployments = cur_deployments;
+            prev_allocations = cur_allocations;
 
             // Send the snapshot to the receiver, if no listener is available, finish the service
             if let Err(err) = tx_snapshot.send(snapshot) {
