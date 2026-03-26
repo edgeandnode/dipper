@@ -169,7 +169,7 @@ where
 
     let mut successful_new_ids: Vec<dipper_core::ids::IndexingAgreementId> = vec![];
     let mut add_failures = 0u32;
-    let mut pending_recorded = 0u32;
+    let mut _pending_recorded = 0u32;
     for indexer_id in &to_add {
         let candidate = match ctx.network.get_indexer_by_id(indexer_id) {
             Some(indexer) => indexer,
@@ -251,7 +251,7 @@ where
                         reason = "reassessment_replacement",
                         "agreement state transition"
                     );
-                    pending_recorded += 1;
+                    _pending_recorded += 1;
                     id
                 }
                 Err(err) => {
