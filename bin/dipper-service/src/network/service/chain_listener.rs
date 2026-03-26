@@ -183,6 +183,12 @@ where
             // Fetch accepted events from subgraph
             let accepted_result = match event_source.get_accepted_agreements(last_block).await {
                 Ok(result) => {
+                    if consecutive_failures > 0 {
+                        tracing::info!(
+                            recovered_after = consecutive_failures,
+                            "chain listener recovered from consecutive fetch failures"
+                        );
+                    }
                     consecutive_failures = 0;
                     result
                 }
