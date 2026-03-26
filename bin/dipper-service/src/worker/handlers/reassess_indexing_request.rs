@@ -243,6 +243,14 @@ where
                 .await
             {
                 Ok(id) => {
+                    tracing::info!(
+                        agreement_id = %id,
+                        indexing_request_id = %indexing_request_id,
+                        old_status = "none",
+                        new_status = "CREATED",
+                        reason = "reassessment_replacement",
+                        "agreement state transition"
+                    );
                     pending_recorded += 1;
                     id
                 }
@@ -269,7 +277,17 @@ where
                 )
                 .await
             {
-                Ok(id) => id,
+                Ok(id) => {
+                    tracing::info!(
+                        agreement_id = %id,
+                        indexing_request_id = %indexing_request_id,
+                        old_status = "none",
+                        new_status = "CREATED",
+                        reason = "reassessment_addition",
+                        "agreement state transition"
+                    );
+                    id
+                }
                 Err(err) => {
                     add_failures += 1;
                     tracing::error!(
@@ -299,6 +317,11 @@ where
                 "Failed to queue task: 'send_indexing_agreement_proposal'"
             );
         } else {
+            tracing::debug!(
+                agreement_id = %agreement_id,
+                indexer_id = %indexer_id,
+                "proposal queued"
+            );
             successful_new_ids.push(agreement_id);
         }
     }
@@ -320,6 +343,15 @@ where
             );
             continue;
         }
+
+        tracing::info!(
+            agreement_id = %old_agreement.id,
+            indexing_request_id = %indexing_request_id,
+            old_status = %old_agreement.status,
+            new_status = "CANCELED_BY_REQUESTER",
+            reason = "reassessment_not_in_target_group",
+            "agreement state transition"
+        );
 
         if let Err(err) = ctx
             .queue
@@ -349,12 +381,12 @@ where
     }
 
     tracing::info!(
-        indexing_request_id=%indexing_request_id,
-        deployment_id=%deployment_id,
-        added = successful_new_ids.len(),
-        pending_cancellations = pending_recorded,
-        directly_cancelled = directly_cancelled,
-        "reassessment complete"
+        indexing_request_id = %indexing_request_id,
+        deployment_id = %deployment_id,
+        created = successful_new_ids.len(),
+        canceled = directly_cancelled,
+        failed = add_failures,
+        "reassessment summary"
     );
 
     Ok(())
