@@ -171,10 +171,12 @@ where
                 match mark_result {
                     Ok(Ok(())) => {
                         marked += 1;
-                        tracing::debug!(
+                        tracing::info!(
                             agreement_id = %agreement.id,
                             indexing_request_id = %agreement.indexing_request_id,
-                            "marked agreement as expired"
+                            old_status = "Created",
+                            new_status = "Expired",
+                            "agreement state transition"
                         );
                         // Clean up pending cancellations: the replacement expired
                         // before on-chain acceptance, so old agreements stay active.
