@@ -232,7 +232,7 @@ impl Extend<indexer_subgraphs::types::Subgraph> for Snapshot {
             self.subgraphs
                 .entry(subgraph_id)
                 .or_insert_with(|| Subgraph {
-                    id: subgraph_id,
+                    _id: subgraph_id,
                     versions: Default::default(),
                 });
 
@@ -244,8 +244,8 @@ impl Extend<indexer_subgraphs::types::Subgraph> for Snapshot {
                 // Add subgraph version to the subgraph
                 self.subgraphs.entry(subgraph_id).and_modify(|subgraph| {
                     subgraph.versions.push(SubgraphVersion {
-                        num: deployment_version_num,
-                        deployment: deployment_id,
+                        _num: deployment_version_num,
+                        _deployment: deployment_id,
                     });
                 });
 
@@ -253,9 +253,9 @@ impl Extend<indexer_subgraphs::types::Subgraph> for Snapshot {
                 self.deployments
                     .entry(deployment_id)
                     .or_insert_with(|| Deployment {
-                        id: deployment_id,
-                        subgraph: deployment_subgraph_id,
-                        version: deployment_version_num,
+                        _id: deployment_id,
+                        _subgraph: deployment_subgraph_id,
+                        _version: deployment_version_num,
                         indexings: Default::default(),
                     });
 
@@ -370,10 +370,8 @@ pub struct Indexer {
 /// They can have multiple versions, each corresponding to a specific deployment.
 #[derive(Debug, Clone)]
 pub struct Subgraph {
-    /// The subgraph ID
-    ///
-    /// A unique identifier for the subgraph.
-    pub id: SubgraphId,
+    /// The subgraph ID (stored for data model completeness; lookups use the BTreeMap key)
+    _id: SubgraphId,
     /// The versions of the subgraph
     ///
     /// Each version corresponds to a specific deployment of the subgraph.
@@ -391,11 +389,11 @@ pub struct SubgraphVersion {
     ///
     /// A sequential number identifying the version, with higher numbers
     /// indicating newer versions.
-    pub num: u32,
+    _num: u32,
     /// The deployment ID
     ///
     /// The ID of the deployment corresponding to this version.
-    pub deployment: DeploymentId,
+    _deployment: DeploymentId,
 }
 
 /// A deployment of a [Subgraph] to the network.
@@ -404,21 +402,12 @@ pub struct SubgraphVersion {
 /// published to the network and can be indexed by indexers.
 #[derive(Debug, Clone)]
 pub struct Deployment {
-    /// The deployment ID
-    ///
-    /// The deployment ID is a unique identifier for the deployment and coincides
-    /// with the IPFS CID of the deployment manifest.
-    pub id: DeploymentId,
-    /// The subgraph ID
-    ///
-    /// The subgraph ID is the identifier of the subgraph that the deployment
-    /// belongs to.
-    pub subgraph: SubgraphId,
-    /// The deployment version number
-    ///
-    /// The deployment version number represents the version of the subgraph the
-    /// deployment belongs to.
-    pub version: u32,
+    /// The deployment ID (stored for data model completeness; lookups use the BTreeMap key)
+    _id: DeploymentId,
+    /// The subgraph this deployment belongs to
+    _subgraph: SubgraphId,
+    /// The deployment version number within the subgraph
+    _version: u32,
     /// The indexers that are indexing the deployment
     ///
     /// The indexers are stored in a BTreeSet to ensure that they are unique.
