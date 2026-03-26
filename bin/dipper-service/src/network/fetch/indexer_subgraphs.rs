@@ -69,20 +69,22 @@ pub(in crate::network) mod types {
         pub allocations: Vec<Allocation>,
     }
 
-    /// GraphQL response struct -- fields are required for deserialization but
-    /// only `indexer` is read after parsing.
     #[serde_as]
     #[derive(Debug, Clone, serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
-    #[allow(dead_code)]
     pub struct Allocation {
-        pub id: AllocationId,
-        pub created_at_epoch: u32,
-        pub closed_at_epoch: Option<u32>,
+        #[serde(rename = "id")]
+        pub _id: AllocationId,
+        #[serde(rename = "createdAtEpoch")]
+        pub _created_at_epoch: u32,
+        #[serde(rename = "closedAtEpoch")]
+        pub _closed_at_epoch: Option<u32>,
         #[serde_as(as = "serde_with::DisplayFromStr")]
-        pub allocated_tokens: u128,
+        #[serde(rename = "allocatedTokens")]
+        pub _allocated_tokens: u128,
         pub indexer: Indexer,
-        pub poi: Option<ProofOfIndexing>,
+        #[serde(rename = "poi")]
+        pub _poi: Option<ProofOfIndexing>,
     }
 
     #[serde_as]
