@@ -175,6 +175,15 @@ where
             JobError::Fatal(err.into())
         })?;
 
+    tracing::info!(
+        agreement_id = %agreement_id,
+        indexing_request_id = %indexing_request_id,
+        old_status = %agreement.status,
+        new_status = "CANCELED_BY_REQUESTER",
+        reason = "canceled_by_requester",
+        "agreement state transition"
+    );
+
     // Clean up pending cancellations: if this cancelled agreement was a
     // replacement, the old agreement it was replacing should stay active.
     if let Err(err) = ctx
