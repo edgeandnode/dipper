@@ -404,8 +404,11 @@ where
                 .await?;
             tracing::info!(
                 agreement_id = %event.agreement_id,
-                indexer = %event.indexer,
-                "Agreement marked as AcceptedOnChain"
+                indexing_request_id = %agreement.indexing_request_id,
+                old_status = "CREATED",
+                new_status = "ACCEPTED_ON_CHAIN",
+                reason = "accepted_on_chain",
+                "agreement state transition"
             );
 
             execute_pending_cancellations(event, registry, worker_queue).await?;
@@ -427,8 +430,11 @@ where
             // it if it does.
             tracing::warn!(
                 agreement_id = %event.agreement_id,
-                indexer = %event.indexer,
-                "Recovering expired agreement with on-chain acceptance"
+                indexing_request_id = %agreement.indexing_request_id,
+                old_status = "EXPIRED",
+                new_status = "ACCEPTED_ON_CHAIN",
+                reason = "recovered_expired_on_chain",
+                "agreement state transition"
             );
             registry
                 .mark_indexing_agreement_as_accepted_on_chain(&event.agreement_id)
