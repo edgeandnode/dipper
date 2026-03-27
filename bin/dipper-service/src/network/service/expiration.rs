@@ -171,10 +171,12 @@ where
                 match mark_result {
                     Ok(Ok(())) => {
                         marked += 1;
-                        tracing::debug!(
+                        tracing::info!(
                             agreement_id = %agreement.id,
                             indexing_request_id = %agreement.indexing_request_id,
-                            "marked agreement as expired"
+                            old_status = "Created",
+                            new_status = "Expired",
+                            "agreement state transition"
                         );
                         // Clean up pending cancellations: the replacement expired
                         // before on-chain acceptance, so old agreements stay active.
@@ -358,6 +360,7 @@ mod tests {
             self.state.lock().unwrap().get_expired_calls.clone()
         }
 
+        #[allow(dead_code)] // available for future test assertions
         fn marked_expired(&self) -> Vec<IndexingAgreementId> {
             self.state.lock().unwrap().marked_expired.clone()
         }

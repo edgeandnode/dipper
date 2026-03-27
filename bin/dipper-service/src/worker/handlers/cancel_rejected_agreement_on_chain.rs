@@ -100,6 +100,14 @@ where
                     "Failed to update agreement status after on-chain cancellation"
                 );
                 // Don't fail the job - the on-chain tx succeeded, status update can be retried
+            } else {
+                tracing::info!(
+                    agreement_id = %agreement_id,
+                    old_status = "REJECTED",
+                    new_status = "CANCELED_BY_REQUESTER",
+                    reason = "canceled_on_chain_after_rejection",
+                    "agreement state transition"
+                );
             }
 
             Ok(())

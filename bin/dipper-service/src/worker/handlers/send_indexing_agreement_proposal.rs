@@ -116,12 +116,13 @@ where
 
             match proposal_response {
                 ProposalResponse::Accept => {
-                    tracing::debug!(
-                        indexing_request_id=%indexing_request_id,
-                        agreement_id=%agreement_id,
-                        deployment_id=%deployment_id,
-                        indexer_url=%indexer_url,
-                        "Agreement proposal accepted by indexer"
+                    tracing::info!(
+                        agreement_id = %agreement_id,
+                        indexing_request_id = %indexing_request_id,
+                        old_status = "CREATED",
+                        new_status = "CREATED",
+                        reason = "accepted_by_indexer",
+                        "agreement state transition (awaiting on-chain acceptance)"
                     );
                     // Agreement stays in Created, waiting for on-chain acceptance
                 }
@@ -157,13 +158,14 @@ where
                         RejectReason::Other => rejection_reason::OTHER,
                     });
 
+                    let reason = rejection_reason_str.unwrap_or("unspecified");
                     tracing::info!(
-                        indexing_request_id=%indexing_request_id,
-                        agreement_id=%agreement_id,
-                        deployment_id=%deployment_id,
-                        indexer_url=%indexer_url,
-                        rejection_reason=?rejection_reason_str,
-                        "Agreement proposal rejected by indexer"
+                        agreement_id = %agreement_id,
+                        indexing_request_id = %indexing_request_id,
+                        old_status = "CREATED",
+                        new_status = "REJECTED",
+                        reason = %format_args!("rejected_{reason}"),
+                        "agreement state transition"
                     );
                     // Mark as Rejected and reassess. The indexer may still accept on-chain,
                     // in which case the chain listener will trigger cancellation.
@@ -180,6 +182,14 @@ where
             }
         }
         Err(err) => {
+            tracing::info!(
+                agreement_id = %agreement_id,
+                indexing_request_id = %indexing_request_id,
+                old_status = "CREATED",
+                new_status = "DELIVERY_FAILED",
+                reason = "delivery_failed",
+                "agreement state transition"
+            );
             tracing::error!(
                 indexing_request_id=%indexing_request_id,
                 agreement_id=%agreement_id,

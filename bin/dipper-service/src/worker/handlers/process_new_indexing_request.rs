@@ -315,6 +315,13 @@ where
             tracing::error!(error=?err, "Failed to queue task: 'send_indexing_agreement_proposal'");
             return Err(JobError::Fatal(err));
         }
+
+        tracing::debug!(
+            indexing_request_id=%indexing_request_id,
+            agreement_id=%agreement_id,
+            indexer_id=%selected_indexer.id,
+            "proposal queued for dispatch"
+        );
     }
 
     Ok(())
