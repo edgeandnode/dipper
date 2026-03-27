@@ -371,6 +371,13 @@ pub(crate) fn resolve_pricing(
 
     // Fall back to static pricing_table
     if let Some(prices) = fallback_prices {
+        tracing::warn!(
+            indexer_id=%selected.id,
+            chain_id=%chain_id,
+            tokens_per_second=%prices.tokens_per_second,
+            tokens_per_entity_per_second=%prices.tokens_per_entity_per_second,
+            "IISA returned no per-indexer pricing, falling back to static pricing_table"
+        );
         return Some((
             prices.tokens_per_second,
             prices.tokens_per_entity_per_second,
