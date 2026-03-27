@@ -360,6 +360,7 @@ mod tests {
             self.state.lock().unwrap().get_expired_calls.clone()
         }
 
+        #[allow(dead_code)] // available for future test assertions
         fn marked_expired(&self) -> Vec<IndexingAgreementId> {
             self.state.lock().unwrap().marked_expired.clone()
         }
