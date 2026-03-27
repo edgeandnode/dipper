@@ -149,8 +149,20 @@ pub fn new(
                 }
             }
 
+            // Guard against topology updates that produce zero indexers. The
+            // per-fetch empty checks above handle empty API responses, but the
+            // snapshot can still end up with zero indexers if all returned entries
+            // have invalid URLs and are filtered out during extend.
+            let new_count = snapshot.indexers.len();
+            if new_count == 0 {
+                tracing::warn!(
+                    "topology refresh produced 0 indexers despite non-empty fetch \
+                     responses -- preserving previous snapshot"
+                );
+                continue;
+            }
+
             // Log topology summary on every successful refresh.
-            let cur_indexers = snapshot.indexers.len();
             let cur_deployments = snapshot.deployments.len();
             let cur_allocations: usize = snapshot
                 .deployments
@@ -159,22 +171,22 @@ pub fn new(
                 .sum();
 
             tracing::info!(
-                indexers = cur_indexers,
+                indexers = new_count,
                 deployments = cur_deployments,
                 allocations = cur_allocations,
                 "topology refresh completed"
             );
 
             // Log deltas when any count changed since the last successful refresh.
-            if prev_indexers != cur_indexers
+            if prev_indexers != new_count
                 || prev_deployments != cur_deployments
                 || prev_allocations != cur_allocations
             {
                 tracing::info!(
                     "topology updated: indexers {}->{} ({:+}), deployments {}->{} ({:+}), allocations {}->{} ({:+})",
                     prev_indexers,
-                    cur_indexers,
-                    cur_indexers as isize - prev_indexers as isize,
+                    new_count,
+                    new_count as isize - prev_indexers as isize,
                     prev_deployments,
                     cur_deployments,
                     cur_deployments as isize - prev_deployments as isize,
@@ -184,7 +196,7 @@ pub fn new(
                 );
             }
 
-            prev_indexers = cur_indexers;
+            prev_indexers = new_count;
             prev_deployments = cur_deployments;
             prev_allocations = cur_allocations;
 
