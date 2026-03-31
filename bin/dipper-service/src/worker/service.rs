@@ -64,6 +64,7 @@ where
         networks_registry,
         additional_networks,
         entity_count_cache,
+        chain_listener_notify,
     } = state.into();
 
     let (tx_stop, rx_stop) = mpsc::channel(1);
@@ -86,6 +87,7 @@ where
             networks_registry,
             additional_networks,
             entity_count_cache,
+            chain_listener_notify,
             worker: WorkerQueueHandle::new(queue.clone()),
         };
 

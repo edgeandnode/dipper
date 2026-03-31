@@ -40,6 +40,9 @@ pub struct Ctx<R, N, W, I> {
     pub networks_registry: Arc<NetworksRegistry>,
     pub additional_networks: Arc<BTreeMap<ChainId, String>>,
     pub entity_count_cache: EntityCountCache,
+    /// Wakes the chain_listener when a proposal is dispatched so it starts
+    /// fast-polling for on-chain acceptance events immediately.
+    pub chain_listener_notify: Arc<tokio::sync::Notify>,
 }
 
 /// Given a new indexing request, run the IISA and get a list of indexers that
@@ -323,6 +326,9 @@ where
             "proposal queued for dispatch"
         );
     }
+
+    // Wake the chain_listener so it switches to fast-polling for on-chain events.
+    ctx.chain_listener_notify.notify_one();
 
     Ok(())
 }

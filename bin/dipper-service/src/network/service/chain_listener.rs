@@ -14,10 +14,13 @@
 //! This provides reliable, scalable event retrieval without the block range limits
 //! and rate limiting concerns of direct RPC polling.
 
-use std::{future::Future, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use thegraph_core::alloy::primitives::Address;
-use tokio::{sync::mpsc, time::MissedTickBehavior};
+use tokio::{
+    sync::{Notify, mpsc},
+    time::MissedTickBehavior,
+};
 
 use super::chain_events::{AcceptedAgreementEvent, CanceledAgreementEvent, ChainEventSource};
 use crate::{
@@ -56,6 +59,9 @@ pub struct Ctx<R, W, E> {
     pub config: ChainListenerConfig,
     /// The payer/signer address (used to identify who initiated cancellations)
     pub signer_address: thegraph_core::alloy::primitives::Address,
+    /// Signalled by the worker when proposals are dispatched, waking the listener
+    /// from the slow (300s) idle interval so it starts fast-polling immediately.
+    pub chain_listener_notify: Arc<Notify>,
 }
 
 /// State persisted in the database
@@ -85,6 +91,7 @@ where
         event_source,
         config,
         signer_address,
+        chain_listener_notify,
     } = ctx;
 
     let service = async move {
@@ -141,6 +148,19 @@ where
             tokio::select! {
                 _ = rx_stop.recv() => break,
                 _ = timer.tick() => {},
+                _ = chain_listener_notify.notified() => {
+                    // Worker dispatched a proposal -- switch to fast polling immediately
+                    if !using_fast_interval {
+                        timer = tokio::time::interval(fast_interval);
+                        timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                        timer.tick().await;
+                        using_fast_interval = true;
+                        tracing::info!(
+                            interval_secs = fast_interval.as_secs(),
+                            "chain listener woken by proposal dispatch, switching to fast polling"
+                        );
+                    }
+                },
             }
 
             // Adaptive interval: check if there are Created agreements awaiting acceptance
