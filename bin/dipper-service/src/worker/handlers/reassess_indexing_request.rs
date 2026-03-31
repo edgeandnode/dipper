@@ -37,6 +37,7 @@ pub struct Ctx<R, N, W, I> {
     pub networks_registry: Arc<NetworksRegistry>,
     pub additional_networks: Arc<BTreeMap<ChainId, String>>,
     pub entity_count_cache: EntityCountCache,
+    pub chain_listener_notify: Arc<tokio::sync::Notify>,
 }
 
 /// Reassess an indexing request against the current IISA target state.
@@ -388,6 +389,10 @@ where
         failed = add_failures,
         "reassessment summary"
     );
+
+    if !successful_new_ids.is_empty() {
+        ctx.chain_listener_notify.notify_one();
+    }
 
     Ok(())
 }

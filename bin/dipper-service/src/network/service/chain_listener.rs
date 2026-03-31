@@ -14,10 +14,13 @@
 //! This provides reliable, scalable event retrieval without the block range limits
 //! and rate limiting concerns of direct RPC polling.
 
-use std::{future::Future, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use thegraph_core::alloy::primitives::Address;
-use tokio::{sync::mpsc, time::MissedTickBehavior};
+use tokio::{
+    sync::{Notify, mpsc},
+    time::MissedTickBehavior,
+};
 
 use super::chain_events::{AcceptedAgreementEvent, CanceledAgreementEvent, ChainEventSource};
 use crate::{
@@ -56,6 +59,9 @@ pub struct Ctx<R, W, E> {
     pub config: ChainListenerConfig,
     /// The payer/signer address (used to identify who initiated cancellations)
     pub signer_address: thegraph_core::alloy::primitives::Address,
+    /// Signalled by the worker when proposals are dispatched, waking the listener
+    /// from the slow (300s) idle interval so it starts fast-polling immediately.
+    pub chain_listener_notify: Arc<Notify>,
 }
 
 /// State persisted in the database
@@ -85,6 +91,7 @@ where
         event_source,
         config,
         signer_address,
+        chain_listener_notify,
     } = ctx;
 
     let service = async move {
@@ -141,6 +148,19 @@ where
             tokio::select! {
                 _ = rx_stop.recv() => break,
                 _ = timer.tick() => {},
+                _ = chain_listener_notify.notified() => {
+                    // Worker dispatched a proposal -- switch to fast polling immediately
+                    if !using_fast_interval {
+                        timer = tokio::time::interval(fast_interval);
+                        timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                        timer.tick().await;
+                        using_fast_interval = true;
+                        tracing::info!(
+                            interval_secs = fast_interval.as_secs(),
+                            "chain listener woken by proposal dispatch, switching to fast polling"
+                        );
+                    }
+                },
             }
 
             // Adaptive interval: check if there are Created agreements awaiting acceptance
@@ -1488,5 +1508,123 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
+    }
+
+    // -- notify wakeup integration test --
+
+    #[async_trait::async_trait]
+    impl ChainListenerStateRegistry for MockRegistry {
+        async fn get_chain_listener_state(
+            &self,
+            _chain_id: u64,
+        ) -> crate::registry::Result<Option<ChainListenerState>> {
+            Ok(Some(ChainListenerState {
+                _chain_id: 1337,
+                last_processed_block: 0,
+                last_processed_block_timestamp: None,
+            }))
+        }
+
+        async fn update_chain_listener_state(
+            &self,
+            _chain_id: u64,
+            _last_processed_block: u64,
+            _last_processed_block_timestamp: Option<u64>,
+        ) -> crate::registry::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A mock event source that records when it was polled.
+    struct TimingEventSource {
+        poll_times: Arc<Mutex<Vec<tokio::time::Instant>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl super::super::chain_events::ChainEventSource for TimingEventSource {
+        async fn get_accepted_agreements(
+            &self,
+            _since_block: u64,
+        ) -> Result<
+            super::super::chain_events::AcceptedEventsResult,
+            super::super::chain_events::ChainEventError,
+        > {
+            self.poll_times
+                .lock()
+                .unwrap()
+                .push(tokio::time::Instant::now());
+            Ok(super::super::chain_events::AcceptedEventsResult {
+                events: vec![],
+                latest_block: 1,
+                latest_block_timestamp: Some(1000),
+            })
+        }
+
+        async fn get_canceled_agreements(
+            &self,
+            _since_block: u64,
+        ) -> Result<
+            super::super::chain_events::CanceledEventsResult,
+            super::super::chain_events::ChainEventError,
+        > {
+            Ok(super::super::chain_events::CanceledEventsResult {
+                events: vec![],
+                latest_block: 1,
+                latest_block_timestamp: Some(1000),
+            })
+        }
+    }
+
+    /// Verify that notify_one() wakes the chain_listener from its idle
+    /// 300s interval and triggers a poll within a few seconds.
+    #[tokio::test]
+    async fn test_notify_wakes_listener_from_idle_interval() {
+        let poll_times: Arc<Mutex<Vec<tokio::time::Instant>>> = Arc::new(Mutex::new(vec![]));
+        let notify = Arc::new(tokio::sync::Notify::new());
+
+        let config = crate::config::ChainListenerConfig {
+            enabled: true,
+            subgraph_endpoint: "http://localhost:8000/subgraphs/name/test".parse().unwrap(),
+            subgraph_api_key: None,
+            chain_id: 1337,
+            poll_interval: Duration::from_millis(50), // fast interval = 50ms for test speed
+            request_timeout: Duration::from_secs(5),
+            max_retries: 0,
+        };
+
+        let ctx = Ctx {
+            registry: MockRegistry::new(),
+            worker_queue: MockWorkerQueue::default(),
+            event_source: TimingEventSource {
+                poll_times: poll_times.clone(),
+            },
+            config,
+            signer_address: Address::ZERO,
+            chain_listener_notify: notify.clone(),
+        };
+
+        let (handle, service) = new(ctx);
+        let svc_handle = tokio::spawn(service);
+
+        // Wait for the initial fast poll to happen, then let it settle into idle (300s).
+        // The listener switches to slow after seeing no pending agreements.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let polls_before = poll_times.lock().unwrap().len();
+
+        // Now we're in the 300s idle interval. Without the notify, no poll
+        // would happen for 300s. Signal the notify and check that a poll
+        // happens promptly.
+        notify.notify_one();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let polls_after = poll_times.lock().unwrap().len();
+        assert!(
+            polls_after > polls_before,
+            "expected at least one poll after notify_one(), got {polls_before} -> {polls_after}"
+        );
+
+        handle.stop().await;
+        let _ = svc_handle.await;
     }
 }

@@ -4,6 +4,7 @@ use dipper_core::state::FromState;
 use dipper_iisa::FallbackFilter;
 use graph_networks_registry::NetworksRegistry;
 use thegraph_core::alloy::primitives::ChainId;
+use tokio::sync::Notify;
 
 use super::handlers::{
     CancelRejectedAgreementOnChainCtx, ProcessIndexingAgreementCancellationCtx,
@@ -100,6 +101,9 @@ pub struct Ctx<Q, R, N, C, I, T> {
 
     /// Shared entity count cache for optimistic fee estimation
     pub entity_count_cache: EntityCountCache,
+
+    /// Wakes the chain_listener when proposals are dispatched
+    pub chain_listener_notify: Arc<Notify>,
 }
 
 /// The inner worker context.
@@ -145,6 +149,9 @@ pub(super) struct InnerCtx<R, N, W, C, I, T> {
 
     /// Shared entity count cache for optimistic fee estimation
     pub entity_count_cache: EntityCountCache,
+
+    /// Wakes the chain_listener when proposals are dispatched
+    pub chain_listener_notify: Arc<Notify>,
 }
 
 impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I> {
@@ -158,6 +165,7 @@ impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I> {
     networks_registry,
     additional_networks,
     entity_count_cache,
+    chain_listener_notify,
 });
 
 impl_from_state!(SendIndexingAgreementCancellationCtx<R, C> {
@@ -177,6 +185,7 @@ impl_from_state!(ProcessNewIndexingRequestCtx<R, N, W, I> {
     registry,
     network,
     queue: worker,
+    chain_listener_notify,
     iisa,
     fallback_filter,
     networks_registry,

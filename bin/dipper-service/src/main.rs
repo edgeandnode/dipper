@@ -234,6 +234,10 @@ pub async fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
+    // Shared notify: worker signals the chain_listener when proposals are
+    // dispatched so it switches from 300s idle polling to 5s immediately.
+    let chain_listener_notify = Arc::new(tokio::sync::Notify::new());
+
     //- The worker service
     let (worker_handle, worker_service) = {
         let ctx = worker::Ctx {
@@ -250,6 +254,7 @@ pub async fn main() -> anyhow::Result<()> {
             networks_registry,
             additional_networks,
             entity_count_cache,
+            chain_listener_notify: chain_listener_notify.clone(),
         };
         worker::service::new(ctx)
     };
@@ -305,6 +310,7 @@ pub async fn main() -> anyhow::Result<()> {
                 event_source,
                 config: chain_listener_conf.clone(),
                 signer_address: signer.address(),
+                chain_listener_notify: chain_listener_notify.clone(),
             };
             let (handle, service) = network::service::chain_listener::new(ctx);
             Some((handle, service))
