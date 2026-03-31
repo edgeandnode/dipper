@@ -14,6 +14,7 @@ use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::ChainId};
 use super::selection_context::gather_selection_context;
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
+    indexer_rpc_client::compute_on_chain_id,
     network::{NetworkProvider, service::entity_count_cache::EntityCountCache},
     registry::{
         AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementVoucher,
@@ -228,18 +229,25 @@ where
             metadata: voucher_metadata,
         };
 
+        // Generate the agreement ID up front so we can derive the on-chain ID
+        // (the nonce is derived from the UUID, so we need it before INSERT).
+        let agreement_id_candidate = dipper_core::ids::IndexingAgreementId::new();
+        let on_chain_id = compute_on_chain_id(agreement_id_candidate, &voucher);
+
         // If this add replaces an old agreement, register both atomically
         // so a crash cannot leave an agreement without its pending cancellation.
         let agreement_id = if let Some(old_agreement) = old_iter.next() {
             match ctx
                 .registry
                 .register_agreement_with_pending_cancellation(
+                    agreement_id_candidate,
                     *indexing_request_id,
                     *deployment_id,
                     candidate.id,
                     candidate.url.clone(),
                     voucher,
                     old_agreement.id,
+                    &on_chain_id,
                 )
                 .await
             {
@@ -270,11 +278,13 @@ where
             match ctx
                 .registry
                 .register_new_indexing_agreement(
+                    agreement_id_candidate,
                     *indexing_request_id,
                     *deployment_id,
                     candidate.id,
                     candidate.url.clone(),
                     voucher,
+                    &on_chain_id,
                 )
                 .await
             {

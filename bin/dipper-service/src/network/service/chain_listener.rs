@@ -16,6 +16,7 @@
 
 use std::{future::Future, sync::Arc, time::Duration};
 
+use dipper_core::ids::IndexingAgreementId;
 use thegraph_core::alloy::primitives::Address;
 use tokio::{
     sync::{Notify, mpsc},
@@ -407,16 +408,18 @@ where
         "Processing IndexingAgreementAccepted event"
     );
 
-    // Look up the agreement in our DB
+    // The event's agreement_id is the on-chain bytes16 packed into a UUID.
+    // Look up by on_chain_id to find the matching dipper agreement.
+    let on_chain_id_bytes = event.agreement_id.into_bytes();
     let agreement = match registry
-        .get_indexing_agreement_by_id(&event.agreement_id)
+        .get_indexing_agreement_by_on_chain_id(&on_chain_id_bytes)
         .await?
     {
         Some(a) => a,
         None => {
             tracing::debug!(
-                agreement_id = %event.agreement_id,
-                "Agreement not found in DB (may be from another payer)"
+                on_chain_id = %event.agreement_id,
+                "Agreement not found by on_chain_id (may be from another payer)"
             );
             return Ok(());
         }
@@ -426,10 +429,11 @@ where
         IndexingAgreementStatus::Created => {
             // Normal case: agreement was Created, now accepted on-chain
             registry
-                .mark_indexing_agreement_as_accepted_on_chain(&event.agreement_id)
+                .mark_indexing_agreement_as_accepted_on_chain(&agreement.id)
                 .await?;
             tracing::info!(
-                agreement_id = %event.agreement_id,
+                agreement_id = %agreement.id,
+                on_chain_id = %event.agreement_id,
                 indexing_request_id = %agreement.indexing_request_id,
                 old_status = "CREATED",
                 new_status = "ACCEPTED_ON_CHAIN",
@@ -437,17 +441,17 @@ where
                 "agreement state transition"
             );
 
-            execute_pending_cancellations(event, registry, worker_queue).await?;
+            execute_pending_cancellations(&agreement.id, registry, worker_queue).await?;
         }
         IndexingAgreementStatus::AcceptedOnChain => {
             // Crash recovery: if dipper crashed after marking AcceptedOnChain but
             // before executing pending cancellations, this re-processes the event.
             tracing::debug!(
-                agreement_id = %event.agreement_id,
+                agreement_id = %agreement.id,
                 "Re-processing AcceptedOnChain event (crash recovery)"
             );
 
-            execute_pending_cancellations(event, registry, worker_queue).await?;
+            execute_pending_cancellations(&agreement.id, registry, worker_queue).await?;
         }
         IndexingAgreementStatus::Expired => {
             // The expiration service marked this as expired, but the indexer
@@ -455,7 +459,8 @@ where
             // not happen with chain-time expiration; the WARN log will surface
             // it if it does.
             tracing::warn!(
-                agreement_id = %event.agreement_id,
+                agreement_id = %agreement.id,
+                on_chain_id = %event.agreement_id,
                 indexing_request_id = %agreement.indexing_request_id,
                 old_status = "EXPIRED",
                 new_status = "ACCEPTED_ON_CHAIN",
@@ -463,26 +468,28 @@ where
                 "agreement state transition"
             );
             registry
-                .mark_indexing_agreement_as_accepted_on_chain(&event.agreement_id)
+                .mark_indexing_agreement_as_accepted_on_chain(&agreement.id)
                 .await?;
 
-            execute_pending_cancellations(event, registry, worker_queue).await?;
+            execute_pending_cancellations(&agreement.id, registry, worker_queue).await?;
         }
         IndexingAgreementStatus::Rejected => {
             // Indexer rejected off-chain but accepted on-chain anyway
             // Queue a cancellation job
             tracing::warn!(
-                agreement_id = %event.agreement_id,
+                agreement_id = %agreement.id,
+                on_chain_id = %event.agreement_id,
                 indexer = %event.indexer,
                 "Rejected agreement accepted on-chain, queuing cancellation"
             );
             worker_queue
-                .cancel_rejected_agreement_on_chain(event.agreement_id)
+                .cancel_rejected_agreement_on_chain(agreement.id)
                 .await?;
         }
         status => {
             tracing::debug!(
-                agreement_id = %event.agreement_id,
+                agreement_id = %agreement.id,
+                on_chain_id = %event.agreement_id,
                 status = %status,
                 "Ignoring acceptance for agreement in status: {status}"
             );
@@ -501,7 +508,7 @@ where
 /// processing. If a cancellation fails with a transient error, its record is
 /// retained so it can be retried on the next crash-recovery replay.
 async fn execute_pending_cancellations<R, W>(
-    event: &AcceptedAgreementEvent,
+    agreement_id: &IndexingAgreementId,
     registry: &R,
     worker_queue: &W,
 ) -> anyhow::Result<()>
@@ -510,7 +517,7 @@ where
     W: WorkerQueue,
 {
     let pending = registry
-        .get_pending_cancellations_by_new_agreement(event.agreement_id)
+        .get_pending_cancellations_by_new_agreement(*agreement_id)
         .await?;
 
     if pending.is_empty() {
@@ -532,7 +539,7 @@ where
                 );
                 // Agreement is gone permanently — clean up the stale record
                 registry
-                    .delete_pending_cancellation(event.agreement_id, cancellation.old_agreement_id)
+                    .delete_pending_cancellation(*agreement_id, cancellation.old_agreement_id)
                     .await?;
                 continue;
             }
@@ -550,7 +557,7 @@ where
                     "Old agreement already in terminal state, skipping cancellation"
                 );
                 registry
-                    .delete_pending_cancellation(event.agreement_id, cancellation.old_agreement_id)
+                    .delete_pending_cancellation(*agreement_id, cancellation.old_agreement_id)
                     .await?;
                 continue;
             }
@@ -569,7 +576,7 @@ where
         // DB cancellation succeeded — remove the pending record before
         // attempting the best-effort notification to the indexer.
         registry
-            .delete_pending_cancellation(event.agreement_id, cancellation.old_agreement_id)
+            .delete_pending_cancellation(*agreement_id, cancellation.old_agreement_id)
             .await?;
 
         if let Err(err) = worker_queue
@@ -587,7 +594,7 @@ where
             );
         } else {
             tracing::info!(
-                new_agreement_id = %event.agreement_id,
+                new_agreement_id = %agreement_id,
                 old_agreement_id = %cancellation.old_agreement_id,
                 "Cancelled old agreement after replacement confirmed on-chain"
             );
@@ -598,7 +605,7 @@ where
         anyhow::bail!(
             "{transient_failures} pending cancellation(s) failed for agreement {}; \
              records retained for retry",
-            event.agreement_id,
+            agreement_id,
         );
     }
 
@@ -622,16 +629,18 @@ where
         "Processing IndexingAgreementCanceled event"
     );
 
-    // Look up the agreement in our DB
+    // The event's agreement_id is the on-chain bytes16 packed into a UUID.
+    // Look up by on_chain_id to find the matching dipper agreement.
+    let on_chain_id_bytes = event.agreement_id.into_bytes();
     let agreement = match registry
-        .get_indexing_agreement_by_id(&event.agreement_id)
+        .get_indexing_agreement_by_on_chain_id(&on_chain_id_bytes)
         .await?
     {
         Some(a) => a,
         None => {
             tracing::debug!(
-                agreement_id = %event.agreement_id,
-                "Agreement not found in DB (may be from another payer)"
+                on_chain_id = %event.agreement_id,
+                "Agreement not found by on_chain_id (may be from another payer)"
             );
             return Ok(());
         }
@@ -645,19 +654,21 @@ where
             if canceled_by_us {
                 // We initiated the cancellation - update to CanceledByRequester
                 registry
-                    .mark_indexing_agreement_as_canceled_by_requester(&event.agreement_id)
+                    .mark_indexing_agreement_as_canceled_by_requester(&agreement.id)
                     .await?;
                 tracing::info!(
-                    agreement_id = %event.agreement_id,
+                    agreement_id = %agreement.id,
+                    on_chain_id = %event.agreement_id,
                     "Agreement marked as CanceledByRequester (on-chain confirmation)"
                 );
             } else {
                 // Indexer initiated the cancellation
                 registry
-                    .mark_indexing_agreement_as_canceled_by_indexer(&event.agreement_id)
+                    .mark_indexing_agreement_as_canceled_by_indexer(&agreement.id)
                     .await?;
                 tracing::info!(
-                    agreement_id = %event.agreement_id,
+                    agreement_id = %agreement.id,
+                    on_chain_id = %event.agreement_id,
                     indexer = %event.indexer,
                     "Agreement marked as CanceledByIndexer"
                 );
@@ -667,7 +678,8 @@ where
         | IndexingAgreementStatus::CanceledByIndexer => {
             // Already in a canceled state, nothing to do
             tracing::debug!(
-                agreement_id = %event.agreement_id,
+                agreement_id = %agreement.id,
+                on_chain_id = %event.agreement_id,
                 status = %agreement.status,
                 "Agreement already canceled, ignoring event"
             );
@@ -675,7 +687,8 @@ where
         status => {
             // Unexpected status for a cancellation event
             tracing::warn!(
-                agreement_id = %event.agreement_id,
+                agreement_id = %agreement.id,
+                on_chain_id = %event.agreement_id,
                 status = %status,
                 canceled_by = %event.canceled_by,
                 "Received cancellation event for agreement in unexpected status"
@@ -759,6 +772,8 @@ mod tests {
     #[derive(Default)]
     struct MockRegistryState {
         agreements: std::collections::HashMap<IndexingAgreementId, IndexingAgreement>,
+        /// Maps on_chain_id bytes -> agreement UUID for lookup-by-on-chain-id.
+        on_chain_ids: std::collections::HashMap<Vec<u8>, IndexingAgreementId>,
         marked_accepted_on_chain: Vec<IndexingAgreementId>,
         marked_canceled_by_requester: Vec<IndexingAgreementId>,
         marked_canceled_by_indexer: Vec<IndexingAgreementId>,
@@ -794,6 +809,16 @@ mod tests {
                 rejection_reason: None,
             };
             self.state.lock().unwrap().agreements.insert(id, agreement);
+        }
+
+        /// Register the on-chain ID mapping for an agreement so
+        /// `get_indexing_agreement_by_on_chain_id` can find it.
+        fn set_on_chain_id(&self, on_chain_id: &[u8], agreement_id: IndexingAgreementId) {
+            self.state
+                .lock()
+                .unwrap()
+                .on_chain_ids
+                .insert(on_chain_id.to_vec(), agreement_id);
         }
 
         fn add_pending_cancellation(
@@ -865,6 +890,18 @@ mod tests {
             Ok(self.state.lock().unwrap().agreements.get(id).cloned())
         }
 
+        async fn get_indexing_agreement_by_on_chain_id(
+            &self,
+            on_chain_id: &[u8],
+        ) -> RegistryResult<Option<IndexingAgreement>> {
+            let state = self.state.lock().unwrap();
+            // Find by matching on_chain_id stored in the mock's on_chain_ids map
+            if let Some(agreement_id) = state.on_chain_ids.get(on_chain_id) {
+                return Ok(state.agreements.get(agreement_id).cloned());
+            }
+            Ok(None)
+        }
+
         async fn get_indexing_agreements_by_deployment_id(
             &self,
             _deployment_id: &DeploymentId,
@@ -911,23 +948,27 @@ mod tests {
 
         async fn register_new_indexing_agreement(
             &self,
+            _agreement_id: IndexingAgreementId,
             _request_id: IndexingRequestId,
             _deployment_id: DeploymentId,
             _indexer_id: IndexerId,
             _indexer_url: Url,
             _voucher: Voucher,
+            _on_chain_id: &[u8],
         ) -> RegistryResult<IndexingAgreementId> {
             Ok(IndexingAgreementId::new())
         }
 
         async fn register_agreement_with_pending_cancellation(
             &self,
+            _agreement_id: IndexingAgreementId,
             _request_id: IndexingRequestId,
             _deployment_id: DeploymentId,
             _indexer_id: IndexerId,
             _indexer_url: Url,
             _voucher: Voucher,
             _old_agreement_id: IndexingAgreementId,
+            _on_chain_id: &[u8],
         ) -> RegistryResult<IndexingAgreementId> {
             Ok(IndexingAgreementId::new())
         }
@@ -1173,6 +1214,7 @@ mod tests {
         let agreement_id = IndexingAgreementId::new();
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::Created);
+        registry.set_on_chain_id(&agreement_id.into_bytes(), agreement_id);
 
         let event = AcceptedAgreementEvent {
             agreement_id,
@@ -1199,6 +1241,7 @@ mod tests {
         let agreement_id = IndexingAgreementId::new();
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::Rejected);
+        registry.set_on_chain_id(&agreement_id.into_bytes(), agreement_id);
 
         let event = AcceptedAgreementEvent {
             agreement_id,
@@ -1256,6 +1299,7 @@ mod tests {
         // chain_listener saw the on-chain acceptance. The contract guarantees
         // the acceptance was within the RCA deadline, so we should recover.
         registry.add_agreement(agreement_id, IndexingAgreementStatus::Expired);
+        registry.set_on_chain_id(&agreement_id.into_bytes(), agreement_id);
         registry.add_agreement(old_agreement_id, IndexingAgreementStatus::AcceptedOnChain);
         registry.add_pending_cancellation(agreement_id, old_agreement_id, request_id);
 
@@ -1291,6 +1335,7 @@ mod tests {
             .unwrap();
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::AcceptedOnChain);
+        registry.set_on_chain_id(&agreement_id.into_bytes(), agreement_id);
 
         let event = CanceledAgreementEvent {
             agreement_id,
@@ -1318,6 +1363,7 @@ mod tests {
             .unwrap();
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::AcceptedOnChain);
+        registry.set_on_chain_id(&agreement_id.into_bytes(), agreement_id);
 
         let event = CanceledAgreementEvent {
             agreement_id,
@@ -1345,6 +1391,7 @@ mod tests {
             .unwrap();
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::CanceledByIndexer);
+        registry.set_on_chain_id(&agreement_id.into_bytes(), agreement_id);
 
         let event = CanceledAgreementEvent {
             agreement_id,
@@ -1363,19 +1410,6 @@ mod tests {
 
     // -- execute_pending_cancellations tests --
 
-    fn test_accepted_event(agreement_id: IndexingAgreementId) -> AcceptedAgreementEvent {
-        AcceptedAgreementEvent {
-            agreement_id,
-            indexer: "0x1234567890123456789012345678901234567890"
-                .parse()
-                .unwrap(),
-            allocation_id: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
-                .parse()
-                .unwrap(),
-            block_number: 100,
-        }
-    }
-
     #[tokio::test]
     async fn test_pending_cancellations_all_succeed_records_deleted() {
         // Arrange
@@ -1392,10 +1426,8 @@ mod tests {
         registry.add_pending_cancellation(new_id, old_id_1, request_id);
         registry.add_pending_cancellation(new_id, old_id_2, request_id);
 
-        let event = test_accepted_event(new_id);
-
         // Act
-        let result = execute_pending_cancellations(&event, &registry, &worker_queue).await;
+        let result = execute_pending_cancellations(&new_id, &registry, &worker_queue).await;
 
         // Assert
         assert!(result.is_ok());
@@ -1428,10 +1460,8 @@ mod tests {
         registry.add_pending_cancellation(new_id, old_fail, request_id);
         registry.fail_cancel_for(old_fail);
 
-        let event = test_accepted_event(new_id);
-
         // Act
-        let result = execute_pending_cancellations(&event, &registry, &worker_queue).await;
+        let result = execute_pending_cancellations(&new_id, &registry, &worker_queue).await;
 
         // Assert: function returns error due to transient failure
         assert!(result.is_err());
@@ -1481,10 +1511,8 @@ mod tests {
         // Remove the old agreement so get_indexing_agreement_by_id returns None.
         registry.state.lock().unwrap().agreements.remove(&old_id);
 
-        let event = test_accepted_event(new_id);
-
         // Act
-        let result = execute_pending_cancellations(&event, &registry, &worker_queue).await;
+        let result = execute_pending_cancellations(&new_id, &registry, &worker_queue).await;
 
         // Assert
         assert!(result.is_ok());
@@ -1501,10 +1529,8 @@ mod tests {
         let new_id = IndexingAgreementId::new();
         registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
 
-        let event = test_accepted_event(new_id);
-
         // Act
-        let result = execute_pending_cancellations(&event, &registry, &worker_queue).await;
+        let result = execute_pending_cancellations(&new_id, &registry, &worker_queue).await;
 
         // Assert
         assert!(result.is_ok());

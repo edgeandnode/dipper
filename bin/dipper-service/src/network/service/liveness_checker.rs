@@ -930,23 +930,33 @@ mod tests {
         }
         async fn register_new_indexing_agreement(
             &self,
+            _agreement_id: IndexingAgreementId,
             _req_id: IndexingRequestId,
             _dep_id: DeploymentId,
             _idx_id: IndexerId,
             _url: Url,
             _voucher: crate::registry::IndexingAgreementVoucher,
+            _on_chain_id: &[u8],
         ) -> RegistryResult<IndexingAgreementId> {
             unimplemented!()
         }
         async fn register_agreement_with_pending_cancellation(
             &self,
+            _agreement_id: IndexingAgreementId,
             _req_id: IndexingRequestId,
             _dep_id: DeploymentId,
             _idx_id: IndexerId,
             _url: Url,
             _voucher: crate::registry::IndexingAgreementVoucher,
             _old_agreement_id: IndexingAgreementId,
+            _on_chain_id: &[u8],
         ) -> RegistryResult<IndexingAgreementId> {
+            unimplemented!()
+        }
+        async fn get_indexing_agreement_by_on_chain_id(
+            &self,
+            _on_chain_id: &[u8],
+        ) -> RegistryResult<Option<IndexingAgreement>> {
             unimplemented!()
         }
         async fn mark_indexing_agreement_as_delivery_failed(

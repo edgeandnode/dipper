@@ -220,11 +220,13 @@ impl PgRegistry {
 
     pub async fn register_new_indexing_agreement(
         &self,
+        agreement_id: IndexingAgreementId,
         request_id: IndexingRequestId,
         deployment_id: DeploymentId,
         indexer_id: IndexerId,
         indexer_url: Url,
         voucher: Voucher,
+        on_chain_id: &[u8],
     ) -> Result<IndexingAgreementId, Error> {
         sqlx::query_as(
             r#"
@@ -237,22 +239,24 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher
+                voucher,
+                on_chain_id
             )
             VALUES (
                 $1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, $5,
-                $6, $7
+                $6, $7, $8
             )
             RETURNING id
             "#,
         )
-        .bind(IndexingAgreementId::new())
+        .bind(agreement_id)
         .bind(IndexingAgreementStatus::default())
         .bind(request_id)
         .bind(PgDeploymentId(deployment_id))
         .bind(PgIndexerId(indexer_id))
         .bind(PgUrl(indexer_url))
         .bind(Json(voucher))
+        .bind(on_chain_id)
         .fetch_one(&self.pool)
         .await
         .map(|(id,)| id)
@@ -283,6 +287,35 @@ impl PgRegistry {
             "#,
         )
         .bind(agreement_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    pub async fn get_indexing_agreement_by_on_chain_id(
+        &self,
+        on_chain_id: &[u8],
+    ) -> Result<Option<IndexingAgreement>, Error> {
+        sqlx::query_as(
+            r#"
+            SELECT
+                id,
+                created_at,
+                updated_at,
+                status,
+                indexing_request_id,
+                deployment_id,
+                indexer_id,
+                indexer_url,
+                voucher,
+                last_block_height,
+                last_progress_at,
+                rejection_reason
+            FROM dipper_reg_indexing_agreements
+            WHERE on_chain_id = $1
+            "#,
+        )
+        .bind(on_chain_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Into::into)
@@ -1127,12 +1160,14 @@ impl PgRegistry {
     /// cancellation linking it to the old agreement also exists.
     pub async fn register_agreement_with_pending_cancellation(
         &self,
+        agreement_id: IndexingAgreementId,
         request_id: IndexingRequestId,
         deployment_id: DeploymentId,
         indexer_id: IndexerId,
         indexer_url: Url,
         voucher: Voucher,
         old_agreement_id: IndexingAgreementId,
+        on_chain_id: &[u8],
     ) -> Result<IndexingAgreementId, Error> {
         let mut tx = self.pool.begin().await?;
 
@@ -1147,22 +1182,24 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher
+                voucher,
+                on_chain_id
             )
             VALUES (
                 $1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, $5,
-                $6, $7
+                $6, $7, $8
             )
             RETURNING id
             "#,
         )
-        .bind(IndexingAgreementId::new())
+        .bind(agreement_id)
         .bind(IndexingAgreementStatus::default())
         .bind(request_id)
         .bind(PgDeploymentId(deployment_id))
         .bind(PgIndexerId(indexer_id))
         .bind(PgUrl(indexer_url))
         .bind(Json(voucher))
+        .bind(on_chain_id)
         .fetch_one(&mut *tx)
         .await?;
 
