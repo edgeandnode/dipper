@@ -99,7 +99,7 @@ pub trait AgreementRegistry {
         indexer_id: IndexerId,
         indexer_url: Url,
         voucher: Voucher,
-        on_chain_id: &[u8],
+        on_chain_id: &[u8; 16],
     ) -> RegistryResult<IndexingAgreementId>;
 
     /// Register a new agreement and record a pending cancellation atomically.
@@ -117,7 +117,7 @@ pub trait AgreementRegistry {
         indexer_url: Url,
         voucher: Voucher,
         old_agreement_id: IndexingAgreementId,
-        on_chain_id: &[u8],
+        on_chain_id: &[u8; 16],
     ) -> RegistryResult<IndexingAgreementId>;
 
     /// Look up an agreement by its on-chain agreement ID (bytes16).
@@ -128,7 +128,7 @@ pub trait AgreementRegistry {
     /// back to dipper's internal agreements.
     async fn get_indexing_agreement_by_on_chain_id(
         &self,
-        on_chain_id: &[u8],
+        on_chain_id: &[u8; 16],
     ) -> RegistryResult<Option<IndexingAgreement>>;
 
     /// Mark an indexing agreement as `DELIVERY_FAILED`.

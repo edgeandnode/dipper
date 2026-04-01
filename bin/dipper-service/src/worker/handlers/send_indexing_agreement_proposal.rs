@@ -426,7 +426,7 @@ mod tests {
             _indexer_id: IndexerId,
             _indexer_url: Url,
             _voucher: IndexingAgreementVoucher,
-            _on_chain_id: &[u8],
+            _on_chain_id: &[u8; 16],
         ) -> crate::registry::Result<IndexingAgreementId> {
             Ok(IndexingAgreementId::new())
         }
@@ -440,14 +440,14 @@ mod tests {
             _indexer_url: Url,
             _voucher: IndexingAgreementVoucher,
             _old_agreement_id: IndexingAgreementId,
-            _on_chain_id: &[u8],
+            _on_chain_id: &[u8; 16],
         ) -> crate::registry::Result<IndexingAgreementId> {
             Ok(IndexingAgreementId::new())
         }
 
         async fn get_indexing_agreement_by_on_chain_id(
             &self,
-            _on_chain_id: &[u8],
+            _on_chain_id: &[u8; 16],
         ) -> crate::registry::Result<Option<IndexingAgreement>> {
             Ok(None)
         }

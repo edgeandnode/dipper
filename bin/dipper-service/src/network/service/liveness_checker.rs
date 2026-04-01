@@ -936,7 +936,7 @@ mod tests {
             _idx_id: IndexerId,
             _url: Url,
             _voucher: crate::registry::IndexingAgreementVoucher,
-            _on_chain_id: &[u8],
+            _on_chain_id: &[u8; 16],
         ) -> RegistryResult<IndexingAgreementId> {
             unimplemented!()
         }
@@ -949,13 +949,13 @@ mod tests {
             _url: Url,
             _voucher: crate::registry::IndexingAgreementVoucher,
             _old_agreement_id: IndexingAgreementId,
-            _on_chain_id: &[u8],
+            _on_chain_id: &[u8; 16],
         ) -> RegistryResult<IndexingAgreementId> {
             unimplemented!()
         }
         async fn get_indexing_agreement_by_on_chain_id(
             &self,
-            _on_chain_id: &[u8],
+            _on_chain_id: &[u8; 16],
         ) -> RegistryResult<Option<IndexingAgreement>> {
             unimplemented!()
         }

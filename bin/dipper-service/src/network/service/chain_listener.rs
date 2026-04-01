@@ -813,7 +813,7 @@ mod tests {
 
         /// Register the on-chain ID mapping for an agreement so
         /// `get_indexing_agreement_by_on_chain_id` can find it.
-        fn set_on_chain_id(&self, on_chain_id: &[u8], agreement_id: IndexingAgreementId) {
+        fn set_on_chain_id(&self, on_chain_id: &[u8; 16], agreement_id: IndexingAgreementId) {
             self.state
                 .lock()
                 .unwrap()
@@ -892,11 +892,11 @@ mod tests {
 
         async fn get_indexing_agreement_by_on_chain_id(
             &self,
-            on_chain_id: &[u8],
+            on_chain_id: &[u8; 16],
         ) -> RegistryResult<Option<IndexingAgreement>> {
             let state = self.state.lock().unwrap();
             // Find by matching on_chain_id stored in the mock's on_chain_ids map
-            if let Some(agreement_id) = state.on_chain_ids.get(on_chain_id) {
+            if let Some(agreement_id) = state.on_chain_ids.get(on_chain_id.as_slice()) {
                 return Ok(state.agreements.get(agreement_id).cloned());
             }
             Ok(None)
@@ -954,7 +954,7 @@ mod tests {
             _indexer_id: IndexerId,
             _indexer_url: Url,
             _voucher: Voucher,
-            _on_chain_id: &[u8],
+            _on_chain_id: &[u8; 16],
         ) -> RegistryResult<IndexingAgreementId> {
             Ok(IndexingAgreementId::new())
         }
@@ -968,7 +968,7 @@ mod tests {
             _indexer_url: Url,
             _voucher: Voucher,
             _old_agreement_id: IndexingAgreementId,
-            _on_chain_id: &[u8],
+            _on_chain_id: &[u8; 16],
         ) -> RegistryResult<IndexingAgreementId> {
             Ok(IndexingAgreementId::new())
         }

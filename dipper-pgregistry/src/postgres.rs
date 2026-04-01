@@ -226,7 +226,7 @@ impl PgRegistry {
         indexer_id: IndexerId,
         indexer_url: Url,
         voucher: Voucher,
-        on_chain_id: &[u8],
+        on_chain_id: &[u8; 16],
     ) -> Result<IndexingAgreementId, Error> {
         sqlx::query_as(
             r#"
@@ -294,7 +294,7 @@ impl PgRegistry {
 
     pub async fn get_indexing_agreement_by_on_chain_id(
         &self,
-        on_chain_id: &[u8],
+        on_chain_id: &[u8; 16],
     ) -> Result<Option<IndexingAgreement>, Error> {
         sqlx::query_as(
             r#"
@@ -1167,7 +1167,7 @@ impl PgRegistry {
         indexer_url: Url,
         voucher: Voucher,
         old_agreement_id: IndexingAgreementId,
-        on_chain_id: &[u8],
+        on_chain_id: &[u8; 16],
     ) -> Result<IndexingAgreementId, Error> {
         let mut tx = self.pool.begin().await?;
 

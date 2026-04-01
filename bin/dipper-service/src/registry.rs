@@ -248,7 +248,7 @@ impl AgreementRegistry for RegistryProvider {
         indexer_id: IndexerId,
         indexer_url: Url,
         voucher: IndexingAgreementVoucher,
-        on_chain_id: &[u8],
+        on_chain_id: &[u8; 16],
     ) -> RegistryResult<IndexingAgreementId> {
         self.inner
             .register_new_indexing_agreement(
@@ -273,7 +273,7 @@ impl AgreementRegistry for RegistryProvider {
         indexer_url: Url,
         voucher: IndexingAgreementVoucher,
         old_agreement_id: IndexingAgreementId,
-        on_chain_id: &[u8],
+        on_chain_id: &[u8; 16],
     ) -> RegistryResult<IndexingAgreementId> {
         self.inner
             .register_agreement_with_pending_cancellation(
@@ -292,7 +292,7 @@ impl AgreementRegistry for RegistryProvider {
 
     async fn get_indexing_agreement_by_on_chain_id(
         &self,
-        on_chain_id: &[u8],
+        on_chain_id: &[u8; 16],
     ) -> RegistryResult<Option<IndexingAgreement>> {
         Ok(self
             .inner
