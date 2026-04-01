@@ -511,6 +511,7 @@ fn calculate_retry_delay(attempt: u32) -> Duration {
 
 /// Mock implementation for testing.
 #[cfg(test)]
+#[allow(dead_code)]
 pub mod mock {
     use std::sync::{Arc, Mutex};
 
