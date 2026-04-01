@@ -284,11 +284,13 @@ async fn register_new_indexing_agreement_no_indexing_request() {
     //* When
     let res = registry
         .register_new_indexing_agreement(
+            IndexingAgreementId::new(),
             indexing_request_id,
             deployment_id,
             indexer_id,
             indexer_url,
             agreement_voucher,
+            &[0u8; 16],
         )
         .await;
 
@@ -323,11 +325,13 @@ async fn register_new_indexing_agreement() {
     //* When
     let res = registry
         .register_new_indexing_agreement(
+            IndexingAgreementId::new(),
             indexing_request_id,
             deployment_id,
             indexer_id,
             indexer_url,
             agreement_voucher,
+            &[0u8; 16],
         )
         .await;
 
@@ -364,11 +368,13 @@ async fn register_new_and_get_indexing_agreement_by_id() {
     // Register a new indexing agreement
     let indexing_agreement_id = registry
         .register_new_indexing_agreement(
+            IndexingAgreementId::new(),
             indexing_request_id,
             deployment_id,
             indexer_id,
             indexer_url,
             agreement_voucher,
+            &[0u8; 16],
         )
         .await
         .expect("Failed to register new indexing agreement");
@@ -487,11 +493,13 @@ async fn register_new_indexing_receipt() {
     // Register a new indexing agreement
     let indexing_agreement_id = registry
         .register_new_indexing_agreement(
+            IndexingAgreementId::new(),
             indexing_request_id,
             deployment_id,
             indexer_id,
             indexer_url,
             agreement_voucher,
+            &[0u8; 16],
         )
         .await
         .expect("Failed to register new indexing agreement");
