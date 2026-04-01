@@ -17,7 +17,10 @@ use std::{str::FromStr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use dipper_core::ids::IndexingAgreementId;
-use dipper_rpc::indexer::indexer_client::{rpc, rpc::SubmitAgreementProposalResponse, sol};
+use dipper_rpc::indexer::{
+    derive_agreement_id,
+    indexer_client::{rpc, rpc::SubmitAgreementProposalResponse, sol},
+};
 use thegraph_core::alloy::{
     primitives::{B256, U256},
     sol_types::SolValue,
@@ -186,7 +189,7 @@ impl IndexerClient for DipsIndexerClient {
         voucher: IndexingAgreementVoucher,
     ) -> Result<SubmitAgreementProposalResponse, DipsError> {
         // Convert to the RCA solidity data structure
-        let sol_rca = into_sol_rca(indexing_agreement_id, voucher);
+        let (sol_rca, _on_chain_id) = into_sol_rca(indexing_agreement_id, voucher);
 
         // Sign the RCA with the RecurringCollector EIP-712 domain
         let signed = self
@@ -269,12 +272,28 @@ impl IndexerClient for DipsIndexerClient {
     }
 }
 
+/// Compute the on-chain agreement ID (bytes16) for a voucher.
+///
+/// This replicates the contract's derivation:
+/// `bytes16(keccak256(abi.encode(payer, dataService, serviceProvider, deadline, nonce)))`
+///
+/// Used by worker handlers to store the on_chain_id at agreement registration time.
+pub fn compute_on_chain_id(
+    agreement_id: IndexingAgreementId,
+    voucher: &IndexingAgreementVoucher,
+) -> [u8; 16] {
+    let (_, on_chain_id) = into_sol_rca(agreement_id, voucher.clone());
+    on_chain_id
+}
+
 /// Convert an internal voucher to the on-chain `RecurringCollectionAgreement` sol type.
+///
+/// Returns the RCA and the derived on-chain agreement ID (bytes16).
 #[inline]
 fn into_sol_rca(
     agreement_id: IndexingAgreementId,
     voucher: IndexingAgreementVoucher,
-) -> sol::RecurringCollectionAgreement {
+) -> (sol::RecurringCollectionAgreement, [u8; 16]) {
     // Build the V1 pricing terms
     let terms = sol::IndexingAgreementTermsV1 {
         tokensPerSecond: voucher.metadata.tokens_per_second,
@@ -295,7 +314,7 @@ fn into_sol_rca(
     nonce_bytes[16..].copy_from_slice(agreement_id.as_bytes());
     let nonce = U256::from_be_bytes(nonce_bytes);
 
-    sol::RecurringCollectionAgreement {
+    let rca = sol::RecurringCollectionAgreement {
         deadline: voucher.deadline,
         endsAt: voucher.ends_at,
         payer: voucher.payer,
@@ -307,7 +326,9 @@ fn into_sol_rca(
         maxSecondsPerCollection: voucher.max_seconds_per_collection,
         nonce,
         metadata: metadata.into(),
-    }
+    };
+    let on_chain_id = derive_agreement_id(&rca);
+    (rca, on_chain_id)
 }
 
 #[inline]
@@ -367,7 +388,7 @@ mod tests {
         };
 
         //* Act
-        let rca = into_sol_rca(agreement_id, voucher);
+        let (rca, _on_chain_id) = into_sol_rca(agreement_id, voucher);
 
         //* Assert
         // Verify top-level fields

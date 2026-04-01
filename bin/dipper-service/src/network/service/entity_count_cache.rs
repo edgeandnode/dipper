@@ -249,7 +249,7 @@ mod tests {
         };
         let result = parse_entity_entry(&entry);
         assert!(result.is_some());
-        let ((indexer, deployment), entities) = result.unwrap();
+        let ((indexer, _deployment), entities) = result.unwrap();
         assert_eq!(
             indexer,
             "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

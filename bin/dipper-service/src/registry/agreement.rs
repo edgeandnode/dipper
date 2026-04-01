@@ -22,6 +22,7 @@ use url::Url;
 use super::result::Result as RegistryResult;
 
 #[async_trait]
+#[allow(clippy::too_many_arguments)]
 pub trait AgreementRegistry {
     /// Get agreement by ID.
     async fn get_indexing_agreement_by_id(
@@ -87,13 +88,19 @@ pub trait AgreementRegistry {
     ) -> RegistryResult<Vec<IndexingAgreement>>;
 
     /// Register a new indexing agreement.
+    ///
+    /// The caller generates the `agreement_id` and `on_chain_id` so the
+    /// on-chain agreement ID can be derived from the voucher nonce (which
+    /// embeds the agreement UUID) before the row is inserted.
     async fn register_new_indexing_agreement(
         &self,
+        agreement_id: IndexingAgreementId,
         request_id: IndexingRequestId,
         deployment_id: DeploymentId,
         indexer_id: IndexerId,
         indexer_url: Url,
         voucher: Voucher,
+        on_chain_id: &[u8; 16],
     ) -> RegistryResult<IndexingAgreementId>;
 
     /// Register a new agreement and record a pending cancellation atomically.
@@ -104,13 +111,26 @@ pub trait AgreementRegistry {
     /// corresponding pending cancellation.
     async fn register_agreement_with_pending_cancellation(
         &self,
+        agreement_id: IndexingAgreementId,
         request_id: IndexingRequestId,
         deployment_id: DeploymentId,
         indexer_id: IndexerId,
         indexer_url: Url,
         voucher: Voucher,
         old_agreement_id: IndexingAgreementId,
+        on_chain_id: &[u8; 16],
     ) -> RegistryResult<IndexingAgreementId>;
+
+    /// Look up an agreement by its on-chain agreement ID (bytes16).
+    ///
+    /// The on-chain ID is derived from `keccak256(abi.encode(payer, dataService,
+    /// serviceProvider, deadline, nonce))` truncated to 16 bytes. It is stored at
+    /// agreement creation time so the chain_listener can match on-chain events
+    /// back to dipper's internal agreements.
+    async fn get_indexing_agreement_by_on_chain_id(
+        &self,
+        on_chain_id: &[u8; 16],
+    ) -> RegistryResult<Option<IndexingAgreement>>;
 
     /// Mark an indexing agreement as `DELIVERY_FAILED`.
     ///

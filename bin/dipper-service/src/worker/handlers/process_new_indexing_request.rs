@@ -16,6 +16,7 @@ use thegraph_core::{
 use super::selection_context::gather_selection_context;
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
+    indexer_rpc_client::compute_on_chain_id,
     network::{NetworkProvider, service::entity_count_cache::EntityCountCache},
     registry::{
         AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementVoucher,
@@ -275,14 +276,21 @@ where
             "Creating agreement with pricing"
         );
 
+        // Generate the agreement ID up front so we can derive the on-chain ID
+        // (the nonce is derived from the UUID, so we need it before INSERT).
+        let agreement_id_candidate = dipper_core::ids::IndexingAgreementId::new();
+        let on_chain_id = compute_on_chain_id(agreement_id_candidate, &voucher);
+
         let agreement_id = match ctx
             .registry
             .register_new_indexing_agreement(
+                agreement_id_candidate,
                 *indexing_request_id,
                 *deployment_id,
                 indexer.id,
                 indexer.url.clone(),
                 voucher,
+                &on_chain_id,
             )
             .await
         {

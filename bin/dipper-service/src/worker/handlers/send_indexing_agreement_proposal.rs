@@ -420,25 +420,36 @@ mod tests {
 
         async fn register_new_indexing_agreement(
             &self,
+            _agreement_id: IndexingAgreementId,
             _request_id: IndexingRequestId,
             _deployment_id: DeploymentId,
             _indexer_id: IndexerId,
             _indexer_url: Url,
             _voucher: IndexingAgreementVoucher,
+            _on_chain_id: &[u8; 16],
         ) -> crate::registry::Result<IndexingAgreementId> {
             Ok(IndexingAgreementId::new())
         }
 
         async fn register_agreement_with_pending_cancellation(
             &self,
+            _agreement_id: IndexingAgreementId,
             _request_id: IndexingRequestId,
             _deployment_id: DeploymentId,
             _indexer_id: IndexerId,
             _indexer_url: Url,
             _voucher: IndexingAgreementVoucher,
             _old_agreement_id: IndexingAgreementId,
+            _on_chain_id: &[u8; 16],
         ) -> crate::registry::Result<IndexingAgreementId> {
             Ok(IndexingAgreementId::new())
+        }
+
+        async fn get_indexing_agreement_by_on_chain_id(
+            &self,
+            _on_chain_id: &[u8; 16],
+        ) -> crate::registry::Result<Option<IndexingAgreement>> {
+            Ok(None)
         }
 
         async fn mark_indexing_agreement_as_delivery_failed(
