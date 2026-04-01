@@ -1235,6 +1235,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_process_accepted_event_matches_by_on_chain_id_not_uuid() {
+        let registry = MockRegistry::new();
+        let worker_queue = MockWorkerQueue::default();
+        let agreement_id = IndexingAgreementId::new();
+        let on_chain_bytes: [u8; 16] = [0xAA; 16]; // distinct from the UUID
+
+        registry.add_agreement(agreement_id, IndexingAgreementStatus::Created);
+        registry.set_on_chain_id(&on_chain_bytes, agreement_id);
+
+        // Event arrives with the on-chain bytes, not the internal UUID
+        let event = AcceptedAgreementEvent {
+            agreement_id: IndexingAgreementId::from_bytes(on_chain_bytes),
+            indexer: "0x1234567890123456789012345678901234567890"
+                .parse()
+                .unwrap(),
+            allocation_id: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+                .parse()
+                .unwrap(),
+            block_number: 100,
+        };
+
+        let result = process_accepted_event(&event, &registry, &worker_queue).await;
+
+        assert!(result.is_ok());
+        assert!(registry.was_marked_accepted_on_chain(&agreement_id));
+    }
+
+    #[tokio::test]
     async fn test_process_accepted_event_queues_cancellation_for_rejected() {
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
