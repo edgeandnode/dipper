@@ -218,6 +218,7 @@ impl PgRegistry {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn register_new_indexing_agreement(
         &self,
         agreement_id: IndexingAgreementId,
@@ -1158,6 +1159,7 @@ impl PgRegistry {
     /// Register a new agreement and record a pending cancellation in a single
     /// transaction. Guarantees that if the agreement row exists, the pending
     /// cancellation linking it to the old agreement also exists.
+    #[allow(clippy::too_many_arguments)]
     pub async fn register_agreement_with_pending_cancellation(
         &self,
         agreement_id: IndexingAgreementId,
