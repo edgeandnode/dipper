@@ -794,8 +794,9 @@ mod tests {
         last_block_height: Option<u64>,
         last_progress_at: Option<OffsetDateTime>,
     ) -> IndexingAgreement {
+        let agreement_id = IndexingAgreementId::new();
         IndexingAgreement {
-            id: IndexingAgreementId::new(),
+            id: agreement_id,
             created_at: OffsetDateTime::now_utc(),
             updated_at: OffsetDateTime::now_utc(),
             status: IndexingAgreementStatus::AcceptedOnChain,
@@ -825,7 +826,7 @@ mod tests {
             last_block_height,
             last_progress_at,
             rejection_reason: None,
-            on_chain_id: [0u8; 16],
+            on_chain_id: *agreement_id.as_bytes(),
         }
     }
 
