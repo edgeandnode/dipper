@@ -107,6 +107,10 @@ pub struct IndexingAgreement {
     ///
     /// Values from the `rejection_reason` module constants, or None.
     pub rejection_reason: Option<String>,
+
+    /// The on-chain agreement ID (bytes16), derived from
+    /// `keccak256(abi.encode(payer, dataService, serviceProvider, deadline, nonce))[0..16]`.
+    pub on_chain_id: [u8; 16],
 }
 
 /// The status of the [`IndexingAgreement`].

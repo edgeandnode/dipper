@@ -807,6 +807,7 @@ mod tests {
                 last_block_height: None,
                 last_progress_at: None,
                 rejection_reason: None,
+                on_chain_id: [0u8; 16],
             };
             self.state.lock().unwrap().agreements.insert(id, agreement);
         }

@@ -61,11 +61,14 @@ pub trait IndexerClient {
         voucher: IndexingAgreementVoucher,
     ) -> Result<SubmitAgreementProposalResponse, DipsError>;
 
-    /// Send an indexing agreement cancel request to the indexer
+    /// Send an indexing agreement cancel request to the indexer.
+    ///
+    /// The `on_chain_id` is the keccak-derived bytes16 stored on-chain.
     async fn send_indexing_agreement_cancellation_notification(
         &self,
         indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
+        on_chain_id: &[u8; 16],
     ) -> Result<(), DipsError>;
 }
 
@@ -235,9 +238,10 @@ impl IndexerClient for DipsIndexerClient {
         &self,
         indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
+        on_chain_id: &[u8; 16],
     ) -> Result<(), DipsError> {
         // Convert to the solidity cancellation request data structure
-        let sol_cancellation_request = into_sol_cancellation_request(indexing_agreement_id);
+        let sol_cancellation_request = into_sol_cancellation_request(on_chain_id);
 
         // Sign the solidity cancellation request with the appropriate domain
         let signed = self
@@ -332,9 +336,9 @@ fn into_sol_rca(
 }
 
 #[inline]
-fn into_sol_cancellation_request(agreement_id: IndexingAgreementId) -> sol::CancellationRequest {
+fn into_sol_cancellation_request(on_chain_id: &[u8; 16]) -> sol::CancellationRequest {
     sol::CancellationRequest {
-        agreement_id: agreement_id.as_bytes().into(),
+        agreement_id: on_chain_id.into(),
     }
 }
 

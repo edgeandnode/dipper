@@ -174,7 +174,8 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                on_chain_id
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1 AND status IN ($2, $3)
             "#,
@@ -282,7 +283,8 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                on_chain_id
             FROM dipper_reg_indexing_agreements
             WHERE id = $1
             "#,
@@ -311,7 +313,8 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                on_chain_id
             FROM dipper_reg_indexing_agreements
             WHERE on_chain_id = $1
             "#,
@@ -340,7 +343,8 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                on_chain_id
             FROM dipper_reg_indexing_agreements
             WHERE deployment_id = $1
             "#,
@@ -369,7 +373,8 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                on_chain_id
             FROM dipper_reg_indexing_agreements
             WHERE indexer_id = $1
             "#,
@@ -513,7 +518,8 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                on_chain_id
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1
             "#,
@@ -809,7 +815,8 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                on_chain_id
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
               AND CAST(voucher->>'deadline' AS bigint) < $3
@@ -919,7 +926,8 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                on_chain_id
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
             ORDER BY last_progress_at ASC NULLS FIRST
@@ -1018,7 +1026,8 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                on_chain_id
             "#,
         )
         .bind(IndexingAgreementStatus::AbandonedByIndexer)

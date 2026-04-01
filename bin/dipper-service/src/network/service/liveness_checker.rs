@@ -487,7 +487,7 @@ async fn cancel_and_reassess<R, W, C>(
 {
     // 1. Cancel on-chain
     match chain_client
-        .cancel_indexing_agreement_by_payer(agreement.id)
+        .cancel_indexing_agreement_by_payer(&agreement.on_chain_id)
         .await
     {
         Ok(tx_hash) => {
@@ -825,6 +825,7 @@ mod tests {
             last_block_height,
             last_progress_at,
             rejection_reason: None,
+            on_chain_id: [0u8; 16],
         }
     }
 
@@ -851,7 +852,7 @@ mod tests {
         progress_updates: Arc<Mutex<Vec<(IndexingAgreementId, u64)>>>,
         abandoned: Arc<Mutex<Vec<IndexingAgreementId>>>,
         reassessments: Arc<Mutex<Vec<IndexingRequestId>>>,
-        chain_cancels: Arc<Mutex<Vec<IndexingAgreementId>>>,
+        chain_cancels: Arc<Mutex<Vec<[u8; 16]>>>,
     }
 
     struct MockRegistry {
@@ -1216,9 +1217,9 @@ mod tests {
     impl ChainClient for MockChainClient {
         async fn cancel_indexing_agreement_by_payer(
             &self,
-            id: IndexingAgreementId,
+            on_chain_id: &[u8; 16],
         ) -> Result<B256, ChainClientError> {
-            self.calls.chain_cancels.lock().unwrap().push(id);
+            self.calls.chain_cancels.lock().unwrap().push(*on_chain_id);
             match &self.result {
                 Ok(hash) => Ok(*hash),
                 Err(ChainClientError::ConfigError(s)) => {
@@ -1507,7 +1508,10 @@ mod tests {
         .await;
 
         // Assert
-        assert_eq!(calls.chain_cancels.lock().unwrap().as_slice(), &[agr_id]);
+        assert_eq!(
+            calls.chain_cancels.lock().unwrap().as_slice(),
+            &[agreement.on_chain_id]
+        );
         assert_eq!(calls.abandoned.lock().unwrap().as_slice(), &[agr_id]);
         assert_eq!(calls.reassessments.lock().unwrap().as_slice(), &[req_id]);
     }
@@ -1550,7 +1554,10 @@ mod tests {
 
         // Assert: no on-chain cancel (ConfigError is treated as disabled, not a real error)
         // but DB mark and reassessment still happen
-        assert_eq!(calls.chain_cancels.lock().unwrap().as_slice(), &[agr_id]);
+        assert_eq!(
+            calls.chain_cancels.lock().unwrap().as_slice(),
+            &[agreement.on_chain_id]
+        );
         assert_eq!(calls.abandoned.lock().unwrap().as_slice(), &[agr_id]);
         assert_eq!(calls.reassessments.lock().unwrap().as_slice(), &[req_id]);
     }
@@ -1570,7 +1577,6 @@ mod tests {
             Some(100),
             Some(OffsetDateTime::now_utc()),
         );
-        let agr_id = agreement.id;
 
         let calls = MockCalls::default();
         let registry = MockRegistry::with_chain_error(calls.clone(), agreement.clone());
@@ -1591,7 +1597,10 @@ mod tests {
         .await;
 
         // Assert: chain cancel attempted, but DB and queue untouched
-        assert_eq!(calls.chain_cancels.lock().unwrap().as_slice(), &[agr_id]);
+        assert_eq!(
+            calls.chain_cancels.lock().unwrap().as_slice(),
+            &[agreement.on_chain_id]
+        );
         assert!(calls.abandoned.lock().unwrap().is_empty());
         assert!(calls.reassessments.lock().unwrap().is_empty());
     }
