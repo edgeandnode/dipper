@@ -29,7 +29,7 @@ VALUES ('01930100-0001-7000-8000-000000000001'::uuid, timezone('UTC', now()), ti
         '\x1111111111111111111111111111111111111111'::bytea,
         'https://indexer-a.com',
         '{"payer": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "service_provider": "0x1111111111111111111111111111111111111111", "data_service": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "deadline": 1700000300, "ends_at": 1700086400, "max_initial_tokens": "1000", "max_ongoing_tokens_per_second": "100", "min_seconds_per_collection": 86400, "max_seconds_per_collection": 864000, "metadata": {"tokens_per_second": "10", "tokens_per_entity_per_second": "1", "subgraph_deployment_id": "QmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1a", "protocol_network": 1, "chain_id": 1}}'::json,
-        '\xaa00000000000000000000000000000001'::bytea);
+        '\xaa000000000000000000000000000001'::bytea);
 
 INSERT INTO dipper_reg_indexing_agreements (id, created_at, updated_at, status, indexing_request_id, deployment_id, indexer_id, indexer_url, voucher, on_chain_id)
 VALUES ('01930100-0001-7000-8000-000000000002'::uuid, timezone('UTC', now()), timezone('UTC', now()),
@@ -39,7 +39,7 @@ VALUES ('01930100-0001-7000-8000-000000000002'::uuid, timezone('UTC', now()), ti
         '\x1111111111111111111111111111111111111111'::bytea,
         'https://indexer-a.com',
         '{"payer": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "service_provider": "0x1111111111111111111111111111111111111111", "data_service": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "deadline": 1700000300, "ends_at": 1700086400, "max_initial_tokens": "1000", "max_ongoing_tokens_per_second": "100", "min_seconds_per_collection": 86400, "max_seconds_per_collection": 864000, "metadata": {"tokens_per_second": "10", "tokens_per_entity_per_second": "1", "subgraph_deployment_id": "QmBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB2b", "protocol_network": 1, "chain_id": 1}}'::json,
-        '\xaa00000000000000000000000000000002'::bytea);
+        '\xaa000000000000000000000000000002'::bytea);
 
 -- Indexer A also has 1 canceled-by-indexer agreement (should NOT be returned by active query)
 INSERT INTO dipper_reg_indexing_agreements (id, created_at, updated_at, status, indexing_request_id, deployment_id, indexer_id, indexer_url, voucher, on_chain_id)
@@ -50,7 +50,7 @@ VALUES ('01930100-0001-7000-8000-000000000003'::uuid, timezone('UTC', now()), ti
         '\x1111111111111111111111111111111111111111'::bytea,
         'https://indexer-a.com',
         '{"payer": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "service_provider": "0x1111111111111111111111111111111111111111", "data_service": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "deadline": 1700000300, "ends_at": 1700086400, "max_initial_tokens": "1000", "max_ongoing_tokens_per_second": "100", "min_seconds_per_collection": 86400, "max_seconds_per_collection": 864000, "metadata": {"tokens_per_second": "10", "tokens_per_entity_per_second": "1", "subgraph_deployment_id": "QmCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC3c", "protocol_network": 1, "chain_id": 1}}'::json,
-        '\xaa00000000000000000000000000000003'::bytea);
+        '\xaa000000000000000000000000000003'::bytea);
 
 -- Indexer B: 0x2222222222222222222222222222222222222222
 -- Has 1 active agreement (Created)
@@ -62,7 +62,7 @@ VALUES ('01930100-0002-7000-8000-000000000001'::uuid, timezone('UTC', now()), ti
         '\x2222222222222222222222222222222222222222'::bytea,
         'https://indexer-b.com',
         '{"payer": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "service_provider": "0x2222222222222222222222222222222222222222", "data_service": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "deadline": 1700000300, "ends_at": 1700086400, "max_initial_tokens": "1000", "max_ongoing_tokens_per_second": "100", "min_seconds_per_collection": 86400, "max_seconds_per_collection": 864000, "metadata": {"tokens_per_second": "10", "tokens_per_entity_per_second": "1", "subgraph_deployment_id": "QmDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD4d", "protocol_network": 1, "chain_id": 1}}'::json,
-        '\xbb00000000000000000000000000000001'::bytea);
+        '\xbb000000000000000000000000000001'::bytea);
 
 -- Indexer C: 0x3333333333333333333333333333333333333333
 -- Has NO active agreements (only expired)
@@ -74,4 +74,4 @@ VALUES ('01930100-0003-7000-8000-000000000001'::uuid, timezone('UTC', now()), ti
         '\x3333333333333333333333333333333333333333'::bytea,
         'https://indexer-c.com',
         '{"payer": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "service_provider": "0x3333333333333333333333333333333333333333", "data_service": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "deadline": 1700000300, "ends_at": 1700086400, "max_initial_tokens": "1000", "max_ongoing_tokens_per_second": "100", "min_seconds_per_collection": 86400, "max_seconds_per_collection": 864000, "metadata": {"tokens_per_second": "10", "tokens_per_entity_per_second": "1", "subgraph_deployment_id": "QmEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE5e", "protocol_network": 1, "chain_id": 1}}'::json,
-        '\xcc00000000000000000000000000000001'::bytea);
+        '\xcc000000000000000000000000000001'::bytea);
