@@ -118,8 +118,8 @@ impl AlloyChainClient {
     }
 
     /// Encode the calldata for `cancelIndexingAgreementByPayer(bytes16)`.
-    fn encode_cancel_call(&self, on_chain_id: &[u8; 16]) -> Vec<u8> {
-        let agreement_bytes = FixedBytes::<16>::from_slice(on_chain_id);
+    fn encode_cancel_call(&self, agreement_id: &[u8; 16]) -> Vec<u8> {
+        let agreement_bytes = FixedBytes::<16>::from_slice(agreement_id);
 
         ISubgraphService::cancelIndexingAgreementByPayerCall {
             agreementId: agreement_bytes,
@@ -133,7 +133,7 @@ impl AlloyChainClient {
     async fn sign_and_send(
         &self,
         mut tx: TransactionRequest,
-        on_chain_id: &[u8; 16],
+        agreement_id: &[u8; 16],
     ) -> Result<B256, ChainClientError> {
         const MAX_NONCE_RETRIES: u32 = 2;
 
@@ -156,7 +156,7 @@ impl AlloyChainClient {
             match result {
                 Ok(tx_hash) => {
                     tracing::info!(
-                        on_chain_id = %format_args!("0x{}", on_chain_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                        agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
                         tx_hash = %tx_hash,
                         nonce,
                         "Transaction sent successfully"
@@ -165,7 +165,7 @@ impl AlloyChainClient {
                 }
                 Err(e) if is_nonce_error(&e.to_string()) && attempt + 1 < MAX_NONCE_RETRIES => {
                     tracing::warn!(
-                        on_chain_id = %format_args!("0x{}", on_chain_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                        agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
                         attempt = attempt + 1,
                         error = %e,
                         "Nonce error, refreshing and retrying"
@@ -215,16 +215,16 @@ impl AlloyChainClient {
 impl ChainClient for AlloyChainClient {
     async fn cancel_indexing_agreement_by_payer(
         &self,
-        on_chain_id: &[u8; 16],
+        agreement_id: &[u8; 16],
     ) -> Result<B256, ChainClientError> {
         tracing::info!(
-            on_chain_id = %format_args!("0x{}", on_chain_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
             contract = %self.inner.subgraph_service_address,
             "Canceling indexing agreement on-chain"
         );
 
         // 1. Encode the contract call
-        let calldata = self.encode_cancel_call(on_chain_id);
+        let calldata = self.encode_cancel_call(agreement_id);
 
         // 2. Build initial transaction request
         let tx = TransactionRequest::default()
@@ -283,7 +283,7 @@ impl ChainClient for AlloyChainClient {
             .with_chain_id(self.inner.chain_id);
 
         tracing::debug!(
-            on_chain_id = %format_args!("0x{}", on_chain_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
             gas_limit,
             base_fee_gwei = base_fee / 1_000_000_000,
             priority_fee_gwei = priority_fee / 1_000_000_000,
@@ -292,7 +292,7 @@ impl ChainClient for AlloyChainClient {
         );
 
         // 8. Sign and send with nonce handling
-        self.sign_and_send(tx, on_chain_id).await
+        self.sign_and_send(tx, agreement_id).await
     }
 }
 
@@ -318,8 +318,8 @@ mod tests {
 
     #[test]
     fn test_encode_cancel_call() {
-        let on_chain_id: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-        let agreement_bytes = FixedBytes::<16>::from_slice(&on_chain_id);
+        let agreement_id: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        let agreement_bytes = FixedBytes::<16>::from_slice(&agreement_id);
 
         let call = ISubgraphService::cancelIndexingAgreementByPayerCall {
             agreementId: agreement_bytes,

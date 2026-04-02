@@ -416,8 +416,8 @@ where
         Some(a) => a,
         None => {
             tracing::debug!(
-                on_chain_id = %event.agreement_id,
-                "Agreement not found by on_chain_id (may be from another payer)"
+                agreement_id = %event.agreement_id,
+                "Agreement not found (may be from another payer)"
             );
             return Ok(());
         }
@@ -431,7 +431,6 @@ where
                 .await?;
             tracing::info!(
                 agreement_id = %agreement.id,
-                on_chain_id = %event.agreement_id,
                 indexing_request_id = %agreement.indexing_request_id,
                 old_status = "CREATED",
                 new_status = "ACCEPTED_ON_CHAIN",
@@ -458,7 +457,6 @@ where
             // it if it does.
             tracing::warn!(
                 agreement_id = %agreement.id,
-                on_chain_id = %event.agreement_id,
                 indexing_request_id = %agreement.indexing_request_id,
                 old_status = "EXPIRED",
                 new_status = "ACCEPTED_ON_CHAIN",
@@ -476,7 +474,6 @@ where
             // Queue a cancellation job
             tracing::warn!(
                 agreement_id = %agreement.id,
-                on_chain_id = %event.agreement_id,
                 indexer = %event.indexer,
                 "Rejected agreement accepted on-chain, queuing cancellation"
             );
@@ -487,7 +484,6 @@ where
         status => {
             tracing::debug!(
                 agreement_id = %agreement.id,
-                on_chain_id = %event.agreement_id,
                 status = %status,
                 "Ignoring acceptance for agreement in status: {status}"
             );
@@ -635,8 +631,8 @@ where
         Some(a) => a,
         None => {
             tracing::debug!(
-                on_chain_id = %event.agreement_id,
-                "Agreement not found by on_chain_id (may be from another payer)"
+                agreement_id = %event.agreement_id,
+                "Agreement not found (may be from another payer)"
             );
             return Ok(());
         }
@@ -654,7 +650,6 @@ where
                     .await?;
                 tracing::info!(
                     agreement_id = %agreement.id,
-                    on_chain_id = %event.agreement_id,
                     "Agreement marked as CanceledByRequester (on-chain confirmation)"
                 );
             } else {
@@ -664,7 +659,6 @@ where
                     .await?;
                 tracing::info!(
                     agreement_id = %agreement.id,
-                    on_chain_id = %event.agreement_id,
                     indexer = %event.indexer,
                     "Agreement marked as CanceledByIndexer"
                 );
@@ -675,7 +669,6 @@ where
             // Already in a canceled state, nothing to do
             tracing::debug!(
                 agreement_id = %agreement.id,
-                on_chain_id = %event.agreement_id,
                 status = %agreement.status,
                 "Agreement already canceled, ignoring event"
             );
@@ -684,7 +677,6 @@ where
             // Unexpected status for a cancellation event
             tracing::warn!(
                 agreement_id = %agreement.id,
-                on_chain_id = %event.agreement_id,
                 status = %status,
                 canceled_by = %event.canceled_by,
                 "Received cancellation event for agreement in unexpected status"

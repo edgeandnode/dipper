@@ -1201,9 +1201,9 @@ mod tests {
     impl ChainClient for MockChainClient {
         async fn cancel_indexing_agreement_by_payer(
             &self,
-            on_chain_id: &[u8; 16],
+            agreement_id: &[u8; 16],
         ) -> Result<B256, ChainClientError> {
-            self.calls.chain_cancels.lock().unwrap().push(*on_chain_id);
+            self.calls.chain_cancels.lock().unwrap().push(*agreement_id);
             match &self.result {
                 Ok(hash) => Ok(*hash),
                 Err(ChainClientError::ConfigError(s)) => {

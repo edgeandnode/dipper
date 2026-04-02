@@ -58,7 +58,7 @@ where
         .get_indexing_agreement_by_id(agreement_id)
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
-    let _agreement = match agreement {
+    let agreement = match agreement {
         None => {
             tracing::error!(
                 %indexing_request_id,
@@ -85,6 +85,9 @@ where
             agreement
         }
     };
+    // The fetch above validates the agreement exists and is in the expected state.
+    // The variable is only inspected in debug builds; suppress unused warnings in release.
+    let _ = &agreement;
 
     tracing::debug!(
         %indexing_request_id,

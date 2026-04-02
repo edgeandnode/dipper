@@ -29,6 +29,20 @@ pub use self::{
     result::{Error, Result},
 };
 
+impl From<NewAgreementParams> for dipper_pgregistry::NewAgreementParams {
+    fn from(params: NewAgreementParams) -> Self {
+        Self {
+            agreement_id: params.agreement_id,
+            nonce_uuid: params.nonce_uuid,
+            request_id: params.request_id,
+            deployment_id: params.deployment_id,
+            indexer_id: params.indexer_id,
+            indexer_url: params.indexer_url,
+            voucher: params.voucher.into(),
+        }
+    }
+}
+
 /// Filter and log conversion errors instead of silently dropping them.
 ///
 /// This is a replacement for `.filter_map(filter_map_with_logging)` that logs warnings
@@ -244,17 +258,8 @@ impl AgreementRegistry for RegistryProvider {
         &self,
         params: NewAgreementParams,
     ) -> RegistryResult<IndexingAgreementId> {
-        let pg_params = dipper_pgregistry::NewAgreementParams {
-            agreement_id: params.agreement_id,
-            nonce_uuid: params.nonce_uuid,
-            request_id: params.request_id,
-            deployment_id: params.deployment_id,
-            indexer_id: params.indexer_id,
-            indexer_url: params.indexer_url,
-            voucher: params.voucher.into(),
-        };
         self.inner
-            .register_new_indexing_agreement(pg_params)
+            .register_new_indexing_agreement(params.into())
             .await
             .map_err(Into::into)
     }
@@ -264,17 +269,8 @@ impl AgreementRegistry for RegistryProvider {
         params: NewAgreementParams,
         old_agreement_id: IndexingAgreementId,
     ) -> RegistryResult<IndexingAgreementId> {
-        let pg_params = dipper_pgregistry::NewAgreementParams {
-            agreement_id: params.agreement_id,
-            nonce_uuid: params.nonce_uuid,
-            request_id: params.request_id,
-            deployment_id: params.deployment_id,
-            indexer_id: params.indexer_id,
-            indexer_url: params.indexer_url,
-            voucher: params.voucher.into(),
-        };
         self.inner
-            .register_agreement_with_pending_cancellation(pg_params, old_agreement_id)
+            .register_agreement_with_pending_cancellation(params.into(), old_agreement_id)
             .await
             .map_err(Into::into)
     }

@@ -53,23 +53,30 @@ impl std::fmt::Display for IndexingAgreementId {
     }
 }
 
+/// Error returned when parsing an [`IndexingAgreementId`] from a string fails.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct ParseAgreementIdError(String);
+
 impl std::str::FromStr for IndexingAgreementId {
-    type Err = String;
+    type Err = ParseAgreementIdError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let hex = s.strip_prefix("0x").unwrap_or(s);
         if hex.len() != 32 {
-            return Err(format!(
+            return Err(ParseAgreementIdError(format!(
                 "expected 32 hex chars (16 bytes), got {} chars",
                 hex.len()
-            ));
+            )));
         }
         let mut bytes = [0u8; 16];
         for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
-            let hi = hex_nibble(chunk[0])
-                .ok_or_else(|| format!("invalid hex char: {}", chunk[0] as char))?;
-            let lo = hex_nibble(chunk[1])
-                .ok_or_else(|| format!("invalid hex char: {}", chunk[1] as char))?;
+            let hi = hex_nibble(chunk[0]).ok_or_else(|| {
+                ParseAgreementIdError(format!("invalid hex char: {}", chunk[0] as char))
+            })?;
+            let lo = hex_nibble(chunk[1]).ok_or_else(|| {
+                ParseAgreementIdError(format!("invalid hex char: {}", chunk[1] as char))
+            })?;
             bytes[i] = (hi << 4) | lo;
         }
         Ok(Self(bytes))
@@ -287,3 +294,108 @@ macro_rules! uuid_new_type_impls {
 
 uuid_new_type_impls!(IndexingRequestId);
 uuid_new_type_impls!(IndexingReceiptId);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_format_is_0x_lowercase_hex() {
+        let id = IndexingAgreementId([
+            0xaa, 0xbb, 0xcc, 0xdd, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
+            0xef, 0xab,
+        ]);
+        assert_eq!(id.to_string(), "0xaabbccdd11223344556677889900efab");
+    }
+
+    #[test]
+    fn roundtrip_display_then_from_str() {
+        let original = IndexingAgreementId([
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+            0x32, 0x10,
+        ]);
+        let text = original.to_string();
+        let parsed: IndexingAgreementId = text.parse().unwrap();
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn from_str_with_uppercase_hex() {
+        let id: IndexingAgreementId = "0xAABBCCDD11223344556677889900EFAB".parse().unwrap();
+        assert_eq!(
+            id.as_bytes(),
+            &[
+                0xaa, 0xbb, 0xcc, 0xdd, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
+                0xef, 0xab
+            ]
+        );
+    }
+
+    #[test]
+    fn from_str_without_0x_prefix() {
+        let id: IndexingAgreementId = "aabbccdd11223344556677889900efab".parse().unwrap();
+        assert_eq!(
+            id.as_bytes(),
+            &[
+                0xaa, 0xbb, 0xcc, 0xdd, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
+                0xef, 0xab
+            ]
+        );
+    }
+
+    #[test]
+    fn from_str_rejects_odd_length() {
+        // 31 hex chars (15.5 bytes) -- odd-length input
+        let result = "0xaabbccdd1122334455667788990012".parse::<IndexingAgreementId>();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("expected 32 hex chars")
+        );
+    }
+
+    #[test]
+    fn from_str_rejects_too_short() {
+        // 30 hex chars (15 bytes)
+        let result = "0xaabbccdd112233445566778899001".parse::<IndexingAgreementId>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_str_rejects_too_long() {
+        // 34 hex chars (17 bytes)
+        let result = "0xaabbccdd1122334455667788990012ab99".parse::<IndexingAgreementId>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_str_rejects_invalid_hex_chars() {
+        let result = "0xaabbccdd112233445566778899GGHHII".parse::<IndexingAgreementId>();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid hex char"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_roundtrip() {
+        let original = IndexingAgreementId([
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+            0x32, 0x10,
+        ]);
+        let json = serde_json::to_string(&original).unwrap();
+        assert_eq!(json, "\"0x0123456789abcdeffedcba9876543210\"");
+        let deserialized: IndexingAgreementId = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn error_type_is_parse_agreement_id_error() {
+        let result = "too_short".parse::<IndexingAgreementId>();
+        let err = result.unwrap_err();
+        // Verify it's a ParseAgreementIdError (the type implements Error + Display)
+        let _: &dyn std::error::Error = &err;
+        assert!(!err.to_string().is_empty());
+    }
+}
