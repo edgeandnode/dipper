@@ -408,11 +408,9 @@ where
         "Processing IndexingAgreementAccepted event"
     );
 
-    // The event's agreement_id is the on-chain bytes16 packed into a UUID.
-    // Look up by on_chain_id to find the matching dipper agreement.
-    let on_chain_id_bytes = event.agreement_id.into_bytes();
+    // The event's agreement_id is the on-chain bytes16, which IS the PK now.
     let agreement = match registry
-        .get_indexing_agreement_by_on_chain_id(&on_chain_id_bytes)
+        .get_indexing_agreement_by_id(&event.agreement_id)
         .await?
     {
         Some(a) => a,
@@ -629,11 +627,9 @@ where
         "Processing IndexingAgreementCanceled event"
     );
 
-    // The event's agreement_id is the on-chain bytes16 packed into a UUID.
-    // Look up by on_chain_id to find the matching dipper agreement.
-    let on_chain_id_bytes = event.agreement_id.into_bytes();
+    // The event's agreement_id is the on-chain bytes16, which IS the PK now.
     let agreement = match registry
-        .get_indexing_agreement_by_on_chain_id(&on_chain_id_bytes)
+        .get_indexing_agreement_by_id(&event.agreement_id)
         .await?
     {
         Some(a) => a,
@@ -772,8 +768,6 @@ mod tests {
     #[derive(Default)]
     struct MockRegistryState {
         agreements: std::collections::HashMap<IndexingAgreementId, IndexingAgreement>,
-        /// Maps on_chain_id bytes -> agreement UUID for lookup-by-on-chain-id.
-        on_chain_ids: std::collections::HashMap<Vec<u8>, IndexingAgreementId>,
         marked_accepted_on_chain: Vec<IndexingAgreementId>,
         marked_canceled_by_requester: Vec<IndexingAgreementId>,
         marked_canceled_by_indexer: Vec<IndexingAgreementId>,
@@ -792,9 +786,9 @@ mod tests {
 
         fn add_agreement(&self, id: IndexingAgreementId, status: IndexingAgreementStatus) {
             let voucher = test_voucher();
-            let on_chain_id = crate::indexer_rpc_client::compute_on_chain_id(id, &voucher);
             let agreement = IndexingAgreement {
                 id,
+                nonce_uuid: uuid::Uuid::now_v7(),
                 status,
                 indexer: Indexer {
                     id: "0x1234567890123456789012345678901234567890"
@@ -809,19 +803,8 @@ mod tests {
                 last_block_height: None,
                 last_progress_at: None,
                 rejection_reason: None,
-                on_chain_id,
             };
             self.state.lock().unwrap().agreements.insert(id, agreement);
-        }
-
-        /// Register the on-chain ID mapping for an agreement so
-        /// `get_indexing_agreement_by_on_chain_id` can find it.
-        fn set_on_chain_id(&self, on_chain_id: &[u8; 16], agreement_id: IndexingAgreementId) {
-            self.state
-                .lock()
-                .unwrap()
-                .on_chain_ids
-                .insert(on_chain_id.to_vec(), agreement_id);
         }
 
         fn add_pending_cancellation(
@@ -893,18 +876,6 @@ mod tests {
             Ok(self.state.lock().unwrap().agreements.get(id).cloned())
         }
 
-        async fn get_indexing_agreement_by_on_chain_id(
-            &self,
-            on_chain_id: &[u8; 16],
-        ) -> RegistryResult<Option<IndexingAgreement>> {
-            let state = self.state.lock().unwrap();
-            // Find by matching on_chain_id stored in the mock's on_chain_ids map
-            if let Some(agreement_id) = state.on_chain_ids.get(on_chain_id.as_slice()) {
-                return Ok(state.agreements.get(agreement_id).cloned());
-            }
-            Ok(None)
-        }
-
         async fn get_indexing_agreements_by_deployment_id(
             &self,
             _deployment_id: &DeploymentId,
@@ -952,28 +923,28 @@ mod tests {
         async fn register_new_indexing_agreement(
             &self,
             _agreement_id: IndexingAgreementId,
+            _nonce_uuid: uuid::Uuid,
             _request_id: IndexingRequestId,
             _deployment_id: DeploymentId,
             _indexer_id: IndexerId,
             _indexer_url: Url,
             _voucher: Voucher,
-            _on_chain_id: &[u8; 16],
         ) -> RegistryResult<IndexingAgreementId> {
-            Ok(IndexingAgreementId::new())
+            Ok(IndexingAgreementId::from_bytes(rand::random()))
         }
 
         async fn register_agreement_with_pending_cancellation(
             &self,
             _agreement_id: IndexingAgreementId,
+            _nonce_uuid: uuid::Uuid,
             _request_id: IndexingRequestId,
             _deployment_id: DeploymentId,
             _indexer_id: IndexerId,
             _indexer_url: Url,
             _voucher: Voucher,
             _old_agreement_id: IndexingAgreementId,
-            _on_chain_id: &[u8; 16],
         ) -> RegistryResult<IndexingAgreementId> {
-            Ok(IndexingAgreementId::new())
+            Ok(IndexingAgreementId::from_bytes(rand::random()))
         }
 
         async fn mark_indexing_agreement_as_delivery_failed(
@@ -1214,10 +1185,9 @@ mod tests {
     async fn test_process_accepted_event_transitions_created_to_accepted() {
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
-        let agreement_id = IndexingAgreementId::new();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::Created);
-        registry.set_on_chain_id(&agreement_id.into_bytes(), agreement_id);
 
         let event = AcceptedAgreementEvent {
             agreement_id,
@@ -1238,41 +1208,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_accepted_event_matches_by_on_chain_id_not_uuid() {
-        let registry = MockRegistry::new();
-        let worker_queue = MockWorkerQueue::default();
-        let agreement_id = IndexingAgreementId::new();
-        let on_chain_bytes: [u8; 16] = [0xAA; 16]; // distinct from the UUID
-
-        registry.add_agreement(agreement_id, IndexingAgreementStatus::Created);
-        registry.set_on_chain_id(&on_chain_bytes, agreement_id);
-
-        // Event arrives with the on-chain bytes, not the internal UUID
-        let event = AcceptedAgreementEvent {
-            agreement_id: IndexingAgreementId::from_bytes(on_chain_bytes),
-            indexer: "0x1234567890123456789012345678901234567890"
-                .parse()
-                .unwrap(),
-            allocation_id: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
-                .parse()
-                .unwrap(),
-            block_number: 100,
-        };
-
-        let result = process_accepted_event(&event, &registry, &worker_queue).await;
-
-        assert!(result.is_ok());
-        assert!(registry.was_marked_accepted_on_chain(&agreement_id));
-    }
-
-    #[tokio::test]
     async fn test_process_accepted_event_queues_cancellation_for_rejected() {
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
-        let agreement_id = IndexingAgreementId::new();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::Rejected);
-        registry.set_on_chain_id(&agreement_id.into_bytes(), agreement_id);
 
         let event = AcceptedAgreementEvent {
             agreement_id,
@@ -1296,7 +1237,7 @@ mod tests {
     async fn test_process_accepted_event_ignores_unknown_agreement() {
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
-        let agreement_id = IndexingAgreementId::new();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
 
         // Don't add the agreement to the registry
 
@@ -1322,15 +1263,14 @@ mod tests {
     async fn test_process_accepted_event_recovers_expired_agreement() {
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
-        let agreement_id = IndexingAgreementId::new();
-        let old_agreement_id = IndexingAgreementId::new();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
+        let old_agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
 
         // Agreement was marked Expired by the expiration service before the
         // chain_listener saw the on-chain acceptance. The contract guarantees
         // the acceptance was within the RCA deadline, so we should recover.
         registry.add_agreement(agreement_id, IndexingAgreementStatus::Expired);
-        registry.set_on_chain_id(&agreement_id.into_bytes(), agreement_id);
         registry.add_agreement(old_agreement_id, IndexingAgreementStatus::AcceptedOnChain);
         registry.add_pending_cancellation(agreement_id, old_agreement_id, request_id);
 
@@ -1357,7 +1297,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_canceled_event_marks_canceled_by_indexer() {
         let registry = MockRegistry::new();
-        let agreement_id = IndexingAgreementId::new();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let signer_address: Address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             .parse()
             .unwrap();
@@ -1366,7 +1306,6 @@ mod tests {
             .unwrap();
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::AcceptedOnChain);
-        registry.set_on_chain_id(&agreement_id.into_bytes(), agreement_id);
 
         let event = CanceledAgreementEvent {
             agreement_id,
@@ -1385,7 +1324,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_canceled_event_marks_canceled_by_requester() {
         let registry = MockRegistry::new();
-        let agreement_id = IndexingAgreementId::new();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let signer_address: Address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             .parse()
             .unwrap();
@@ -1394,7 +1333,6 @@ mod tests {
             .unwrap();
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::AcceptedOnChain);
-        registry.set_on_chain_id(&agreement_id.into_bytes(), agreement_id);
 
         let event = CanceledAgreementEvent {
             agreement_id,
@@ -1413,7 +1351,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_canceled_event_ignores_already_canceled() {
         let registry = MockRegistry::new();
-        let agreement_id = IndexingAgreementId::new();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let signer_address: Address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             .parse()
             .unwrap();
@@ -1422,7 +1360,6 @@ mod tests {
             .unwrap();
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::CanceledByIndexer);
-        registry.set_on_chain_id(&agreement_id.into_bytes(), agreement_id);
 
         let event = CanceledAgreementEvent {
             agreement_id,
@@ -1446,9 +1383,9 @@ mod tests {
         // Arrange
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
-        let new_id = IndexingAgreementId::new();
-        let old_id_1 = IndexingAgreementId::new();
-        let old_id_2 = IndexingAgreementId::new();
+        let new_id = IndexingAgreementId::from_bytes(rand::random());
+        let old_id_1 = IndexingAgreementId::from_bytes(rand::random());
+        let old_id_2 = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
 
         registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
@@ -1479,9 +1416,9 @@ mod tests {
         // Arrange
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
-        let new_id = IndexingAgreementId::new();
-        let old_ok = IndexingAgreementId::new();
-        let old_fail = IndexingAgreementId::new();
+        let new_id = IndexingAgreementId::from_bytes(rand::random());
+        let old_ok = IndexingAgreementId::from_bytes(rand::random());
+        let old_fail = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
 
         registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
@@ -1524,8 +1461,8 @@ mod tests {
         // Arrange: old agreement is already in terminal state (NoRecordsUpdated path)
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
-        let new_id = IndexingAgreementId::new();
-        let old_id = IndexingAgreementId::new();
+        let new_id = IndexingAgreementId::from_bytes(rand::random());
+        let old_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
 
         registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
@@ -1557,7 +1494,7 @@ mod tests {
         // Arrange
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
-        let new_id = IndexingAgreementId::new();
+        let new_id = IndexingAgreementId::from_bytes(rand::random());
         registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
 
         // Act

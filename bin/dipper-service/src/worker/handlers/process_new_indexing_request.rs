@@ -276,21 +276,21 @@ where
             "Creating agreement with pricing"
         );
 
-        // Generate the agreement ID up front so we can derive the on-chain ID
-        // (the nonce is derived from the UUID, so we need it before INSERT).
-        let agreement_id_candidate = dipper_core::ids::IndexingAgreementId::new();
-        let on_chain_id = compute_on_chain_id(agreement_id_candidate, &voucher);
+        // Generate a UUID for nonce derivation, then compute the on-chain ID
+        // which becomes the agreement's primary key.
+        let nonce_uuid = uuid::Uuid::now_v7();
+        let agreement_id = compute_on_chain_id(nonce_uuid, &voucher);
 
         let agreement_id = match ctx
             .registry
             .register_new_indexing_agreement(
-                agreement_id_candidate,
+                agreement_id,
+                nonce_uuid,
                 *indexing_request_id,
                 *deployment_id,
                 indexer.id,
                 indexer.url.clone(),
                 voucher,
-                &on_chain_id,
             )
             .await
         {

@@ -89,18 +89,17 @@ pub trait AgreementRegistry {
 
     /// Register a new indexing agreement.
     ///
-    /// The caller generates the `agreement_id` and `on_chain_id` so the
-    /// on-chain agreement ID can be derived from the voucher nonce (which
-    /// embeds the agreement UUID) before the row is inserted.
+    /// The caller generates the `agreement_id` (on-chain bytes16) and
+    /// `nonce_uuid` (used to derive the RCA nonce) before the row is inserted.
     async fn register_new_indexing_agreement(
         &self,
         agreement_id: IndexingAgreementId,
+        nonce_uuid: uuid::Uuid,
         request_id: IndexingRequestId,
         deployment_id: DeploymentId,
         indexer_id: IndexerId,
         indexer_url: Url,
         voucher: Voucher,
-        on_chain_id: &[u8; 16],
     ) -> RegistryResult<IndexingAgreementId>;
 
     /// Register a new agreement and record a pending cancellation atomically.
@@ -112,25 +111,14 @@ pub trait AgreementRegistry {
     async fn register_agreement_with_pending_cancellation(
         &self,
         agreement_id: IndexingAgreementId,
+        nonce_uuid: uuid::Uuid,
         request_id: IndexingRequestId,
         deployment_id: DeploymentId,
         indexer_id: IndexerId,
         indexer_url: Url,
         voucher: Voucher,
         old_agreement_id: IndexingAgreementId,
-        on_chain_id: &[u8; 16],
     ) -> RegistryResult<IndexingAgreementId>;
-
-    /// Look up an agreement by its on-chain agreement ID (bytes16).
-    ///
-    /// The on-chain ID is derived from `keccak256(abi.encode(payer, dataService,
-    /// serviceProvider, deadline, nonce))` truncated to 16 bytes. It is stored at
-    /// agreement creation time so the chain_listener can match on-chain events
-    /// back to dipper's internal agreements.
-    async fn get_indexing_agreement_by_on_chain_id(
-        &self,
-        on_chain_id: &[u8; 16],
-    ) -> RegistryResult<Option<IndexingAgreement>>;
 
     /// Mark an indexing agreement as `DELIVERY_FAILED`.
     ///
@@ -271,8 +259,11 @@ pub struct AgreementFeeRate {
 /// The [`IndexingAgreement`] is as a Data Transfer Object (DTO).
 #[derive(Debug, Clone)]
 pub struct IndexingAgreement {
-    /// The indexing agreement unique ID.
+    /// The on-chain agreement ID (bytes16 primary key).
     pub id: IndexingAgreementId,
+
+    /// The UUID v7 used to derive the RCA nonce.
+    pub nonce_uuid: uuid::Uuid,
 
     /// The indexing agreement creation time.
     pub created_at: OffsetDateTime,
@@ -306,10 +297,6 @@ pub struct IndexingAgreement {
 
     /// Reason the agreement was rejected (only set when status is Rejected).
     pub rejection_reason: Option<String>,
-
-    /// The on-chain agreement ID (bytes16), derived from
-    /// `keccak256(abi.encode(payer, dataService, serviceProvider, deadline, nonce))[0..16]`.
-    pub on_chain_id: [u8; 16],
 }
 
 /// The _indexing agreement_ indexer information.
@@ -442,6 +429,7 @@ impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
     fn try_from(value: dipper_pgregistry::IndexingAgreement) -> Result<Self, Self::Error> {
         Ok(Self {
             id: value.id,
+            nonce_uuid: value.nonce_uuid,
             created_at: value.created_at,
             updated_at: value.updated_at,
             status: match value.status {
@@ -473,7 +461,6 @@ impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
             last_block_height: value.last_block_height,
             last_progress_at: value.last_progress_at,
             rejection_reason: value.rejection_reason,
-            on_chain_id: value.on_chain_id,
         })
     }
 }

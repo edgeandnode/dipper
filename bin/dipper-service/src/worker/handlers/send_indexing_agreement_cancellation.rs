@@ -58,7 +58,7 @@ where
         .get_indexing_agreement_by_id(agreement_id)
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
-    let agreement = match agreement {
+    let _agreement = match agreement {
         None => {
             tracing::error!(
                 %indexing_request_id,
@@ -96,11 +96,7 @@ where
     // If the notification fails, retry after 20 seconds
     if let Err(err) = ctx
         .indexer_client
-        .send_indexing_agreement_cancellation_notification(
-            &indexer_url,
-            *agreement_id,
-            &agreement.on_chain_id,
-        )
+        .send_indexing_agreement_cancellation_notification(&indexer_url, *agreement_id)
         .await
     {
         tracing::error!(

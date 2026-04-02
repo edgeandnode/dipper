@@ -70,8 +70,13 @@ use url::Url;
 /// The [`IndexingAgreement`] is as a Data Transfer Object (DTO).
 #[derive(Debug, Clone)]
 pub struct IndexingAgreement {
-    /// The indexing agreement unique ID.
+    /// The on-chain agreement ID (bytes16 primary key).
+    ///
+    /// Derived from `keccak256(abi.encode(payer, dataService, serviceProvider, deadline, nonce))[0..16]`.
     pub id: IndexingAgreementId,
+
+    /// The UUID v7 used to derive the RCA nonce. Retained for audit purposes.
+    pub nonce_uuid: uuid::Uuid,
 
     /// The indexing agreement creation time.
     pub created_at: OffsetDateTime,
@@ -107,10 +112,6 @@ pub struct IndexingAgreement {
     ///
     /// Values from the `rejection_reason` module constants, or None.
     pub rejection_reason: Option<String>,
-
-    /// The on-chain agreement ID (bytes16), derived from
-    /// `keccak256(abi.encode(payer, dataService, serviceProvider, deadline, nonce))[0..16]`.
-    pub on_chain_id: [u8; 16],
 }
 
 /// The status of the [`IndexingAgreement`].
@@ -316,7 +317,6 @@ pub mod fake_impl {
 
 #[cfg(test)]
 mod tests {
-    use serde_json;
     use thegraph_core::alloy::primitives::{U256, address};
 
     use super::*;

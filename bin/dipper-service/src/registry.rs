@@ -243,22 +243,22 @@ impl AgreementRegistry for RegistryProvider {
     async fn register_new_indexing_agreement(
         &self,
         agreement_id: IndexingAgreementId,
+        nonce_uuid: uuid::Uuid,
         request_id: IndexingRequestId,
         deployment_id: DeploymentId,
         indexer_id: IndexerId,
         indexer_url: Url,
         voucher: IndexingAgreementVoucher,
-        on_chain_id: &[u8; 16],
     ) -> RegistryResult<IndexingAgreementId> {
         self.inner
             .register_new_indexing_agreement(
                 agreement_id,
+                nonce_uuid,
                 request_id,
                 deployment_id,
                 indexer_id,
                 indexer_url,
                 voucher.into(),
-                on_chain_id,
             )
             .await
             .map_err(Into::into)
@@ -267,39 +267,27 @@ impl AgreementRegistry for RegistryProvider {
     async fn register_agreement_with_pending_cancellation(
         &self,
         agreement_id: IndexingAgreementId,
+        nonce_uuid: uuid::Uuid,
         request_id: IndexingRequestId,
         deployment_id: DeploymentId,
         indexer_id: IndexerId,
         indexer_url: Url,
         voucher: IndexingAgreementVoucher,
         old_agreement_id: IndexingAgreementId,
-        on_chain_id: &[u8; 16],
     ) -> RegistryResult<IndexingAgreementId> {
         self.inner
             .register_agreement_with_pending_cancellation(
                 agreement_id,
+                nonce_uuid,
                 request_id,
                 deployment_id,
                 indexer_id,
                 indexer_url,
                 voucher.into(),
                 old_agreement_id,
-                on_chain_id,
             )
             .await
             .map_err(Into::into)
-    }
-
-    async fn get_indexing_agreement_by_on_chain_id(
-        &self,
-        on_chain_id: &[u8; 16],
-    ) -> RegistryResult<Option<IndexingAgreement>> {
-        Ok(self
-            .inner
-            .get_indexing_agreement_by_on_chain_id(on_chain_id)
-            .await?
-            .map(TryInto::try_into)
-            .and_then(Result::ok))
     }
 
     async fn mark_indexing_agreement_as_delivery_failed(
