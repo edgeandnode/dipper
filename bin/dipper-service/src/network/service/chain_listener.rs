@@ -791,6 +791,8 @@ mod tests {
         }
 
         fn add_agreement(&self, id: IndexingAgreementId, status: IndexingAgreementStatus) {
+            let voucher = test_voucher();
+            let on_chain_id = crate::indexer_rpc_client::compute_on_chain_id(id, &voucher);
             let agreement = IndexingAgreement {
                 id,
                 status,
@@ -801,13 +803,13 @@ mod tests {
                     url: "http://indexer.test".parse().unwrap(),
                 },
                 indexing_request_id: IndexingRequestId::new(),
-                voucher: test_voucher(),
+                voucher,
                 created_at: OffsetDateTime::now_utc(),
                 updated_at: OffsetDateTime::now_utc(),
                 last_block_height: None,
                 last_progress_at: None,
                 rejection_reason: None,
-                on_chain_id: *id.as_bytes(),
+                on_chain_id,
             };
             self.state.lock().unwrap().agreements.insert(id, agreement);
         }

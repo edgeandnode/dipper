@@ -795,6 +795,25 @@ mod tests {
         last_progress_at: Option<OffsetDateTime>,
     ) -> IndexingAgreement {
         let agreement_id = IndexingAgreementId::new();
+        let voucher = IndexingAgreementVoucher {
+            payer: Address::ZERO,
+            service_provider: Address::ZERO,
+            data_service: Address::ZERO,
+            deadline: 0,
+            ends_at: 0,
+            max_initial_tokens: U256::ZERO,
+            max_ongoing_tokens_per_second: U256::ZERO,
+            min_seconds_per_collection: 0,
+            max_seconds_per_collection: 0,
+            metadata: IndexingAgreementVoucherMetadata {
+                tokens_per_second: U256::ZERO,
+                tokens_per_entity_per_second: U256::ZERO,
+                subgraph_deployment_id: deployment_id,
+                protocol_network: 1u64,
+                chain_id: 1u64,
+            },
+        };
+        let on_chain_id = crate::indexer_rpc_client::compute_on_chain_id(agreement_id, &voucher);
         IndexingAgreement {
             id: agreement_id,
             created_at: OffsetDateTime::now_utc(),
@@ -805,28 +824,11 @@ mod tests {
                 id: indexer_id,
                 url,
             },
-            voucher: IndexingAgreementVoucher {
-                payer: Address::ZERO,
-                service_provider: Address::ZERO,
-                data_service: Address::ZERO,
-                deadline: 0,
-                ends_at: 0,
-                max_initial_tokens: U256::ZERO,
-                max_ongoing_tokens_per_second: U256::ZERO,
-                min_seconds_per_collection: 0,
-                max_seconds_per_collection: 0,
-                metadata: IndexingAgreementVoucherMetadata {
-                    tokens_per_second: U256::ZERO,
-                    tokens_per_entity_per_second: U256::ZERO,
-                    subgraph_deployment_id: deployment_id,
-                    protocol_network: 1u64,
-                    chain_id: 1u64,
-                },
-            },
+            voucher,
             last_block_height,
             last_progress_at,
             rejection_reason: None,
-            on_chain_id: *agreement_id.as_bytes(),
+            on_chain_id,
         }
     }
 
