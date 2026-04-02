@@ -156,7 +156,7 @@ impl AlloyChainClient {
             match result {
                 Ok(tx_hash) => {
                     tracing::info!(
-                        on_chain_id = ?on_chain_id,
+                        on_chain_id = %format_args!("0x{}", on_chain_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
                         tx_hash = %tx_hash,
                         nonce,
                         "Transaction sent successfully"
@@ -165,7 +165,7 @@ impl AlloyChainClient {
                 }
                 Err(e) if is_nonce_error(&e.to_string()) && attempt + 1 < MAX_NONCE_RETRIES => {
                     tracing::warn!(
-                        on_chain_id = ?on_chain_id,
+                        on_chain_id = %format_args!("0x{}", on_chain_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
                         attempt = attempt + 1,
                         error = %e,
                         "Nonce error, refreshing and retrying"
@@ -218,7 +218,7 @@ impl ChainClient for AlloyChainClient {
         on_chain_id: &[u8; 16],
     ) -> Result<B256, ChainClientError> {
         tracing::info!(
-            on_chain_id = ?on_chain_id,
+            on_chain_id = %format_args!("0x{}", on_chain_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
             contract = %self.inner.subgraph_service_address,
             "Canceling indexing agreement on-chain"
         );
@@ -283,7 +283,7 @@ impl ChainClient for AlloyChainClient {
             .with_chain_id(self.inner.chain_id);
 
         tracing::debug!(
-            on_chain_id = ?on_chain_id,
+            on_chain_id = %format_args!("0x{}", on_chain_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
             gas_limit,
             base_fee_gwei = base_fee / 1_000_000_000,
             priority_fee_gwei = priority_fee / 1_000_000_000,

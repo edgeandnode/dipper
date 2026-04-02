@@ -86,7 +86,7 @@ impl ChainClient for StubChainClient {
         on_chain_id: &[u8; 16],
     ) -> Result<B256, ChainClientError> {
         tracing::error!(
-            on_chain_id = ?on_chain_id,
+            on_chain_id = %format_args!("0x{}", on_chain_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
             "ChainClient not implemented - cannot cancel agreement on-chain"
         );
         Err(ChainClientError::ConfigError(
