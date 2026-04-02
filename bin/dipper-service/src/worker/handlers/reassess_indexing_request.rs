@@ -18,7 +18,8 @@ use crate::{
     network::{NetworkProvider, service::entity_count_cache::EntityCountCache},
     registry::{
         AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementVoucher,
-        IndexingAgreementVoucherMetadata, IndexingRequestRegistry, PendingCancellationRegistry,
+        IndexingAgreementVoucherMetadata, IndexingRequestRegistry, NewAgreementParams,
+        PendingCancellationRegistry,
     },
     signing::eip712::PrivateKeyEip712Signer,
     worker::{
@@ -240,13 +241,15 @@ where
             match ctx
                 .registry
                 .register_agreement_with_pending_cancellation(
-                    agreement_id_candidate,
-                    nonce_uuid,
-                    *indexing_request_id,
-                    *deployment_id,
-                    candidate.id,
-                    candidate.url.clone(),
-                    voucher,
+                    NewAgreementParams {
+                        agreement_id: agreement_id_candidate,
+                        nonce_uuid,
+                        request_id: *indexing_request_id,
+                        deployment_id: *deployment_id,
+                        indexer_id: candidate.id,
+                        indexer_url: candidate.url.clone(),
+                        voucher,
+                    },
                     old_agreement.id,
                 )
                 .await
@@ -277,15 +280,15 @@ where
         } else {
             match ctx
                 .registry
-                .register_new_indexing_agreement(
-                    agreement_id_candidate,
+                .register_new_indexing_agreement(NewAgreementParams {
+                    agreement_id: agreement_id_candidate,
                     nonce_uuid,
-                    *indexing_request_id,
-                    *deployment_id,
-                    candidate.id,
-                    candidate.url.clone(),
+                    request_id: *indexing_request_id,
+                    deployment_id: *deployment_id,
+                    indexer_id: candidate.id,
+                    indexer_url: candidate.url.clone(),
                     voucher,
-                )
+                })
                 .await
             {
                 Ok(id) => {

@@ -12,7 +12,6 @@ use thegraph_core::{
     DeploymentId, IndexerId,
     alloy::primitives::{Address, ChainId},
 };
-use url::Url;
 
 // Re-export for tests only
 #[cfg(test)]
@@ -20,8 +19,9 @@ pub use self::agreement::Indexer;
 use self::result::Result as RegistryResult;
 pub use self::{
     agreement::{
-        AgreementFeeRate, AgreementRegistry, IndexingAgreement, Status as IndexingAgreementStatus,
-        Voucher as IndexingAgreementVoucher, VoucherMetadata as IndexingAgreementVoucherMetadata,
+        AgreementFeeRate, AgreementRegistry, IndexingAgreement, NewAgreementParams,
+        Status as IndexingAgreementStatus, Voucher as IndexingAgreementVoucher,
+        VoucherMetadata as IndexingAgreementVoucherMetadata,
     },
     indexer_denylist::IndexerDenylistRegistry,
     indexing_request::{IndexingRequest, IndexingRequestRegistry, Status as IndexingRequestStatus},
@@ -242,50 +242,39 @@ impl AgreementRegistry for RegistryProvider {
     }
     async fn register_new_indexing_agreement(
         &self,
-        agreement_id: IndexingAgreementId,
-        nonce_uuid: uuid::Uuid,
-        request_id: IndexingRequestId,
-        deployment_id: DeploymentId,
-        indexer_id: IndexerId,
-        indexer_url: Url,
-        voucher: IndexingAgreementVoucher,
+        params: NewAgreementParams,
     ) -> RegistryResult<IndexingAgreementId> {
+        let pg_params = dipper_pgregistry::NewAgreementParams {
+            agreement_id: params.agreement_id,
+            nonce_uuid: params.nonce_uuid,
+            request_id: params.request_id,
+            deployment_id: params.deployment_id,
+            indexer_id: params.indexer_id,
+            indexer_url: params.indexer_url,
+            voucher: params.voucher.into(),
+        };
         self.inner
-            .register_new_indexing_agreement(
-                agreement_id,
-                nonce_uuid,
-                request_id,
-                deployment_id,
-                indexer_id,
-                indexer_url,
-                voucher.into(),
-            )
+            .register_new_indexing_agreement(pg_params)
             .await
             .map_err(Into::into)
     }
 
     async fn register_agreement_with_pending_cancellation(
         &self,
-        agreement_id: IndexingAgreementId,
-        nonce_uuid: uuid::Uuid,
-        request_id: IndexingRequestId,
-        deployment_id: DeploymentId,
-        indexer_id: IndexerId,
-        indexer_url: Url,
-        voucher: IndexingAgreementVoucher,
+        params: NewAgreementParams,
         old_agreement_id: IndexingAgreementId,
     ) -> RegistryResult<IndexingAgreementId> {
+        let pg_params = dipper_pgregistry::NewAgreementParams {
+            agreement_id: params.agreement_id,
+            nonce_uuid: params.nonce_uuid,
+            request_id: params.request_id,
+            deployment_id: params.deployment_id,
+            indexer_id: params.indexer_id,
+            indexer_url: params.indexer_url,
+            voucher: params.voucher.into(),
+        };
         self.inner
-            .register_agreement_with_pending_cancellation(
-                agreement_id,
-                nonce_uuid,
-                request_id,
-                deployment_id,
-                indexer_id,
-                indexer_url,
-                voucher.into(),
-                old_agreement_id,
-            )
+            .register_agreement_with_pending_cancellation(pg_params, old_agreement_id)
             .await
             .map_err(Into::into)
     }

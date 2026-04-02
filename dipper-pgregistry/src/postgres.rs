@@ -10,13 +10,24 @@ use thegraph_core::{
 };
 use url::Url;
 
+/// Parameters for registering a new indexing agreement.
+pub struct NewAgreementParams {
+    pub agreement_id: IndexingAgreementId,
+    pub nonce_uuid: uuid::Uuid,
+    pub request_id: IndexingRequestId,
+    pub deployment_id: DeploymentId,
+    pub indexer_id: IndexerId,
+    pub indexer_url: Url,
+    pub voucher: crate::IndexingAgreementVoucher,
+}
+
 use self::common::{
     PgAddress, PgAllocationId, PgDeploymentId, PgIndexerId, PgProofOfIndexing, PgU32, PgU64,
     PgU256, PgUrl,
 };
 use super::{
     IndexingReceiptReportedWork,
-    indexing_agreement::{IndexingAgreement, Status as IndexingAgreementStatus, Voucher},
+    indexing_agreement::{IndexingAgreement, Status as IndexingAgreementStatus},
     indexing_receipt::IndexingReceipt,
     indexing_request::{IndexingRequest, Status as IndexingRequestStatus},
     result::Error,
@@ -219,17 +230,19 @@ impl PgRegistry {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn register_new_indexing_agreement(
         &self,
-        agreement_id: IndexingAgreementId,
-        nonce_uuid: uuid::Uuid,
-        request_id: IndexingRequestId,
-        deployment_id: DeploymentId,
-        indexer_id: IndexerId,
-        indexer_url: Url,
-        voucher: Voucher,
+        params: NewAgreementParams,
     ) -> Result<IndexingAgreementId, Error> {
+        let NewAgreementParams {
+            agreement_id,
+            nonce_uuid,
+            request_id,
+            deployment_id,
+            indexer_id,
+            indexer_url,
+            voucher,
+        } = params;
         sqlx::query_as(
             r#"
             INSERT INTO dipper_reg_indexing_agreements (
@@ -1138,18 +1151,20 @@ impl PgRegistry {
     /// Register a new agreement and record a pending cancellation in a single
     /// transaction. Guarantees that if the agreement row exists, the pending
     /// cancellation linking it to the old agreement also exists.
-    #[allow(clippy::too_many_arguments)]
     pub async fn register_agreement_with_pending_cancellation(
         &self,
-        agreement_id: IndexingAgreementId,
-        nonce_uuid: uuid::Uuid,
-        request_id: IndexingRequestId,
-        deployment_id: DeploymentId,
-        indexer_id: IndexerId,
-        indexer_url: Url,
-        voucher: Voucher,
+        params: NewAgreementParams,
         old_agreement_id: IndexingAgreementId,
     ) -> Result<IndexingAgreementId, Error> {
+        let NewAgreementParams {
+            agreement_id,
+            nonce_uuid,
+            request_id,
+            deployment_id,
+            indexer_id,
+            indexer_url,
+            voucher,
+        } = params;
         let mut tx = self.pool.begin().await?;
 
         let (new_id,): (IndexingAgreementId,) = sqlx::query_as(

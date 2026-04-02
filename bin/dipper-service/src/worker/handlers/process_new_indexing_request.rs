@@ -20,7 +20,7 @@ use crate::{
     network::{NetworkProvider, service::entity_count_cache::EntityCountCache},
     registry::{
         AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementVoucher,
-        IndexingAgreementVoucherMetadata, IndexingRequestRegistry,
+        IndexingAgreementVoucherMetadata, IndexingRequestRegistry, NewAgreementParams,
     },
     signing::eip712::PrivateKeyEip712Signer,
     worker::{
@@ -283,15 +283,15 @@ where
 
         let agreement_id = match ctx
             .registry
-            .register_new_indexing_agreement(
+            .register_new_indexing_agreement(NewAgreementParams {
                 agreement_id,
                 nonce_uuid,
-                *indexing_request_id,
-                *deployment_id,
-                indexer.id,
-                indexer.url.clone(),
+                request_id: *indexing_request_id,
+                deployment_id: *deployment_id,
+                indexer_id: indexer.id,
+                indexer_url: indexer.url.clone(),
                 voucher,
-            )
+            })
             .await
         {
             Ok(id) => id,

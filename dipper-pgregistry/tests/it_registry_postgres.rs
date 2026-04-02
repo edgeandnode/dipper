@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_pgregistry::{
     Error, IndexingAgreementStatus, IndexingAgreementVoucher, IndexingReceiptReportedWork,
-    IndexingRequestStatus, PgRegistry,
+    IndexingRequestStatus, NewAgreementParams, PgRegistry,
 };
 use fake::{Fake, Faker};
 use pgtemp::PgTempDB;
@@ -283,15 +283,15 @@ async fn register_new_indexing_agreement_no_indexing_request() {
 
     //* When
     let res = registry
-        .register_new_indexing_agreement(
-            Faker.fake::<IndexingAgreementId>(),
-            uuid::Uuid::now_v7(),
-            indexing_request_id,
+        .register_new_indexing_agreement(NewAgreementParams {
+            agreement_id: Faker.fake::<IndexingAgreementId>(),
+            nonce_uuid: uuid::Uuid::now_v7(),
+            request_id: indexing_request_id,
             deployment_id,
             indexer_id,
             indexer_url,
-            agreement_voucher,
-        )
+            voucher: agreement_voucher,
+        })
         .await;
 
     //* Then
@@ -324,15 +324,15 @@ async fn register_new_indexing_agreement() {
 
     //* When
     let res = registry
-        .register_new_indexing_agreement(
-            Faker.fake::<IndexingAgreementId>(),
-            uuid::Uuid::now_v7(),
-            indexing_request_id,
+        .register_new_indexing_agreement(NewAgreementParams {
+            agreement_id: Faker.fake::<IndexingAgreementId>(),
+            nonce_uuid: uuid::Uuid::now_v7(),
+            request_id: indexing_request_id,
             deployment_id,
             indexer_id,
             indexer_url,
-            agreement_voucher,
-        )
+            voucher: agreement_voucher,
+        })
         .await;
 
     //* Then
@@ -367,15 +367,15 @@ async fn register_new_and_get_indexing_agreement_by_id() {
 
     // Register a new indexing agreement
     let indexing_agreement_id = registry
-        .register_new_indexing_agreement(
-            Faker.fake::<IndexingAgreementId>(),
-            uuid::Uuid::now_v7(),
-            indexing_request_id,
+        .register_new_indexing_agreement(NewAgreementParams {
+            agreement_id: Faker.fake::<IndexingAgreementId>(),
+            nonce_uuid: uuid::Uuid::now_v7(),
+            request_id: indexing_request_id,
             deployment_id,
             indexer_id,
             indexer_url,
-            agreement_voucher,
-        )
+            voucher: agreement_voucher,
+        })
         .await
         .expect("Failed to register new indexing agreement");
 
@@ -492,15 +492,15 @@ async fn register_new_indexing_receipt() {
 
     // Register a new indexing agreement
     let indexing_agreement_id = registry
-        .register_new_indexing_agreement(
-            Faker.fake::<IndexingAgreementId>(),
-            uuid::Uuid::now_v7(),
-            indexing_request_id,
+        .register_new_indexing_agreement(NewAgreementParams {
+            agreement_id: Faker.fake::<IndexingAgreementId>(),
+            nonce_uuid: uuid::Uuid::now_v7(),
+            request_id: indexing_request_id,
             deployment_id,
             indexer_id,
             indexer_url,
-            agreement_voucher,
-        )
+            voucher: agreement_voucher,
+        })
         .await
         .expect("Failed to register new indexing agreement");
 

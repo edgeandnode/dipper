@@ -933,25 +933,13 @@ mod tests {
         }
         async fn register_new_indexing_agreement(
             &self,
-            _agreement_id: IndexingAgreementId,
-            _nonce_uuid: uuid::Uuid,
-            _req_id: IndexingRequestId,
-            _dep_id: DeploymentId,
-            _idx_id: IndexerId,
-            _url: Url,
-            _voucher: crate::registry::IndexingAgreementVoucher,
+            _params: crate::registry::NewAgreementParams,
         ) -> RegistryResult<IndexingAgreementId> {
             unimplemented!()
         }
         async fn register_agreement_with_pending_cancellation(
             &self,
-            _agreement_id: IndexingAgreementId,
-            _nonce_uuid: uuid::Uuid,
-            _req_id: IndexingRequestId,
-            _dep_id: DeploymentId,
-            _idx_id: IndexerId,
-            _url: Url,
-            _voucher: crate::registry::IndexingAgreementVoucher,
+            _params: crate::registry::NewAgreementParams,
             _old_agreement_id: IndexingAgreementId,
         ) -> RegistryResult<IndexingAgreementId> {
             unimplemented!()
