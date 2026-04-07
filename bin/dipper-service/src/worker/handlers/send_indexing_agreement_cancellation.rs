@@ -85,6 +85,8 @@ where
             agreement
         }
     };
+    // Fetched for status validation above; not used after.
+    let _ = &agreement;
 
     tracing::debug!(
         %indexing_request_id,
@@ -96,11 +98,7 @@ where
     // If the notification fails, retry after 20 seconds
     if let Err(err) = ctx
         .indexer_client
-        .send_indexing_agreement_cancellation_notification(
-            &indexer_url,
-            *agreement_id,
-            &agreement.on_chain_id,
-        )
+        .send_indexing_agreement_cancellation_notification(&indexer_url, *agreement_id)
         .await
     {
         tracing::error!(

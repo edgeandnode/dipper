@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_pgregistry::{
     Error, IndexingAgreementStatus, IndexingAgreementVoucher, IndexingReceiptReportedWork,
-    IndexingRequestStatus, PgRegistry,
+    IndexingRequestStatus, NewAgreementParams, PgRegistry,
 };
 use fake::{Fake, Faker};
 use pgtemp::PgTempDB;
@@ -283,15 +283,15 @@ async fn register_new_indexing_agreement_no_indexing_request() {
 
     //* When
     let res = registry
-        .register_new_indexing_agreement(
-            IndexingAgreementId::new(),
-            indexing_request_id,
+        .register_new_indexing_agreement(NewAgreementParams {
+            agreement_id: Faker.fake::<IndexingAgreementId>(),
+            nonce_uuid: uuid::Uuid::now_v7(),
+            request_id: indexing_request_id,
             deployment_id,
             indexer_id,
             indexer_url,
-            agreement_voucher,
-            &[0u8; 16],
-        )
+            voucher: agreement_voucher,
+        })
         .await;
 
     //* Then
@@ -324,15 +324,15 @@ async fn register_new_indexing_agreement() {
 
     //* When
     let res = registry
-        .register_new_indexing_agreement(
-            IndexingAgreementId::new(),
-            indexing_request_id,
+        .register_new_indexing_agreement(NewAgreementParams {
+            agreement_id: Faker.fake::<IndexingAgreementId>(),
+            nonce_uuid: uuid::Uuid::now_v7(),
+            request_id: indexing_request_id,
             deployment_id,
             indexer_id,
             indexer_url,
-            agreement_voucher,
-            &[0u8; 16],
-        )
+            voucher: agreement_voucher,
+        })
         .await;
 
     //* Then
@@ -367,15 +367,15 @@ async fn register_new_and_get_indexing_agreement_by_id() {
 
     // Register a new indexing agreement
     let indexing_agreement_id = registry
-        .register_new_indexing_agreement(
-            IndexingAgreementId::new(),
-            indexing_request_id,
+        .register_new_indexing_agreement(NewAgreementParams {
+            agreement_id: Faker.fake::<IndexingAgreementId>(),
+            nonce_uuid: uuid::Uuid::now_v7(),
+            request_id: indexing_request_id,
             deployment_id,
             indexer_id,
             indexer_url,
-            agreement_voucher,
-            &[0u8; 16],
-        )
+            voucher: agreement_voucher,
+        })
         .await
         .expect("Failed to register new indexing agreement");
 
@@ -492,15 +492,15 @@ async fn register_new_indexing_receipt() {
 
     // Register a new indexing agreement
     let indexing_agreement_id = registry
-        .register_new_indexing_agreement(
-            IndexingAgreementId::new(),
-            indexing_request_id,
+        .register_new_indexing_agreement(NewAgreementParams {
+            agreement_id: Faker.fake::<IndexingAgreementId>(),
+            nonce_uuid: uuid::Uuid::now_v7(),
+            request_id: indexing_request_id,
             deployment_id,
             indexer_id,
             indexer_url,
-            agreement_voucher,
-            &[0u8; 16],
-        )
+            voucher: agreement_voucher,
+        })
         .await
         .expect("Failed to register new indexing agreement");
 
@@ -743,9 +743,12 @@ async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
         r#"
         UPDATE dipper_reg_indexing_agreements
         SET updated_at = timezone('UTC', now()) - interval '31 days'
-        WHERE id = '01930100-0001-7000-8000-000000000003'::uuid
+        WHERE id = $1
         "#,
     )
+    .bind(IndexingAgreementId::from_bytes([
+        0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
+    ]))
     .execute(&db)
     .await
     .expect("Failed to update CanceledByIndexer agreement timestamp");
@@ -756,9 +759,12 @@ async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
         r#"
         UPDATE dipper_reg_indexing_agreements
         SET updated_at = timezone('UTC', now()) - interval '31 days'
-        WHERE id = '01930100-0003-7000-8000-000000000001'::uuid
+        WHERE id = $1
         "#,
     )
+    .bind(IndexingAgreementId::from_bytes([
+        0xcc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+    ]))
     .execute(&db)
     .await
     .expect("Failed to update Expired agreement timestamp");
@@ -797,7 +803,8 @@ async fn mark_indexing_agreement_as_rejected_transitions_created_to_rejected() {
     let registry = PgRegistry::new(db);
 
     // Agreement in Created status
-    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
     //* When
     let result = registry
@@ -832,7 +839,8 @@ async fn mark_indexing_agreement_as_rejected_fails_if_not_created() {
     let registry = PgRegistry::new(db);
 
     // Agreement in AcceptedOnChain status (not Created)
-    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000002").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
 
     //* When
     let result = registry
@@ -851,7 +859,8 @@ async fn mark_indexing_agreement_as_rejected_fails_if_not_found() {
     let registry = PgRegistry::new(db);
 
     // Non-existent agreement
-    let agreement_id: IndexingAgreementId = uuid!("01930100-9999-7000-8000-000000000001").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff]);
 
     //* When
     let result = registry
@@ -875,7 +884,8 @@ async fn get_declined_indexers_includes_rejected_status() {
     .expect("Failed to run fixture");
 
     // Mark one agreement as Rejected
-    let agreement_id: IndexingAgreementId = uuid!("01930100-0002-7000-8000-000000000001").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     sqlx::query(
         r#"
         UPDATE dipper_reg_indexing_agreements
@@ -952,8 +962,10 @@ async fn get_expired_created_agreements_returns_past_deadline() {
     );
 
     let agreement_ids: Vec<_> = result.iter().map(|a| a.id).collect();
-    let expected_id_1: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
-    let expected_id_2: IndexingAgreementId = uuid!("01930100-0002-7000-8000-000000000001").into();
+    let expected_id_1 =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    let expected_id_2 =
+        IndexingAgreementId::from_bytes([0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     assert!(
         agreement_ids.contains(&expected_id_1),
         "Should include first Created agreement"
@@ -981,10 +993,13 @@ async fn get_expired_created_agreements_excludes_future_deadline() {
         r#"
         UPDATE dipper_reg_indexing_agreements
         SET voucher = jsonb_set(voucher::jsonb, '{deadline}', to_jsonb($1::bigint))
-        WHERE id = '01930100-0001-7000-8000-000000000001'::uuid
+        WHERE id = $2
         "#,
     )
     .bind(future_deadline)
+    .bind(IndexingAgreementId::from_bytes([
+        0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+    ]))
     .execute(&db)
     .await
     .expect("Failed to update deadline");
@@ -1004,7 +1019,8 @@ async fn get_expired_created_agreements_excludes_future_deadline() {
         1,
         "Should return only 1 expired Created agreement"
     );
-    let expected_id: IndexingAgreementId = uuid!("01930100-0002-7000-8000-000000000001").into();
+    let expected_id =
+        IndexingAgreementId::from_bytes([0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     assert_eq!(
         result[0].id, expected_id,
         "Should return the past-deadline agreement"
@@ -1080,7 +1096,8 @@ async fn mark_indexing_agreement_as_expired_transitions_created_to_expired() {
     let registry = PgRegistry::new(db);
 
     // Agreement in Created status
-    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
     //* When
     let result = registry
@@ -1115,7 +1132,8 @@ async fn mark_indexing_agreement_as_expired_fails_if_not_created() {
     let registry = PgRegistry::new(db);
 
     // Agreement in AcceptedOnChain status (not Created)
-    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000002").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
 
     //* When
     let result = registry
@@ -1134,7 +1152,8 @@ async fn mark_indexing_agreement_as_expired_fails_if_not_found() {
     let registry = PgRegistry::new(db);
 
     // Non-existent agreement
-    let agreement_id: IndexingAgreementId = uuid!("01930100-9999-7000-8000-000000000001").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff]);
 
     //* When
     let result = registry
@@ -1543,7 +1562,8 @@ async fn test_update_agreement_sync_progress() {
     let registry = PgRegistry::new(db);
 
     // AcceptedOnChain agreement from fixture 0002
-    let agreement_id: IndexingAgreementId = uuid!("019300e1-0c52-72b0-ae96-5eed9a9bd77a").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
     let now = time::OffsetDateTime::now_utc();
 
     //* When
@@ -1607,7 +1627,8 @@ async fn test_mark_as_abandoned_transitions_status() {
     let registry = PgRegistry::new(db);
 
     // AcceptedOnChain agreement from fixture 0002
-    let agreement_id: IndexingAgreementId = uuid!("019300e1-0c52-72b0-ae96-5eed9a9bd77a").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
 
     //* When
     let abandoned = registry
@@ -1650,7 +1671,8 @@ async fn mark_indexing_agreement_as_rejected_stores_price_too_low_reason() {
     let registry = PgRegistry::new(db);
 
     // Agreement in Created status
-    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
     //* When
     let result = registry
@@ -1690,7 +1712,8 @@ async fn mark_indexing_agreement_as_rejected_stores_other_reason() {
     let registry = PgRegistry::new(db);
 
     // Agreement in Created status
-    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
     //* When
     let result = registry
@@ -1733,7 +1756,8 @@ async fn get_declined_indexers_price_too_low_excluded_after_1_day() {
     .expect("Failed to run fixture");
 
     // Mark an agreement as rejected with PRICE_TOO_LOW and set updated_at to 2 days ago
-    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     sqlx::query(
         r#"
         UPDATE dipper_reg_indexing_agreements
@@ -1780,7 +1804,8 @@ async fn get_declined_indexers_price_too_low_included_within_1_day() {
     .expect("Failed to run fixture");
 
     // Mark an agreement as rejected with PRICE_TOO_LOW (just now, so within 1-day window)
-    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     sqlx::query(
         r#"
         UPDATE dipper_reg_indexing_agreements
@@ -1830,7 +1855,8 @@ async fn get_declined_indexers_other_reason_uses_30_day_window() {
     .expect("Failed to run fixture");
 
     // Mark an agreement as rejected with OTHER and set updated_at to 15 days ago
-    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     sqlx::query(
         r#"
         UPDATE dipper_reg_indexing_agreements
@@ -1880,7 +1906,8 @@ async fn get_declined_indexers_other_reason_excluded_after_30_days() {
     .expect("Failed to run fixture");
 
     // Mark an agreement as rejected with OTHER and set updated_at to 31 days ago
-    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     sqlx::query(
         r#"
         UPDATE dipper_reg_indexing_agreements
@@ -1933,7 +1960,8 @@ async fn get_declined_indexers_signer_not_authorised_included_within_5_minutes()
     .expect("Failed to run fixture");
 
     // Mark an agreement as rejected with SIGNER_NOT_AUTHORISED (just now, within 5-min window)
-    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     sqlx::query(
         r#"
         UPDATE dipper_reg_indexing_agreements
@@ -1983,7 +2011,8 @@ async fn get_declined_indexers_signer_not_authorised_excluded_after_5_minutes() 
     .expect("Failed to run fixture");
 
     // Mark an agreement as rejected with SIGNER_NOT_AUTHORISED, set updated_at to 10 minutes ago
-    let agreement_id: IndexingAgreementId = uuid!("01930100-0001-7000-8000-000000000001").into();
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     sqlx::query(
         r#"
         UPDATE dipper_reg_indexing_agreements

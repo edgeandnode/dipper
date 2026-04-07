@@ -77,7 +77,7 @@ where
     // Send the cancellation transaction
     match ctx
         .chain_client
-        .cancel_indexing_agreement_by_payer(&agreement.on_chain_id)
+        .cancel_indexing_agreement_by_payer(agreement.id.as_bytes())
         .await
     {
         Ok(tx_hash) => {

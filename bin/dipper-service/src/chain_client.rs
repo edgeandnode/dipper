@@ -47,13 +47,13 @@ pub trait ChainClient {
     /// Cancel an indexing agreement as the payer.
     ///
     /// Calls `cancelIndexingAgreementByPayer(agreementId)` on the SubgraphService contract.
-    /// The `on_chain_id` is the keccak-derived bytes16 stored on-chain, not the internal UUID.
+    /// The `agreement_id` is the keccak-derived bytes16 stored on-chain.
     /// This caps the collectible fees at the cancellation timestamp.
     ///
     /// Returns the transaction hash on success.
     async fn cancel_indexing_agreement_by_payer(
         &self,
-        on_chain_id: &[u8; 16],
+        agreement_id: &[u8; 16],
     ) -> Result<B256, ChainClientError>;
 }
 
@@ -65,10 +65,10 @@ pub trait ChainClient {
 impl<T: ChainClient + Send + Sync + ?Sized> ChainClient for Arc<T> {
     async fn cancel_indexing_agreement_by_payer(
         &self,
-        on_chain_id: &[u8; 16],
+        agreement_id: &[u8; 16],
     ) -> Result<B256, ChainClientError> {
         (**self)
-            .cancel_indexing_agreement_by_payer(on_chain_id)
+            .cancel_indexing_agreement_by_payer(agreement_id)
             .await
     }
 }
@@ -83,10 +83,10 @@ pub struct StubChainClient;
 impl ChainClient for StubChainClient {
     async fn cancel_indexing_agreement_by_payer(
         &self,
-        on_chain_id: &[u8; 16],
+        agreement_id: &[u8; 16],
     ) -> Result<B256, ChainClientError> {
         tracing::error!(
-            on_chain_id = %format_args!("0x{}", on_chain_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
             "ChainClient not implemented - cannot cancel agreement on-chain"
         );
         Err(ChainClientError::ConfigError(

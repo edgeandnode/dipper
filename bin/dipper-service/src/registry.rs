@@ -12,7 +12,6 @@ use thegraph_core::{
     DeploymentId, IndexerId,
     alloy::primitives::{Address, ChainId},
 };
-use url::Url;
 
 // Re-export for tests only
 #[cfg(test)]
@@ -20,14 +19,29 @@ pub use self::agreement::Indexer;
 use self::result::Result as RegistryResult;
 pub use self::{
     agreement::{
-        AgreementFeeRate, AgreementRegistry, IndexingAgreement, Status as IndexingAgreementStatus,
-        Voucher as IndexingAgreementVoucher, VoucherMetadata as IndexingAgreementVoucherMetadata,
+        AgreementFeeRate, AgreementRegistry, IndexingAgreement, NewAgreementParams,
+        Status as IndexingAgreementStatus, Voucher as IndexingAgreementVoucher,
+        VoucherMetadata as IndexingAgreementVoucherMetadata,
     },
     indexer_denylist::IndexerDenylistRegistry,
     indexing_request::{IndexingRequest, IndexingRequestRegistry, Status as IndexingRequestStatus},
     pending_cancellation::{PendingCancellation, PendingCancellationRegistry},
     result::{Error, Result},
 };
+
+impl From<NewAgreementParams> for dipper_pgregistry::NewAgreementParams {
+    fn from(params: NewAgreementParams) -> Self {
+        Self {
+            agreement_id: params.agreement_id,
+            nonce_uuid: params.nonce_uuid,
+            request_id: params.request_id,
+            deployment_id: params.deployment_id,
+            indexer_id: params.indexer_id,
+            indexer_url: params.indexer_url,
+            voucher: params.voucher.into(),
+        }
+    }
+}
 
 /// Filter and log conversion errors instead of silently dropping them.
 ///
@@ -242,64 +256,23 @@ impl AgreementRegistry for RegistryProvider {
     }
     async fn register_new_indexing_agreement(
         &self,
-        agreement_id: IndexingAgreementId,
-        request_id: IndexingRequestId,
-        deployment_id: DeploymentId,
-        indexer_id: IndexerId,
-        indexer_url: Url,
-        voucher: IndexingAgreementVoucher,
-        on_chain_id: &[u8; 16],
+        params: NewAgreementParams,
     ) -> RegistryResult<IndexingAgreementId> {
         self.inner
-            .register_new_indexing_agreement(
-                agreement_id,
-                request_id,
-                deployment_id,
-                indexer_id,
-                indexer_url,
-                voucher.into(),
-                on_chain_id,
-            )
+            .register_new_indexing_agreement(params.into())
             .await
             .map_err(Into::into)
     }
 
     async fn register_agreement_with_pending_cancellation(
         &self,
-        agreement_id: IndexingAgreementId,
-        request_id: IndexingRequestId,
-        deployment_id: DeploymentId,
-        indexer_id: IndexerId,
-        indexer_url: Url,
-        voucher: IndexingAgreementVoucher,
+        params: NewAgreementParams,
         old_agreement_id: IndexingAgreementId,
-        on_chain_id: &[u8; 16],
     ) -> RegistryResult<IndexingAgreementId> {
         self.inner
-            .register_agreement_with_pending_cancellation(
-                agreement_id,
-                request_id,
-                deployment_id,
-                indexer_id,
-                indexer_url,
-                voucher.into(),
-                old_agreement_id,
-                on_chain_id,
-            )
+            .register_agreement_with_pending_cancellation(params.into(), old_agreement_id)
             .await
             .map_err(Into::into)
-    }
-
-    async fn get_indexing_agreement_by_on_chain_id(
-        &self,
-        on_chain_id: &[u8; 16],
-    ) -> RegistryResult<Option<IndexingAgreement>> {
-        Ok(self
-            .inner
-            .get_indexing_agreement_by_on_chain_id(on_chain_id)
-            .await?
-            .map(TryInto::try_into)
-            .and_then(Result::ok))
     }
 
     async fn mark_indexing_agreement_as_delivery_failed(

@@ -487,7 +487,7 @@ async fn cancel_and_reassess<R, W, C>(
 {
     // 1. Cancel on-chain
     match chain_client
-        .cancel_indexing_agreement_by_payer(&agreement.on_chain_id)
+        .cancel_indexing_agreement_by_payer(agreement.id.as_bytes())
         .await
     {
         Ok(tx_hash) => {
@@ -794,7 +794,7 @@ mod tests {
         last_block_height: Option<u64>,
         last_progress_at: Option<OffsetDateTime>,
     ) -> IndexingAgreement {
-        let agreement_id = IndexingAgreementId::new();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let voucher = IndexingAgreementVoucher {
             payer: Address::ZERO,
             service_provider: Address::ZERO,
@@ -813,9 +813,9 @@ mod tests {
                 chain_id: 1u64,
             },
         };
-        let on_chain_id = crate::indexer_rpc_client::compute_on_chain_id(agreement_id, &voucher);
         IndexingAgreement {
             id: agreement_id,
+            nonce_uuid: uuid::Uuid::now_v7(),
             created_at: OffsetDateTime::now_utc(),
             updated_at: OffsetDateTime::now_utc(),
             status: IndexingAgreementStatus::AcceptedOnChain,
@@ -828,7 +828,6 @@ mod tests {
             last_block_height,
             last_progress_at,
             rejection_reason: None,
-            on_chain_id,
         }
     }
 
@@ -934,33 +933,15 @@ mod tests {
         }
         async fn register_new_indexing_agreement(
             &self,
-            _agreement_id: IndexingAgreementId,
-            _req_id: IndexingRequestId,
-            _dep_id: DeploymentId,
-            _idx_id: IndexerId,
-            _url: Url,
-            _voucher: crate::registry::IndexingAgreementVoucher,
-            _on_chain_id: &[u8; 16],
+            _params: crate::registry::NewAgreementParams,
         ) -> RegistryResult<IndexingAgreementId> {
             unimplemented!()
         }
         async fn register_agreement_with_pending_cancellation(
             &self,
-            _agreement_id: IndexingAgreementId,
-            _req_id: IndexingRequestId,
-            _dep_id: DeploymentId,
-            _idx_id: IndexerId,
-            _url: Url,
-            _voucher: crate::registry::IndexingAgreementVoucher,
+            _params: crate::registry::NewAgreementParams,
             _old_agreement_id: IndexingAgreementId,
-            _on_chain_id: &[u8; 16],
         ) -> RegistryResult<IndexingAgreementId> {
-            unimplemented!()
-        }
-        async fn get_indexing_agreement_by_on_chain_id(
-            &self,
-            _on_chain_id: &[u8; 16],
-        ) -> RegistryResult<Option<IndexingAgreement>> {
             unimplemented!()
         }
         async fn mark_indexing_agreement_as_delivery_failed(
@@ -1220,9 +1201,9 @@ mod tests {
     impl ChainClient for MockChainClient {
         async fn cancel_indexing_agreement_by_payer(
             &self,
-            on_chain_id: &[u8; 16],
+            agreement_id: &[u8; 16],
         ) -> Result<B256, ChainClientError> {
-            self.calls.chain_cancels.lock().unwrap().push(*on_chain_id);
+            self.calls.chain_cancels.lock().unwrap().push(*agreement_id);
             match &self.result {
                 Ok(hash) => Ok(*hash),
                 Err(ChainClientError::ConfigError(s)) => {
@@ -1513,7 +1494,7 @@ mod tests {
         // Assert
         assert_eq!(
             calls.chain_cancels.lock().unwrap().as_slice(),
-            &[agreement.on_chain_id]
+            &[agreement.id.into_bytes()]
         );
         assert_eq!(calls.abandoned.lock().unwrap().as_slice(), &[agr_id]);
         assert_eq!(calls.reassessments.lock().unwrap().as_slice(), &[req_id]);
@@ -1559,7 +1540,7 @@ mod tests {
         // but DB mark and reassessment still happen
         assert_eq!(
             calls.chain_cancels.lock().unwrap().as_slice(),
-            &[agreement.on_chain_id]
+            &[agreement.id.into_bytes()]
         );
         assert_eq!(calls.abandoned.lock().unwrap().as_slice(), &[agr_id]);
         assert_eq!(calls.reassessments.lock().unwrap().as_slice(), &[req_id]);
@@ -1602,7 +1583,7 @@ mod tests {
         // Assert: chain cancel attempted, but DB and queue untouched
         assert_eq!(
             calls.chain_cancels.lock().unwrap().as_slice(),
-            &[agreement.on_chain_id]
+            &[agreement.id.into_bytes()]
         );
         assert!(calls.abandoned.lock().unwrap().is_empty());
         assert!(calls.reassessments.lock().unwrap().is_empty());

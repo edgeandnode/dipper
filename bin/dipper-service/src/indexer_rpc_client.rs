@@ -59,16 +59,16 @@ pub trait IndexerClient {
         indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
         voucher: IndexingAgreementVoucher,
+        nonce_uuid: uuid::Uuid,
     ) -> Result<SubmitAgreementProposalResponse, DipsError>;
 
     /// Send an indexing agreement cancel request to the indexer.
     ///
-    /// The `on_chain_id` is the keccak-derived bytes16 stored on-chain.
+    /// The agreement ID IS the on-chain bytes16, so no separate `on_chain_id` is needed.
     async fn send_indexing_agreement_cancellation_notification(
         &self,
         indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
-        on_chain_id: &[u8; 16],
     ) -> Result<(), DipsError>;
 }
 
@@ -190,9 +190,10 @@ impl IndexerClient for DipsIndexerClient {
         indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
         voucher: IndexingAgreementVoucher,
+        nonce_uuid: uuid::Uuid,
     ) -> Result<SubmitAgreementProposalResponse, DipsError> {
         // Convert to the RCA solidity data structure
-        let (sol_rca, _on_chain_id) = into_sol_rca(indexing_agreement_id, voucher);
+        let (sol_rca, _on_chain_id) = into_sol_rca(nonce_uuid, voucher);
 
         // Sign the RCA with the RecurringCollector EIP-712 domain
         let signed = self
@@ -238,10 +239,10 @@ impl IndexerClient for DipsIndexerClient {
         &self,
         indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
-        on_chain_id: &[u8; 16],
     ) -> Result<(), DipsError> {
         // Convert to the solidity cancellation request data structure
-        let sol_cancellation_request = into_sol_cancellation_request(on_chain_id);
+        let sol_cancellation_request =
+            into_sol_cancellation_request(indexing_agreement_id.as_bytes());
 
         // Sign the solidity cancellation request with the appropriate domain
         let signed = self
@@ -281,13 +282,14 @@ impl IndexerClient for DipsIndexerClient {
 /// This replicates the contract's derivation:
 /// `bytes16(keccak256(abi.encode(payer, dataService, serviceProvider, deadline, nonce)))`
 ///
-/// Used by worker handlers to store the on_chain_id at agreement registration time.
+/// The `nonce_uuid` is the UUID v7 used to derive the RCA nonce (placed in the lower
+/// 16 bytes of a U256). The returned `IndexingAgreementId` IS the on-chain identity.
 pub fn compute_on_chain_id(
-    agreement_id: IndexingAgreementId,
+    nonce_uuid: uuid::Uuid,
     voucher: &IndexingAgreementVoucher,
-) -> [u8; 16] {
-    let (_, on_chain_id) = into_sol_rca(agreement_id, voucher.clone());
-    on_chain_id
+) -> IndexingAgreementId {
+    let (_, on_chain_id) = into_sol_rca(nonce_uuid, voucher.clone());
+    IndexingAgreementId::from_bytes(on_chain_id)
 }
 
 /// Convert an internal voucher to the on-chain `RecurringCollectionAgreement` sol type.
@@ -295,7 +297,7 @@ pub fn compute_on_chain_id(
 /// Returns the RCA and the derived on-chain agreement ID (bytes16).
 #[inline]
 fn into_sol_rca(
-    agreement_id: IndexingAgreementId,
+    nonce_uuid: uuid::Uuid,
     voucher: IndexingAgreementVoucher,
 ) -> (sol::RecurringCollectionAgreement, [u8; 16]) {
     // Build the V1 pricing terms
@@ -313,9 +315,9 @@ fn into_sol_rca(
     }
     .abi_encode();
 
-    // Derive nonce from the agreement UUID (16-byte UUID -> U256)
+    // Derive nonce from the UUID (16-byte UUID -> U256)
     let mut nonce_bytes = [0u8; 32];
-    nonce_bytes[16..].copy_from_slice(agreement_id.as_bytes());
+    nonce_bytes[16..].copy_from_slice(nonce_uuid.as_bytes());
     let nonce = U256::from_be_bytes(nonce_bytes);
 
     let rca = sol::RecurringCollectionAgreement {
@@ -356,7 +358,7 @@ mod tests {
         use thegraph_core::{DeploymentId, alloy::primitives::address};
 
         //* Arrange
-        let agreement_id = IndexingAgreementId::new();
+        let nonce_uuid = uuid::Uuid::now_v7();
         let deployment_id =
             DeploymentId::from_str("QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9").unwrap();
 
@@ -392,7 +394,7 @@ mod tests {
         };
 
         //* Act
-        let (rca, _on_chain_id) = into_sol_rca(agreement_id, voucher);
+        let (rca, _on_chain_id) = into_sol_rca(nonce_uuid, voucher);
 
         //* Assert
         // Verify top-level fields

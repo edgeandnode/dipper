@@ -8,7 +8,6 @@ use dipper_rpc::admin::indexing_agreements::{
     CancelIndexingAgreement, IndexingAgreementsRpcClient,
 };
 use thegraph_core::signed_message;
-use uuid::Uuid;
 
 use super::{common, result::Result};
 use crate::{client, config::Config, signer};
@@ -115,7 +114,7 @@ pub(super) fn cmd() -> Command {
             command!("cancel")
                 .about("Cancel a specific agreement by ID")
                 .arg(
-                    arg!(<AGREEMENT_ID> "The agreement ID (UUIDv7)")
+                    arg!(<AGREEMENT_ID> "The agreement ID (0x-prefixed hex bytes16)")
                         .value_parser(parse_agreement_id),
                 ),
         ])
@@ -123,14 +122,13 @@ pub(super) fn cmd() -> Command {
 
 /// Parses an IndexingRequestId from a string.
 fn parse_indexing_request_id(s: &str) -> Result<IndexingRequestId, anyhow::Error> {
-    Uuid::from_str(s)
+    uuid::Uuid::from_str(s)
         .map(Into::into)
         .map_err(|err| anyhow::anyhow!("Invalid Indexing Request ID (UUIDv7) '{s}': {err}"))
 }
 
-/// Parses an IndexingAgreementId from a string.
+/// Parses an IndexingAgreementId from a hex string (with optional 0x prefix).
 fn parse_agreement_id(s: &str) -> Result<IndexingAgreementId, anyhow::Error> {
-    Uuid::from_str(s)
-        .map(Into::into) // Assuming IndexingAgreementId implements From<Uuid>
-        .map_err(|err| anyhow::anyhow!("Invalid Agreement ID (UUIDv7) '{s}': {err}"))
+    IndexingAgreementId::from_str(s)
+        .map_err(|err| anyhow::anyhow!("Invalid Agreement ID (hex bytes16) '{s}': {err}"))
 }

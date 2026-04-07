@@ -106,7 +106,12 @@ where
 
     let response = ctx
         .indexer_client
-        .send_indexing_agreement_proposal(&indexer_url, *agreement_id, agreement.voucher)
+        .send_indexing_agreement_proposal(
+            &indexer_url,
+            *agreement_id,
+            agreement.voucher,
+            agreement.nonce_uuid,
+        )
         .await;
 
     match response {
@@ -420,36 +425,17 @@ mod tests {
 
         async fn register_new_indexing_agreement(
             &self,
-            _agreement_id: IndexingAgreementId,
-            _request_id: IndexingRequestId,
-            _deployment_id: DeploymentId,
-            _indexer_id: IndexerId,
-            _indexer_url: Url,
-            _voucher: IndexingAgreementVoucher,
-            _on_chain_id: &[u8; 16],
+            _params: crate::registry::NewAgreementParams,
         ) -> crate::registry::Result<IndexingAgreementId> {
-            Ok(IndexingAgreementId::new())
+            Ok(IndexingAgreementId::from_bytes(rand::random()))
         }
 
         async fn register_agreement_with_pending_cancellation(
             &self,
-            _agreement_id: IndexingAgreementId,
-            _request_id: IndexingRequestId,
-            _deployment_id: DeploymentId,
-            _indexer_id: IndexerId,
-            _indexer_url: Url,
-            _voucher: IndexingAgreementVoucher,
+            _params: crate::registry::NewAgreementParams,
             _old_agreement_id: IndexingAgreementId,
-            _on_chain_id: &[u8; 16],
         ) -> crate::registry::Result<IndexingAgreementId> {
-            Ok(IndexingAgreementId::new())
-        }
-
-        async fn get_indexing_agreement_by_on_chain_id(
-            &self,
-            _on_chain_id: &[u8; 16],
-        ) -> crate::registry::Result<Option<IndexingAgreement>> {
-            Ok(None)
+            Ok(IndexingAgreementId::from_bytes(rand::random()))
         }
 
         async fn mark_indexing_agreement_as_delivery_failed(
@@ -758,6 +744,7 @@ mod tests {
             _indexer: &Url,
             _indexing_agreement_id: IndexingAgreementId,
             _voucher: IndexingAgreementVoucher,
+            _nonce_uuid: uuid::Uuid,
         ) -> Result<SubmitAgreementProposalResponse, DipsError> {
             match self.response {
                 MockResponse::Accept => Ok(SubmitAgreementProposalResponse {
@@ -786,7 +773,6 @@ mod tests {
             &self,
             _indexer: &Url,
             _indexing_agreement_id: IndexingAgreementId,
-            _on_chain_id: &[u8; 16],
         ) -> Result<(), DipsError> {
             Ok(())
         }
@@ -819,9 +805,9 @@ mod tests {
                 chain_id: 1,
             },
         };
-        let on_chain_id = crate::indexer_rpc_client::compute_on_chain_id(id, &voucher);
         IndexingAgreement {
             id,
+            nonce_uuid: uuid::Uuid::now_v7(),
             created_at: OffsetDateTime::now_utc(),
             updated_at: OffsetDateTime::now_utc(),
             status,
@@ -834,7 +820,6 @@ mod tests {
             last_block_height: None,
             last_progress_at: None,
             rejection_reason: None,
-            on_chain_id,
         }
     }
 
@@ -867,7 +852,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_accept_response_leaves_agreement_created() {
-        let agreement_id = IndexingAgreementId::new();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
 
         let registry_state = Arc::new(Mutex::new(MockRegistryState {
@@ -906,7 +891,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reject_response_marks_rejected_with_other_reason() {
-        let agreement_id = IndexingAgreementId::new();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
 
         let registry_state = Arc::new(Mutex::new(MockRegistryState {
@@ -954,7 +939,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reject_price_too_low_marks_with_correct_reason() {
-        let agreement_id = IndexingAgreementId::new();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
 
         let registry_state = Arc::new(Mutex::new(MockRegistryState {
@@ -1002,7 +987,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reject_signer_not_authorised_marks_with_correct_reason() {
-        let agreement_id = IndexingAgreementId::new();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
 
         let registry_state = Arc::new(Mutex::new(MockRegistryState {
@@ -1050,7 +1035,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_network_error_marks_failed_and_reassesses() {
-        let agreement_id = IndexingAgreementId::new();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
 
         let registry_state = Arc::new(Mutex::new(MockRegistryState {
@@ -1093,7 +1078,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_non_created_status_skips_sending() {
-        let agreement_id = IndexingAgreementId::new();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
 
         let registry_state = Arc::new(Mutex::new(MockRegistryState {

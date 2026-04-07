@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
-use dipper_core::state::FromState;
+use dipper_core::{ids::IndexingAgreementId, state::FromState};
 use dipper_rpc::indexer::gateway_server::{rpc, sol};
 use thegraph_core::{
     IndexerId,
@@ -109,12 +109,12 @@ where
             }
         };
 
-        let on_chain_id: [u8; 16] = sol_cancellation_req.agreement_id.0;
+        let on_chain_id = IndexingAgreementId::from_bytes(sol_cancellation_req.agreement_id.0);
 
         // Check if the agreement exists and the indexer is the owner
         let agreement = match self
             .registry
-            .get_indexing_agreement_by_on_chain_id(&on_chain_id)
+            .get_indexing_agreement_by_id(&on_chain_id)
             .await
         {
             Ok(None) => {

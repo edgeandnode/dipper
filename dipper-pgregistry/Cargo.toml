@@ -18,6 +18,7 @@ thegraph-core = { workspace = true, features = ["serde"] }
 thiserror.workspace = true
 time.workspace = true
 url.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 dipper-core = { path = "../dipper-core" }

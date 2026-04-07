@@ -11,6 +11,7 @@ use crate::indexing_agreement::{Indexer, IndexingAgreement, Status};
 impl sqlx::FromRow<'_, PgRow> for IndexingAgreement {
     fn from_row(row: &'_ PgRow) -> Result<Self, sqlx::Error> {
         let id = row.try_get("id")?;
+        let nonce_uuid = row.try_get("nonce_uuid")?;
         let created_at = row.try_get("created_at")?;
         let updated_at = row.try_get("updated_at")?;
         let status = row.try_get("status")?;
@@ -20,20 +21,10 @@ impl sqlx::FromRow<'_, PgRow> for IndexingAgreement {
         let last_block_height: Option<i64> = row.try_get("last_block_height")?;
         let last_progress_at = row.try_get("last_progress_at")?;
         let rejection_reason: Option<String> = row.try_get("rejection_reason")?;
-        let on_chain_id_vec: Vec<u8> = row.try_get("on_chain_id")?;
-        let on_chain_id: [u8; 16] =
-            on_chain_id_vec
-                .try_into()
-                .map_err(|_| sqlx::Error::ColumnDecode {
-                    index: "on_chain_id".to_string(),
-                    source: Box::new(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "on_chain_id must be exactly 16 bytes",
-                    )),
-                })?;
 
         Ok(Self {
             id,
+            nonce_uuid,
             created_at,
             updated_at,
             status,
@@ -43,7 +34,6 @@ impl sqlx::FromRow<'_, PgRow> for IndexingAgreement {
             last_block_height: last_block_height.map(|v| v as u64),
             last_progress_at,
             rejection_reason,
-            on_chain_id,
         })
     }
 }

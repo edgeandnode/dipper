@@ -18,4 +18,5 @@ thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 thegraph-core = { workspace = true, features = ["alloy-signer-local"] }

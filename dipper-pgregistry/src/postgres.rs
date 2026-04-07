@@ -10,13 +10,24 @@ use thegraph_core::{
 };
 use url::Url;
 
+/// Parameters for registering a new indexing agreement.
+pub struct NewAgreementParams {
+    pub agreement_id: IndexingAgreementId,
+    pub nonce_uuid: uuid::Uuid,
+    pub request_id: IndexingRequestId,
+    pub deployment_id: DeploymentId,
+    pub indexer_id: IndexerId,
+    pub indexer_url: Url,
+    pub voucher: crate::IndexingAgreementVoucher,
+}
+
 use self::common::{
     PgAddress, PgAllocationId, PgDeploymentId, PgIndexerId, PgProofOfIndexing, PgU32, PgU64,
     PgU256, PgUrl,
 };
 use super::{
     IndexingReceiptReportedWork,
-    indexing_agreement::{IndexingAgreement, Status as IndexingAgreementStatus, Voucher},
+    indexing_agreement::{IndexingAgreement, Status as IndexingAgreementStatus},
     indexing_receipt::IndexingReceipt,
     indexing_request::{IndexingRequest, Status as IndexingRequestStatus},
     result::Error,
@@ -164,6 +175,7 @@ impl PgRegistry {
             r#"
             SELECT
                 id,
+                nonce_uuid,
                 created_at,
                 updated_at,
                 status,
@@ -174,8 +186,7 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason,
-                on_chain_id
+                rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1 AND status IN ($2, $3)
             "#,
@@ -219,21 +230,24 @@ impl PgRegistry {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn register_new_indexing_agreement(
         &self,
-        agreement_id: IndexingAgreementId,
-        request_id: IndexingRequestId,
-        deployment_id: DeploymentId,
-        indexer_id: IndexerId,
-        indexer_url: Url,
-        voucher: Voucher,
-        on_chain_id: &[u8; 16],
+        params: NewAgreementParams,
     ) -> Result<IndexingAgreementId, Error> {
+        let NewAgreementParams {
+            agreement_id,
+            nonce_uuid,
+            request_id,
+            deployment_id,
+            indexer_id,
+            indexer_url,
+            voucher,
+        } = params;
         sqlx::query_as(
             r#"
             INSERT INTO dipper_reg_indexing_agreements (
                 id,
+                nonce_uuid,
                 created_at,
                 updated_at,
                 status,
@@ -241,24 +255,23 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher,
-                on_chain_id
+                voucher
             )
             VALUES (
-                $1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, $5,
-                $6, $7, $8
+                $1, $2, timezone('UTC', now()), timezone('UTC', now()), $3, $4, $5, $6,
+                $7, $8
             )
             RETURNING id
             "#,
         )
         .bind(agreement_id)
+        .bind(nonce_uuid)
         .bind(IndexingAgreementStatus::default())
         .bind(request_id)
         .bind(PgDeploymentId(deployment_id))
         .bind(PgIndexerId(indexer_id))
         .bind(PgUrl(indexer_url))
         .bind(Json(voucher))
-        .bind(on_chain_id)
         .fetch_one(&self.pool)
         .await
         .map(|(id,)| id)
@@ -273,6 +286,7 @@ impl PgRegistry {
             r#"
             SELECT
                 id,
+                nonce_uuid,
                 created_at,
                 updated_at,
                 status,
@@ -283,43 +297,12 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason,
-                on_chain_id
+                rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE id = $1
             "#,
         )
         .bind(agreement_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(Into::into)
-    }
-
-    pub async fn get_indexing_agreement_by_on_chain_id(
-        &self,
-        on_chain_id: &[u8; 16],
-    ) -> Result<Option<IndexingAgreement>, Error> {
-        sqlx::query_as(
-            r#"
-            SELECT
-                id,
-                created_at,
-                updated_at,
-                status,
-                indexing_request_id,
-                deployment_id,
-                indexer_id,
-                indexer_url,
-                voucher,
-                last_block_height,
-                last_progress_at,
-                rejection_reason,
-                on_chain_id
-            FROM dipper_reg_indexing_agreements
-            WHERE on_chain_id = $1
-            "#,
-        )
-        .bind(on_chain_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(Into::into)
@@ -333,6 +316,7 @@ impl PgRegistry {
             r#"
             SELECT
                 id,
+                nonce_uuid,
                 created_at,
                 updated_at,
                 status,
@@ -343,8 +327,7 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason,
-                on_chain_id
+                rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE deployment_id = $1
             "#,
@@ -363,6 +346,7 @@ impl PgRegistry {
             r#"
             SELECT
                 id,
+                nonce_uuid,
                 created_at,
                 updated_at,
                 status,
@@ -373,8 +357,7 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason,
-                on_chain_id
+                rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE indexer_id = $1
             "#,
@@ -508,6 +491,7 @@ impl PgRegistry {
             r#"
             SELECT
                 id,
+                nonce_uuid,
                 created_at,
                 updated_at,
                 status,
@@ -518,8 +502,7 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason,
-                on_chain_id
+                rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1
             "#,
@@ -805,6 +788,7 @@ impl PgRegistry {
             r#"
             SELECT
                 id,
+                nonce_uuid,
                 created_at,
                 updated_at,
                 status,
@@ -815,8 +799,7 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason,
-                on_chain_id
+                rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
               AND CAST(voucher->>'deadline' AS bigint) < $3
@@ -916,6 +899,7 @@ impl PgRegistry {
             r#"
             SELECT
                 id,
+                nonce_uuid,
                 created_at,
                 updated_at,
                 status,
@@ -926,8 +910,7 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason,
-                on_chain_id
+                rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
             ORDER BY last_progress_at ASC NULLS FIRST
@@ -1016,6 +999,7 @@ impl PgRegistry {
             WHERE id = $2 AND status = $3
             RETURNING
                 id,
+                nonce_uuid,
                 created_at,
                 updated_at,
                 status,
@@ -1026,8 +1010,7 @@ impl PgRegistry {
                 voucher,
                 last_block_height,
                 last_progress_at,
-                rejection_reason,
-                on_chain_id
+                rejection_reason
             "#,
         )
         .bind(IndexingAgreementStatus::AbandonedByIndexer)
@@ -1168,24 +1151,27 @@ impl PgRegistry {
     /// Register a new agreement and record a pending cancellation in a single
     /// transaction. Guarantees that if the agreement row exists, the pending
     /// cancellation linking it to the old agreement also exists.
-    #[allow(clippy::too_many_arguments)]
     pub async fn register_agreement_with_pending_cancellation(
         &self,
-        agreement_id: IndexingAgreementId,
-        request_id: IndexingRequestId,
-        deployment_id: DeploymentId,
-        indexer_id: IndexerId,
-        indexer_url: Url,
-        voucher: Voucher,
+        params: NewAgreementParams,
         old_agreement_id: IndexingAgreementId,
-        on_chain_id: &[u8; 16],
     ) -> Result<IndexingAgreementId, Error> {
+        let NewAgreementParams {
+            agreement_id,
+            nonce_uuid,
+            request_id,
+            deployment_id,
+            indexer_id,
+            indexer_url,
+            voucher,
+        } = params;
         let mut tx = self.pool.begin().await?;
 
         let (new_id,): (IndexingAgreementId,) = sqlx::query_as(
             r#"
             INSERT INTO dipper_reg_indexing_agreements (
                 id,
+                nonce_uuid,
                 created_at,
                 updated_at,
                 status,
@@ -1193,24 +1179,23 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher,
-                on_chain_id
+                voucher
             )
             VALUES (
-                $1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, $5,
-                $6, $7, $8
+                $1, $2, timezone('UTC', now()), timezone('UTC', now()), $3, $4, $5, $6,
+                $7, $8
             )
             RETURNING id
             "#,
         )
         .bind(agreement_id)
+        .bind(nonce_uuid)
         .bind(IndexingAgreementStatus::default())
         .bind(request_id)
         .bind(PgDeploymentId(deployment_id))
         .bind(PgIndexerId(indexer_id))
         .bind(PgUrl(indexer_url))
         .bind(Json(voucher))
-        .bind(on_chain_id)
         .fetch_one(&mut *tx)
         .await?;
 
