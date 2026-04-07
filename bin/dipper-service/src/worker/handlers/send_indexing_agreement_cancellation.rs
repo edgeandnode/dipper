@@ -85,8 +85,7 @@ where
             agreement
         }
     };
-    // The fetch above validates the agreement exists and is in the expected state.
-    // The variable is only inspected in debug builds; suppress unused warnings in release.
+    // Fetched for status validation above; not used after.
     let _ = &agreement;
 
     tracing::debug!(
