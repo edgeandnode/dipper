@@ -20,8 +20,8 @@ use self::result::Result as RegistryResult;
 pub use self::{
     agreement::{
         AgreementFeeRate, AgreementRegistry, IndexingAgreement, NewAgreementParams,
-        Status as IndexingAgreementStatus, Voucher as IndexingAgreementVoucher,
-        VoucherMetadata as IndexingAgreementVoucherMetadata,
+        Status as IndexingAgreementStatus, Terms as IndexingAgreementTerms,
+        TermsMetadata as IndexingAgreementTermsMetadata,
     },
     indexer_denylist::IndexerDenylistRegistry,
     indexing_request::{IndexingRequest, IndexingRequestRegistry, Status as IndexingRequestStatus},
@@ -38,7 +38,7 @@ impl From<NewAgreementParams> for dipper_pgregistry::NewAgreementParams {
             deployment_id: params.deployment_id,
             indexer_id: params.indexer_id,
             indexer_url: params.indexer_url,
-            voucher: params.voucher.into(),
+            terms: params.terms.into(),
         }
     }
 }

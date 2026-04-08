@@ -19,8 +19,8 @@ use crate::{
     indexer_rpc_client::compute_on_chain_id,
     network::{NetworkProvider, service::entity_count_cache::EntityCountCache},
     registry::{
-        AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementVoucher,
-        IndexingAgreementVoucherMetadata, IndexingRequestRegistry, NewAgreementParams,
+        AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementTerms,
+        IndexingAgreementTermsMetadata, IndexingRequestRegistry, NewAgreementParams,
     },
     signing::eip712::PrivateKeyEip712Signer,
     worker::{
@@ -230,12 +230,12 @@ where
 
         // Use per-indexer pricing from IISA if available, otherwise fall back to
         // the static pricing_table config
-        let voucher_metadata = match resolve_pricing(
+        let terms_metadata = match resolve_pricing(
             selected_indexer,
             ctx.chain_price.get(deployment_chain_id),
             deployment_chain_id,
         ) {
-            Some(meta) => IndexingAgreementVoucherMetadata {
+            Some(meta) => IndexingAgreementTermsMetadata {
                 tokens_per_second: meta.0,
                 tokens_per_entity_per_second: meta.1,
                 subgraph_deployment_id: *deployment_id,
@@ -254,7 +254,7 @@ where
             }
         };
 
-        let voucher = IndexingAgreementVoucher {
+        let terms = IndexingAgreementTerms {
             payer: ctx.signer.address(),
             service_provider: indexer.id.into_inner(),
             data_service: ctx.agreement_conf.data_service(),
@@ -264,14 +264,14 @@ where
             min_seconds_per_collection: ctx.agreement_conf.min_seconds_per_collection(),
             max_seconds_per_collection: ctx.agreement_conf.max_seconds_per_collection(),
             deadline: now.saturating_add(ctx.agreement_conf.deadline_seconds()),
-            metadata: voucher_metadata,
+            metadata: terms_metadata,
         };
 
         tracing::info!(
             indexing_request_id=%indexing_request_id,
             indexer_id=%indexer.id,
-            tokens_per_second=%voucher.metadata.tokens_per_second,
-            tokens_per_entity_per_second=%voucher.metadata.tokens_per_entity_per_second,
+            tokens_per_second=%terms.metadata.tokens_per_second,
+            tokens_per_entity_per_second=%terms.metadata.tokens_per_entity_per_second,
             iisa_price=selected_indexer.min_grt_per_30_days.is_some(),
             "Creating agreement with pricing"
         );
@@ -279,7 +279,7 @@ where
         // Generate a UUID for nonce derivation, then compute the on-chain ID
         // which becomes the agreement's primary key.
         let nonce_uuid = uuid::Uuid::now_v7();
-        let agreement_id = compute_on_chain_id(nonce_uuid, &voucher);
+        let agreement_id = compute_on_chain_id(nonce_uuid, &terms);
 
         let agreement_id = match ctx
             .registry
@@ -290,7 +290,7 @@ where
                 deployment_id: *deployment_id,
                 indexer_id: indexer.id,
                 indexer_url: indexer.url.clone(),
-                voucher,
+                terms,
             })
             .await
         {
