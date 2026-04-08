@@ -13,7 +13,7 @@ mod result;
 
 pub use indexing_agreement::{
     Indexer as IndexingAgreementIndexer, IndexingAgreement, Status as IndexingAgreementStatus,
-    Voucher as IndexingAgreementVoucher, VoucherMetadata as IndexingAgreementVoucherMetadata,
+    Terms as IndexingAgreementTerms, TermsMetadata as IndexingAgreementTermsMetadata,
     rejection_reason,
 };
 pub use indexing_receipt::{IndexingReceipt, ReportedWork as IndexingReceiptReportedWork};

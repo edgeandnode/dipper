@@ -28,7 +28,7 @@ use thegraph_core::alloy::{
 use url::Url;
 
 use crate::{
-    config::IndexerClientConfig, registry::IndexingAgreementVoucher,
+    config::IndexerClientConfig, registry::IndexingAgreementTerms,
     signing::eip712::PrivateKeyEip712Signer,
 };
 
@@ -58,7 +58,7 @@ pub trait IndexerClient {
         &self,
         indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
-        voucher: IndexingAgreementVoucher,
+        terms: IndexingAgreementTerms,
         nonce_uuid: uuid::Uuid,
     ) -> Result<SubmitAgreementProposalResponse, DipsError>;
 
@@ -189,11 +189,11 @@ impl IndexerClient for DipsIndexerClient {
         &self,
         indexer: &Url,
         indexing_agreement_id: IndexingAgreementId,
-        voucher: IndexingAgreementVoucher,
+        terms: IndexingAgreementTerms,
         nonce_uuid: uuid::Uuid,
     ) -> Result<SubmitAgreementProposalResponse, DipsError> {
         // Convert to the RCA solidity data structure
-        let (sol_rca, _on_chain_id) = into_sol_rca(nonce_uuid, voucher);
+        let (sol_rca, _on_chain_id) = into_sol_rca(nonce_uuid, terms);
 
         // Sign the RCA with the RecurringCollector EIP-712 domain
         let signed = self
@@ -277,7 +277,7 @@ impl IndexerClient for DipsIndexerClient {
     }
 }
 
-/// Compute the on-chain agreement ID (bytes16) for a voucher.
+/// Compute the on-chain agreement ID (bytes16) for an agreement's terms.
 ///
 /// This replicates the contract's derivation:
 /// `bytes16(keccak256(abi.encode(payer, dataService, serviceProvider, deadline, nonce)))`
@@ -286,32 +286,32 @@ impl IndexerClient for DipsIndexerClient {
 /// 16 bytes of a U256). The returned `IndexingAgreementId` IS the on-chain identity.
 pub fn compute_on_chain_id(
     nonce_uuid: uuid::Uuid,
-    voucher: &IndexingAgreementVoucher,
+    terms: &IndexingAgreementTerms,
 ) -> IndexingAgreementId {
-    let (_, on_chain_id) = into_sol_rca(nonce_uuid, voucher.clone());
+    let (_, on_chain_id) = into_sol_rca(nonce_uuid, terms.clone());
     IndexingAgreementId::from_bytes(on_chain_id)
 }
 
-/// Convert an internal voucher to the on-chain `RecurringCollectionAgreement` sol type.
+/// Convert agreement terms to the on-chain `RecurringCollectionAgreement` sol type.
 ///
 /// Returns the RCA and the derived on-chain agreement ID (bytes16).
 #[inline]
 fn into_sol_rca(
     nonce_uuid: uuid::Uuid,
-    voucher: IndexingAgreementVoucher,
+    terms: IndexingAgreementTerms,
 ) -> (sol::RecurringCollectionAgreement, [u8; 16]) {
     // Build the V1 pricing terms
-    let terms = sol::IndexingAgreementTermsV1 {
-        tokensPerSecond: voucher.metadata.tokens_per_second,
-        tokensPerEntityPerSecond: voucher.metadata.tokens_per_entity_per_second,
+    let sol_terms = sol::IndexingAgreementTermsV1 {
+        tokensPerSecond: terms.metadata.tokens_per_second,
+        tokensPerEntityPerSecond: terms.metadata.tokens_per_entity_per_second,
     }
     .abi_encode();
 
     // Build the acceptance metadata (ABI-encoded into the RCA metadata field)
     let metadata = sol::AcceptIndexingAgreementMetadata {
-        subgraphDeploymentId: B256::from(voucher.metadata.subgraph_deployment_id),
+        subgraphDeploymentId: B256::from(terms.metadata.subgraph_deployment_id),
         version: 0, // IndexingAgreementVersion.V1 = 0 (first enum variant in Solidity)
-        terms: terms.into(),
+        terms: sol_terms.into(),
     }
     .abi_encode();
 
@@ -321,15 +321,15 @@ fn into_sol_rca(
     let nonce = U256::from_be_bytes(nonce_bytes);
 
     let rca = sol::RecurringCollectionAgreement {
-        deadline: voucher.deadline,
-        endsAt: voucher.ends_at,
-        payer: voucher.payer,
-        dataService: voucher.data_service,
-        serviceProvider: voucher.service_provider,
-        maxInitialTokens: voucher.max_initial_tokens,
-        maxOngoingTokensPerSecond: voucher.max_ongoing_tokens_per_second,
-        minSecondsPerCollection: voucher.min_seconds_per_collection,
-        maxSecondsPerCollection: voucher.max_seconds_per_collection,
+        deadline: terms.deadline,
+        endsAt: terms.ends_at,
+        payer: terms.payer,
+        dataService: terms.data_service,
+        serviceProvider: terms.service_provider,
+        maxInitialTokens: terms.max_initial_tokens,
+        maxOngoingTokensPerSecond: terms.max_ongoing_tokens_per_second,
+        minSecondsPerCollection: terms.min_seconds_per_collection,
+        maxSecondsPerCollection: terms.max_seconds_per_collection,
         nonce,
         metadata: metadata.into(),
     };
@@ -351,7 +351,7 @@ mod tests {
     use thegraph_core::alloy::{primitives::U256, sol_types::SolValue};
 
     use super::*;
-    use crate::registry::IndexingAgreementVoucherMetadata;
+    use crate::registry::IndexingAgreementTermsMetadata;
 
     #[test]
     fn test_into_sol_rca_conversion() {
@@ -374,7 +374,7 @@ mod tests {
         let tokens_per_second = U256::from(10u64);
         let tokens_per_entity_per_second = U256::from(2u64);
 
-        let voucher = IndexingAgreementVoucher {
+        let terms = IndexingAgreementTerms {
             payer,
             service_provider,
             data_service,
@@ -384,7 +384,7 @@ mod tests {
             max_ongoing_tokens_per_second,
             min_seconds_per_collection,
             max_seconds_per_collection,
-            metadata: IndexingAgreementVoucherMetadata {
+            metadata: IndexingAgreementTermsMetadata {
                 tokens_per_second,
                 tokens_per_entity_per_second,
                 subgraph_deployment_id: deployment_id,
@@ -394,7 +394,7 @@ mod tests {
         };
 
         //* Act
-        let (rca, _on_chain_id) = into_sol_rca(nonce_uuid, voucher);
+        let (rca, _on_chain_id) = into_sol_rca(nonce_uuid, terms);
 
         //* Assert
         // Verify top-level fields

@@ -29,7 +29,7 @@ pub struct NewAgreementParams {
     pub deployment_id: DeploymentId,
     pub indexer_id: IndexerId,
     pub indexer_url: Url,
-    pub voucher: Voucher,
+    pub terms: Terms,
 }
 
 #[async_trait]
@@ -278,10 +278,10 @@ pub struct IndexingAgreement {
     /// The indexer.
     pub indexer: Indexer,
 
-    /// The agreement voucher.
+    /// The agreement terms.
     ///
     /// It contains the agreement terms and conditions.
-    pub voucher: Voucher,
+    pub terms: Terms,
 
     /// The last observed block height for the subgraph deployment.
     ///
@@ -308,7 +308,7 @@ pub struct Indexer {
 
 /// The agreement terms. Field names align with the on-chain `RecurringCollectionAgreement`.
 #[derive(Debug, Clone)]
-pub struct Voucher {
+pub struct Terms {
     /// The agreement payer (signer address).
     pub payer: Address,
     /// The indexer (service provider).
@@ -332,12 +332,12 @@ pub struct Voucher {
     pub max_seconds_per_collection: u32,
 
     /// The agreement metadata.
-    pub metadata: VoucherMetadata,
+    pub metadata: TermsMetadata,
 }
 
 /// Pricing and deployment metadata for the agreement.
 #[derive(Debug, Clone)]
-pub struct VoucherMetadata {
+pub struct TermsMetadata {
     /// Tokens per second (base rate) in wei GRT.
     pub tokens_per_second: U256,
     /// Tokens per entity per second in wei GRT.
@@ -455,7 +455,7 @@ impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
             },
             indexing_request_id: value.indexing_request_id,
             indexer: value.indexer.into(),
-            voucher: value.voucher.into(),
+            terms: value.terms.into(),
             last_block_height: value.last_block_height,
             last_progress_at: value.last_progress_at,
             rejection_reason: value.rejection_reason,
@@ -472,8 +472,8 @@ impl From<dipper_pgregistry::IndexingAgreementIndexer> for Indexer {
     }
 }
 
-impl From<dipper_pgregistry::IndexingAgreementVoucher> for Voucher {
-    fn from(value: dipper_pgregistry::IndexingAgreementVoucher) -> Self {
+impl From<dipper_pgregistry::IndexingAgreementTerms> for Terms {
+    fn from(value: dipper_pgregistry::IndexingAgreementTerms) -> Self {
         Self {
             payer: value.payer,
             service_provider: value.service_provider,
@@ -489,8 +489,8 @@ impl From<dipper_pgregistry::IndexingAgreementVoucher> for Voucher {
     }
 }
 
-impl From<dipper_pgregistry::IndexingAgreementVoucherMetadata> for VoucherMetadata {
-    fn from(value: dipper_pgregistry::IndexingAgreementVoucherMetadata) -> Self {
+impl From<dipper_pgregistry::IndexingAgreementTermsMetadata> for TermsMetadata {
+    fn from(value: dipper_pgregistry::IndexingAgreementTermsMetadata) -> Self {
         Self {
             tokens_per_second: value.tokens_per_second,
             tokens_per_entity_per_second: value.tokens_per_entity_per_second,
@@ -501,8 +501,8 @@ impl From<dipper_pgregistry::IndexingAgreementVoucherMetadata> for VoucherMetada
     }
 }
 
-impl From<Voucher> for dipper_pgregistry::IndexingAgreementVoucher {
-    fn from(value: Voucher) -> Self {
+impl From<Terms> for dipper_pgregistry::IndexingAgreementTerms {
+    fn from(value: Terms) -> Self {
         Self {
             payer: value.payer,
             service_provider: value.service_provider,
@@ -518,8 +518,8 @@ impl From<Voucher> for dipper_pgregistry::IndexingAgreementVoucher {
     }
 }
 
-impl From<VoucherMetadata> for dipper_pgregistry::IndexingAgreementVoucherMetadata {
-    fn from(value: VoucherMetadata) -> Self {
+impl From<TermsMetadata> for dipper_pgregistry::IndexingAgreementTermsMetadata {
+    fn from(value: TermsMetadata) -> Self {
         Self {
             tokens_per_second: value.tokens_per_second,
             tokens_per_entity_per_second: value.tokens_per_entity_per_second,
@@ -546,7 +546,7 @@ pub mod fake_impl {
         }
     }
 
-    impl Dummy<Faker> for Voucher {
+    impl Dummy<Faker> for Terms {
         fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
             Self {
                 payer: Address::new(<[u8; 20]>::dummy_with_rng(config, rng)),
@@ -560,12 +560,12 @@ pub mod fake_impl {
                 )),
                 min_seconds_per_collection: u32::dummy_with_rng(config, rng),
                 max_seconds_per_collection: u32::dummy_with_rng(config, rng),
-                metadata: VoucherMetadata::dummy_with_rng(config, rng),
+                metadata: TermsMetadata::dummy_with_rng(config, rng),
             }
         }
     }
 
-    impl Dummy<Faker> for VoucherMetadata {
+    impl Dummy<Faker> for TermsMetadata {
         fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
             Self {
                 tokens_per_second: U256::from_be_bytes(<[u8; 32]>::dummy_with_rng(config, rng)),

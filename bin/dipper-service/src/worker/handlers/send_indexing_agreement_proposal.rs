@@ -109,7 +109,7 @@ where
         .send_indexing_agreement_proposal(
             &indexer_url,
             *agreement_id,
-            agreement.voucher,
+            agreement.terms,
             agreement.nonce_uuid,
         )
         .await;
@@ -339,8 +339,8 @@ mod tests {
     use crate::{
         indexer_rpc_client::DipsError,
         registry::{
-            AgreementFeeRate, IndexingAgreement, IndexingAgreementVoucher,
-            IndexingAgreementVoucherMetadata, IndexingRequest, IndexingRequestStatus,
+            AgreementFeeRate, IndexingAgreement, IndexingAgreementTerms,
+            IndexingAgreementTermsMetadata, IndexingRequest, IndexingRequestStatus,
         },
         worker::queue::JobId,
     };
@@ -743,7 +743,7 @@ mod tests {
             &self,
             _indexer: &Url,
             _indexing_agreement_id: IndexingAgreementId,
-            _voucher: IndexingAgreementVoucher,
+            _terms: IndexingAgreementTerms,
             _nonce_uuid: uuid::Uuid,
         ) -> Result<SubmitAgreementProposalResponse, DipsError> {
             match self.response {
@@ -785,7 +785,7 @@ mod tests {
         use thegraph_core::alloy::primitives::{Address, U256};
         use time::OffsetDateTime;
 
-        let voucher = IndexingAgreementVoucher {
+        let terms = IndexingAgreementTerms {
             payer: Address::ZERO,
             service_provider: Address::ZERO,
             data_service: Address::ZERO,
@@ -795,7 +795,7 @@ mod tests {
             max_ongoing_tokens_per_second: U256::ZERO,
             min_seconds_per_collection: 0,
             max_seconds_per_collection: 0,
-            metadata: IndexingAgreementVoucherMetadata {
+            metadata: IndexingAgreementTermsMetadata {
                 tokens_per_second: U256::ZERO,
                 tokens_per_entity_per_second: U256::ZERO,
                 subgraph_deployment_id: deployment_id!(
@@ -816,7 +816,7 @@ mod tests {
                 id: indexer_id!("1111111111111111111111111111111111111111"),
                 url: "https://indexer.example.com".parse().unwrap(),
             },
-            voucher,
+            terms,
             last_block_height: None,
             last_progress_at: None,
             rejection_reason: None,

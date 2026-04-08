@@ -249,8 +249,8 @@ where
                     QUEUE_PUSH_TIMEOUT,
                     worker_queue.reassess_indexing_request(
                         agreement.indexing_request_id,
-                        agreement.voucher.metadata.subgraph_deployment_id,
-                        agreement.voucher.metadata.chain_id,
+                        agreement.terms.metadata.subgraph_deployment_id,
+                        agreement.terms.metadata.chain_id,
                         request.num_candidates,
                     ),
                 )

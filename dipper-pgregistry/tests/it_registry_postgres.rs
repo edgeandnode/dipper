@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_pgregistry::{
-    Error, IndexingAgreementStatus, IndexingAgreementVoucher, IndexingReceiptReportedWork,
+    Error, IndexingAgreementStatus, IndexingAgreementTerms, IndexingReceiptReportedWork,
     IndexingRequestStatus, NewAgreementParams, PgRegistry,
 };
 use fake::{Fake, Faker};
@@ -276,7 +276,7 @@ async fn register_new_indexing_agreement_no_indexing_request() {
     let indexer_id = Faker.fake::<IndexerId>();
     let indexer_url = Faker.fake::<Url>();
 
-    let agreement_voucher = Faker.fake::<IndexingAgreementVoucher>();
+    let agreement_terms = Faker.fake::<IndexingAgreementTerms>();
 
     let (db, _temp_db) = temp_registry_db().await;
     let registry = PgRegistry::new(db);
@@ -290,7 +290,7 @@ async fn register_new_indexing_agreement_no_indexing_request() {
             deployment_id,
             indexer_id,
             indexer_url,
-            voucher: agreement_voucher,
+            terms: agreement_terms,
         })
         .await;
 
@@ -310,8 +310,8 @@ async fn register_new_indexing_agreement() {
     let indexer_id = indexer_id!("3c584ee1d89f43c6ccee17e886a001de2bb4d8a9");
     let indexer_url = "http://localhost:8020".parse().expect("Invalid URL");
 
-    // Indexing agreement voucher
-    let agreement_voucher = Faker.fake::<IndexingAgreementVoucher>();
+    // Indexing agreement terms
+    let agreement_terms = Faker.fake::<IndexingAgreementTerms>();
 
     let (db, _temp_db) = temp_registry_db().await;
     let registry = PgRegistry::new(db);
@@ -331,7 +331,7 @@ async fn register_new_indexing_agreement() {
             deployment_id,
             indexer_id,
             indexer_url,
-            voucher: agreement_voucher,
+            terms: agreement_terms,
         })
         .await;
 
@@ -353,10 +353,10 @@ async fn register_new_and_get_indexing_agreement_by_id() {
     // Indexing agreement
     let indexer_id = indexer_id!("3c584ee1d89f43c6ccee17e886a001de2bb4d8a9");
     let indexer_url = "http://localhost:8020".parse().expect("Invalid URL");
-    let agreement_voucher = {
-        let mut voucher = Faker.fake::<IndexingAgreementVoucher>();
-        voucher.metadata.subgraph_deployment_id = deployment_id;
-        voucher
+    let agreement_terms = {
+        let mut terms = Faker.fake::<IndexingAgreementTerms>();
+        terms.metadata.subgraph_deployment_id = deployment_id;
+        terms
     };
 
     // Register a new indexing request
@@ -374,7 +374,7 @@ async fn register_new_and_get_indexing_agreement_by_id() {
             deployment_id,
             indexer_id,
             indexer_url,
-            voucher: agreement_voucher,
+            terms: agreement_terms,
         })
         .await
         .expect("Failed to register new indexing agreement");
@@ -392,7 +392,7 @@ async fn register_new_and_get_indexing_agreement_by_id() {
     assert_eq!(indexing_agreement.status, IndexingAgreementStatus::Created);
     assert_eq!(indexing_agreement.indexer.id, indexer_id);
     assert_eq!(
-        indexing_agreement.voucher.metadata.subgraph_deployment_id,
+        indexing_agreement.terms.metadata.subgraph_deployment_id,
         deployment_id
     );
 }
@@ -474,7 +474,7 @@ async fn register_new_indexing_receipt() {
     // Indexing agreement
     let indexer_id = indexer_id!("3c584ee1d89f43c6ccee17e886a001de2bb4d8a9");
     let indexer_url = "http://localhost:8020".parse().expect("Invalid URL");
-    let agreement_voucher = Faker.fake::<IndexingAgreementVoucher>();
+    let agreement_terms = Faker.fake::<IndexingAgreementTerms>();
 
     // Indexing receipt
     let indexer_operator_id = address!("f027cfe07afa186afec8144eb20e53715d7f33b2");
@@ -499,7 +499,7 @@ async fn register_new_indexing_receipt() {
             deployment_id,
             indexer_id,
             indexer_url,
-            voucher: agreement_voucher,
+            terms: agreement_terms,
         })
         .await
         .expect("Failed to register new indexing agreement");
@@ -992,7 +992,7 @@ async fn get_expired_created_agreements_excludes_future_deadline() {
     sqlx::query(
         r#"
         UPDATE dipper_reg_indexing_agreements
-        SET voucher = jsonb_set(voucher::jsonb, '{deadline}', to_jsonb($1::bigint))
+        SET terms = jsonb_set(terms::jsonb, '{deadline}', to_jsonb($1::bigint))
         WHERE id = $2
         "#,
     )

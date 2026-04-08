@@ -93,10 +93,10 @@ pub struct IndexingAgreement {
     /// The indexer.
     pub indexer: Indexer,
 
-    /// The agreement voucher.
+    /// The agreement terms.
     ///
     /// It contains the agreement terms and conditions.
-    pub voucher: Voucher,
+    pub terms: Terms,
 
     /// The last observed block height for the subgraph deployment.
     ///
@@ -209,11 +209,11 @@ pub struct Indexer {
     pub url: Url,
 }
 
-/// The agreement terms, stored as JSON in the `voucher` column.
+/// The agreement terms, stored as JSON in the `terms` column.
 ///
 /// Field names align with the on-chain `RecurringCollectionAgreement` type.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Voucher {
+pub struct Terms {
     /// The agreement payer (signer address).
     pub payer: Address,
     /// The indexer (service provider).
@@ -237,12 +237,12 @@ pub struct Voucher {
     pub max_seconds_per_collection: u32,
 
     /// The agreement metadata.
-    pub metadata: VoucherMetadata,
+    pub metadata: TermsMetadata,
 }
 
 /// Pricing and deployment metadata for the agreement.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct VoucherMetadata {
+pub struct TermsMetadata {
     /// Tokens per second (base rate) in wei GRT.
     pub tokens_per_second: U256,
     /// Tokens per entity per second in wei GRT.
@@ -284,7 +284,7 @@ pub mod fake_impl {
         U256::from(bigint_safe_u64(config, rng))
     }
 
-    impl Dummy<Faker> for Voucher {
+    impl Dummy<Faker> for Terms {
         fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
             Self {
                 payer: Address::new(<[u8; 20]>::dummy_with_rng(config, rng)),
@@ -297,12 +297,12 @@ pub mod fake_impl {
                 max_ongoing_tokens_per_second: bigint_safe_u256(config, rng),
                 min_seconds_per_collection: u32::dummy_with_rng(config, rng),
                 max_seconds_per_collection: u32::dummy_with_rng(config, rng),
-                metadata: VoucherMetadata::dummy_with_rng(config, rng),
+                metadata: TermsMetadata::dummy_with_rng(config, rng),
             }
         }
     }
 
-    impl Dummy<Faker> for VoucherMetadata {
+    impl Dummy<Faker> for TermsMetadata {
         fn dummy_with_rng<R: Rng + ?Sized>(config: &Faker, rng: &mut R) -> Self {
             Self {
                 tokens_per_second: bigint_safe_u256(config, rng),
@@ -322,11 +322,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_voucher_serde_round_trip() {
+    fn test_terms_serde_round_trip() {
         use std::str::FromStr;
 
         //* Arrange
-        let voucher = Voucher {
+        let terms = Terms {
             payer: address!("1111111111111111111111111111111111111111"),
             service_provider: address!("2222222222222222222222222222222222222222"),
             data_service: address!("3333333333333333333333333333333333333333"),
@@ -336,7 +336,7 @@ mod tests {
             max_ongoing_tokens_per_second: U256::from(512u64),
             min_seconds_per_collection: 60,
             max_seconds_per_collection: 3600,
-            metadata: VoucherMetadata {
+            metadata: TermsMetadata {
                 tokens_per_second: U256::from(10u64),
                 tokens_per_entity_per_second: U256::from(2u64),
                 subgraph_deployment_id: DeploymentId::from_str(
@@ -349,60 +349,60 @@ mod tests {
         };
 
         //* Act - Serialize to JSON
-        let json = serde_json::to_string(&voucher).expect("serialization failed");
+        let json = serde_json::to_string(&terms).expect("serialization failed");
 
         //* Act - Deserialize from JSON
-        let deserialized: Voucher = serde_json::from_str(&json).expect("deserialization failed");
+        let deserialized: Terms = serde_json::from_str(&json).expect("deserialization failed");
 
         //* Assert - Field-by-field comparison
-        assert_eq!(deserialized.payer, voucher.payer, "payer mismatch");
+        assert_eq!(deserialized.payer, terms.payer, "payer mismatch");
         assert_eq!(
-            deserialized.service_provider, voucher.service_provider,
+            deserialized.service_provider, terms.service_provider,
             "service_provider mismatch"
         );
         assert_eq!(
-            deserialized.data_service, voucher.data_service,
+            deserialized.data_service, terms.data_service,
             "data_service mismatch"
         );
-        assert_eq!(deserialized.deadline, voucher.deadline, "deadline mismatch");
-        assert_eq!(deserialized.ends_at, voucher.ends_at, "ends_at mismatch");
+        assert_eq!(deserialized.deadline, terms.deadline, "deadline mismatch");
+        assert_eq!(deserialized.ends_at, terms.ends_at, "ends_at mismatch");
         assert_eq!(
-            deserialized.max_initial_tokens, voucher.max_initial_tokens,
+            deserialized.max_initial_tokens, terms.max_initial_tokens,
             "max_initial_tokens mismatch"
         );
         assert_eq!(
-            deserialized.max_ongoing_tokens_per_second, voucher.max_ongoing_tokens_per_second,
+            deserialized.max_ongoing_tokens_per_second, terms.max_ongoing_tokens_per_second,
             "max_ongoing_tokens_per_second mismatch"
         );
         assert_eq!(
-            deserialized.min_seconds_per_collection, voucher.min_seconds_per_collection,
+            deserialized.min_seconds_per_collection, terms.min_seconds_per_collection,
             "min_seconds_per_collection mismatch"
         );
         assert_eq!(
-            deserialized.max_seconds_per_collection, voucher.max_seconds_per_collection,
+            deserialized.max_seconds_per_collection, terms.max_seconds_per_collection,
             "max_seconds_per_collection mismatch"
         );
 
         // Assert metadata fields
         assert_eq!(
-            deserialized.metadata.tokens_per_second, voucher.metadata.tokens_per_second,
+            deserialized.metadata.tokens_per_second, terms.metadata.tokens_per_second,
             "tokens_per_second mismatch"
         );
         assert_eq!(
             deserialized.metadata.tokens_per_entity_per_second,
-            voucher.metadata.tokens_per_entity_per_second,
+            terms.metadata.tokens_per_entity_per_second,
             "tokens_per_entity_per_second mismatch"
         );
         assert_eq!(
-            deserialized.metadata.subgraph_deployment_id, voucher.metadata.subgraph_deployment_id,
+            deserialized.metadata.subgraph_deployment_id, terms.metadata.subgraph_deployment_id,
             "subgraph_deployment_id mismatch"
         );
         assert_eq!(
-            deserialized.metadata.protocol_network, voucher.metadata.protocol_network,
+            deserialized.metadata.protocol_network, terms.metadata.protocol_network,
             "protocol_network mismatch"
         );
         assert_eq!(
-            deserialized.metadata.chain_id, voucher.metadata.chain_id,
+            deserialized.metadata.chain_id, terms.metadata.chain_id,
             "chain_id mismatch"
         );
     }

@@ -217,7 +217,7 @@ where
                 // 5. Query the indexer status endpoint for all deployments in this group
                 let deployment_ids: Vec<String> = group_agreements
                     .iter()
-                    .map(|a| a.voucher.metadata.subgraph_deployment_id.to_string())
+                    .map(|a| a.terms.metadata.subgraph_deployment_id.to_string())
                     .collect();
 
                 let block_heights =
@@ -236,11 +236,8 @@ where
 
                 // 6. Process each agreement in the group
                 for agreement in group_agreements {
-                    let deployment_id_str = agreement
-                        .voucher
-                        .metadata
-                        .subgraph_deployment_id
-                        .to_string();
+                    let deployment_id_str =
+                        agreement.terms.metadata.subgraph_deployment_id.to_string();
                     let current_block = block_heights.get(&deployment_id_str).copied().flatten();
 
                     let now = OffsetDateTime::now_utc();
@@ -250,7 +247,7 @@ where
                         current_block,
                         agreement.last_progress_at,
                         now,
-                        agreement.voucher.metadata.subgraph_deployment_id,
+                        agreement.terms.metadata.subgraph_deployment_id,
                         &active_counts,
                         config.max_tolerance_days,
                     );
@@ -265,7 +262,7 @@ where
                             let last_progress = agreement.last_progress_at.unwrap_or(now);
                             let elapsed = now - last_progress;
                             let threshold = tolerance_duration(
-                                agreement.voucher.metadata.subgraph_deployment_id,
+                                agreement.terms.metadata.subgraph_deployment_id,
                                 &active_counts,
                                 config.max_tolerance_days,
                             );
@@ -282,7 +279,7 @@ where
                             let last_progress = agreement.last_progress_at.unwrap_or(now);
                             let elapsed = now - last_progress;
                             let threshold = tolerance_duration(
-                                agreement.voucher.metadata.subgraph_deployment_id,
+                                agreement.terms.metadata.subgraph_deployment_id,
                                 &active_counts,
                                 config.max_tolerance_days,
                             );
@@ -372,7 +369,7 @@ async fn process_agreements_with_no_data<R, W, C>(
             None, // No data available
             agreement.last_progress_at,
             now,
-            agreement.voucher.metadata.subgraph_deployment_id,
+            agreement.terms.metadata.subgraph_deployment_id,
             active_counts,
             config.max_tolerance_days,
         );
@@ -390,7 +387,7 @@ async fn process_agreements_with_no_data<R, W, C>(
                 let last_progress = agreement.last_progress_at.unwrap_or(now);
                 let elapsed = now - last_progress;
                 let threshold = tolerance_duration(
-                    agreement.voucher.metadata.subgraph_deployment_id,
+                    agreement.terms.metadata.subgraph_deployment_id,
                     active_counts,
                     config.max_tolerance_days,
                 );
@@ -405,7 +402,7 @@ async fn process_agreements_with_no_data<R, W, C>(
                 let last_progress = agreement.last_progress_at.unwrap_or(now);
                 let elapsed = now - last_progress;
                 let threshold = tolerance_duration(
-                    agreement.voucher.metadata.subgraph_deployment_id,
+                    agreement.terms.metadata.subgraph_deployment_id,
                     active_counts,
                     config.max_tolerance_days,
                 );
@@ -591,8 +588,8 @@ async fn cancel_and_reassess<R, W, C>(
         queue_timeout,
         worker_queue.reassess_indexing_request(
             abandoned.indexing_request_id,
-            abandoned.voucher.metadata.subgraph_deployment_id,
-            abandoned.voucher.metadata.chain_id,
+            abandoned.terms.metadata.subgraph_deployment_id,
+            abandoned.terms.metadata.chain_id,
             request.num_candidates,
         ),
     )
@@ -779,7 +776,7 @@ mod tests {
         config::LivenessCheckerConfig,
         registry::{
             AgreementFeeRate, AgreementRegistry, IndexingAgreement, IndexingAgreementStatus,
-            IndexingAgreementVoucher, IndexingAgreementVoucherMetadata, IndexingRequest,
+            IndexingAgreementTerms, IndexingAgreementTermsMetadata, IndexingRequest,
             IndexingRequestRegistry, PendingCancellationRegistry, Result as RegistryResult,
         },
         worker::service::WorkerQueue,
@@ -795,7 +792,7 @@ mod tests {
         last_progress_at: Option<OffsetDateTime>,
     ) -> IndexingAgreement {
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
-        let voucher = IndexingAgreementVoucher {
+        let terms = IndexingAgreementTerms {
             payer: Address::ZERO,
             service_provider: Address::ZERO,
             data_service: Address::ZERO,
@@ -805,7 +802,7 @@ mod tests {
             max_ongoing_tokens_per_second: U256::ZERO,
             min_seconds_per_collection: 0,
             max_seconds_per_collection: 0,
-            metadata: IndexingAgreementVoucherMetadata {
+            metadata: IndexingAgreementTermsMetadata {
                 tokens_per_second: U256::ZERO,
                 tokens_per_entity_per_second: U256::ZERO,
                 subgraph_deployment_id: deployment_id,
@@ -824,7 +821,7 @@ mod tests {
                 id: indexer_id,
                 url,
             },
-            voucher,
+            terms,
             last_block_height,
             last_progress_at,
             rejection_reason: None,

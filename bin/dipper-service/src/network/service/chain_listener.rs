@@ -716,12 +716,12 @@ mod tests {
 
     use super::*;
     use crate::registry::{
-        AgreementFeeRate, Indexer, IndexingAgreement, IndexingAgreementVoucher as Voucher,
-        IndexingAgreementVoucherMetadata as VoucherMetadata, Result as RegistryResult,
+        AgreementFeeRate, Indexer, IndexingAgreement, IndexingAgreementTerms as Terms,
+        IndexingAgreementTermsMetadata as TermsMetadata, Result as RegistryResult,
     };
 
-    fn test_voucher() -> Voucher {
-        Voucher {
+    fn test_terms() -> Terms {
+        Terms {
             payer: Address::ZERO,
             service_provider: Address::ZERO,
             data_service: Address::ZERO,
@@ -731,7 +731,7 @@ mod tests {
             max_ongoing_tokens_per_second: thegraph_core::alloy::primitives::U256::ZERO,
             min_seconds_per_collection: 0,
             max_seconds_per_collection: 0,
-            metadata: VoucherMetadata {
+            metadata: TermsMetadata {
                 tokens_per_second: thegraph_core::alloy::primitives::U256::ZERO,
                 tokens_per_entity_per_second: thegraph_core::alloy::primitives::U256::ZERO,
                 subgraph_deployment_id: "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
@@ -777,7 +777,7 @@ mod tests {
         }
 
         fn add_agreement(&self, id: IndexingAgreementId, status: IndexingAgreementStatus) {
-            let voucher = test_voucher();
+            let terms = test_terms();
             let agreement = IndexingAgreement {
                 id,
                 nonce_uuid: uuid::Uuid::now_v7(),
@@ -789,7 +789,7 @@ mod tests {
                     url: "http://indexer.test".parse().unwrap(),
                 },
                 indexing_request_id: IndexingRequestId::new(),
-                voucher,
+                terms,
                 created_at: OffsetDateTime::now_utc(),
                 updated_at: OffsetDateTime::now_utc(),
                 last_block_height: None,

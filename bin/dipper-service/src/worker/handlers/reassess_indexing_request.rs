@@ -17,8 +17,8 @@ use crate::{
     indexer_rpc_client::compute_on_chain_id,
     network::{NetworkProvider, service::entity_count_cache::EntityCountCache},
     registry::{
-        AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementVoucher,
-        IndexingAgreementVoucherMetadata, IndexingRequestRegistry, NewAgreementParams,
+        AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementTerms,
+        IndexingAgreementTermsMetadata, IndexingRequestRegistry, NewAgreementParams,
         PendingCancellationRegistry,
     },
     signing::eip712::PrivateKeyEip712Signer,
@@ -209,7 +209,7 @@ where
                 }
             };
 
-        let voucher_metadata = IndexingAgreementVoucherMetadata {
+        let terms_metadata = IndexingAgreementTermsMetadata {
             tokens_per_second,
             tokens_per_entity_per_second,
             subgraph_deployment_id: *deployment_id,
@@ -217,7 +217,7 @@ where
             chain_id: *deployment_chain_id,
         };
 
-        let voucher = IndexingAgreementVoucher {
+        let terms = IndexingAgreementTerms {
             payer: ctx.signer.address(),
             service_provider: candidate.id.into_inner(),
             data_service: ctx.agreement_conf.data_service(),
@@ -227,13 +227,13 @@ where
             min_seconds_per_collection: ctx.agreement_conf.min_seconds_per_collection(),
             max_seconds_per_collection: ctx.agreement_conf.max_seconds_per_collection(),
             deadline: now.saturating_add(ctx.agreement_conf.deadline_seconds()),
-            metadata: voucher_metadata,
+            metadata: terms_metadata,
         };
 
         // Generate a UUID for nonce derivation, then compute the on-chain ID
         // which becomes the agreement's primary key.
         let nonce_uuid = uuid::Uuid::now_v7();
-        let agreement_id_candidate = compute_on_chain_id(nonce_uuid, &voucher);
+        let agreement_id_candidate = compute_on_chain_id(nonce_uuid, &terms);
 
         // If this add replaces an old agreement, register both atomically
         // so a crash cannot leave an agreement without its pending cancellation.
@@ -248,7 +248,7 @@ where
                         deployment_id: *deployment_id,
                         indexer_id: candidate.id,
                         indexer_url: candidate.url.clone(),
-                        voucher,
+                        terms,
                     },
                     old_agreement.id,
                 )
@@ -287,7 +287,7 @@ where
                     deployment_id: *deployment_id,
                     indexer_id: candidate.id,
                     indexer_url: candidate.url.clone(),
-                    voucher,
+                    terms,
                 })
                 .await
             {

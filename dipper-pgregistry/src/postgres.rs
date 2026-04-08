@@ -18,7 +18,7 @@ pub struct NewAgreementParams {
     pub deployment_id: DeploymentId,
     pub indexer_id: IndexerId,
     pub indexer_url: Url,
-    pub voucher: crate::IndexingAgreementVoucher,
+    pub terms: crate::IndexingAgreementTerms,
 }
 
 use self::common::{
@@ -183,7 +183,7 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher,
+                terms,
                 last_block_height,
                 last_progress_at,
                 rejection_reason
@@ -241,7 +241,7 @@ impl PgRegistry {
             deployment_id,
             indexer_id,
             indexer_url,
-            voucher,
+            terms,
         } = params;
         sqlx::query_as(
             r#"
@@ -255,7 +255,7 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher
+                terms
             )
             VALUES (
                 $1, $2, timezone('UTC', now()), timezone('UTC', now()), $3, $4, $5, $6,
@@ -271,7 +271,7 @@ impl PgRegistry {
         .bind(PgDeploymentId(deployment_id))
         .bind(PgIndexerId(indexer_id))
         .bind(PgUrl(indexer_url))
-        .bind(Json(voucher))
+        .bind(Json(terms))
         .fetch_one(&self.pool)
         .await
         .map(|(id,)| id)
@@ -294,7 +294,7 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher,
+                terms,
                 last_block_height,
                 last_progress_at,
                 rejection_reason
@@ -324,7 +324,7 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher,
+                terms,
                 last_block_height,
                 last_progress_at,
                 rejection_reason
@@ -354,7 +354,7 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher,
+                terms,
                 last_block_height,
                 last_progress_at,
                 rejection_reason
@@ -499,7 +499,7 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher,
+                terms,
                 last_block_height,
                 last_progress_at,
                 rejection_reason
@@ -778,7 +778,7 @@ impl PgRegistry {
 
     /// Get `Created` agreements whose RCA deadline has passed.
     ///
-    /// Compares `voucher.deadline` against `chain_timestamp` (block time).
+    /// Compares `terms.deadline` against `chain_timestamp` (block time).
     pub async fn get_expired_created_agreements(
         &self,
         batch_size: i64,
@@ -796,14 +796,14 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher,
+                terms,
                 last_block_height,
                 last_progress_at,
                 rejection_reason
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
-              AND CAST(voucher->>'deadline' AS bigint) < $3
-            ORDER BY CAST(voucher->>'deadline' AS bigint) ASC
+              AND CAST(terms->>'deadline' AS bigint) < $3
+            ORDER BY CAST(terms->>'deadline' AS bigint) ASC
             LIMIT CASE WHEN $2 > 0 THEN $2 ELSE NULL END
             "#,
         )
@@ -907,7 +907,7 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher,
+                terms,
                 last_block_height,
                 last_progress_at,
                 rejection_reason
@@ -1007,7 +1007,7 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher,
+                terms,
                 last_block_height,
                 last_progress_at,
                 rejection_reason
@@ -1051,17 +1051,17 @@ impl PgRegistry {
     /// entity_rate_wei) per active agreement for optimistic fee estimation.
     ///
     /// Queries all `Created` or `AcceptedOnChain` agreements and extracts
-    /// both rate fields from the voucher metadata.
+    /// both rate fields from the terms metadata.
     pub async fn get_agreement_fee_rates(
         &self,
     ) -> Result<Vec<(IndexingAgreementId, IndexerId, DeploymentId, f64, f64)>, Error> {
         let rows: Vec<(
             IndexingAgreementId,
             PgIndexerId,
-            sqlx::types::Json<super::indexing_agreement::Voucher>,
+            sqlx::types::Json<super::indexing_agreement::Terms>,
         )> = sqlx::query_as(
             r#"
-                SELECT id, indexer_id, voucher
+                SELECT id, indexer_id, terms
                 FROM dipper_reg_indexing_agreements
                 WHERE status IN ($1, $2)
                 "#,
@@ -1073,8 +1073,8 @@ impl PgRegistry {
 
         let rates = rows
             .into_iter()
-            .map(|(agreement_id, pg_indexer_id, voucher_json)| {
-                let meta = &voucher_json.0.metadata;
+            .map(|(agreement_id, pg_indexer_id, terms_json)| {
+                let meta = &terms_json.0.metadata;
                 (
                     agreement_id,
                     pg_indexer_id.0,
@@ -1163,7 +1163,7 @@ impl PgRegistry {
             deployment_id,
             indexer_id,
             indexer_url,
-            voucher,
+            terms,
         } = params;
         let mut tx = self.pool.begin().await?;
 
@@ -1179,7 +1179,7 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                voucher
+                terms
             )
             VALUES (
                 $1, $2, timezone('UTC', now()), timezone('UTC', now()), $3, $4, $5, $6,
@@ -1195,7 +1195,7 @@ impl PgRegistry {
         .bind(PgDeploymentId(deployment_id))
         .bind(PgIndexerId(indexer_id))
         .bind(PgUrl(indexer_url))
-        .bind(Json(voucher))
+        .bind(Json(terms))
         .fetch_one(&mut *tx)
         .await?;
 
