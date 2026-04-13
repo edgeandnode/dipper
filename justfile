@@ -18,6 +18,12 @@ check *EXTRA_FLAGS:
 test-unit *EXTRA_FLAGS:
     cargo test {{EXTRA_FLAGS}} 'tests::' -- --skip 'tests::it_'
 
+# Build the dipper-service image locally. Tags as ghcr.io/edgeandnode/dipper-service:local
+# by default; override with `DIPPER_TAG=foo just build-image`. Used by local-network, which
+# references the image via DIPPER_VERSION in its .env.
+build-image:
+    docker compose build
+
 # Run Rust integration tests
 test-it *EXTRA_FLAGS:
     @printf "\e[1;92m[1/2]\e[0m Running in-tree integration tests...\n"
