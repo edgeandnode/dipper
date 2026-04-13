@@ -330,6 +330,7 @@ fn into_sol_rca(
         maxOngoingTokensPerSecond: terms.max_ongoing_tokens_per_second,
         minSecondsPerCollection: terms.min_seconds_per_collection,
         maxSecondsPerCollection: terms.max_seconds_per_collection,
+        conditions: terms.conditions,
         nonce,
         metadata: metadata.into(),
     };
@@ -384,6 +385,7 @@ mod tests {
             max_ongoing_tokens_per_second,
             min_seconds_per_collection,
             max_seconds_per_collection,
+            conditions: 0,
             metadata: IndexingAgreementTermsMetadata {
                 tokens_per_second,
                 tokens_per_entity_per_second,

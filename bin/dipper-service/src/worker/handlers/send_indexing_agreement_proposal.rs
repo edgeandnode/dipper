@@ -795,6 +795,7 @@ mod tests {
             max_ongoing_tokens_per_second: U256::ZERO,
             min_seconds_per_collection: 0,
             max_seconds_per_collection: 0,
+            conditions: 0,
             metadata: IndexingAgreementTermsMetadata {
                 tokens_per_second: U256::ZERO,
                 tokens_per_entity_per_second: U256::ZERO,

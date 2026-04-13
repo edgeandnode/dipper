@@ -331,6 +331,14 @@ pub struct Terms {
     /// Maximum seconds per collection.
     pub max_seconds_per_collection: u32,
 
+    /// Bitmask of payer-declared conditions (e.g. eligibility check).
+    ///
+    /// Must be 0 unless the payer is a contract that implements the
+    /// corresponding callback interfaces. Against an EOA payer, any
+    /// non-zero value will cause the on-chain `offer()` and `accept()`
+    /// calls to revert.
+    pub conditions: u16,
+
     /// The agreement metadata.
     pub metadata: TermsMetadata,
 }
@@ -484,6 +492,7 @@ impl From<dipper_pgregistry::IndexingAgreementTerms> for Terms {
             max_ongoing_tokens_per_second: value.max_ongoing_tokens_per_second,
             min_seconds_per_collection: value.min_seconds_per_collection,
             max_seconds_per_collection: value.max_seconds_per_collection,
+            conditions: value.conditions,
             metadata: value.metadata.into(),
         }
     }
@@ -513,6 +522,7 @@ impl From<Terms> for dipper_pgregistry::IndexingAgreementTerms {
             max_ongoing_tokens_per_second: value.max_ongoing_tokens_per_second,
             min_seconds_per_collection: value.min_seconds_per_collection,
             max_seconds_per_collection: value.max_seconds_per_collection,
+            conditions: value.conditions,
             metadata: value.metadata.into(),
         }
     }
@@ -560,6 +570,7 @@ pub mod fake_impl {
                 )),
                 min_seconds_per_collection: u32::dummy_with_rng(config, rng),
                 max_seconds_per_collection: u32::dummy_with_rng(config, rng),
+                conditions: 0,
                 metadata: TermsMetadata::dummy_with_rng(config, rng),
             }
         }

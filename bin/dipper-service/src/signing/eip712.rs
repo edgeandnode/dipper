@@ -233,6 +233,7 @@ mod tests {
             maxOngoingTokensPerSecond: U256::from(100u64),
             minSecondsPerCollection: 60,
             maxSecondsPerCollection: 3600,
+            conditions: 0,
             nonce: U256::from(1u64),
             metadata: Default::default(),
         };
