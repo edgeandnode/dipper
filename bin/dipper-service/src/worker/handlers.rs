@@ -6,6 +6,7 @@ mod reassess_indexing_request;
 mod selection_context;
 mod send_indexing_agreement_cancellation;
 mod send_indexing_agreement_proposal;
+mod submit_offer;
 
 pub use cancel_rejected_agreement_on_chain::{
     Ctx as CancelRejectedAgreementOnChainCtx, Message as CancelRejectedAgreementOnChain,
@@ -37,3 +38,4 @@ pub use send_indexing_agreement_proposal::{
     Ctx as SendIndexingAgreementProposalCtx, Message as SendIndexingAgreementProposal,
     handle as send_indexing_agreement_proposal,
 };
+pub use submit_offer::{Ctx as SubmitOfferCtx, Message as SubmitOffer, handle as submit_offer};

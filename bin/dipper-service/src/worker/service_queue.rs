@@ -7,7 +7,7 @@ use super::{
     handlers::{
         CancelRejectedAgreementOnChain, ProcessIndexingAgreementCancellation,
         ProcessIndexingRequestCancellation, ProcessNewIndexingRequest, ReassessIndexingRequest,
-        SendIndexingAgreementCancellation, SendIndexingAgreementProposal,
+        SendIndexingAgreementCancellation, SendIndexingAgreementProposal, SubmitOffer,
     },
     messages::Message,
     queue::{JobId, Queue},
@@ -71,6 +71,16 @@ pub trait WorkerQueue {
     async fn cancel_rejected_agreement_on_chain(
         &self,
         agreement_id: IndexingAgreementId,
+    ) -> anyhow::Result<JobId>;
+
+    /// Submit an RCA offer on-chain as the first step of a new proposal.
+    async fn submit_offer(
+        &self,
+        agreement_id: IndexingAgreementId,
+        indexing_request_id: IndexingRequestId,
+        indexer_url: Url,
+        deployment_id: DeploymentId,
+        deployment_chain_id: ChainId,
     ) -> anyhow::Result<JobId>;
 }
 
@@ -217,6 +227,25 @@ where
             .push(Message::CancelRejectedAgreementOnChain(
                 CancelRejectedAgreementOnChain { agreement_id },
             ))
+            .await
+    }
+
+    async fn submit_offer(
+        &self,
+        agreement_id: IndexingAgreementId,
+        indexing_request_id: IndexingRequestId,
+        indexer_url: Url,
+        deployment_id: DeploymentId,
+        deployment_chain_id: ChainId,
+    ) -> anyhow::Result<JobId> {
+        self.queue
+            .push(Message::SubmitOffer(SubmitOffer {
+                agreement_id,
+                indexing_request_id,
+                indexer_url,
+                deployment_id,
+                deployment_chain_id,
+            }))
             .await
     }
 }

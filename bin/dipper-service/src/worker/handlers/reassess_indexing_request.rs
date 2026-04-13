@@ -317,10 +317,10 @@ where
 
         if let Err(err) = ctx
             .queue
-            .send_indexing_agreement_proposal(
-                candidate.url,
+            .submit_offer(
                 agreement_id,
                 *indexing_request_id,
+                candidate.url,
                 *deployment_id,
                 *deployment_chain_id,
             )
@@ -329,7 +329,7 @@ where
             add_failures += 1;
             tracing::error!(
                 error=%err,
-                "Failed to queue task: 'send_indexing_agreement_proposal'"
+                "Failed to queue task: 'submit_offer'"
             );
         } else {
             tracing::debug!(

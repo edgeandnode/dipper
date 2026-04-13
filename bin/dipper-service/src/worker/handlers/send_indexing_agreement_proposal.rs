@@ -691,6 +691,17 @@ mod tests {
         ) -> anyhow::Result<JobId> {
             Ok(JobId::default())
         }
+
+        async fn submit_offer(
+            &self,
+            _agreement_id: IndexingAgreementId,
+            _indexing_request_id: IndexingRequestId,
+            _indexer_url: Url,
+            _deployment_id: DeploymentId,
+            _deployment_chain_id: ChainId,
+        ) -> anyhow::Result<JobId> {
+            Ok(JobId::default())
+        }
     }
 
     enum MockResponse {

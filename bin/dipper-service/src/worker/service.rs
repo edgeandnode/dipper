@@ -12,7 +12,7 @@ use super::{
         self, CancelRejectedAgreementOnChainCtx, ProcessIndexingAgreementCancellationCtx,
         ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
         ReassessIndexingRequestCtx, SendIndexingAgreementCancellationCtx,
-        SendIndexingAgreementProposalCtx,
+        SendIndexingAgreementProposalCtx, SubmitOfferCtx,
     },
     messages::Message,
     queue::Queue,
@@ -182,6 +182,7 @@ where
     SendIndexingAgreementCancellationCtx<R, C>: FromState<S>,
     ProcessIndexingAgreementCancellationCtx<R, W>: FromState<S>,
     CancelRejectedAgreementOnChainCtx<R, T>: FromState<S>,
+    SubmitOfferCtx<R, W, T>: FromState<S>,
 {
     /// Dispatch a message to the appropriate message handler, based on the message type, with
     /// the given state and job metadata.
@@ -204,6 +205,7 @@ where
         Message::ProcessIndexingAgreementIndexerCancellation => handlers::process_indexing_agreement_indexer_cancellation,
         Message::ProcessIndexingAgreementRequesterCancellation => handlers::process_indexing_agreement_requester_cancellation,
         Message::CancelRejectedAgreementOnChain => handlers::cancel_rejected_agreement_on_chain,
+        Message::SubmitOffer => handlers::submit_offer,
     })
 }
 

@@ -517,6 +517,13 @@ pub struct ChainClientConfig {
     /// `cancelIndexingAgreementByPayer(bytes32)`.
     pub subgraph_service_address: Address,
 
+    /// RecurringCollector contract address.
+    ///
+    /// This is the contract that stores on-chain RCA offers. Dipper calls
+    /// `offer(OFFER_TYPE_NEW, abi.encode(rca), 0)` before dispatching a
+    /// proposal, and queries `rcaOffers(agreementId)` for idempotency.
+    pub recurring_collector_address: Address,
+
     /// Gas price multiplier (default: 1.2)
     ///
     /// Applied to the estimated gas price to ensure timely inclusion.

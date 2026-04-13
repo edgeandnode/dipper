@@ -1160,6 +1160,17 @@ mod tests {
             self.cancel_jobs.lock().unwrap().push(agreement_id);
             Ok(dipper_pgmq::JobId::default())
         }
+
+        async fn submit_offer(
+            &self,
+            _agreement_id: IndexingAgreementId,
+            _indexing_request_id: IndexingRequestId,
+            _indexer_url: Url,
+            _deployment_id: DeploymentId,
+            _deployment_chain_id: ChainId,
+        ) -> anyhow::Result<dipper_pgmq::JobId> {
+            Ok(dipper_pgmq::JobId::default())
+        }
     }
 
     #[tokio::test]

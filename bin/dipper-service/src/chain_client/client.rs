@@ -6,17 +6,18 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use dipper_rpc::indexer::{indexer_client::sol::RecurringCollectionAgreement, rca_eip712_domain};
 use thegraph_core::alloy::{
     network::{EthereumWallet, TransactionBuilder},
     primitives::{Address, B256, FixedBytes},
     providers::{Provider, ProviderBuilder},
     rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
-    sol_types::SolCall,
+    sol_types::{SolCall, SolStruct, SolValue},
 };
 
 use super::{
-    abi::ISubgraphService,
+    abi::{IRecurringCollector, ISubgraphService},
     gas::{GasEstimator, calculate_max_fee, exceeds_max_gas_price, get_gas_prices},
     rpc_provider::RpcProviderPool,
 };
@@ -24,6 +25,10 @@ use crate::{
     chain_client::{ChainClient, ChainClientError},
     config::ChainClientConfig,
 };
+
+/// OFFER_TYPE_NEW from `RecurringCollector.sol`. Used when submitting a new
+/// agreement offer on-chain.
+const OFFER_TYPE_NEW: u8 = 0;
 
 /// Error patterns that indicate a nonce-related issue.
 ///
@@ -62,6 +67,8 @@ struct AlloyChainClientInner {
     signer: PrivateKeySigner,
     /// SubgraphService contract address
     subgraph_service_address: Address,
+    /// RecurringCollector contract address (for RCA offer submission)
+    recurring_collector_address: Address,
     /// Chain ID
     chain_id: u64,
     /// Gas price multiplier
@@ -100,6 +107,7 @@ impl AlloyChainClient {
         tracing::info!(
             signer_address = %signer.address(),
             subgraph_service = %config.subgraph_service_address,
+            recurring_collector = %config.recurring_collector_address,
             chain_id = config.chain_id,
             "AlloyChainClient initialized"
         );
@@ -110,6 +118,7 @@ impl AlloyChainClient {
                 gas_estimator,
                 signer,
                 subgraph_service_address: config.subgraph_service_address,
+                recurring_collector_address: config.recurring_collector_address,
                 chain_id: config.chain_id,
                 gas_price_multiplier: config.gas_price_multiplier,
                 max_gas_price_gwei: config.max_gas_price_gwei,
@@ -125,6 +134,123 @@ impl AlloyChainClient {
             agreementId: agreement_bytes,
         }
         .abi_encode()
+    }
+
+    /// Build, gas-estimate, and send a call to any contract.
+    ///
+    /// Shared entry point for `cancelIndexingAgreementByPayer` and `offer`.
+    /// `log_agreement_id` is used only for structured logging.
+    async fn build_and_send_call(
+        &self,
+        to: Address,
+        calldata: Vec<u8>,
+        log_agreement_id: &[u8; 16],
+    ) -> Result<B256, ChainClientError> {
+        // 1. Build initial transaction request
+        let tx = TransactionRequest::default()
+            .from(self.inner.signer.address())
+            .to(to)
+            .input(calldata.into());
+
+        // 2. Estimate gas with safety bounds
+        let gas_limit = self
+            .inner
+            .rpc_pool
+            .execute("estimate_gas", |provider| {
+                let tx = tx.clone();
+                let estimator = self.inner.gas_estimator.clone();
+                async move {
+                    estimator.estimate(&provider, &tx).await.map_err(|e| {
+                        thegraph_core::alloy::transports::TransportError::local_usage_str(
+                            &e.to_string(),
+                        )
+                    })
+                }
+            })
+            .await?;
+
+        // 3. Get gas prices
+        let (base_fee, priority_fee) = self
+            .inner
+            .rpc_pool
+            .execute("get_gas_prices", |provider| async move {
+                get_gas_prices(&provider).await.map_err(|e| {
+                    thegraph_core::alloy::transports::TransportError::local_usage_str(
+                        &e.to_string(),
+                    )
+                })
+            })
+            .await?;
+
+        // 4. Calculate max fee with multiplier
+        let max_fee_per_gas =
+            calculate_max_fee(base_fee, priority_fee, self.inner.gas_price_multiplier);
+
+        // 5. Check gas price limit
+        if exceeds_max_gas_price(max_fee_per_gas, self.inner.max_gas_price_gwei) {
+            return Err(ChainClientError::SubmitFailed(anyhow::anyhow!(
+                "Gas price {} gwei exceeds maximum {} gwei",
+                max_fee_per_gas / 1_000_000_000,
+                self.inner.max_gas_price_gwei
+            )));
+        }
+
+        // 6. Build final transaction
+        let tx = tx
+            .with_gas_limit(gas_limit)
+            .with_max_fee_per_gas(max_fee_per_gas)
+            .with_max_priority_fee_per_gas(priority_fee)
+            .with_chain_id(self.inner.chain_id);
+
+        tracing::debug!(
+            agreement_id = %format_args!("0x{}", log_agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            to = %to,
+            gas_limit,
+            base_fee_gwei = base_fee / 1_000_000_000,
+            priority_fee_gwei = priority_fee / 1_000_000_000,
+            max_fee_gwei = max_fee_per_gas / 1_000_000_000,
+            "Transaction parameters"
+        );
+
+        // 7. Sign and send with nonce handling
+        self.sign_and_send(tx, log_agreement_id).await
+    }
+
+    /// Query `rcaOffers(agreementId)` on the RecurringCollector via eth_call.
+    ///
+    /// Returns `Some(offerHash)` if an offer is stored, `None` otherwise
+    /// (offerHash == 0x0).
+    async fn read_offer_hash(
+        &self,
+        agreement_id: &[u8; 16],
+    ) -> Result<Option<B256>, ChainClientError> {
+        let calldata = IRecurringCollector::rcaOffersCall {
+            agreementId: FixedBytes::<16>::from_slice(agreement_id),
+        }
+        .abi_encode();
+
+        let tx = TransactionRequest::default()
+            .to(self.inner.recurring_collector_address)
+            .input(calldata.into());
+
+        let raw = self
+            .inner
+            .rpc_pool
+            .execute("eth_call_rca_offers", |provider| {
+                let tx = tx.clone();
+                async move { provider.call(tx).await }
+            })
+            .await?;
+
+        // Decode (bytes32 offerHash, bytes data) tuple; we only care about offerHash.
+        let decoded = IRecurringCollector::rcaOffersCall::abi_decode_returns(&raw)
+            .map_err(|e| ChainClientError::RpcError(anyhow::anyhow!("decode rcaOffers: {e}")))?;
+
+        if decoded.offerHash == B256::ZERO {
+            Ok(None)
+        } else {
+            Ok(Some(decoded.offerHash))
+        }
     }
 
     /// Sign and send a transaction with nonce error handling.
@@ -223,76 +349,73 @@ impl ChainClient for AlloyChainClient {
             "Canceling indexing agreement on-chain"
         );
 
-        // 1. Encode the contract call
         let calldata = self.encode_cancel_call(agreement_id);
+        self.build_and_send_call(self.inner.subgraph_service_address, calldata, agreement_id)
+            .await
+    }
 
-        // 2. Build initial transaction request
-        let tx = TransactionRequest::default()
-            .from(self.inner.signer.address())
-            .to(self.inner.subgraph_service_address)
-            .input(calldata.into());
+    async fn post_offer(
+        &self,
+        rca: &RecurringCollectionAgreement,
+    ) -> Result<Option<B256>, ChainClientError> {
+        // 1. Derive the on-chain agreement ID deterministically from the RCA.
+        let agreement_id = dipper_rpc::indexer::derive_agreement_id(rca);
 
-        // 3. Estimate gas with safety bounds
-        let gas_limit = self
-            .inner
-            .rpc_pool
-            .execute("estimate_gas", |provider| {
-                let tx = tx.clone();
-                let estimator = self.inner.gas_estimator.clone();
-                async move {
-                    estimator.estimate(&provider, &tx).await.map_err(|e| {
-                        thegraph_core::alloy::transports::TransportError::local_usage_str(
-                            &e.to_string(),
-                        )
-                    })
-                }
-            })
-            .await?;
+        // 2. Compute the local EIP-712 hash of the RCA; this is what the
+        //    contract will compare against `rcaOffers[agreementId].offerHash`
+        //    when the indexer later calls `accept(rca, "")`.
+        let domain = rca_eip712_domain(self.inner.chain_id, self.inner.recurring_collector_address);
+        let local_hash = rca.eip712_signing_hash(&domain);
 
-        // 4. Get gas prices
-        let (base_fee, priority_fee) = self
-            .inner
-            .rpc_pool
-            .execute("get_gas_prices", |provider| async move {
-                get_gas_prices(&provider).await.map_err(|e| {
-                    thegraph_core::alloy::transports::TransportError::local_usage_str(
-                        &e.to_string(),
-                    )
-                })
-            })
-            .await?;
-
-        // 5. Calculate max fee with multiplier
-        let max_fee_per_gas =
-            calculate_max_fee(base_fee, priority_fee, self.inner.gas_price_multiplier);
-
-        // 6. Check gas price limit
-        if exceeds_max_gas_price(max_fee_per_gas, self.inner.max_gas_price_gwei) {
-            return Err(ChainClientError::SubmitFailed(anyhow::anyhow!(
-                "Gas price {} gwei exceeds maximum {} gwei",
-                max_fee_per_gas / 1_000_000_000,
-                self.inner.max_gas_price_gwei
-            )));
+        // 3. Idempotency: if an offer is already stored with a matching hash,
+        //    skip re-submission. If stored with a different hash, abort.
+        if let Some(stored) = self.read_offer_hash(&agreement_id).await? {
+            if stored == local_hash {
+                tracing::info!(
+                    agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                    offer_hash = %stored,
+                    "Offer already stored on-chain with matching hash, skipping submission"
+                );
+                return Ok(None);
+            }
+            return Err(ChainClientError::OfferHashMismatch {
+                agreement_id: format!(
+                    "0x{}",
+                    agreement_id
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>()
+                ),
+                stored,
+                expected: local_hash,
+            });
         }
 
-        // 7. Build final transaction
-        let tx = tx
-            .with_gas_limit(gas_limit)
-            .with_max_fee_per_gas(max_fee_per_gas)
-            .with_max_priority_fee_per_gas(priority_fee)
-            .with_chain_id(self.inner.chain_id);
+        // 4. Encode offer(OFFER_TYPE_NEW, abi.encode(rca), 0).
+        let rca_bytes = rca.abi_encode();
+        let calldata = IRecurringCollector::offerCall {
+            offerType: OFFER_TYPE_NEW,
+            data: rca_bytes.into(),
+            options: 0,
+        }
+        .abi_encode();
 
-        tracing::debug!(
+        tracing::info!(
             agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
-            gas_limit,
-            base_fee_gwei = base_fee / 1_000_000_000,
-            priority_fee_gwei = priority_fee / 1_000_000_000,
-            max_fee_gwei = max_fee_per_gas / 1_000_000_000,
-            "Transaction parameters"
+            contract = %self.inner.recurring_collector_address,
+            offer_hash = %local_hash,
+            "Submitting RCA offer on-chain"
         );
 
-        // 8. Sign and send with nonce handling
-        self.sign_and_send(tx, agreement_id).await
+        let tx_hash = self
+            .build_and_send_call(
+                self.inner.recurring_collector_address,
+                calldata,
+                &agreement_id,
+            )
+            .await?;
+
+        Ok(Some(tx_hash))
     }
 }
 
