@@ -4,9 +4,12 @@ use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use serde_with::serde_as;
 use url::Url;
 
+// Only referenced in the debug-build status assertion below.
+#[cfg(debug_assertions)]
+use crate::registry::IndexingAgreementStatus;
 use crate::{
     indexer_rpc_client::IndexerClient,
-    registry::{AgreementRegistry, IndexingAgreementStatus},
+    registry::AgreementRegistry,
     worker::result::{JobError, JobMeta, JobResult},
 };
 

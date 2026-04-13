@@ -585,7 +585,8 @@ fn default_gas_max_addition() -> u64 {
 pub struct DipsAgreementConfig {
     /// The data service address (SubgraphService contract).
     pub data_service: Address,
-    /// The RecurringCollector contract address (used for EIP-712 signing domain).
+    /// The RecurringCollector contract address. Dipper posts on-chain offers
+    /// here via `RecurringCollector.offer()` before dispatching gRPC proposals.
     pub recurring_collector: Address,
     /// Maximum tokens for the initial subgraph sync.
     pub max_initial_tokens: U256,
