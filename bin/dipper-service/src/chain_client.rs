@@ -41,11 +41,15 @@ pub enum ChainClientError {
     #[error("RPC error: {0}")]
     RpcError(#[source] anyhow::Error),
 
-    /// On-chain offer exists but its hash does not match the locally-computed hash.
+    /// Subgraph reports a stored offer whose hash does not match the locally-computed hash.
     ///
-    /// Indicates the agreement terms drifted between stored offer and current
-    /// invocation (e.g. a stale nonce or deadline). The offer must be cleared
-    /// and re-submitted; dipper aborts the proposal cycle.
+    /// Indicates the agreement terms drifted between a prior submission and
+    /// the current invocation (e.g. a stale nonce or deadline). Since the
+    /// RecurringCollector stores offers inside a namespaced storage struct
+    /// with no public getter, dipper treats the indexing-payments-subgraph's
+    /// Offer entity as the source of truth for this check. When a mismatch
+    /// is detected, dipper marks the agreement as delivery-failed and bails;
+    /// the reassignment service finds a replacement.
     #[error(
         "offer hash mismatch for agreement {agreement_id}: stored={stored}, expected={expected}"
     )]
@@ -73,12 +77,13 @@ pub trait ChainClient {
 
     /// Submit an RCA offer on-chain via `RecurringCollector.offer(OFFER_TYPE_NEW, ...)`.
     ///
-    /// This is idempotent against on-chain state: if the offer already exists
-    /// and its hash matches the locally-computed `hashRCA(rca)`, the method
-    /// returns `Ok(None)` without sending a transaction. If the offer exists
-    /// but with a different hash, returns `OfferHashMismatch`. Otherwise submits
-    /// an `offer()` transaction and returns `Ok(Some(tx_hash))` after the
-    /// receipt confirms.
+    /// Crash-recovery idempotency is handled via a query to the
+    /// indexing-payments subgraph (not an RPC call): if a matching
+    /// `Offer` entity already exists the method returns `Ok(None)` without
+    /// sending a transaction. If an offer exists with a different hash,
+    /// returns `OfferHashMismatch`. Otherwise submits an `offer()` transaction
+    /// and returns `Ok(Some(tx_hash))`. When no subgraph URL is configured,
+    /// the idempotency check is skipped and every call unconditionally submits.
     ///
     /// `msg.sender` of the transaction must equal `rca.payer` or the contract
     /// reverts with `RecurringCollectorUnauthorizedCaller`.

@@ -521,8 +521,24 @@ pub struct ChainClientConfig {
     ///
     /// This is the contract that stores on-chain RCA offers. Dipper calls
     /// `offer(OFFER_TYPE_NEW, abi.encode(rca), 0)` before dispatching a
-    /// proposal, and queries `rcaOffers(agreementId)` for idempotency.
+    /// proposal. The stored offer mapping lives inside an ERC-7201 namespaced
+    /// storage struct and has no auto-generated getter, so crash-recovery
+    /// idempotency is handled via the indexing-payments subgraph
+    /// (`indexing_payments_subgraph_url` below) rather than an eth_call.
     pub recurring_collector_address: Address,
+
+    /// Indexing-payments-subgraph query URL.
+    ///
+    /// When set, dipper queries the subgraph for an existing `Offer` entity
+    /// before submitting a new `offer()` transaction. This provides
+    /// crash-recovery idempotency: after a restart, if dipper's prior
+    /// submission already landed on-chain and the subgraph has indexed it,
+    /// dipper will skip re-submission rather than wasting gas. When unset,
+    /// dipper will log a warning on startup and always submit, trusting
+    /// the contract's overwrite semantics to make double-submission harmless.
+    #[serde(default)]
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
+    pub indexing_payments_subgraph_url: Option<Url>,
 
     /// Gas price multiplier (default: 1.2)
     ///

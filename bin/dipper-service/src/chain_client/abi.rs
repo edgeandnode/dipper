@@ -27,8 +27,13 @@ sol! {
     ///
     /// The `offer` function stores an RCA offer on-chain keyed by agreement ID.
     /// Indexers later call `accept(rca, "")` with an empty signature, and the
-    /// contract verifies `rcaOffers[agreementId].offerHash == hashRCA(rca)`.
+    /// contract verifies the stored offer hash matches `hashRCA(rca)`.
     /// `msg.sender` of `offer()` must equal `rca.payer`.
+    ///
+    /// The stored offer mapping lives inside an ERC-7201 namespaced storage
+    /// struct and has no public getter, so there is no RPC-level idempotency
+    /// check available. Dipper queries the indexing-payments subgraph's
+    /// Offer entity instead.
     #[allow(missing_docs)]
     interface IRecurringCollector {
         /// Agreement details returned from `offer()`.
@@ -49,16 +54,6 @@ sol! {
         function offer(uint8 offerType, bytes calldata data, uint16 options)
             external
             returns (AgreementDetails memory details);
-
-        /// Read the stored RCA offer for an agreement ID.
-        ///
-        /// Returns `(0x00..0, 0x)` if no offer exists.
-        /// Used by dipper for crash-recovery idempotency: if the offer hash
-        /// already matches the locally-computed hashRCA(rca), skip re-submission.
-        function rcaOffers(bytes16 agreementId)
-            external
-            view
-            returns (bytes32 offerHash, bytes memory data);
 
         /// Emitted when `offer()` stores a new or updated RCA offer.
         event OfferStored(

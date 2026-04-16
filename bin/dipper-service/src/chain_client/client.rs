@@ -8,6 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use dipper_rpc::indexer::{indexer_client::sol::RecurringCollectionAgreement, rca_eip712_domain};
 use thegraph_core::alloy::{
+    hex,
     network::{EthereumWallet, TransactionBuilder},
     primitives::{Address, B256, FixedBytes},
     providers::{Provider, ProviderBuilder},
@@ -15,6 +16,7 @@ use thegraph_core::alloy::{
     signers::local::PrivateKeySigner,
     sol_types::{SolCall, SolStruct, SolValue},
 };
+use url::Url;
 
 use super::{
     abi::{IRecurringCollector, ISubgraphService},
@@ -25,6 +27,11 @@ use crate::{
     chain_client::{ChainClient, ChainClientError},
     config::ChainClientConfig,
 };
+
+/// HTTP timeout for the indexing-payments subgraph idempotency query.
+/// Kept tight because dipper polls this on every offer submission and a
+/// slow response stalls the worker handler.
+const SUBGRAPH_QUERY_TIMEOUT_SECS: u64 = 10;
 
 /// OFFER_TYPE_NEW from `RecurringCollector.sol`. Used when submitting a new
 /// agreement offer on-chain.
@@ -75,6 +82,11 @@ struct AlloyChainClientInner {
     gas_price_multiplier: f64,
     /// Maximum gas price in gwei
     max_gas_price_gwei: u64,
+    /// Indexing-payments-subgraph query URL for offer idempotency checks.
+    /// When None, the idempotency check is skipped and every call submits.
+    indexing_payments_subgraph_url: Option<Url>,
+    /// HTTP client used to query the indexing-payments subgraph.
+    http_client: reqwest::Client,
 }
 
 impl AlloyChainClient {
@@ -104,11 +116,28 @@ impl AlloyChainClient {
             config.gas_max_addition,
         );
 
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(SUBGRAPH_QUERY_TIMEOUT_SECS))
+            .build()
+            .map_err(|e| {
+                ChainClientError::ConfigError(format!("Failed to build subgraph HTTP client: {e}"))
+            })?;
+
+        if config.indexing_payments_subgraph_url.is_none() {
+            tracing::warn!(
+                "indexing_payments_subgraph_url not configured; offer submission \
+                 will skip crash-recovery idempotency and unconditionally send a \
+                 new offer tx. The contract's overwrite semantics make this safe \
+                 but wastes gas on re-submission after a crashed restart."
+            );
+        }
+
         tracing::info!(
             signer_address = %signer.address(),
             subgraph_service = %config.subgraph_service_address,
             recurring_collector = %config.recurring_collector_address,
             chain_id = config.chain_id,
+            indexing_payments_subgraph = ?config.indexing_payments_subgraph_url,
             "AlloyChainClient initialized"
         );
 
@@ -122,6 +151,8 @@ impl AlloyChainClient {
                 chain_id: config.chain_id,
                 gas_price_multiplier: config.gas_price_multiplier,
                 max_gas_price_gwei: config.max_gas_price_gwei,
+                indexing_payments_subgraph_url: config.indexing_payments_subgraph_url.clone(),
+                http_client,
             }),
         })
     }
@@ -216,41 +247,81 @@ impl AlloyChainClient {
         self.sign_and_send(tx, log_agreement_id).await
     }
 
-    /// Query `rcaOffers(agreementId)` on the RecurringCollector via eth_call.
+    /// Query the indexing-payments-subgraph for an existing `Offer` entity.
     ///
-    /// Returns `Some(offerHash)` if an offer is stored, `None` otherwise
-    /// (offerHash == 0x0).
-    async fn read_offer_hash(
+    /// Returns `Ok(Some(offerHash))` if the subgraph has indexed a prior
+    /// `OfferStored` event for this agreement id, `Ok(None)` if no offer is
+    /// present yet, and `Ok(None)` with a warning if the subgraph URL is not
+    /// configured. Network or query errors are returned as `RpcError`.
+    ///
+    /// The agreement id is serialized as a 0x-prefixed 32-char hex string
+    /// to match how graph-node stores `Bytes` entity ids.
+    async fn read_offer_hash_from_subgraph(
         &self,
         agreement_id: &[u8; 16],
     ) -> Result<Option<B256>, ChainClientError> {
-        let calldata = IRecurringCollector::rcaOffersCall {
-            agreementId: FixedBytes::<16>::from_slice(agreement_id),
-        }
-        .abi_encode();
+        let subgraph_url = match &self.inner.indexing_payments_subgraph_url {
+            Some(url) => url,
+            None => return Ok(None),
+        };
 
-        let tx = TransactionRequest::default()
-            .to(self.inner.recurring_collector_address)
-            .input(calldata.into());
+        let id_hex = format!("0x{}", hex::encode(agreement_id));
 
-        let raw = self
+        let query = r#"query GetOffer($id: Bytes!) { offer(id: $id) { offerHash } }"#;
+        let body = serde_json::json!({
+            "query": query,
+            "variables": { "id": id_hex },
+        });
+
+        let response = self
             .inner
-            .rpc_pool
-            .execute("eth_call_rca_offers", |provider| {
-                let tx = tx.clone();
-                async move { provider.call(tx).await }
-            })
-            .await?;
+            .http_client
+            .post(subgraph_url.as_str())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                ChainClientError::RpcError(anyhow::anyhow!("subgraph POST failed: {e}"))
+            })?;
 
-        // Decode (bytes32 offerHash, bytes data) tuple; we only care about offerHash.
-        let decoded = IRecurringCollector::rcaOffersCall::abi_decode_returns(&raw)
-            .map_err(|e| ChainClientError::RpcError(anyhow::anyhow!("decode rcaOffers: {e}")))?;
-
-        if decoded.offerHash == B256::ZERO {
-            Ok(None)
-        } else {
-            Ok(Some(decoded.offerHash))
+        if !response.status().is_success() {
+            return Err(ChainClientError::RpcError(anyhow::anyhow!(
+                "subgraph returned HTTP {}",
+                response.status()
+            )));
         }
+
+        let json: serde_json::Value = response.json().await.map_err(|e| {
+            ChainClientError::RpcError(anyhow::anyhow!("decode subgraph body: {e}"))
+        })?;
+
+        if let Some(errors) = json.get("errors") {
+            return Err(ChainClientError::RpcError(anyhow::anyhow!(
+                "subgraph returned errors: {errors}"
+            )));
+        }
+
+        let offer_hash_hex = match json
+            .get("data")
+            .and_then(|d| d.get("offer"))
+            .and_then(|o| o.get("offerHash"))
+            .and_then(|h| h.as_str())
+        {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+
+        let stripped = offer_hash_hex.strip_prefix("0x").unwrap_or(offer_hash_hex);
+        let bytes = hex::decode(stripped).map_err(|e| {
+            ChainClientError::RpcError(anyhow::anyhow!("decode offerHash from subgraph: {e}"))
+        })?;
+        if bytes.len() != 32 {
+            return Err(ChainClientError::RpcError(anyhow::anyhow!(
+                "subgraph offerHash is not 32 bytes: len={}",
+                bytes.len()
+            )));
+        }
+        Ok(Some(B256::from_slice(&bytes)))
     }
 
     /// Sign and send a transaction with nonce error handling.
@@ -362,19 +433,29 @@ impl ChainClient for AlloyChainClient {
         let agreement_id = dipper_rpc::indexer::derive_agreement_id(rca);
 
         // 2. Compute the local EIP-712 hash of the RCA; this is what the
-        //    contract will compare against `rcaOffers[agreementId].offerHash`
-        //    when the indexer later calls `accept(rca, "")`.
+        //    contract compares against the stored offer hash when the indexer
+        //    later calls `accept(rca, "")`.
         let domain = rca_eip712_domain(self.inner.chain_id, self.inner.recurring_collector_address);
         let local_hash = rca.eip712_signing_hash(&domain);
 
-        // 3. Idempotency: if an offer is already stored with a matching hash,
-        //    skip re-submission. If stored with a different hash, abort.
-        if let Some(stored) = self.read_offer_hash(&agreement_id).await? {
+        // 3. Idempotency via the indexing-payments-subgraph. If the subgraph
+        //    has indexed a prior OfferStored for this agreement id with a
+        //    matching hash, skip re-submission. If it has indexed one with
+        //    a different hash, abort the proposal cycle as a hash conflict.
+        //    If the URL isn't configured, this returns None and we submit
+        //    unconditionally (see AlloyChainClient::new for the warning).
+        //
+        //    Note: there is a short window between an offer tx confirming
+        //    and the subgraph indexing it. A crashed-restart during that
+        //    window will re-submit. The subgraph handler absorbs the
+        //    duplicate OfferStored event via an existence check, so the
+        //    resulting second write is a no-op at the entity level.
+        if let Some(stored) = self.read_offer_hash_from_subgraph(&agreement_id).await? {
             if stored == local_hash {
                 tracing::info!(
                     agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
                     offer_hash = %stored,
-                    "Offer already stored on-chain with matching hash, skipping submission"
+                    "Offer already indexed by subgraph with matching hash, skipping submission"
                 );
                 return Ok(None);
             }
