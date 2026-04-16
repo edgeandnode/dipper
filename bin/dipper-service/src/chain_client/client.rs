@@ -3,7 +3,10 @@
 //! This is the production implementation of the `ChainClient` trait using
 //! alloy for Ethereum interactions.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use async_trait::async_trait;
 use dipper_rpc::indexer::{indexer_client::sol::RecurringCollectionAgreement, rca_eip712_domain};
@@ -64,6 +67,9 @@ pub struct AlloyChainClient {
     inner: Arc<AlloyChainClientInner>,
 }
 
+/// Sentinel value indicating the nonce has not been fetched from chain yet.
+const NONCE_UNINITIALIZED: u64 = u64::MAX;
+
 /// Inner state for AlloyChainClient
 struct AlloyChainClientInner {
     /// RPC provider pool with failover
@@ -87,6 +93,11 @@ struct AlloyChainClientInner {
     indexing_payments_subgraph_url: Option<Url>,
     /// HTTP client used to query the indexing-payments subgraph.
     http_client: reqwest::Client,
+    /// In-memory nonce counter. Concurrent callers atomically increment this
+    /// to get unique nonces without querying the chain, avoiding
+    /// "replacement transaction underpriced" errors when multiple offer()
+    /// transactions are submitted in parallel.
+    nonce: AtomicU64,
 }
 
 impl AlloyChainClient {
@@ -153,6 +164,7 @@ impl AlloyChainClient {
                 max_gas_price_gwei: config.max_gas_price_gwei,
                 indexing_payments_subgraph_url: config.indexing_payments_subgraph_url.clone(),
                 http_client,
+                nonce: AtomicU64::new(NONCE_UNINITIALIZED),
             }),
         })
     }
@@ -324,9 +336,57 @@ impl AlloyChainClient {
         Ok(Some(B256::from_slice(&bytes)))
     }
 
+    /// Get the next nonce, initializing from chain on first call.
+    ///
+    /// Concurrent callers each get a unique nonce via atomic
+    /// fetch-and-increment, avoiding the "replacement transaction
+    /// underpriced" race when multiple offer() calls fire in parallel.
+    async fn next_nonce(&self) -> Result<u64, ChainClientError> {
+        let current = self.inner.nonce.load(Ordering::SeqCst);
+        if current == NONCE_UNINITIALIZED {
+            let chain_nonce = self.fetch_chain_nonce().await?;
+            // CAS: if another task already initialized, use its value
+            match self.inner.nonce.compare_exchange(
+                NONCE_UNINITIALIZED,
+                chain_nonce + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return Ok(chain_nonce),
+                // Another task already initialized; get next unique nonce
+                Err(_) => return Ok(self.inner.nonce.fetch_add(1, Ordering::SeqCst)),
+            }
+        }
+        Ok(self.inner.nonce.fetch_add(1, Ordering::SeqCst))
+    }
+
+    /// Re-sync the in-memory nonce from chain state.
+    async fn resync_nonce(&self) -> Result<u64, ChainClientError> {
+        let chain_nonce = self.fetch_chain_nonce().await?;
+        self.inner.nonce.store(chain_nonce, Ordering::SeqCst);
+        Ok(chain_nonce)
+    }
+
+    /// Fetch the pending transaction count from chain.
+    ///
+    /// Uses the "pending" block tag so the count includes transactions
+    /// sitting in the mempool from our wallet. Querying "latest" would
+    /// return a stale count when prior txs are awaiting confirmation,
+    /// causing the next tx to reuse a nonce that's already in-flight.
+    async fn fetch_chain_nonce(&self) -> Result<u64, ChainClientError> {
+        self.inner
+            .rpc_pool
+            .execute("get_nonce", |provider| {
+                let addr = self.inner.signer.address();
+                async move { provider.get_transaction_count(addr).pending().await }
+            })
+            .await
+    }
+
     /// Sign and send a transaction with nonce error handling.
     ///
-    /// On nonce errors, refreshes the nonce and retries once.
+    /// Uses the in-memory nonce counter for the first attempt. On nonce
+    /// errors, re-syncs from chain and retries.
     async fn sign_and_send(
         &self,
         mut tx: TransactionRequest,
@@ -335,19 +395,14 @@ impl AlloyChainClient {
         const MAX_NONCE_RETRIES: u32 = 2;
 
         for attempt in 0..MAX_NONCE_RETRIES {
-            // Get fresh nonce
-            let nonce = self
-                .inner
-                .rpc_pool
-                .execute("get_nonce", |provider| {
-                    let addr = self.inner.signer.address();
-                    async move { provider.get_transaction_count(addr).await }
-                })
-                .await?;
+            let nonce = if attempt == 0 {
+                self.next_nonce().await?
+            } else {
+                self.resync_nonce().await?
+            };
 
             tx = tx.with_nonce(nonce);
 
-            // Send the transaction
             let result = self.send_transaction(&tx).await;
 
             match result {
@@ -365,7 +420,7 @@ impl AlloyChainClient {
                         agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
                         attempt = attempt + 1,
                         error = %e,
-                        "Nonce error, refreshing and retrying"
+                        "Nonce error, re-syncing from chain and retrying"
                     );
                     continue;
                 }
