@@ -209,8 +209,7 @@ impl_from_state!(CancelRejectedAgreementOnChainCtx<R, T> {
     chain_client,
 });
 
-impl_from_state!(SubmitOfferCtx<R, W, T> {
+impl_from_state!(SubmitOfferCtx<R, T> {
     registry,
-    queue: worker,
     chain_client,
 });

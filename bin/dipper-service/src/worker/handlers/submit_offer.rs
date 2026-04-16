@@ -1,20 +1,24 @@
-//! Submit an RCA offer on-chain before dispatching the proposal to the indexer.
+//! Submit an RCA offer on-chain after the indexer has accepted the proposal.
 //!
-//! This is the first step in the offer-based authorization flow. The worker
-//! pipeline is:
+//! This handler runs after `send_indexing_agreement_proposal` receives an
+//! Accept response from the indexer. The worker pipeline is:
 //!
 //! 1. `process_new_indexing_request` registers the agreement in the DB.
-//! 2. `submit_offer` (this handler) posts the RCA offer on-chain via
-//!    `RecurringCollector.offer()`.
-//! 3. `send_indexing_agreement_proposal` dispatches the (empty-signature)
-//!    gRPC proposal to the indexer, which verifies the offer via the
-//!    indexing-payments-subgraph before accepting.
+//! 2. `send_indexing_agreement_proposal` sends the gRPC proposal to the
+//!    indexer, which validates pricing/metadata/networks and responds
+//!    Accept or Reject.
+//! 3. On Accept, `submit_offer` (this handler) posts the RCA offer on-chain
+//!    via `RecurringCollector.offer()`. The indexer-agent then calls
+//!    `acceptIndexingAgreement` — the contract checks `rcaOffers`.
 //!
-//! Idempotency is gated on the on-chain `rcaOffers(agreementId)` eth_call:
-//! if the offer already exists with a matching hash, we skip submission and
-//! proceed directly to dispatch. This means a crashed-mid-flight restart is
-//! safe, and a dev loop that recycles the Postgres volume but keeps chain
-//! state never double-spends gas.
+//! Idempotency is gated on the indexing-payments-subgraph's `Offer` entity,
+//! not an RPC call. The `rcaOffers` mapping on `RecurringCollector` lives
+//! inside an ERC-7201 namespaced storage struct with no public getter, so
+//! dipper reuses the same subgraph indexer-rs queries to check whether a
+//! prior submission already landed. The subgraph handler is idempotent on
+//! duplicate `OfferStored` events, so a crashed restart that races the
+//! subgraph's indexing lag and re-submits will end up as a no-op at the
+//! entity level even if it costs a second on-chain transaction.
 
 use std::time::Duration;
 
@@ -26,15 +30,11 @@ use crate::{
     chain_client::{ChainClient, ChainClientError},
     indexer_rpc_client::into_sol_rca,
     registry::{AgreementRegistry, IndexingAgreementStatus},
-    worker::{
-        result::{JobError, JobMeta, JobResult},
-        service::WorkerQueue,
-    },
+    worker::result::{JobError, JobMeta, JobResult},
 };
 
-pub struct Ctx<R, W, T> {
+pub struct Ctx<R, T> {
     pub registry: R,
-    pub queue: W,
     pub chain_client: T,
 }
 
@@ -48,20 +48,19 @@ pub struct Message {
     pub deployment_chain_id: ChainId,
 }
 
-pub async fn handle<R, W, T>(
-    ctx: Ctx<R, W, T>,
+pub async fn handle<R, T>(
+    ctx: Ctx<R, T>,
     Message {
         agreement_id,
         indexing_request_id,
-        indexer_url,
-        deployment_id,
-        deployment_chain_id,
+        indexer_url: _,
+        deployment_id: _,
+        deployment_chain_id: _,
     }: &Message,
     _job_meta: JobMeta,
 ) -> JobResult<()>
 where
     R: AgreementRegistry,
-    W: WorkerQueue,
     T: ChainClient,
 {
     // Fetch the agreement. Skip silently if it's already been transitioned
@@ -165,27 +164,9 @@ where
         }
     }
 
-    // Offer is confirmed on-chain (or was already there). Enqueue the
-    // proposal dispatch so the indexer gets the gRPC with the empty-sig
-    // SignedRCA.
-    if let Err(err) = ctx
-        .queue
-        .send_indexing_agreement_proposal(
-            indexer_url.clone(),
-            *agreement_id,
-            *indexing_request_id,
-            *deployment_id,
-            *deployment_chain_id,
-        )
-        .await
-    {
-        tracing::error!(
-            agreement_id = %agreement_id,
-            error = %err,
-            "Failed to enqueue send_indexing_agreement_proposal after offer submission"
-        );
-        return Err(JobError::Fatal(err));
-    }
-
+    // Offer is confirmed on-chain (or was already there). The indexer-agent
+    // will pick up the pending_rca_proposals row and call
+    // acceptIndexingAgreement — the contract checks rcaOffers at that point.
+    // No further enqueue needed; chain_listener detects the acceptance event.
     Ok(())
 }

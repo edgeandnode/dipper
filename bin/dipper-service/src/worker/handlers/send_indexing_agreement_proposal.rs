@@ -127,9 +127,30 @@ where
                         old_status = "CREATED",
                         new_status = "CREATED",
                         reason = "accepted_by_indexer",
-                        "agreement state transition (awaiting on-chain acceptance)"
+                        "agreement state transition (submitting offer on-chain)"
                     );
-                    // Agreement stays in Created, waiting for on-chain acceptance
+
+                    // Indexer accepted the terms. Submit the on-chain offer so
+                    // the contract has the RCA hash when the indexer-agent calls
+                    // acceptIndexingAgreement later.
+                    if let Err(err) = ctx
+                        .queue
+                        .submit_offer(
+                            *agreement_id,
+                            *indexing_request_id,
+                            indexer_url.clone(),
+                            *deployment_id,
+                            *deployment_chain_id,
+                        )
+                        .await
+                    {
+                        tracing::error!(
+                            agreement_id = %agreement_id,
+                            error = %err,
+                            "Failed to queue task: 'submit_offer' after Accept"
+                        );
+                        return Err(JobError::Fatal(err));
+                    }
                 }
                 ProposalResponse::Reject => {
                     // Extract rejection reason from the response.

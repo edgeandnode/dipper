@@ -182,7 +182,7 @@ where
     SendIndexingAgreementCancellationCtx<R, C>: FromState<S>,
     ProcessIndexingAgreementCancellationCtx<R, W>: FromState<S>,
     CancelRejectedAgreementOnChainCtx<R, T>: FromState<S>,
-    SubmitOfferCtx<R, W, T>: FromState<S>,
+    SubmitOfferCtx<R, T>: FromState<S>,
 {
     /// Dispatch a message to the appropriate message handler, based on the message type, with
     /// the given state and job metadata.

@@ -315,16 +315,16 @@ where
 
         if let Err(err) = ctx
             .queue
-            .submit_offer(
+            .send_indexing_agreement_proposal(
+                indexer.url,
                 agreement_id,
                 *indexing_request_id,
-                indexer.url,
                 *deployment_id,
                 *deployment_chain_id,
             )
             .await
         {
-            tracing::error!(error=?err, "Failed to queue task: 'submit_offer'");
+            tracing::error!(error=?err, "Failed to queue task: 'send_indexing_agreement_proposal'");
             return Err(JobError::Fatal(err));
         }
 
