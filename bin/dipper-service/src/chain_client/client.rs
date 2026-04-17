@@ -361,9 +361,13 @@ impl AlloyChainClient {
     }
 
     /// Re-sync the in-memory nonce from chain state.
+    ///
+    /// Stores `chain_nonce + 1` to reserve `chain_nonce` for the caller —
+    /// otherwise a concurrent `next_nonce` would load the same value and
+    /// collide. Mirrors the init path in `next_nonce`.
     async fn resync_nonce(&self) -> Result<u64, ChainClientError> {
         let chain_nonce = self.fetch_chain_nonce().await?;
-        self.inner.nonce.store(chain_nonce, Ordering::SeqCst);
+        self.inner.nonce.store(chain_nonce + 1, Ordering::SeqCst);
         Ok(chain_nonce)
     }
 
