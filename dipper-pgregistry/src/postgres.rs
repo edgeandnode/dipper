@@ -616,53 +616,19 @@ impl PgRegistry {
         Ok(())
     }
 
-    pub async fn mark_indexing_agreement_as_accepted_on_chain(
-        &self,
-        agreement_id: &IndexingAgreementId,
-    ) -> Result<(), Error> {
-        // Allows Created -> AcceptedOnChain (normal) and Expired -> AcceptedOnChain
-        // (recovery -- the contract enforces the deadline, so the acceptance is valid).
-        let record: Option<(IndexingAgreementId,)> = sqlx::query_as(
-            r#"
-            UPDATE dipper_reg_indexing_agreements
-            SET
-                status = $1,
-                updated_at = timezone('UTC', now())
-            WHERE id = $2 AND status IN ($3, $4)
-            RETURNING id
-            "#,
-        )
-        .bind(IndexingAgreementStatus::AcceptedOnChain)
-        .bind(agreement_id)
-        .bind(IndexingAgreementStatus::Created)
-        .bind(IndexingAgreementStatus::Expired)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        if record.is_none() {
-            return Err(Error::NoRecordsUpdated);
-        }
-
-        Ok(())
-    }
-
     /// Atomically apply a reconciliation-driven state transition (accept
-    /// and/or cancel) in a single database transaction. Exists so the
+    /// and/or cancel) in a single database transaction so the
     /// chain_listener's Accept-then-Cancel-in-one-snapshot path does not
     /// leave an intermediate `AcceptedOnChain` row visible to concurrent
-    /// readers between the two writes.
+    /// readers.
     ///
-    /// - `apply_accept` attempts the `Created | Expired → AcceptedOnChain`
-    ///   transition. May be a no-op if the agreement is in another status
-    ///   (e.g. already `AcceptedOnChain` from an earlier retry); the
-    ///   returned `did_accept` reports whether the row was actually
-    ///   transitioned this call, so the caller can gate side effects like
-    ///   running `execute_pending_cancellations` on a fresh accept.
-    /// - `cancel` applies either `CanceledByRequester` or `CanceledByIndexer`
-    ///   from an accepting/pre-accept state. If no row was transitioned
-    ///   (the agreement is already in a terminal cancel state, race with a
-    ///   concurrent writer), the whole transaction rolls back via
-    ///   `NoRecordsUpdated` so the accept write does not land alone.
+    /// `did_accept` is false when the agreement was not in `Created` or
+    /// `Expired` at UPDATE time; callers gate side effects like
+    /// `execute_pending_cancellations` on this so it only fires on a fresh
+    /// accept write. `cancel` returns `NoRecordsUpdated` (rolling back the
+    /// whole tx) if the row is already in a terminal cancel state or the
+    /// source-status filter does not match — prevents the accept write
+    /// from landing alone.
     pub async fn apply_reconciliation(
         &self,
         agreement_id: &IndexingAgreementId,
@@ -671,76 +637,42 @@ impl PgRegistry {
     ) -> Result<ReconciliationOutcome, Error> {
         let mut tx = self.pool.begin().await?;
 
-        let mut did_accept = false;
-        if apply_accept {
-            let record: Option<(IndexingAgreementId,)> = sqlx::query_as(
-                r#"
-                UPDATE dipper_reg_indexing_agreements
-                SET
-                    status = $1,
-                    updated_at = timezone('UTC', now())
-                WHERE id = $2 AND status IN ($3, $4)
-                RETURNING id
-                "#,
+        let did_accept = if apply_accept {
+            update_status_from(
+                &mut tx,
+                agreement_id,
+                IndexingAgreementStatus::AcceptedOnChain,
+                &[
+                    IndexingAgreementStatus::Created,
+                    IndexingAgreementStatus::Expired,
+                ],
             )
-            .bind(IndexingAgreementStatus::AcceptedOnChain)
-            .bind(agreement_id)
-            .bind(IndexingAgreementStatus::Created)
-            .bind(IndexingAgreementStatus::Expired)
-            .fetch_optional(&mut *tx)
-            .await?;
-            did_accept = record.is_some();
-        }
+            .await?
+        } else {
+            false
+        };
 
         let mut did_cancel = false;
         if let Some(kind) = cancel {
-            let record: Option<(IndexingAgreementId,)> = match kind {
-                CancelKind::ByRequester => {
-                    sqlx::query_as(
-                        r#"
-                        UPDATE dipper_reg_indexing_agreements
-                        SET
-                            status = $1,
-                            updated_at = timezone('UTC', now())
-                        WHERE id = $2 AND status IN ($3, $4, $5)
-                        RETURNING id
-                        "#,
-                    )
-                    .bind(IndexingAgreementStatus::CanceledByRequester)
-                    .bind(agreement_id)
-                    .bind(IndexingAgreementStatus::Created)
-                    .bind(IndexingAgreementStatus::AcceptedOnChain)
-                    .bind(IndexingAgreementStatus::Rejected)
-                    .fetch_optional(&mut *tx)
-                    .await?
-                }
-                CancelKind::ByIndexer => {
-                    sqlx::query_as(
-                        r#"
-                        UPDATE dipper_reg_indexing_agreements
-                        SET
-                            status = $1,
-                            updated_at = timezone('UTC', now())
-                        WHERE id = $2 AND status = $3
-                        RETURNING id
-                        "#,
-                    )
-                    .bind(IndexingAgreementStatus::CanceledByIndexer)
-                    .bind(agreement_id)
-                    .bind(IndexingAgreementStatus::AcceptedOnChain)
-                    .fetch_optional(&mut *tx)
-                    .await?
-                }
+            let (new_status, allowed_from): (_, &[IndexingAgreementStatus]) = match kind {
+                CancelKind::ByRequester => (
+                    IndexingAgreementStatus::CanceledByRequester,
+                    &[
+                        IndexingAgreementStatus::Created,
+                        IndexingAgreementStatus::AcceptedOnChain,
+                        IndexingAgreementStatus::Rejected,
+                    ],
+                ),
+                CancelKind::ByIndexer => (
+                    IndexingAgreementStatus::CanceledByIndexer,
+                    &[IndexingAgreementStatus::AcceptedOnChain],
+                ),
             };
-
-            if record.is_none() {
-                // Either the agreement is already in a terminal cancel
-                // state or the source-status filter didn't match (e.g.
-                // ByIndexer + Rejected local status). Roll back so the
-                // accept write, if any, doesn't land on its own.
+            did_cancel =
+                update_status_from(&mut tx, agreement_id, new_status, allowed_from).await?;
+            if !did_cancel {
                 return Err(Error::NoRecordsUpdated);
             }
-            did_cancel = true;
         }
 
         tx.commit().await?;
@@ -1400,4 +1332,37 @@ impl PgRegistry {
 
         Ok(())
     }
+}
+
+/// Transition an agreement's status inside a transaction. Returns `true`
+/// if the row was updated (source status matched `allowed_from`), `false`
+/// otherwise. Placeholder indexes are fixed; `allowed_from` is rendered
+/// as a dynamic `IN` list whose length is 1 or more.
+async fn update_status_from(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    agreement_id: &IndexingAgreementId,
+    new_status: IndexingAgreementStatus,
+    allowed_from: &[IndexingAgreementStatus],
+) -> Result<bool, Error> {
+    let placeholders = (0..allowed_from.len())
+        .map(|i| format!("${}", i + 3))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = $1, updated_at = timezone('UTC', now())
+        WHERE id = $2 AND status IN ({placeholders})
+        RETURNING id
+        "#
+    );
+
+    let mut query = sqlx::query_as::<_, (IndexingAgreementId,)>(&sql)
+        .bind(new_status)
+        .bind(agreement_id);
+    for status in allowed_from {
+        query = query.bind(*status);
+    }
+
+    Ok(query.fetch_optional(&mut **tx).await?.is_some())
 }

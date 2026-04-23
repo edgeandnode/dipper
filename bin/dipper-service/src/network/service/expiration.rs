@@ -462,12 +462,6 @@ mod tests {
         ) -> RegistryResult<()> {
             unimplemented!()
         }
-        async fn mark_indexing_agreement_as_accepted_on_chain(
-            &self,
-            _id: &IndexingAgreementId,
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
         async fn apply_reconciliation(
             &self,
             _id: &IndexingAgreementId,

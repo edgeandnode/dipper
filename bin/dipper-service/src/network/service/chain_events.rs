@@ -40,7 +40,7 @@ use async_trait::async_trait;
 use dipper_core::ids::IndexingAgreementId;
 use rand::Rng;
 use serde::Deserialize;
-use thegraph_core::alloy::{hex, primitives::Address};
+use thegraph_core::alloy::primitives::Address;
 use url::Url;
 
 /// State of an agreement as recorded by the subgraph. Mirrors the
@@ -117,13 +117,11 @@ pub struct ChangedAgreementsResult {
     /// Timestamp of the latest indexed block (seconds since epoch), if
     /// available. Used by the expiration service for chain-time comparisons.
     pub latest_block_timestamp: Option<u64>,
-    /// Safe cursor value for the caller to advance to. Equals `latest_block`
-    /// when every entity parsed cleanly; holds back to just before the
-    /// earliest parse failure when an entity was dropped with a known block,
-    /// so the dropped entity will be re-read on the next poll. Set to `0`
-    /// when a failure occurs with no parseable block — the caller guards
-    /// advances with `cursor_block > last_block`, so `0` means "do not
-    /// advance" rather than "reset to genesis".
+    /// Safe cursor for the caller to advance to. Holds back before the
+    /// earliest parse failure so dropped entities are re-read next poll.
+    /// `0` when a failure had no parseable block — caller's
+    /// `cursor_block > last_block` guard turns that into "don't advance"
+    /// rather than "reset to genesis".
     pub cursor_block: u64,
 }
 
@@ -381,16 +379,14 @@ impl ChainEventSource for SubgraphEventSource {
         let mut min_failed_block: Option<u64> = None;
         let mut unlocatable_failures: usize = 0;
 
-        for entity in response.indexing_agreements {
-            let fallback_block: Option<u64> = entity.last_state_change_block.parse().ok();
-            let entity_id = entity.id.clone();
+        for entity in &response.indexing_agreements {
             match parse_snapshot(entity) {
                 Some(snapshot) => snapshots.push(snapshot),
-                None => match fallback_block {
+                None => match entity.last_state_change_block.parse::<u64>().ok() {
                     Some(block) => {
                         min_failed_block = Some(min_failed_block.map_or(block, |m| m.min(block)));
                         tracing::warn!(
-                            entity_id = %entity_id,
+                            entity_id = %entity.id,
                             last_state_change_block = block,
                             "Dropping malformed IndexingAgreement entity; cursor will hold back so it gets re-read"
                         );
@@ -398,7 +394,7 @@ impl ChainEventSource for SubgraphEventSource {
                     None => {
                         unlocatable_failures += 1;
                         tracing::warn!(
-                            entity_id = %entity_id,
+                            entity_id = %entity.id,
                             "Dropping malformed IndexingAgreement entity with unparseable block; cursor will not advance"
                         );
                     }
@@ -438,19 +434,13 @@ impl ChainEventSource for SubgraphEventSource {
 /// Parse a GraphQL `IndexingAgreement` entity into a snapshot. Returns
 /// `None` if any field is malformed so the caller can filter it out without
 /// halting the whole batch — individual corrupt entities log elsewhere.
-fn parse_snapshot(entity: IndexingAgreementEntity) -> Option<AgreementStateSnapshot> {
-    let agreement_id = parse_agreement_id(&entity.id)?;
-    let indexer = entity.indexer.parse().ok()?;
-    let canceled_by = parse_address_or_zero(&entity.canceled_by)?;
-    let state = parse_state(&entity.state)?;
-    let last_state_change_block = entity.last_state_change_block.parse().ok()?;
-
+fn parse_snapshot(entity: &IndexingAgreementEntity) -> Option<AgreementStateSnapshot> {
     Some(AgreementStateSnapshot {
-        agreement_id,
-        indexer,
-        state,
-        canceled_by,
-        last_state_change_block,
+        agreement_id: entity.id.parse().ok()?,
+        indexer: entity.indexer.parse().ok()?,
+        state: parse_state(&entity.state)?,
+        canceled_by: parse_address_or_zero(&entity.canceled_by)?,
+        last_state_change_block: entity.last_state_change_block.parse().ok()?,
     })
 }
 
@@ -474,18 +464,6 @@ fn parse_address_or_zero(hex_str: &str) -> Option<Address> {
         return Some(Address::ZERO);
     }
     hex_str.parse().ok()
-}
-
-/// Parse a hex-encoded bytes16 agreement ID.
-fn parse_agreement_id(hex: &str) -> Option<IndexingAgreementId> {
-    let hex = hex.strip_prefix("0x").unwrap_or(hex);
-    let bytes = hex::decode(hex).ok()?;
-    if bytes.len() != 16 {
-        return None;
-    }
-    let mut arr = [0u8; 16];
-    arr.copy_from_slice(&bytes);
-    Some(IndexingAgreementId::from_bytes(arr))
 }
 
 /// Calculate retry delay with exponential backoff and jitter.
@@ -617,32 +595,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_agreement_id_with_prefix() {
-        let hex = "0x0102030405060708090a0b0c0d0e0f10";
-        let id = parse_agreement_id(hex).unwrap();
-        assert_eq!(
-            id.into_bytes(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-        );
-    }
-
-    #[test]
-    fn test_parse_agreement_id_without_prefix() {
-        let hex = "0102030405060708090a0b0c0d0e0f10";
-        let id = parse_agreement_id(hex).unwrap();
-        assert_eq!(
-            id.into_bytes(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-        );
-    }
-
-    #[test]
-    fn test_parse_agreement_id_wrong_length() {
-        let hex = "0x010203";
-        assert!(parse_agreement_id(hex).is_none());
-    }
-
-    #[test]
     fn test_parse_address_or_zero_empty_bytes() {
         assert_eq!(parse_address_or_zero("0x").unwrap(), Address::ZERO);
         assert_eq!(parse_address_or_zero("").unwrap(), Address::ZERO);
@@ -704,7 +656,7 @@ mod tests {
 
     #[test]
     fn test_parse_snapshot_happy_path() {
-        let snapshot = parse_snapshot(valid_entity()).expect("should parse");
+        let snapshot = parse_snapshot(&valid_entity()).expect("should parse");
         assert_eq!(snapshot.last_state_change_block, 150);
         assert_eq!(snapshot.state, AgreementState::Accepted);
         assert_eq!(snapshot.canceled_by, Address::ZERO);
@@ -712,12 +664,12 @@ mod tests {
 
     #[test]
     fn test_parse_snapshot_bad_state_returns_none_but_block_parseable() {
-        // A malformed state enum drops the snapshot, but the block field
-        // remains parseable so the caller can hold the cursor back to this
-        // block and re-read on the next poll.
+        // A malformed state drops the snapshot, but the block field remains
+        // parseable so the caller can hold the cursor back to this block
+        // and re-read on the next poll.
         let mut entity = valid_entity();
         entity.state = "UnknownVariant".to_string();
-        assert!(parse_snapshot(entity.clone()).is_none());
+        assert!(parse_snapshot(&entity).is_none());
         assert_eq!(
             entity.last_state_change_block.parse::<u64>().ok(),
             Some(150)
@@ -726,13 +678,12 @@ mod tests {
 
     #[test]
     fn test_parse_snapshot_bad_block_and_bad_state_unlocatable() {
-        // Both the state AND the block are malformed: the caller has no
-        // block to hold the cursor at, so it falls through to
-        // `unlocatable_failures`.
+        // Both state AND block malformed: caller has no block to hold the
+        // cursor at, so it falls through to `unlocatable_failures`.
         let mut entity = valid_entity();
         entity.state = "UnknownVariant".to_string();
         entity.last_state_change_block = "not-a-number".to_string();
-        assert!(parse_snapshot(entity.clone()).is_none());
+        assert!(parse_snapshot(&entity).is_none());
         assert!(entity.last_state_change_block.parse::<u64>().is_err());
     }
 

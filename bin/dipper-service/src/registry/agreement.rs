@@ -162,23 +162,6 @@ pub trait AgreementRegistry {
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;
 
-    /// Mark an indexing agreement as `ACCEPTED_ON_CHAIN`.
-    ///
-    /// The on-chain `IndexingAgreementAccepted` event was observed for this agreement.
-    /// Transitions from `Created` (normal) or `Expired` (recovery -- the contract
-    /// enforces the deadline, so the acceptance is valid). Returns
-    /// [`NoRecordUpdated`](Error::NoRecordsUpdated) for any other status.
-    ///
-    /// Superseded for reconciliation by `apply_reconciliation`, which wraps
-    /// accept + cancel in a single transaction. Retained on the trait as a
-    /// standalone write for any future consumer that needs only the accept
-    /// transition.
-    #[allow(dead_code)]
-    async fn mark_indexing_agreement_as_accepted_on_chain(
-        &self,
-        id: &IndexingAgreementId,
-    ) -> RegistryResult<()>;
-
     /// Apply a reconciliation-driven state transition atomically.
     ///
     /// Used by `chain_listener::reconcile_agreement` so the

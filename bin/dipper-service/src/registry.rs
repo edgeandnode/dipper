@@ -15,15 +15,12 @@ use thegraph_core::{
 
 // Re-export for tests only
 #[cfg(test)]
-pub use self::agreement::Indexer;
+pub use self::agreement::{Indexer, ReconciliationOutcome};
 use self::result::Result as RegistryResult;
-#[allow(unused_imports)] // `ReconciliationOutcome` is used only from test-only
-// mocks in other modules (`cfg(test)`); silencing so the non-test build does
-// not flag the re-export as dead.
 pub use self::{
     agreement::{
         AgreementFeeRate, AgreementRegistry, CancelKind, IndexingAgreement, NewAgreementParams,
-        ReconciliationOutcome, Status as IndexingAgreementStatus, Terms as IndexingAgreementTerms,
+        Status as IndexingAgreementStatus, Terms as IndexingAgreementTerms,
         TermsMetadata as IndexingAgreementTermsMetadata,
     },
     indexer_denylist::IndexerDenylistRegistry,
@@ -326,16 +323,6 @@ impl AgreementRegistry for RegistryProvider {
             did_accept: outcome.did_accept,
             did_cancel: outcome.did_cancel,
         })
-    }
-
-    async fn mark_indexing_agreement_as_accepted_on_chain(
-        &self,
-        id: &IndexingAgreementId,
-    ) -> RegistryResult<()> {
-        self.inner
-            .mark_indexing_agreement_as_accepted_on_chain(id)
-            .await
-            .map_err(Into::into)
     }
 
     async fn get_expired_created_agreements(

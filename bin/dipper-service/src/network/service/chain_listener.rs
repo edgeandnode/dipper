@@ -335,20 +335,16 @@ where
                 polls_since_last_event = 0;
             }
 
-            // Advance the cursor to `new_cursor` rather than the subgraph
-            // head. They are equal when every entity parsed cleanly; the
-            // cursor holds back behind the head when a parse failure was
-            // detected, so the dropped entity can be re-read on the next
-            // poll. `new_cursor > last_block` is still required so we never
-            // rewind — a failure on the first entity of a batch leaves the
-            // cursor where it was.
+            // Advance to `new_cursor` (not the subgraph head) so a held-back
+            // cursor from a parse failure does not skip dropped entities.
+            // The `> last_block` guard prevents rewinding when a failure on
+            // the first entity of a batch leaves the cursor at its prior value.
             if new_cursor > last_block {
                 if let Err(err) = registry
                     .update_chain_listener_state(chain_id, new_cursor, new_timestamp)
                     .await
                 {
                     tracing::error!(error = %err, "Failed to update chain listener state");
-                    // Continue processing - we may re-process some snapshots on restart
                 }
                 last_block = new_cursor;
             }
@@ -902,18 +898,6 @@ mod tests {
                 .lock()
                 .unwrap()
                 .marked_canceled_by_indexer
-                .push(*id);
-            Ok(())
-        }
-
-        async fn mark_indexing_agreement_as_accepted_on_chain(
-            &self,
-            id: &IndexingAgreementId,
-        ) -> RegistryResult<()> {
-            self.state
-                .lock()
-                .unwrap()
-                .marked_accepted_on_chain
                 .push(*id);
             Ok(())
         }
