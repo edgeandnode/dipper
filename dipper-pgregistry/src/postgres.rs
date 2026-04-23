@@ -46,6 +46,26 @@ pub struct ChainListenerStateRow {
     pub last_processed_block_timestamp: Option<u64>,
 }
 
+/// Which party cancelled an agreement, for the atomic reconciliation
+/// transition written by `apply_reconciliation`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelKind {
+    /// The reconciliation initiator (dipper's configured signer) cancelled.
+    ByRequester,
+    /// The indexer cancelled.
+    ByIndexer,
+}
+
+/// Outcome of an atomic `apply_reconciliation` call. The two booleans
+/// report which transitions actually affected a row, so the caller can
+/// gate post-commit side effects (e.g. running pending-cancellation
+/// bookkeeping only when a fresh `AcceptedOnChain` write happened).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReconciliationOutcome {
+    pub did_accept: bool,
+    pub did_cancel: bool,
+}
+
 /// A registry that stores indexing requests, agreements, and receipts in a PostgreSQL database.
 #[derive(Clone)]
 pub struct PgRegistry {
@@ -624,6 +644,111 @@ impl PgRegistry {
         }
 
         Ok(())
+    }
+
+    /// Atomically apply a reconciliation-driven state transition (accept
+    /// and/or cancel) in a single database transaction. Exists so the
+    /// chain_listener's Accept-then-Cancel-in-one-snapshot path does not
+    /// leave an intermediate `AcceptedOnChain` row visible to concurrent
+    /// readers between the two writes.
+    ///
+    /// - `apply_accept` attempts the `Created | Expired → AcceptedOnChain`
+    ///   transition. May be a no-op if the agreement is in another status
+    ///   (e.g. already `AcceptedOnChain` from an earlier retry); the
+    ///   returned `did_accept` reports whether the row was actually
+    ///   transitioned this call, so the caller can gate side effects like
+    ///   running `execute_pending_cancellations` on a fresh accept.
+    /// - `cancel` applies either `CanceledByRequester` or `CanceledByIndexer`
+    ///   from an accepting/pre-accept state. If no row was transitioned
+    ///   (the agreement is already in a terminal cancel state, race with a
+    ///   concurrent writer), the whole transaction rolls back via
+    ///   `NoRecordsUpdated` so the accept write does not land alone.
+    pub async fn apply_reconciliation(
+        &self,
+        agreement_id: &IndexingAgreementId,
+        apply_accept: bool,
+        cancel: Option<CancelKind>,
+    ) -> Result<ReconciliationOutcome, Error> {
+        let mut tx = self.pool.begin().await?;
+
+        let mut did_accept = false;
+        if apply_accept {
+            let record: Option<(IndexingAgreementId,)> = sqlx::query_as(
+                r#"
+                UPDATE dipper_reg_indexing_agreements
+                SET
+                    status = $1,
+                    updated_at = timezone('UTC', now())
+                WHERE id = $2 AND status IN ($3, $4)
+                RETURNING id
+                "#,
+            )
+            .bind(IndexingAgreementStatus::AcceptedOnChain)
+            .bind(agreement_id)
+            .bind(IndexingAgreementStatus::Created)
+            .bind(IndexingAgreementStatus::Expired)
+            .fetch_optional(&mut *tx)
+            .await?;
+            did_accept = record.is_some();
+        }
+
+        let mut did_cancel = false;
+        if let Some(kind) = cancel {
+            let record: Option<(IndexingAgreementId,)> = match kind {
+                CancelKind::ByRequester => {
+                    sqlx::query_as(
+                        r#"
+                        UPDATE dipper_reg_indexing_agreements
+                        SET
+                            status = $1,
+                            updated_at = timezone('UTC', now())
+                        WHERE id = $2 AND status IN ($3, $4, $5)
+                        RETURNING id
+                        "#,
+                    )
+                    .bind(IndexingAgreementStatus::CanceledByRequester)
+                    .bind(agreement_id)
+                    .bind(IndexingAgreementStatus::Created)
+                    .bind(IndexingAgreementStatus::AcceptedOnChain)
+                    .bind(IndexingAgreementStatus::Rejected)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                }
+                CancelKind::ByIndexer => {
+                    sqlx::query_as(
+                        r#"
+                        UPDATE dipper_reg_indexing_agreements
+                        SET
+                            status = $1,
+                            updated_at = timezone('UTC', now())
+                        WHERE id = $2 AND status = $3
+                        RETURNING id
+                        "#,
+                    )
+                    .bind(IndexingAgreementStatus::CanceledByIndexer)
+                    .bind(agreement_id)
+                    .bind(IndexingAgreementStatus::AcceptedOnChain)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                }
+            };
+
+            if record.is_none() {
+                // Either the agreement is already in a terminal cancel
+                // state or the source-status filter didn't match (e.g.
+                // ByIndexer + Rejected local status). Roll back so the
+                // accept write, if any, doesn't land on its own.
+                return Err(Error::NoRecordsUpdated);
+            }
+            did_cancel = true;
+        }
+
+        tx.commit().await?;
+
+        Ok(ReconciliationOutcome {
+            did_accept,
+            did_cancel,
+        })
     }
 
     pub async fn register_new_indexing_receipt(

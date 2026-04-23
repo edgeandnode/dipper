@@ -488,6 +488,18 @@ mod tests {
             Ok(())
         }
 
+        async fn apply_reconciliation(
+            &self,
+            _id: &IndexingAgreementId,
+            _apply_accept: bool,
+            _cancel: Option<crate::registry::CancelKind>,
+        ) -> crate::registry::Result<crate::registry::ReconciliationOutcome> {
+            Ok(crate::registry::ReconciliationOutcome {
+                did_accept: false,
+                did_cancel: false,
+            })
+        }
+
         async fn get_expired_created_agreements(
             &self,
             _batch_size: i64,

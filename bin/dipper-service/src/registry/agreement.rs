@@ -32,6 +32,21 @@ pub struct NewAgreementParams {
     pub terms: Terms,
 }
 
+/// Which party cancelled an agreement. Passed to `apply_reconciliation`
+/// so the atomic state transition chooses the right terminal status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelKind {
+    ByRequester,
+    ByIndexer,
+}
+
+/// Outcome of an atomic `apply_reconciliation` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReconciliationOutcome {
+    pub did_accept: bool,
+    pub did_cancel: bool,
+}
+
 #[async_trait]
 pub trait AgreementRegistry {
     /// Get agreement by ID.
@@ -153,10 +168,39 @@ pub trait AgreementRegistry {
     /// Transitions from `Created` (normal) or `Expired` (recovery -- the contract
     /// enforces the deadline, so the acceptance is valid). Returns
     /// [`NoRecordUpdated`](Error::NoRecordsUpdated) for any other status.
+    ///
+    /// Superseded for reconciliation by `apply_reconciliation`, which wraps
+    /// accept + cancel in a single transaction. Retained on the trait as a
+    /// standalone write for any future consumer that needs only the accept
+    /// transition.
+    #[allow(dead_code)]
     async fn mark_indexing_agreement_as_accepted_on_chain(
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;
+
+    /// Apply a reconciliation-driven state transition atomically.
+    ///
+    /// Used by `chain_listener::reconcile_agreement` so the
+    /// Accept-then-Cancel-in-one-snapshot path writes both status
+    /// transitions in a single database transaction, preventing
+    /// concurrent readers from seeing the intermediate `AcceptedOnChain`
+    /// row.
+    ///
+    /// - `apply_accept`: attempt `Created | Expired → AcceptedOnChain`.
+    ///   May be a no-op if the row is already in another status.
+    /// - `cancel`: optionally apply `CanceledByRequester` or
+    ///   `CanceledByIndexer` from an accepting/pre-accept state.
+    ///
+    /// Returns which transitions actually affected a row so callers can
+    /// gate post-commit side effects (e.g. running
+    /// `execute_pending_cancellations` only on a fresh accept).
+    async fn apply_reconciliation(
+        &self,
+        id: &IndexingAgreementId,
+        apply_accept: bool,
+        cancel: Option<CancelKind>,
+    ) -> RegistryResult<ReconciliationOutcome>;
 
     /// Get `Created` agreements whose deadline has passed (by block timestamp).
     async fn get_expired_created_agreements(

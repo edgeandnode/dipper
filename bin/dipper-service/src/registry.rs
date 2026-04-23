@@ -17,10 +17,13 @@ use thegraph_core::{
 #[cfg(test)]
 pub use self::agreement::Indexer;
 use self::result::Result as RegistryResult;
+#[allow(unused_imports)] // `ReconciliationOutcome` is used only from test-only
+// mocks in other modules (`cfg(test)`); silencing so the non-test build does
+// not flag the re-export as dead.
 pub use self::{
     agreement::{
-        AgreementFeeRate, AgreementRegistry, IndexingAgreement, NewAgreementParams,
-        Status as IndexingAgreementStatus, Terms as IndexingAgreementTerms,
+        AgreementFeeRate, AgreementRegistry, CancelKind, IndexingAgreement, NewAgreementParams,
+        ReconciliationOutcome, Status as IndexingAgreementStatus, Terms as IndexingAgreementTerms,
         TermsMetadata as IndexingAgreementTermsMetadata,
     },
     indexer_denylist::IndexerDenylistRegistry,
@@ -303,6 +306,26 @@ impl AgreementRegistry for RegistryProvider {
             .mark_indexing_agreement_as_canceled_by_indexer(id)
             .await
             .map_err(Into::into)
+    }
+
+    async fn apply_reconciliation(
+        &self,
+        id: &IndexingAgreementId,
+        apply_accept: bool,
+        cancel: Option<agreement::CancelKind>,
+    ) -> RegistryResult<agreement::ReconciliationOutcome> {
+        let pg_cancel = cancel.map(|k| match k {
+            agreement::CancelKind::ByRequester => dipper_pgregistry::CancelKind::ByRequester,
+            agreement::CancelKind::ByIndexer => dipper_pgregistry::CancelKind::ByIndexer,
+        });
+        let outcome = self
+            .inner
+            .apply_reconciliation(id, apply_accept, pg_cancel)
+            .await?;
+        Ok(agreement::ReconciliationOutcome {
+            did_accept: outcome.did_accept,
+            did_cancel: outcome.did_cancel,
+        })
     }
 
     async fn mark_indexing_agreement_as_accepted_on_chain(

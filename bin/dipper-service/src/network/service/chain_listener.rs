@@ -41,7 +41,9 @@ use tokio::{
 use super::chain_events::{AgreementStateSnapshot, ChainEventSource};
 use crate::{
     config::ChainListenerConfig,
-    registry::{AgreementRegistry, IndexingAgreementStatus, PendingCancellationRegistry},
+    registry::{
+        AgreementRegistry, CancelKind, IndexingAgreementStatus, PendingCancellationRegistry,
+    },
     worker::service::WorkerQueue,
 };
 
@@ -247,6 +249,7 @@ where
             };
 
             let new_block = result.latest_block;
+            let new_cursor = result.cursor_block;
             let new_timestamp = result.latest_block_timestamp;
             let total_changes = result.snapshots.len();
 
@@ -332,16 +335,22 @@ where
                 polls_since_last_event = 0;
             }
 
-            // Update last processed block and timestamp
-            if new_block > last_block {
+            // Advance the cursor to `new_cursor` rather than the subgraph
+            // head. They are equal when every entity parsed cleanly; the
+            // cursor holds back behind the head when a parse failure was
+            // detected, so the dropped entity can be re-read on the next
+            // poll. `new_cursor > last_block` is still required so we never
+            // rewind — a failure on the first entity of a batch leaves the
+            // cursor where it was.
+            if new_cursor > last_block {
                 if let Err(err) = registry
-                    .update_chain_listener_state(chain_id, new_block, new_timestamp)
+                    .update_chain_listener_state(chain_id, new_cursor, new_timestamp)
                     .await
                 {
                     tracing::error!(error = %err, "Failed to update chain listener state");
                     // Continue processing - we may re-process some snapshots on restart
                 }
-                last_block = new_block;
+                last_block = new_cursor;
             }
         }
 
@@ -389,115 +398,112 @@ where
         }
     };
 
-    // Step 1: apply the acceptance transition if the agreement reached
-    // Accepted on-chain and the local status is pre-acceptance. This
-    // captures both the happy path (Created -> Accepted) and the
-    // Accept-then-Cancel transient where the subgraph's latest state is
-    // already Canceled but dipper still needs to run acceptance-side
-    // bookkeeping like execute_pending_cancellations.
-    let needs_accept_transition = matches!(
-        agreement.status,
-        IndexingAgreementStatus::Created
-            | IndexingAgreementStatus::Expired
-            | IndexingAgreementStatus::Rejected,
-    ) && snapshot.state.reached_accepted();
-
-    if needs_accept_transition {
-        match agreement.status {
-            IndexingAgreementStatus::Rejected => {
-                // Indexer rejected off-chain over gRPC but the agreement
-                // is Accepted on-chain. Queue an on-chain cancel so the
-                // indexer does not collect payment. This path is
-                // effectively dead code under proposal-first dispatch
-                // (dipper does not post offer() after a gRPC rejection,
-                // so no on-chain acceptance can succeed), but the guard
-                // stays as a defensive response to any flow violation.
-                tracing::warn!(
-                    agreement_id = %agreement.id,
-                    indexer = %snapshot.indexer,
-                    "Rejected agreement accepted on-chain, queuing cancellation"
-                );
-                worker_queue
-                    .cancel_rejected_agreement_on_chain(agreement.id)
-                    .await?;
-                // Skip step 2: the queued job will drive the local state
-                // to a terminal cancel once the on-chain tx confirms.
-                return Ok(());
-            }
-            IndexingAgreementStatus::Created => {
-                registry
-                    .mark_indexing_agreement_as_accepted_on_chain(&agreement.id)
-                    .await?;
-                tracing::info!(
-                    agreement_id = %agreement.id,
-                    indexing_request_id = %agreement.indexing_request_id,
-                    old_status = "CREATED",
-                    new_status = "ACCEPTED_ON_CHAIN",
-                    reason = "accepted_on_chain",
-                    "agreement state transition"
-                );
-                execute_pending_cancellations(&agreement.id, registry, worker_queue).await?;
-            }
-            IndexingAgreementStatus::Expired => {
-                // The expiration service marked this before we saw the
-                // acceptance. The contract enforces the RCA deadline, so
-                // if we see any accepted state the acceptance was
-                // in-window; recover.
-                tracing::warn!(
-                    agreement_id = %agreement.id,
-                    indexing_request_id = %agreement.indexing_request_id,
-                    old_status = "EXPIRED",
-                    new_status = "ACCEPTED_ON_CHAIN",
-                    reason = "recovered_expired_on_chain",
-                    "agreement state transition"
-                );
-                registry
-                    .mark_indexing_agreement_as_accepted_on_chain(&agreement.id)
-                    .await?;
-                execute_pending_cancellations(&agreement.id, registry, worker_queue).await?;
-            }
-            _ => unreachable!("matched in needs_accept_transition guard"),
-        }
+    // Adversarial-indexer guard: if local is Rejected but remote reached an
+    // accepted state, queue an on-chain cancel so the indexer does not
+    // collect payment. Dead code under proposal-first dispatch (dipper does
+    // not post offer() after a gRPC rejection, so on-chain acceptance
+    // cannot succeed) but kept as a defensive response to any flow
+    // violation. Only queue when the agreement is not already canceled
+    // remotely — otherwise the cancel tx would just revert against the
+    // already-canceled contract state. Runs before the DB transitions
+    // below; it enqueues a worker job rather than writing to the agreement
+    // row, so it does not need to share the atomic transaction.
+    if matches!(agreement.status, IndexingAgreementStatus::Rejected)
+        && snapshot.state.reached_accepted()
+        && !snapshot.state.is_canceled()
+    {
+        tracing::warn!(
+            agreement_id = %agreement.id,
+            indexer = %snapshot.indexer,
+            "Rejected agreement accepted on-chain, queuing cancellation"
+        );
+        worker_queue
+            .cancel_rejected_agreement_on_chain(agreement.id)
+            .await?;
     }
 
-    // Step 2: apply the cancellation transition if the agreement is now
-    // canceled on-chain and the local status is not already a terminal
-    // cancel. Runs on top of step 1's transition so the Accept-then-Cancel
-    // transient resolves to two transitions in one snapshot.
-    if snapshot.state.is_canceled() {
-        let already_terminal_cancel = matches!(
-            agreement.status,
-            IndexingAgreementStatus::CanceledByRequester
-                | IndexingAgreementStatus::CanceledByIndexer,
-        );
+    // Compute the transitions to apply:
+    //
+    // - `apply_accept`: local is Created or Expired and remote reached an
+    //   accepted state. We don't mark Rejected -> AcceptedOnChain; the
+    //   Rejected branch jumps straight to the terminal cancel status
+    //   below.
+    // - `cancel`: remote is canceled and local is not already in a
+    //   terminal cancel. The canceler identity is derived by comparing
+    //   snapshot.canceled_by to our signer address.
+    //
+    // Both are applied atomically via apply_reconciliation so the
+    // Accept-then-Cancel-in-one-snapshot path does not leave an
+    // intermediate AcceptedOnChain row visible to concurrent readers.
+    let apply_accept = matches!(
+        agreement.status,
+        IndexingAgreementStatus::Created | IndexingAgreementStatus::Expired,
+    ) && snapshot.state.reached_accepted();
 
-        if !already_terminal_cancel {
-            let canceled_by_us = snapshot.canceled_by == signer_address;
-            if canceled_by_us {
-                registry
-                    .mark_indexing_agreement_as_canceled_by_requester(&agreement.id)
-                    .await?;
-                tracing::info!(
+    let already_terminal_cancel = matches!(
+        agreement.status,
+        IndexingAgreementStatus::CanceledByRequester | IndexingAgreementStatus::CanceledByIndexer,
+    );
+    let cancel_kind = if snapshot.state.is_canceled() && !already_terminal_cancel {
+        Some(if snapshot.canceled_by == signer_address {
+            CancelKind::ByRequester
+        } else {
+            CancelKind::ByIndexer
+        })
+    } else {
+        None
+    };
+
+    if apply_accept || cancel_kind.is_some() {
+        let outcome = registry
+            .apply_reconciliation(&agreement.id, apply_accept, cancel_kind)
+            .await?;
+
+        if outcome.did_accept {
+            let (old_status, reason) = match agreement.status {
+                IndexingAgreementStatus::Expired => ("EXPIRED", "recovered_expired_on_chain"),
+                _ => ("CREATED", "accepted_on_chain"),
+            };
+            tracing::info!(
+                agreement_id = %agreement.id,
+                indexing_request_id = %agreement.indexing_request_id,
+                old_status,
+                new_status = "ACCEPTED_ON_CHAIN",
+                reason,
+                "agreement state transition"
+            );
+        }
+
+        if outcome.did_cancel {
+            match cancel_kind {
+                Some(CancelKind::ByRequester) => tracing::info!(
                     agreement_id = %agreement.id,
                     "Agreement marked as CanceledByRequester (on-chain confirmation)"
-                );
-            } else {
-                registry
-                    .mark_indexing_agreement_as_canceled_by_indexer(&agreement.id)
-                    .await?;
-                tracing::info!(
+                ),
+                Some(CancelKind::ByIndexer) => tracing::info!(
                     agreement_id = %agreement.id,
                     indexer = %snapshot.indexer,
                     "Agreement marked as CanceledByIndexer"
-                );
+                ),
+                None => {}
             }
-        } else {
-            tracing::debug!(
-                agreement_id = %agreement.id,
-                status = %agreement.status,
-                "Agreement already canceled, ignoring snapshot"
-            );
         }
+
+        // Pending-cancellation bookkeeping is a worker-queue enqueue loop
+        // plus per-record deletes; it can't sit inside the atomic tx
+        // without holding DB locks across network calls. Run it after
+        // commit, gated on `did_accept` so it only fires on a fresh
+        // AcceptedOnChain write (not on a no-op where the row was
+        // already there from a prior crash-recovered run).
+        if outcome.did_accept {
+            execute_pending_cancellations(&agreement.id, registry, worker_queue).await?;
+        }
+    } else if already_terminal_cancel && snapshot.state.is_canceled() {
+        tracing::debug!(
+            agreement_id = %agreement.id,
+            status = %agreement.status,
+            "Agreement already canceled, ignoring snapshot"
+        );
     }
 
     Ok(())
@@ -912,6 +918,57 @@ mod tests {
             Ok(())
         }
 
+        async fn apply_reconciliation(
+            &self,
+            id: &IndexingAgreementId,
+            apply_accept: bool,
+            cancel: Option<crate::registry::CancelKind>,
+        ) -> RegistryResult<crate::registry::ReconciliationOutcome> {
+            // The mock reuses the existing per-transition tracking lists
+            // instead of modelling a real Postgres transaction. That's
+            // enough for the chain_listener tests, which only assert which
+            // transitions were recorded; real transactional behaviour is
+            // exercised by dipper_pgregistry's own integration tests.
+            let mut state = self.state.lock().unwrap();
+
+            let mut did_accept = false;
+            if apply_accept {
+                let agreement = state.agreements.get(id);
+                if matches!(
+                    agreement.map(|a| a.status),
+                    Some(IndexingAgreementStatus::Created | IndexingAgreementStatus::Expired),
+                ) {
+                    state.marked_accepted_on_chain.push(*id);
+                    did_accept = true;
+                }
+            }
+
+            let mut did_cancel = false;
+            if let Some(kind) = cancel {
+                if state.fail_cancel_for.contains(id) {
+                    return Err(crate::registry::Error::BackendError(
+                        dipper_pgregistry::Error::DbError(sqlx::Error::Protocol(
+                            "simulated transient failure".into(),
+                        )),
+                    ));
+                }
+                match kind {
+                    crate::registry::CancelKind::ByRequester => {
+                        state.marked_canceled_by_requester.push(*id);
+                    }
+                    crate::registry::CancelKind::ByIndexer => {
+                        state.marked_canceled_by_indexer.push(*id);
+                    }
+                }
+                did_cancel = true;
+            }
+
+            Ok(crate::registry::ReconciliationOutcome {
+                did_accept,
+                did_cancel,
+            })
+        }
+
         async fn get_expired_created_agreements(
             &self,
             _batch_size: i64,
@@ -1142,6 +1199,35 @@ mod tests {
         assert!(result.is_ok());
         assert!(!registry.was_marked_accepted_on_chain(&agreement_id));
         assert!(worker_queue.was_cancellation_queued(&agreement_id));
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_rejected_already_canceled_skips_queue_and_marks_local_cancel() {
+        // The Rejected agreement was canceled on-chain between polls. Dipper
+        // should not queue another cancel job (it would just revert against
+        // the already-canceled contract state), and step 2 should drive the
+        // local status from Rejected straight to the terminal cancel matching
+        // the canceler address.
+        let registry = MockRegistry::new();
+        let worker_queue = MockWorkerQueue::default();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
+        let signer_address: Address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .parse()
+            .unwrap();
+
+        registry.add_agreement(agreement_id, IndexingAgreementStatus::Rejected);
+
+        let snapshot = make_snapshot(
+            agreement_id,
+            AgreementState::CanceledByPayer,
+            signer_address,
+        );
+        let result = reconcile_agreement(&snapshot, &registry, &worker_queue, signer_address).await;
+
+        assert!(result.is_ok());
+        assert!(!worker_queue.was_cancellation_queued(&agreement_id));
+        assert!(registry.was_marked_canceled_by_requester(&agreement_id));
+        assert!(!registry.was_marked_accepted_on_chain(&agreement_id));
     }
 
     #[tokio::test]
@@ -1436,6 +1522,7 @@ mod tests {
                 snapshots: vec![],
                 latest_block: 1,
                 latest_block_timestamp: Some(1000),
+                cursor_block: 1,
             })
         }
     }

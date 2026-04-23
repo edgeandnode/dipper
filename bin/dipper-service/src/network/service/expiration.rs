@@ -468,6 +468,14 @@ mod tests {
         ) -> RegistryResult<()> {
             unimplemented!()
         }
+        async fn apply_reconciliation(
+            &self,
+            _id: &IndexingAgreementId,
+            _apply_accept: bool,
+            _cancel: Option<crate::registry::CancelKind>,
+        ) -> RegistryResult<crate::registry::ReconciliationOutcome> {
+            unimplemented!()
+        }
         async fn get_expired_created_agreements(
             &self,
             _batch_size: i64,

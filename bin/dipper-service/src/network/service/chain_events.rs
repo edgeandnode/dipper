@@ -111,12 +111,20 @@ pub struct ChangedAgreementsResult {
     /// Snapshots of agreements whose state changed since the last poll,
     /// ordered ascending by `last_state_change_block`.
     pub snapshots: Vec<AgreementStateSnapshot>,
-    /// The latest block the subgraph has indexed. Used as the cursor
-    /// high-water mark for the next poll.
+    /// The latest block the subgraph has indexed. Used for stall detection
+    /// and idle-heartbeat checks, not for cursor advance.
     pub latest_block: u64,
     /// Timestamp of the latest indexed block (seconds since epoch), if
     /// available. Used by the expiration service for chain-time comparisons.
     pub latest_block_timestamp: Option<u64>,
+    /// Safe cursor value for the caller to advance to. Equals `latest_block`
+    /// when every entity parsed cleanly; holds back to just before the
+    /// earliest parse failure when an entity was dropped with a known block,
+    /// so the dropped entity will be re-read on the next poll. Set to `0`
+    /// when a failure occurs with no parseable block — the caller guards
+    /// advances with `cursor_block > last_block`, so `0` means "do not
+    /// advance" rather than "reset to genesis".
+    pub cursor_block: u64,
 }
 
 /// Trait for fetching agreement state snapshots from a subgraph.
@@ -178,7 +186,7 @@ struct ChangedAgreementsResponse {
     meta: SubgraphMeta,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct IndexingAgreementEntity {
     /// Hex-encoded bytes16 agreement ID
@@ -368,16 +376,61 @@ impl ChainEventSource for SubgraphEventSource {
 
         let response: ChangedAgreementsResponse = self.query_with_retry(QUERY, variables).await?;
 
-        let snapshots = response
-            .indexing_agreements
-            .into_iter()
-            .filter_map(parse_snapshot)
-            .collect();
+        let latest_block = response.meta.block.number;
+        let mut snapshots: Vec<AgreementStateSnapshot> = Vec::new();
+        let mut min_failed_block: Option<u64> = None;
+        let mut unlocatable_failures: usize = 0;
+
+        for entity in response.indexing_agreements {
+            let fallback_block: Option<u64> = entity.last_state_change_block.parse().ok();
+            let entity_id = entity.id.clone();
+            match parse_snapshot(entity) {
+                Some(snapshot) => snapshots.push(snapshot),
+                None => match fallback_block {
+                    Some(block) => {
+                        min_failed_block = Some(min_failed_block.map_or(block, |m| m.min(block)));
+                        tracing::warn!(
+                            entity_id = %entity_id,
+                            last_state_change_block = block,
+                            "Dropping malformed IndexingAgreement entity; cursor will hold back so it gets re-read"
+                        );
+                    }
+                    None => {
+                        unlocatable_failures += 1;
+                        tracing::warn!(
+                            entity_id = %entity_id,
+                            "Dropping malformed IndexingAgreement entity with unparseable block; cursor will not advance"
+                        );
+                    }
+                },
+            }
+        }
+
+        let cursor_block = if unlocatable_failures > 0 {
+            // Can't locate where the failure was, so hold the cursor back. The
+            // caller's `cursor_block > last_block` guard turns `0` into
+            // "do not advance" without rewinding.
+            0
+        } else if let Some(failed) = min_failed_block {
+            failed.saturating_sub(1)
+        } else {
+            latest_block
+        };
+
+        if cursor_block < latest_block {
+            tracing::warn!(
+                cursor_block,
+                subgraph_head = latest_block,
+                unlocatable_failures,
+                "Parse failures held the cursor back this poll"
+            );
+        }
 
         Ok(ChangedAgreementsResult {
             snapshots,
-            latest_block: response.meta.block.number,
+            latest_block,
             latest_block_timestamp: response.meta.block.timestamp,
+            cursor_block,
         })
     }
 }
@@ -471,6 +524,7 @@ pub mod mock {
         snapshots: Arc<Mutex<Vec<AgreementStateSnapshot>>>,
         latest_block: Arc<Mutex<u64>>,
         latest_block_timestamp: Arc<Mutex<Option<u64>>>,
+        cursor_block_override: Arc<Mutex<Option<u64>>>,
         error: Arc<Mutex<Option<ChainEventError>>>,
     }
 
@@ -480,6 +534,7 @@ pub mod mock {
                 snapshots: Arc::new(Mutex::new(Vec::new())),
                 latest_block: Arc::new(Mutex::new(0)),
                 latest_block_timestamp: Arc::new(Mutex::new(None)),
+                cursor_block_override: Arc::new(Mutex::new(None)),
                 error: Arc::new(Mutex::new(None)),
             }
         }
@@ -497,6 +552,15 @@ pub mod mock {
         /// Set the latest block timestamp.
         pub fn set_latest_block_timestamp(&self, timestamp: Option<u64>) {
             *self.latest_block_timestamp.lock().unwrap() = timestamp;
+        }
+
+        /// Override the cursor_block the mock returns. When `None` (default),
+        /// the mock returns `cursor_block = latest_block`, matching the
+        /// happy-path where every entity parsed cleanly. Tests that want to
+        /// simulate a held-back cursor (parse failure) set this to a lower
+        /// value.
+        pub fn set_cursor_block_override(&self, cursor_block: Option<u64>) {
+            *self.cursor_block_override.lock().unwrap() = cursor_block;
         }
 
         /// Set an error to return on next query.
@@ -532,11 +596,17 @@ pub mod mock {
 
             let latest_block = *self.latest_block.lock().unwrap();
             let latest_block_timestamp = *self.latest_block_timestamp.lock().unwrap();
+            let cursor_block = self
+                .cursor_block_override
+                .lock()
+                .unwrap()
+                .unwrap_or(latest_block);
 
             Ok(ChangedAgreementsResult {
                 snapshots,
                 latest_block,
                 latest_block_timestamp,
+                cursor_block,
             })
         }
     }
@@ -620,6 +690,50 @@ mod tests {
         assert!(AgreementState::Accepted.reached_accepted());
         assert!(AgreementState::CanceledByServiceProvider.reached_accepted());
         assert!(AgreementState::CanceledByPayer.reached_accepted());
+    }
+
+    fn valid_entity() -> IndexingAgreementEntity {
+        IndexingAgreementEntity {
+            id: "0x0102030405060708090a0b0c0d0e0f10".to_string(),
+            indexer: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(),
+            state: "Accepted".to_string(),
+            canceled_by: "0x".to_string(),
+            last_state_change_block: "150".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_parse_snapshot_happy_path() {
+        let snapshot = parse_snapshot(valid_entity()).expect("should parse");
+        assert_eq!(snapshot.last_state_change_block, 150);
+        assert_eq!(snapshot.state, AgreementState::Accepted);
+        assert_eq!(snapshot.canceled_by, Address::ZERO);
+    }
+
+    #[test]
+    fn test_parse_snapshot_bad_state_returns_none_but_block_parseable() {
+        // A malformed state enum drops the snapshot, but the block field
+        // remains parseable so the caller can hold the cursor back to this
+        // block and re-read on the next poll.
+        let mut entity = valid_entity();
+        entity.state = "UnknownVariant".to_string();
+        assert!(parse_snapshot(entity.clone()).is_none());
+        assert_eq!(
+            entity.last_state_change_block.parse::<u64>().ok(),
+            Some(150)
+        );
+    }
+
+    #[test]
+    fn test_parse_snapshot_bad_block_and_bad_state_unlocatable() {
+        // Both the state AND the block are malformed: the caller has no
+        // block to hold the cursor at, so it falls through to
+        // `unlocatable_failures`.
+        let mut entity = valid_entity();
+        entity.state = "UnknownVariant".to_string();
+        entity.last_state_change_block = "not-a-number".to_string();
+        assert!(parse_snapshot(entity.clone()).is_none());
+        assert!(entity.last_state_change_block.parse::<u64>().is_err());
     }
 
     #[test]
