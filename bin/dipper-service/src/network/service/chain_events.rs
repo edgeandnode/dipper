@@ -455,12 +455,12 @@ fn parse_state(s: &str) -> Option<AgreementState> {
     }
 }
 
-/// Parse a hex-encoded address field. The subgraph may return `"0x"`
-/// (empty bytes sentinel) for fields not yet set — map that to
-/// `Address::ZERO` so callers can compare without optional-unwrapping.
+/// Parse a hex-encoded address field. Graph-node serializes unset Bytes
+/// fields with unpredictable padding (observed: `"0x"`, `"0x00000000"`),
+/// so any hex shorter than a 20-byte address is treated as `Address::ZERO`.
 fn parse_address_or_zero(hex_str: &str) -> Option<Address> {
     let stripped = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-    if stripped.is_empty() {
+    if stripped.len() < 40 {
         return Some(Address::ZERO);
     }
     hex_str.parse().ok()
@@ -595,15 +595,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_address_or_zero_empty_bytes() {
+    fn test_parse_address_or_zero_short_hex_is_zero() {
+        // Graph-node may serialize unset Bytes fields as any of these
+        // variants depending on internal padding; all represent "no address".
         assert_eq!(parse_address_or_zero("0x").unwrap(), Address::ZERO);
         assert_eq!(parse_address_or_zero("").unwrap(), Address::ZERO);
+        assert_eq!(parse_address_or_zero("0x00000000").unwrap(), Address::ZERO);
+        assert_eq!(
+            parse_address_or_zero("0x00000000000000000000000000000000000000").unwrap(),
+            Address::ZERO,
+        );
     }
 
     #[test]
     fn test_parse_address_or_zero_real_address() {
         let hex = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
         assert_ne!(parse_address_or_zero(hex).unwrap(), Address::ZERO);
+    }
+
+    #[test]
+    fn test_parse_address_or_zero_full_zero_address() {
+        let hex = "0x0000000000000000000000000000000000000000";
+        assert_eq!(parse_address_or_zero(hex).unwrap(), Address::ZERO);
     }
 
     #[test]
