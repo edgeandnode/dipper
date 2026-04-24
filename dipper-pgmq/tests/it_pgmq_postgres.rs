@@ -450,3 +450,63 @@ async fn max_retries_with_scheduled_job() {
     let actual_max_attempts = row.0;
     assert_eq!(actual_max_attempts, (custom_max_retries + 1) as i32);
 }
+
+#[tokio::test]
+async fn pop_marks_only_one_row_running_with_multiple_queued() {
+    // Regression test: the previous pop SQL used `WHERE id IN (subquery)` with
+    // `FOR UPDATE SKIP LOCKED LIMIT 1` inside the subquery. Postgres planned
+    // this as a Nested Loop Semi Join that re-ran the subquery for every
+    // outer-scan row. Each re-evaluation locked and returned a *different*
+    // queued row (the previous one was now skip-locked), so the outer UPDATE
+    // ended up marking every queued row as Running in one statement.
+    // `fetch_optional` then returned only the first RETURNING row, leaving
+    // the rest orphaned.
+
+    //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
+    let queue = PgQueue::new(db.clone());
+
+    // Push 3 jobs (sequentially so each gets an earlier scheduled_for).
+    let mut job_ids = Vec::new();
+    for _ in 0..3 {
+        let msg = Faker.fake::<TestMsg>();
+        let id = queue
+            .push(msg)
+            .await
+            .expect("Failed to push message to queue");
+        job_ids.push(id);
+    }
+
+    //* When
+    // Pop once and remove, which commits the pop tx (deleting the popped row).
+    // With the bug, pop would have marked all 3 rows Running; remove then
+    // deletes 1, leaving 2 orphaned as Running. With the fix, only the popped
+    // row is Running; remove deletes it; the other 2 stay Queued.
+    let popped = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pull message from queue")
+        .expect("expected pop to return a job");
+    popped.remove().await.expect("Failed to remove job");
+
+    //* Then
+    let (running_count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM pgmq_queue WHERE status = -1")
+            .fetch_one(&db)
+            .await
+            .expect("Failed to count Running rows");
+    assert_eq!(
+        running_count, 0,
+        "after one pop+remove, no rows should be Running (got {running_count}); non-zero means pop marked extra rows that are now orphaned"
+    );
+
+    let (queued_count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM pgmq_queue WHERE status = 0")
+            .fetch_one(&db)
+            .await
+            .expect("Failed to count Queued rows");
+    assert_eq!(
+        queued_count, 2,
+        "other queued rows must remain Queued after one pop; got {queued_count}"
+    );
+}

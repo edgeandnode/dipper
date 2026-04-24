@@ -7,14 +7,30 @@ use super::{id::JobId, postgres};
 /// This struct is used to ensure that the transaction is committed when the job is removed, marked
 /// as failed, or rescheduled.
 pub struct JobGuard<'c, T> {
-    tx: sqlx::Transaction<'c, sqlx::Postgres>,
+    tx: Option<sqlx::Transaction<'c, sqlx::Postgres>>,
     job: JobInner<T>,
+    consumed: bool,
 }
 
 impl<'c, T> JobGuard<'c, T> {
     /// Creates a new job guard
     pub(crate) fn new(tx: sqlx::Transaction<'c, sqlx::Postgres>, job: JobInner<T>) -> Self {
-        Self { tx, job }
+        Self {
+            tx: Some(tx),
+            job,
+            consumed: false,
+        }
+    }
+}
+
+impl<T> Drop for JobGuard<'_, T> {
+    fn drop(&mut self) {
+        if !self.consumed {
+            tracing::warn!(
+                job_id=%self.job.id,
+                "JobGuard dropped without remove/mark_as_failed — tx will rollback via sqlx Drop"
+            );
+        }
     }
 }
 
@@ -55,15 +71,25 @@ impl<T> JobGuard<'_, T> {
 impl<T> JobGuard<'_, T> {
     /// Remove the job from the queue
     pub async fn remove(mut self) -> anyhow::Result<()> {
-        postgres::remove(self.tx.as_mut(), &self.job.id).await?;
-        self.tx.commit().await?;
+        self.consumed = true;
+        let mut tx = self
+            .tx
+            .take()
+            .expect("JobGuard tx already taken; remove/mark_as_failed called twice");
+        postgres::remove(tx.as_mut(), &self.job.id).await?;
+        tx.commit().await?;
         Ok(())
     }
 
     /// Mark the job as failed
     pub async fn mark_as_failed(mut self) -> anyhow::Result<()> {
-        postgres::mark_as_failed(self.tx.as_mut(), &self.job.id, None).await?;
-        self.tx.commit().await?;
+        self.consumed = true;
+        let mut tx = self
+            .tx
+            .take()
+            .expect("JobGuard tx already taken; remove/mark_as_failed called twice");
+        postgres::mark_as_failed(tx.as_mut(), &self.job.id, None).await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -72,8 +98,13 @@ impl<T> JobGuard<'_, T> {
         mut self,
         schedule: time::OffsetDateTime,
     ) -> anyhow::Result<()> {
-        postgres::mark_as_failed(self.tx.as_mut(), &self.job.id, Some(schedule)).await?;
-        self.tx.commit().await?;
+        self.consumed = true;
+        let mut tx = self
+            .tx
+            .take()
+            .expect("JobGuard tx already taken; remove/mark_as_failed called twice");
+        postgres::mark_as_failed(tx.as_mut(), &self.job.id, Some(schedule)).await?;
+        tx.commit().await?;
         Ok(())
     }
 }
