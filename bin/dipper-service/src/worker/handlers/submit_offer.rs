@@ -129,6 +129,20 @@ where
                 tx_hash = %tx_hash,
                 "Offer submitted on-chain successfully"
             );
+            // Observability only: record which tx hash actually mined.
+            // Any failure here is non-fatal to the overall flow.
+            if let Err(err) = ctx
+                .registry
+                .update_offer_tx_hash(agreement_id, tx_hash.as_ref())
+                .await
+            {
+                tracing::warn!(
+                    agreement_id = %agreement_id,
+                    tx_hash = %tx_hash,
+                    error = %err,
+                    "Failed to persist offer_tx_hash; continuing"
+                );
+            }
         }
         Err(ChainClientError::OfferHashMismatch {
             stored, expected, ..
@@ -150,11 +164,24 @@ where
                 .map_err(|err| JobError::Fatal(err.into()))?;
             return Ok(());
         }
+        Err(err @ ChainClientError::TxDropped { .. }) => {
+            // Accepted by the RPC but never mined — typically evicted by a
+            // colliding-nonce tx. `post_offer` already re-synced the nonce
+            // counter; re-running the handler will resubmit with a fresh
+            // nonce, and the subgraph idempotency check short-circuits if
+            // the dropped tx eventually lands before the replay.
+            tracing::warn!(
+                agreement_id = %agreement_id,
+                error = %err,
+                "Offer tx dropped from mempool, will retry with fresh nonce"
+            );
+            return Err(JobError::Retryable(err.into(), Duration::from_secs(5)));
+        }
         Err(err) => {
-            // Transient submission failure (RPC, gas, nonce). Retry with
-            // backoff -- the build_and_send_call path already has bounded
-            // nonce retries, so returning Retryable here escalates to the
-            // worker-level backoff.
+            // Other submission failures (RPC, gas, nonce, on-chain revert).
+            // Retry with backoff -- the build_and_send_call path already has
+            // bounded nonce retries, so returning Retryable here escalates
+            // to the worker-level backoff.
             tracing::warn!(
                 agreement_id = %agreement_id,
                 error = %err,

@@ -948,6 +948,13 @@ mod tests {
         ) -> RegistryResult<()> {
             unimplemented!()
         }
+        async fn update_offer_tx_hash(
+            &self,
+            _id: &IndexingAgreementId,
+            _tx_hash: &[u8; 32],
+        ) -> RegistryResult<()> {
+            unimplemented!()
+        }
         async fn mark_indexing_agreement_as_canceled_by_requester(
             &self,
             _id: &IndexingAgreementId,
@@ -1225,11 +1232,13 @@ mod tests {
                 Err(ChainClientError::SubmitFailed(e)) => {
                     Err(ChainClientError::SubmitFailed(anyhow::anyhow!("{e}")))
                 }
-                Err(ChainClientError::OfferHashMismatch { .. }) => {
+                Err(ChainClientError::OfferHashMismatch { .. })
+                | Err(ChainClientError::TxDropped { .. })
+                | Err(ChainClientError::TxReverted { .. }) => {
                     // Not applicable to the cancel path; mirror as RpcError
                     // so the test helper continues to work.
                     Err(ChainClientError::RpcError(anyhow::anyhow!(
-                        "offer hash mismatch (unexpected for cancel)"
+                        "unexpected chain-client error variant for cancel"
                     )))
                 }
             }

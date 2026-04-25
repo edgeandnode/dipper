@@ -142,6 +142,16 @@ pub trait AgreementRegistry {
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;
 
+    /// Record the on-chain tx hash of the most recent `offer()` submission
+    /// for this agreement. Observability-only; does not transition status.
+    /// Called once per submit (including resubmits after a dropped tx) so
+    /// the DB reflects the live hash rather than an evicted one.
+    async fn update_offer_tx_hash(
+        &self,
+        id: &IndexingAgreementId,
+        tx_hash: &[u8; 32],
+    ) -> RegistryResult<()>;
+
     /// Mark an indexing agreement as `CANCELED_BY_REQUESTER`.
     ///
     /// If there is no indexing agreement with the given ID, or if the agreement is not in the

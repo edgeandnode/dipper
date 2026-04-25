@@ -467,6 +467,14 @@ mod tests {
             Ok(())
         }
 
+        async fn update_offer_tx_hash(
+            &self,
+            _id: &IndexingAgreementId,
+            _tx_hash: &[u8; 32],
+        ) -> crate::registry::Result<()> {
+            Ok(())
+        }
+
         async fn mark_indexing_agreement_as_canceled_by_requester(
             &self,
             _id: &IndexingAgreementId,

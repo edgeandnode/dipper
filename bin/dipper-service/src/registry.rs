@@ -285,6 +285,17 @@ impl AgreementRegistry for RegistryProvider {
             .map_err(Into::into)
     }
 
+    async fn update_offer_tx_hash(
+        &self,
+        id: &IndexingAgreementId,
+        tx_hash: &[u8; 32],
+    ) -> RegistryResult<()> {
+        self.inner
+            .update_offer_tx_hash(id, tx_hash)
+            .await
+            .map_err(Into::into)
+    }
+
     async fn mark_indexing_agreement_as_canceled_by_requester(
         &self,
         id: &IndexingAgreementId,

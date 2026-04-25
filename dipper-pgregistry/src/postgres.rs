@@ -560,6 +560,31 @@ impl PgRegistry {
         Ok(())
     }
 
+    /// Persist the on-chain tx hash of the most recent `offer()` submission
+    /// for this agreement. Overwrites any prior value, so a resubmit after
+    /// mempool eviction records the live hash rather than the dropped one.
+    /// Observability-only: no status transition is performed here.
+    pub async fn update_offer_tx_hash(
+        &self,
+        agreement_id: &IndexingAgreementId,
+        tx_hash: &[u8; 32],
+    ) -> Result<(), Error> {
+        sqlx::query(
+            r#"
+            UPDATE dipper_reg_indexing_agreements
+            SET
+                offer_tx_hash = $1,
+                updated_at = timezone('UTC', now())
+            WHERE id = $2
+            "#,
+        )
+        .bind(&tx_hash[..])
+        .bind(agreement_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn mark_indexing_agreement_as_canceled_by_requester(
         &self,
         agreement_id: &IndexingAgreementId,
