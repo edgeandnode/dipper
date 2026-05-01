@@ -11,71 +11,140 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  dipper-service-image:
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.set.outputs.targets }}
     steps:
-    - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
+      - id: set
+        run: echo 'targets=["dipper-service","dipper-cli"]' >> $GITHUB_OUTPUT
 
-    - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+  build:
+    name: ${{ matrix.target }} (${{ matrix.platform }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.prepare.outputs.targets) }}
+        platform: [linux/amd64, linux/arm64]
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/edgeandnode/${{ matrix.target }}
+    steps:
+      - name: Prepare platform pair
+        run: |
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
 
-    - uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5
-      id: meta
-      with:
-        images: ghcr.io/edgeandnode/dipper-service
-        tags: |
-          type=raw,value=latest,enable={{is_default_branch}}
-          type=ref,event=tag
-          type=sha
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-    - uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
-      with:
-        registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
-    - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
-      with:
-        file: Dockerfile
-        context: .
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        push: ${{ github.event_name != 'pull_request' }}
-        pull: true
-        cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/dipper-service:buildcache
-        cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner}}/dipper-service:buildcache,mode=max
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-  dipper-cli-image:
+      - name: Docker labels
+        id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        with:
+          images: ${{ env.IMAGE }}
+
+      # dipper-service uses the default Dockerfile; dipper-cli has its own.
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          file: ${{ matrix.target == 'dipper-cli' && 'Dockerfile.dipper-cli' || 'Dockerfile' }}
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          pull: true
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ env.PLATFORM_PAIR }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}:buildcache-{1},mode=max', env.IMAGE, env.PLATFORM_PAIR) || '' }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: github.event_name != 'pull_request'
+        with:
+          name: digests-${{ matrix.target }}-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge ${{ matrix.target }} into multi-arch manifest
+    needs: [prepare, build]
+    if: |
+      !cancelled()
+      && needs.build.result == 'success'
+      && github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.prepare.outputs.targets) }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/edgeandnode/${{ matrix.target }}
     steps:
-    - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.target }}-*
+          merge-multiple: true
 
-    - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
-    - uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5
-      id: meta
-      with:
-        images: ghcr.io/edgeandnode/dipper-cli
-        tags: |
-          type=raw,value=latest,enable={{is_default_branch}}
-          type=ref,event=tag
-          type=sha
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-    - uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
-      with:
-        registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Docker tags
+        id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            # Forced on so workflow_dispatch from a non-default branch (no `latest`,
+            # no tag ref) still yields a populated meta.outputs.version for Inspect.
+            type=sha,enable=true
 
-    - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
-      with:
-        file: Dockerfile.dipper-cli
-        context: .
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        push: ${{ github.event_name != 'pull_request' }}
-        pull: true
-        cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/dipper-cli:buildcache
-        cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner}}/dipper-cli:buildcache,mode=max
+      # Glob `*` expands to digest-named files written by the build job's Export digest step.
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
 
   dipper-cli:
     strategy:
@@ -87,7 +156,7 @@ jobs:
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@1780873c7b576612439a134613cc4cc74ce5538c # v1
@@ -104,7 +173,7 @@ jobs:
       - name: Build executable (release)
         run: cargo build --package dipper-cli --bin dipper-cli --target=${{ matrix.target }} --release
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dipper-cli-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/dipper-cli
