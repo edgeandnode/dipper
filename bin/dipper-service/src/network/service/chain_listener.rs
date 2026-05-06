@@ -72,6 +72,12 @@ const SWEEP_BATCH_SIZE: i64 = 1000;
 /// crash-recovery; the steady-state fan-out fires from finalize on a
 /// fresh accept, so per-poll execution is wasted DB work.
 const SWEEP_POLLS: u64 = 60;
+/// How much faster than wall-clock the persisted chain timestamp may
+/// advance per poll, before the listener treats the response as a
+/// drift-poisoning attempt and caps it. Chain time legitimately moves
+/// at ~1s per wall-clock second, plus tolerance for poll-cadence
+/// jitter and subgraph-side rounding.
+const CHAIN_TS_DRIFT_TOLERANCE_SECS: u64 = 10;
 
 /// Handle for controlling the chain listener service lifecycle
 #[derive(Clone)]
@@ -202,6 +208,14 @@ where
         // Starts at SWEEP_POLLS so the first poll runs the sweep,
         // recovering any pre-startup orphans.
         let mut polls_since_sweep: u64 = SWEEP_POLLS;
+        // Wall-clock instant of the last successful chain-timestamp
+        // persist. Used to bound how fast the persisted timestamp can
+        // advance: a hostile response that stays just under the skew
+        // tolerance every poll would otherwise drift the timestamp
+        // forward by tens of seconds per tick, expiring agreements
+        // prematurely. Persisted in memory only; on restart it resets
+        // and the first poll's bound is strict.
+        let mut last_chain_ts_persist_wall: std::time::Instant = std::time::Instant::now();
 
         loop {
             tokio::select! {
@@ -258,6 +272,7 @@ where
             let outcome = match drain_once(
                 &mut cursor,
                 &mut last_persisted_timestamp,
+                &mut last_chain_ts_persist_wall,
                 &mut last_subgraph_head,
                 &mut stall_count,
                 &mut consecutive_failures,
@@ -342,6 +357,7 @@ struct DrainOutcome {
 async fn drain_once<R, W, E>(
     cursor: &mut Cursor,
     last_persisted_timestamp: &mut Option<u64>,
+    last_chain_ts_persist_wall: &mut std::time::Instant,
     last_subgraph_head: &mut u64,
     stall_count: &mut u32,
     consecutive_failures: &mut u32,
@@ -556,8 +572,16 @@ where
 
         pages_per_tick += 1;
 
-        // Persisted timestamp never decreases so a rolled-back
-        // subgraph can't drag expiration's clock backwards.
+        // Persisted timestamp never decreases so a rolled-back subgraph
+        // can't drag expiration's clock backwards. Forward advances are
+        // bounded by wall-clock elapsed so a hostile response that stays
+        // just under the per-poll skew tolerance can't ratchet the
+        // persisted timestamp forward faster than real time.
+        let now_instant = std::time::Instant::now();
+        let wall_elapsed_secs = now_instant
+            .duration_since(*last_chain_ts_persist_wall)
+            .as_secs();
+        let max_chain_advance = wall_elapsed_secs.saturating_add(CHAIN_TS_DRIFT_TOLERANCE_SECS);
         let ratchet_timestamp = match (new_timestamp, *last_persisted_timestamp) {
             (Some(new_ts), Some(cached_ts)) if new_ts < cached_ts => {
                 tracing::warn!(
@@ -567,7 +591,23 @@ where
                 );
                 Some(cached_ts)
             }
-            (Some(new_ts), _) => Some(new_ts),
+            (Some(new_ts), Some(cached_ts)) => {
+                let max_allowed = cached_ts.saturating_add(max_chain_advance);
+                if new_ts > max_allowed {
+                    tracing::warn!(
+                        event = "chain_ts_drift_capped",
+                        new_timestamp_secs = new_ts,
+                        persisted_timestamp_secs = cached_ts,
+                        max_allowed_secs = max_allowed,
+                        wall_elapsed_secs,
+                        "Chain timestamp advance exceeds wall-clock elapsed; capping"
+                    );
+                    Some(max_allowed)
+                } else {
+                    Some(new_ts)
+                }
+            }
+            (Some(new_ts), None) => Some(new_ts),
             (None, _) => *last_persisted_timestamp,
         };
 
@@ -588,6 +628,7 @@ where
             {
                 Ok(()) => {
                     *last_persisted_timestamp = ratchet_timestamp;
+                    *last_chain_ts_persist_wall = now_instant;
                 }
                 Err(err) => {
                     tracing::error!(error = %err, "Failed to update chain listener state");
@@ -2340,6 +2381,7 @@ mod tests {
 
         let mut cursor = Cursor::genesis();
         let mut last_persisted_timestamp: Option<u64> = None;
+        let mut last_chain_ts_persist_wall = std::time::Instant::now();
         let mut last_subgraph_head: u64 = 0;
         let mut stall_count: u32 = 0;
         let mut consecutive_failures: u32 = 0;
@@ -2348,6 +2390,7 @@ mod tests {
         let outcome = drain_once(
             &mut cursor,
             &mut last_persisted_timestamp,
+            &mut last_chain_ts_persist_wall,
             &mut last_subgraph_head,
             &mut stall_count,
             &mut consecutive_failures,
@@ -2378,6 +2421,91 @@ mod tests {
                 "batch failure must not leave per-row mock side-effects"
             );
         }
+    }
+
+    /// Drives a hostile timestamp drift through `drain_once` and asserts
+    /// the persisted chain timestamp is capped near
+    /// `CHAIN_TS_DRIFT_TOLERANCE_SECS` instead of accepting the huge
+    /// jump. Without the cap, a subgraph response that stays just under
+    /// the per-poll skew tolerance would advance the persisted timestamp
+    /// far faster than wall clock.
+    #[tokio::test]
+    async fn test_chain_ts_drift_capped_against_wall_clock() {
+        let registry = MockRegistry::new();
+        let event_source = super::super::chain_events::mock::MockEventSource::new();
+        let baseline_ts = 1_700_000_000u64;
+        let attempted_jump_secs = 100_000u64;
+
+        // First poll establishes the persisted timestamp baseline.
+        event_source.set_latest_block(100);
+        event_source.set_latest_block_timestamp(Some(baseline_ts));
+
+        let mut cursor = Cursor::genesis();
+        let mut last_persisted_timestamp: Option<u64> = None;
+        let mut last_chain_ts_persist_wall = std::time::Instant::now();
+        let mut last_subgraph_head: u64 = 0;
+        let mut stall_count: u32 = 0;
+        let mut consecutive_failures: u32 = 0;
+        let (_tx_stop, mut rx_stop) = mpsc::channel::<()>(1);
+
+        drain_once(
+            &mut cursor,
+            &mut last_persisted_timestamp,
+            &mut last_chain_ts_persist_wall,
+            &mut last_subgraph_head,
+            &mut stall_count,
+            &mut consecutive_failures,
+            1337,
+            0,
+            Address::ZERO,
+            &registry,
+            &MockWorkerQueue::default(),
+            &event_source,
+            &mut rx_stop,
+        )
+        .await
+        .expect("first poll must succeed");
+
+        assert_eq!(last_persisted_timestamp, Some(baseline_ts));
+
+        // Hostile second poll: wall clock has barely moved, but subgraph
+        // claims chain time advanced by ~28 hours.
+        event_source.set_latest_block(101);
+        event_source.set_latest_block_timestamp(Some(baseline_ts + attempted_jump_secs));
+
+        drain_once(
+            &mut cursor,
+            &mut last_persisted_timestamp,
+            &mut last_chain_ts_persist_wall,
+            &mut last_subgraph_head,
+            &mut stall_count,
+            &mut consecutive_failures,
+            1337,
+            0,
+            Address::ZERO,
+            &registry,
+            &MockWorkerQueue::default(),
+            &event_source,
+            &mut rx_stop,
+        )
+        .await
+        .expect("second poll must succeed");
+
+        let persisted = last_persisted_timestamp.expect("must be set");
+        let attempted = baseline_ts + attempted_jump_secs;
+        assert!(
+            persisted < attempted,
+            "drift must be capped; persisted={persisted}, attempted={attempted}"
+        );
+        // wall_elapsed in this synchronous test is sub-second, so the cap
+        // is dominated by the static tolerance. Allow generous slack for
+        // slow CI machines but still assert "nowhere near the attempted
+        // jump".
+        assert!(
+            persisted <= baseline_ts + 1_000,
+            "persisted ({persisted}) should be within seconds of baseline ({baseline_ts}), \
+             not near the attempted jump ({attempted})"
+        );
     }
 
     /// Verify that notify_one() wakes the chain_listener from its idle
