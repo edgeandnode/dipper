@@ -146,6 +146,16 @@ impl<'r> ::sqlx::Decode<'r, ::sqlx::Postgres> for IndexingAgreementId {
     }
 }
 
+#[cfg(feature = "sqlx")]
+impl ::sqlx::postgres::PgHasArrayType for IndexingAgreementId {
+    fn array_type_info() -> ::sqlx::postgres::PgTypeInfo {
+        // BYTEA[] — needed so callers can bind `Vec<IndexingAgreementId>`
+        // (or `&[IndexingAgreementId]`) directly to `... = ANY($1)` filters
+        // for batched lookups and updates.
+        ::sqlx::postgres::PgTypeInfo::with_name("_bytea")
+    }
+}
+
 #[cfg(feature = "fake")]
 impl ::fake::Dummy<fake::Faker> for IndexingAgreementId {
     fn dummy_with_rng<R: ::fake::Rng + ?Sized>(_: &fake::Faker, rng: &mut R) -> Self {
