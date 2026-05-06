@@ -461,14 +461,19 @@ async fn pop_marks_only_one_row_running_with_multiple_queued() {
     // ended up marking every queued row as Running in one statement.
     // `fetch_optional` then returned only the first RETURNING row, leaving
     // the rest orphaned.
+    //
+    // 15 rows gives the planner enough cardinality to consider Hash Anti
+    // Join and other alternative shapes, not just the smallest-table
+    // Nested Loop, so the bug can't stay masked at small N.
 
     //* Given
+    const QUEUED_ROWS: usize = 15;
     let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db.clone());
 
-    // Push 3 jobs (sequentially so each gets an earlier scheduled_for).
+    // Push jobs sequentially so each gets an earlier scheduled_for.
     let mut job_ids = Vec::new();
-    for _ in 0..3 {
+    for _ in 0..QUEUED_ROWS {
         let msg = Faker.fake::<TestMsg>();
         let id = queue
             .push(msg)
@@ -479,9 +484,9 @@ async fn pop_marks_only_one_row_running_with_multiple_queued() {
 
     //* When
     // Pop once and remove, which commits the pop tx (deleting the popped row).
-    // With the bug, pop would have marked all 3 rows Running; remove then
-    // deletes 1, leaving 2 orphaned as Running. With the fix, only the popped
-    // row is Running; remove deletes it; the other 2 stay Queued.
+    // With the bug, pop would have marked all rows Running; remove then
+    // deletes 1, leaving the rest orphaned as Running. With the fix, only the
+    // popped row is Running; remove deletes it; the other rows stay Queued.
     let popped = queue
         .pop::<TestMsg>()
         .await
@@ -505,8 +510,9 @@ async fn pop_marks_only_one_row_running_with_multiple_queued() {
             .fetch_one(&db)
             .await
             .expect("Failed to count Queued rows");
+    let expected_queued = (QUEUED_ROWS - 1) as i64;
     assert_eq!(
-        queued_count, 2,
-        "other queued rows must remain Queued after one pop; got {queued_count}"
+        queued_count, expected_queued,
+        "other queued rows must remain Queued after one pop; got {queued_count}, expected {expected_queued}"
     );
 }
