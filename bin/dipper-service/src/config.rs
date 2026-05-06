@@ -446,6 +446,12 @@ pub struct ChainListenerConfig {
     /// Maximum retry attempts for transient failures (default: 3)
     #[serde(default = "default_chain_listener_max_retries")]
     pub max_retries: u32,
+
+    /// Number of blocks at the tail of the chain that every poll re-reads,
+    /// so a reorg that moves a state change across the cursor boundary is
+    /// still picked up. Set to 0 to disable.
+    #[serde(default = "default_chain_listener_reorg_buffer_blocks")]
+    pub reorg_buffer_blocks: u32,
 }
 
 fn default_chain_listener_enabled() -> bool {
@@ -466,6 +472,10 @@ fn default_chain_listener_request_timeout() -> Duration {
 
 fn default_chain_listener_max_retries() -> u32 {
     3
+}
+
+fn default_chain_listener_reorg_buffer_blocks() -> u32 {
+    20
 }
 
 fn default_gas_price_multiplier() -> f64 {

@@ -38,14 +38,40 @@ use tokio::{
     time::MissedTickBehavior,
 };
 
-use super::chain_events::{AgreementStateSnapshot, ChainEventSource};
+use super::chain_events::{AgreementStateSnapshot, ChainEventSource, Cursor};
 use crate::{
     config::ChainListenerConfig,
     registry::{
-        AgreementRegistry, CancelKind, IndexingAgreementStatus, PendingCancellationRegistry,
+        AgreementRegistry, CancelKind, IndexingAgreement, IndexingAgreementStatus,
+        PendingCancellationRegistry, ReconciliationItem,
     },
     worker::service::WorkerQueue,
 };
+
+/// Idle interval used when no `Created` agreements are awaiting acceptance.
+const SLOW_POLL_INTERVAL: Duration = Duration::from_secs(300);
+/// How often the heartbeat info-line fires while idle. ~5 min at the fast
+/// rate, every poll at the slow rate.
+const HEARTBEAT_POLLS: u64 = 60;
+/// After this many back-to-back fetch failures the listener escalates the
+/// log line from `warn` to `error`.
+const MAX_CONSECUTIVE_FAILURES: u32 = 10;
+/// Base for the exponential failure-backoff sleep applied between ticks
+/// while `consecutive_failures > 0`.
+const FAILURE_BACKOFF_BASE: Duration = Duration::from_secs(5);
+/// Subgraph-stall warn / error escalation: ticks-without-head-advance.
+const STALL_WARN_THRESHOLD: u32 = 5;
+const STALL_ERROR_THRESHOLD: u32 = 15;
+/// Sanity bound on a single tick's drain — not an operating point;
+/// steady-state drains are 0–1 pages.
+const MAX_PAGES_PER_DRAIN: u32 = 1000;
+/// Cap on the cancellation-sweep batch so a backlog drains across polls
+/// instead of blocking one tick.
+const SWEEP_BATCH_SIZE: i64 = 1000;
+/// How often the cancellation sweep runs. The sweep is purely
+/// crash-recovery; the steady-state fan-out fires from finalize on a
+/// fresh accept, so per-poll execution is wasted DB work.
+const SWEEP_POLLS: u64 = 60;
 
 /// Handle for controlling the chain listener service lifecycle
 #[derive(Clone)]
@@ -87,6 +113,10 @@ pub struct Ctx<R, W, E> {
 pub struct ChainListenerState {
     pub _chain_id: u64,
     pub last_processed_block: u64,
+    /// `id` of the last consumed entity at `last_processed_block`. `None`
+    /// means the cursor sits at a block boundary. Stored alongside the
+    /// block to support keyset pagination across same-block ties.
+    pub last_processed_id: Option<dipper_core::ids::IndexingAgreementId>,
     /// Block timestamp (epoch seconds). Used by the expiration service.
     pub last_processed_block_timestamp: Option<u64>,
 }
@@ -121,45 +151,57 @@ where
         );
 
         let chain_id = config.chain_id;
+        let reorg_buffer_blocks = config.reorg_buffer_blocks;
 
-        // Get initial state from DB or start from block 0
-        let mut last_block = match registry.get_chain_listener_state(chain_id).await {
-            Ok(Some(state)) => {
-                tracing::info!(
-                    last_processed_block = state.last_processed_block,
-                    "Resuming from last processed block"
-                );
-                state.last_processed_block
-            }
-            Ok(None) => {
-                tracing::info!("No previous state, starting from block 0");
-                0
-            }
-            Err(err) => {
-                tracing::error!(error = %err, "Failed to get chain listener state");
-                return Err(err.into());
-            }
-        };
+        // Get initial state from DB or start at genesis. We track
+        // `(block, id)` together so a same-block-tie that crashed mid-page
+        // is resumed from the right entity rather than re-played from the
+        // block boundary.
+        let (mut cursor, mut last_persisted_timestamp) =
+            match registry.get_chain_listener_state(chain_id).await {
+                Ok(Some(state)) => {
+                    tracing::info!(
+                        last_processed_block = state.last_processed_block,
+                        last_processed_id = ?state.last_processed_id.map(|id| id.to_string()),
+                        "Resuming from last processed cursor"
+                    );
+                    (
+                        Cursor {
+                            block: state.last_processed_block,
+                            id: state.last_processed_id,
+                        },
+                        state.last_processed_block_timestamp,
+                    )
+                }
+                Ok(None) => {
+                    tracing::info!("No previous state, starting from genesis");
+                    (Cursor::genesis(), None)
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, "Failed to get chain listener state");
+                    return Err(err.into());
+                }
+            };
 
-        // Adaptive polling: fast (5s) when Created agreements exist, slow (5min) when idle.
+        // Adaptive polling: fast (config.poll_interval) when Created
+        // agreements exist, slow (`SLOW_POLL_INTERVAL`) when idle.
         let fast_interval = config.poll_interval;
-        let slow_interval = Duration::from_secs(300);
+        let slow_interval = SLOW_POLL_INTERVAL;
         let mut timer = tokio::time::interval(fast_interval);
         timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut using_fast_interval = true;
 
         // Track consecutive failures for adaptive backoff
         let mut consecutive_failures: u32 = 0;
-        const MAX_CONSECUTIVE_FAILURES: u32 = 10;
-        const FAILURE_BACKOFF_BASE: Duration = Duration::from_secs(5);
 
         // Observability: heartbeat and stall detection
         let mut polls_since_last_event: u64 = 0;
         let mut last_subgraph_head: u64 = 0;
         let mut stall_count: u32 = 0;
-        const STALL_WARN_THRESHOLD: u32 = 5;
-        const STALL_ERROR_THRESHOLD: u32 = 15;
-        const HEARTBEAT_POLLS: u64 = 60; // ~5min at fast rate, every poll at slow rate
+        // Counts up to SWEEP_POLLS, then trips the cancellation sweep.
+        // Starts at SWEEP_POLLS so the first poll runs the sweep,
+        // recovering any pre-startup orphans.
+        let mut polls_since_sweep: u64 = SWEEP_POLLS;
 
         loop {
             tokio::select! {
@@ -181,11 +223,7 @@ where
             }
 
             // Adaptive interval: check if there are Created agreements awaiting acceptance
-            let has_pending = registry
-                .count_active_agreements_by_deployment()
-                .await
-                .map(|m| !m.is_empty())
-                .unwrap_or(false);
+            let has_pending = registry.exists_active_agreements().await.unwrap_or(false);
 
             let want_fast = has_pending;
             if want_fast != using_fast_interval {
@@ -217,136 +255,61 @@ where
                 tokio::time::sleep(backoff).await;
             }
 
-            // Fetch changed agreement snapshots since the last processed block
-            let result = match event_source.get_changed_agreements(last_block).await {
-                Ok(result) => {
-                    if consecutive_failures > 0 {
-                        tracing::info!(
-                            recovered_after = consecutive_failures,
-                            "chain listener recovered from consecutive fetch failures"
-                        );
-                    }
-                    consecutive_failures = 0;
-                    result
-                }
-                Err(err) => {
-                    consecutive_failures = consecutive_failures.saturating_add(1);
-                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                        tracing::error!(
-                            error = %err,
-                            consecutive_failures,
-                            "Too many consecutive failures fetching changed agreements"
-                        );
-                    } else {
-                        tracing::warn!(
-                            error = %err,
-                            consecutive_failures,
-                            "Failed to fetch changed agreements from subgraph"
-                        );
-                    }
-                    continue;
-                }
+            let outcome = match drain_once(
+                &mut cursor,
+                &mut last_persisted_timestamp,
+                &mut last_subgraph_head,
+                &mut stall_count,
+                &mut consecutive_failures,
+                chain_id,
+                reorg_buffer_blocks,
+                signer_address,
+                &registry,
+                &worker_queue,
+                &event_source,
+                &mut rx_stop,
+            )
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(()) => continue,
             };
 
-            let new_block = result.latest_block;
-            let new_cursor = result.cursor_block;
-            let new_timestamp = result.latest_block_timestamp;
-            let total_changes = result.snapshots.len();
-
-            // Stall detection: subgraph head not advancing
-            if new_block == last_subgraph_head && new_block > 0 {
-                stall_count += 1;
-                if stall_count == STALL_ERROR_THRESHOLD {
-                    tracing::error!(
-                        subgraph_head = new_block,
-                        stall_polls = stall_count,
-                        "Subgraph appears stalled — on-chain events may be delayed"
-                    );
-                } else if stall_count == STALL_WARN_THRESHOLD {
-                    tracing::warn!(
-                        subgraph_head = new_block,
-                        stall_polls = stall_count,
-                        "Subgraph has not advanced, may be paused or behind"
-                    );
-                }
-            } else if stall_count > 0 && new_block > last_subgraph_head {
-                tracing::info!(
-                    previous_head = last_subgraph_head,
-                    new_head = new_block,
-                    stall_polls = stall_count,
-                    "Subgraph recovered from stall"
-                );
-                stall_count = 0;
+            if outcome.stopped {
+                tracing::debug!("chain listener stopping mid-cycle");
+                return Ok(());
             }
-            last_subgraph_head = new_block;
 
-            if new_block <= last_block && total_changes == 0 {
+            if outcome.processed > 0 || outcome.errors > 0 {
+                tracing::info!(
+                    pages_per_tick = outcome.pages,
+                    drain_duration_ms = outcome.duration_ms,
+                    subgraph_lag_seconds = outcome.subgraph_lag_seconds,
+                    processed = outcome.processed,
+                    errors = outcome.errors,
+                    "Reconciled agreement snapshots (drain)"
+                );
+                polls_since_last_event = 0;
+            } else if outcome.latest_block <= cursor.block {
                 polls_since_last_event += 1;
                 if polls_since_last_event.is_multiple_of(HEARTBEAT_POLLS) || !using_fast_interval {
                     tracing::info!(
-                        last_processed_block = last_block,
-                        subgraph_head = new_block,
+                        pages_per_tick = outcome.pages,
+                        drain_duration_ms = outcome.duration_ms,
+                        subgraph_lag_seconds = outcome.subgraph_lag_seconds,
+                        last_processed_block = cursor.block,
+                        subgraph_head = outcome.latest_block,
                         polls_idle = polls_since_last_event,
                         fast_mode = using_fast_interval,
                         "chain listener heartbeat"
                     );
                 }
-                continue;
             }
 
-            tracing::debug!(
-                from_block = last_block + 1,
-                to_block = new_block,
-                snapshot_count = total_changes,
-                "Reconciling agreement snapshots"
-            );
-
-            let mut processed = 0;
-            let mut errors = 0;
-
-            for snapshot in result.snapshots {
-                if rx_stop.try_recv().is_ok() {
-                    tracing::debug!("chain listener stopping mid-cycle");
-                    return Ok(());
-                }
-
-                match reconcile_agreement(&snapshot, &registry, &worker_queue, signer_address).await
-                {
-                    Ok(()) => processed += 1,
-                    Err(err) => {
-                        tracing::warn!(
-                            error = %err,
-                            agreement_id = %snapshot.agreement_id,
-                            "Failed to reconcile agreement snapshot"
-                        );
-                        errors += 1;
-                    }
-                }
-            }
-
-            if processed > 0 || errors > 0 {
-                tracing::info!(
-                    from_block = last_block + 1,
-                    to_block = new_block,
-                    processed,
-                    errors,
-                    "Reconciled agreement snapshots"
-                );
-                polls_since_last_event = 0;
-            }
-
-            // Advance to `new_cursor` (not the subgraph head) so a held-back
-            // cursor from a parse failure does not skip dropped entities.
-            // The `> last_block` guard prevents rewinding when a failure on
-            // the first entity of a batch leaves the cursor at its prior value.
-            if new_cursor > last_block {
-                if let Err(err) = registry
-                    .update_chain_listener_state(chain_id, new_cursor, new_timestamp)
-                    .await
-                {
-                    tracing::error!(error = %err, "Failed to update chain listener state");
-                }
-                last_block = new_cursor;
+            polls_since_sweep += 1;
+            if polls_since_sweep >= SWEEP_POLLS {
+                sweep_executable_pending_cancellations(&registry, &worker_queue).await;
+                polls_since_sweep = 0;
             }
         }
 
@@ -357,19 +320,351 @@ where
     (Handle { tx_stop }, service)
 }
 
-/// Reconcile a single agreement snapshot against dipper's local DB.
-///
-/// Compares the snapshot's remote state to the local `IndexingAgreementStatus`
-/// and applies whatever transitions the diff implies. See the module-level
-/// transition table for the full mapping.
-async fn reconcile_agreement<R, W>(
-    snapshot: &AgreementStateSnapshot,
+struct DrainOutcome {
+    pages: u32,
+    processed: u64,
+    errors: u64,
+    latest_block: u64,
+    duration_ms: u64,
+    subgraph_lag_seconds: i64,
+    /// True when `rx_stop` fired mid-drain; the outer loop returns
+    /// gracefully rather than starting another tick.
+    stopped: bool,
+}
+
+/// Run one drain cycle: page through new agreement snapshots from the
+/// subgraph, apply reconciliation transitions, persist cursor + timestamp
+/// progress per-page, and emit observability fields. Mutates the long-lived
+/// state in place; the returned [`DrainOutcome`] carries only stats. `Err(())`
+/// signals the subgraph fetch itself failed so the outer loop skips the
+/// heartbeat block.
+#[allow(clippy::too_many_arguments)]
+async fn drain_once<R, W, E>(
+    cursor: &mut Cursor,
+    last_persisted_timestamp: &mut Option<u64>,
+    last_subgraph_head: &mut u64,
+    stall_count: &mut u32,
+    consecutive_failures: &mut u32,
+    chain_id: u64,
+    reorg_buffer_blocks: u32,
+    signer_address: Address,
     registry: &R,
     worker_queue: &W,
-    signer_address: Address,
-) -> anyhow::Result<()>
+    event_source: &E,
+    rx_stop: &mut mpsc::Receiver<()>,
+) -> Result<DrainOutcome, ()>
 where
-    R: AgreementRegistry + PendingCancellationRegistry,
+    R: AgreementRegistry + ChainListenerStateRegistry + PendingCancellationRegistry + Send + Sync,
+    W: WorkerQueue + Send + Sync,
+    E: ChainEventSource,
+{
+    // Read-side cursor backs off by `reorg_buffer_blocks` so a
+    // reorg that moves a state change across the boundary is still
+    // re-read. The committed cursor only moves forward; idempotent
+    // reconcile makes the duplicate work a no-op. The keyset `id`
+    // is intentionally dropped on backoff (the resume must re-read
+    // every row in the buffer window, not just the tail of the
+    // tied block at `cursor.block`).
+    let mut effective_cursor = if cursor.block > 0
+        && reorg_buffer_blocks > 0
+        && cursor.block > u64::from(reorg_buffer_blocks)
+    {
+        Cursor::at_block(cursor.block.saturating_sub(u64::from(reorg_buffer_blocks)))
+    } else {
+        cursor.clone()
+    };
+
+    let drain_start = std::time::Instant::now();
+    let mut pages_per_tick: u32 = 0;
+    let mut pinned_block: Option<u64> = None;
+    let mut drain_processed: u64 = 0;
+    let mut drain_errors: u64 = 0;
+    let mut drain_latest_block: u64;
+    let mut drain_latest_timestamp: Option<u64>;
+    let mut drain_stopped = false;
+
+    'drain: loop {
+        let result = match event_source
+            .get_changed_agreements(&effective_cursor, pinned_block)
+            .await
+        {
+            Ok(result) => {
+                if *consecutive_failures > 0 {
+                    tracing::info!(
+                        recovered_after = *consecutive_failures,
+                        "chain listener recovered from consecutive fetch failures"
+                    );
+                }
+                *consecutive_failures = 0;
+                result
+            }
+            Err(err) => {
+                *consecutive_failures = consecutive_failures.saturating_add(1);
+                if *consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    tracing::error!(
+                        error = %err,
+                        consecutive_failures = *consecutive_failures,
+                        pages_drained = pages_per_tick,
+                        "Too many consecutive failures fetching changed agreements"
+                    );
+                } else {
+                    tracing::warn!(
+                        error = %err,
+                        consecutive_failures = *consecutive_failures,
+                        pages_drained = pages_per_tick,
+                        "Failed to fetch changed agreements from subgraph"
+                    );
+                }
+                return Err(());
+            }
+        };
+
+        // Pin to page 1's snapshot so later pages in this drain
+        // see the same chain state.
+        if pinned_block.is_none() {
+            pinned_block = Some(result.latest_block);
+        }
+
+        drain_latest_block = result.latest_block;
+        drain_latest_timestamp = result.latest_block_timestamp;
+        let new_cursor = result.cursor.clone();
+        let new_timestamp = result.latest_block_timestamp;
+        let count = result.snapshots.len();
+
+        // Page 1 is the only meaningful sample for stall detection;
+        // pinned pages return the same `latest_block` by construction.
+        if pages_per_tick == 0 {
+            if result.latest_block == *last_subgraph_head && result.latest_block > 0 {
+                *stall_count += 1;
+                if *stall_count == STALL_ERROR_THRESHOLD {
+                    tracing::error!(
+                        subgraph_head = result.latest_block,
+                        stall_polls = *stall_count,
+                        "Subgraph appears stalled — on-chain events may be delayed"
+                    );
+                } else if *stall_count == STALL_WARN_THRESHOLD {
+                    tracing::warn!(
+                        subgraph_head = result.latest_block,
+                        stall_polls = *stall_count,
+                        "Subgraph has not advanced, may be paused or behind"
+                    );
+                }
+            } else if *stall_count > 0 && result.latest_block > *last_subgraph_head {
+                tracing::info!(
+                    previous_head = *last_subgraph_head,
+                    new_head = result.latest_block,
+                    stall_polls = *stall_count,
+                    "Subgraph recovered from stall"
+                );
+                *stall_count = 0;
+            }
+            *last_subgraph_head = result.latest_block;
+        }
+
+        tracing::debug!(
+            from_block = effective_cursor.block + 1,
+            to_block = result.latest_block,
+            snapshot_count = count,
+            page = pages_per_tick + 1,
+            "Reconciling agreement snapshots (page)"
+        );
+
+        // Single-shot batch lookup for every agreement referenced in this
+        // page. Snapshots whose id is not in the local registry (e.g.
+        // another payer's) drop out as `None` below.
+        let snapshot_ids: Vec<IndexingAgreementId> =
+            result.snapshots.iter().map(|s| s.agreement_id).collect();
+        let mut agreements_by_id =
+            match registry.get_indexing_agreements_by_ids(&snapshot_ids).await {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        page = pages_per_tick + 1,
+                        snapshots = snapshot_ids.len(),
+                        "Failed to batch-fetch agreements for page; counting snapshots as errors"
+                    );
+                    drain_errors += snapshot_ids.len() as u64;
+                    std::collections::HashMap::new()
+                }
+            };
+
+        let mut prepared: Vec<PreparedReconciliation> = Vec::with_capacity(count);
+        for snapshot in result.snapshots {
+            if rx_stop.try_recv().is_ok() {
+                drain_stopped = true;
+                break 'drain;
+            }
+
+            let agreement = agreements_by_id.remove(&snapshot.agreement_id);
+            match prepare_reconciliation(&snapshot, agreement, worker_queue, signer_address).await {
+                Ok(Some(prep)) => prepared.push(prep),
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        agreement_id = %snapshot.agreement_id,
+                        "Failed to prepare reconciliation for snapshot"
+                    );
+                    drain_errors += 1;
+                }
+            }
+        }
+
+        // On batch error the tx rolls back; the next tick re-reads
+        // these rows via the reorg buffer. The successful path
+        // pre-fills every input id in `outcomes` (with `default()`
+        // for rows whose CAS guard didn't match), so a missing id
+        // is an unambiguous signal that the whole batch failed.
+        let items: Vec<ReconciliationItem> = prepared.iter().map(|p| p.item).collect();
+        let outcomes = if items.is_empty() {
+            std::collections::HashMap::new()
+        } else {
+            match registry.apply_reconciliation_batch(&items).await {
+                Ok(o) => o,
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        page = pages_per_tick + 1,
+                        items = items.len(),
+                        "Batched apply_reconciliation failed; counting page items as errors"
+                    );
+                    drain_errors += items.len() as u64;
+                    std::collections::HashMap::new()
+                }
+            }
+        };
+
+        for prep in prepared {
+            // Items absent from outcomes are batch-failures, already
+            // counted as errors above — finalize would double-count.
+            let Some(outcome) = outcomes.get(&prep.agreement.id).copied() else {
+                continue;
+            };
+            match finalize_reconciliation(&prep, outcome, registry, worker_queue).await {
+                Ok(()) => drain_processed += 1,
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        agreement_id = %prep.agreement.id,
+                        "Failed to finalize reconciliation outcome"
+                    );
+                    drain_errors += 1;
+                }
+            }
+        }
+
+        pages_per_tick += 1;
+
+        // Persisted timestamp never decreases so a rolled-back
+        // subgraph can't drag expiration's clock backwards.
+        let ratchet_timestamp = match (new_timestamp, *last_persisted_timestamp) {
+            (Some(new_ts), Some(cached_ts)) if new_ts < cached_ts => {
+                tracing::warn!(
+                    new_timestamp_secs = new_ts,
+                    persisted_timestamp_secs = cached_ts,
+                    "Subgraph reported timestamp below persisted value; ignoring (ratchet up only)"
+                );
+                Some(cached_ts)
+            }
+            (Some(new_ts), _) => Some(new_ts),
+            (None, _) => *last_persisted_timestamp,
+        };
+
+        // Persist per-page so a crash mid-drain replays at most
+        // one page. Skip the write when neither cursor nor
+        // ratcheted timestamp moved.
+        let advance_cursor = *cursor < new_cursor;
+        let timestamp_changed = ratchet_timestamp != *last_persisted_timestamp;
+        if advance_cursor || timestamp_changed {
+            let cursor_to_persist = if advance_cursor {
+                &new_cursor
+            } else {
+                &*cursor
+            };
+            match registry
+                .update_chain_listener_state(chain_id, cursor_to_persist, ratchet_timestamp)
+                .await
+            {
+                Ok(()) => {
+                    *last_persisted_timestamp = ratchet_timestamp;
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, "Failed to update chain listener state");
+                }
+            }
+        }
+        if advance_cursor {
+            *cursor = new_cursor.clone();
+            effective_cursor = new_cursor;
+        } else if count == 0 {
+            // Cursor didn't advance and the page was empty —
+            // nothing to do this tick.
+            break 'drain;
+        } else {
+            // Held-back cursor (parse failure path); reconcile
+            // already ran on what we did read, retry next tick.
+            break 'drain;
+        }
+
+        // Drained?
+        if count < super::chain_events::SUBGRAPH_PAGE_SIZE {
+            break 'drain;
+        }
+
+        if pages_per_tick >= MAX_PAGES_PER_DRAIN {
+            tracing::warn!(
+                pages_per_tick,
+                max_pages = MAX_PAGES_PER_DRAIN,
+                "Drain hit per-tick page ceiling; deferring remaining snapshots to next tick"
+            );
+            break 'drain;
+        }
+    }
+
+    let duration_ms: u64 = drain_start
+        .elapsed()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX);
+
+    // Positive = subgraph trailing wall clock; growing = falling
+    // behind. Sourced from `_meta.block.timestamp`.
+    let subgraph_lag_seconds: i64 = drain_latest_timestamp
+        .map(|ts| (dipper_core::time::now_secs() as i64).saturating_sub(ts as i64))
+        .unwrap_or(0);
+
+    Ok(DrainOutcome {
+        pages: pages_per_tick,
+        processed: drain_processed,
+        errors: drain_errors,
+        latest_block: drain_latest_block,
+        duration_ms,
+        subgraph_lag_seconds,
+        stopped: drain_stopped,
+    })
+}
+
+/// Decision computed for one snapshot, plus the resolved agreement and
+/// indexer address that the post-apply log/fan-out paths need.
+struct PreparedReconciliation {
+    item: ReconciliationItem,
+    agreement: IndexingAgreement,
+    indexer: Address,
+}
+
+/// Compute the apply decision for one snapshot and run any side effects
+/// that don't belong inside the apply transaction. Returns `None` when
+/// no DB write is needed. Caller pre-fetches the agreement (in batch for
+/// the chain_listener loop, single-row for tests) and passes `None`
+/// when the snapshot is for an agreement we don't track locally.
+async fn prepare_reconciliation<W>(
+    snapshot: &AgreementStateSnapshot,
+    agreement: Option<IndexingAgreement>,
+    worker_queue: &W,
+    signer_address: Address,
+) -> anyhow::Result<Option<PreparedReconciliation>>
+where
     W: WorkerQueue,
 {
     tracing::debug!(
@@ -377,33 +672,28 @@ where
         indexer = %snapshot.indexer,
         state = ?snapshot.state,
         last_state_change_block = snapshot.last_state_change_block,
-        "Reconciling agreement against snapshot"
+        "Preparing reconciliation against snapshot"
     );
 
-    let agreement = match registry
-        .get_indexing_agreement_by_id(&snapshot.agreement_id)
-        .await?
-    {
+    let agreement = match agreement {
         Some(a) => a,
         None => {
             tracing::debug!(
                 agreement_id = %snapshot.agreement_id,
                 "Agreement not found (may be from another payer)"
             );
-            return Ok(());
+            return Ok(None);
         }
     };
 
-    // Adversarial-indexer guard: if local is Rejected but remote reached an
-    // accepted state, queue an on-chain cancel so the indexer does not
-    // collect payment. Dead code under proposal-first dispatch (dipper does
-    // not post offer() after a gRPC rejection, so on-chain acceptance
-    // cannot succeed) but kept as a defensive response to any flow
-    // violation. Only queue when the agreement is not already canceled
-    // remotely — otherwise the cancel tx would just revert against the
-    // already-canceled contract state. Runs before the DB transitions
-    // below; it enqueues a worker job rather than writing to the agreement
-    // row, so it does not need to share the atomic transaction.
+    // Defensive guard against a state proposal-first dispatch makes
+    // impossible: dipper gates `offer()` submission on local status, and
+    // the contract requires an offer before allowing on-chain accept, so
+    // a Rejected agreement should never reach Accepted. The `warn!` below
+    // is therefore an alarm — investigate the offer-submission path
+    // (race with gRPC rejection or stale read), not the indexer.
+    // Skipped when remote is already canceled because the cancel tx
+    // would revert against canceled contract state.
     if matches!(agreement.status, IndexingAgreementStatus::Rejected)
         && snapshot.state.reached_accepted()
         && !snapshot.state.is_canceled()
@@ -418,19 +708,9 @@ where
             .await?;
     }
 
-    // Compute the transitions to apply:
-    //
-    // - `apply_accept`: local is Created or Expired and remote reached an
-    //   accepted state. We don't mark Rejected -> AcceptedOnChain; the
-    //   Rejected branch jumps straight to the terminal cancel status
-    //   below.
-    // - `cancel`: remote is canceled and local is not already in a
-    //   terminal cancel. The canceler identity is derived by comparing
-    //   snapshot.canceled_by to our signer address.
-    //
-    // Both are applied atomically via apply_reconciliation so the
-    // Accept-then-Cancel-in-one-snapshot path does not leave an
-    // intermediate AcceptedOnChain row visible to concurrent readers.
+    // Both transitions are applied atomically downstream so the
+    // Accept-then-Cancel-in-one-snapshot path can't leak an intermediate
+    // AcceptedOnChain to concurrent readers.
     let apply_accept = matches!(
         agreement.status,
         IndexingAgreementStatus::Created | IndexingAgreementStatus::Expired,
@@ -451,58 +731,109 @@ where
     };
 
     if apply_accept || cancel_kind.is_some() {
-        let outcome = registry
-            .apply_reconciliation(&agreement.id, apply_accept, cancel_kind)
-            .await?;
-
-        if outcome.did_accept {
-            let (old_status, reason) = match agreement.status {
-                IndexingAgreementStatus::Expired => ("EXPIRED", "recovered_expired_on_chain"),
-                _ => ("CREATED", "accepted_on_chain"),
-            };
-            tracing::info!(
+        Ok(Some(PreparedReconciliation {
+            item: ReconciliationItem {
+                agreement_id: agreement.id,
+                apply_accept,
+                cancel: cancel_kind,
+            },
+            agreement,
+            indexer: snapshot.indexer,
+        }))
+    } else {
+        if already_terminal_cancel && snapshot.state.is_canceled() {
+            tracing::debug!(
                 agreement_id = %agreement.id,
-                indexing_request_id = %agreement.indexing_request_id,
-                old_status,
-                new_status = "ACCEPTED_ON_CHAIN",
-                reason,
-                "agreement state transition"
+                status = %agreement.status,
+                "Agreement already canceled, ignoring snapshot"
             );
         }
+        Ok(None)
+    }
+}
 
-        if outcome.did_cancel {
-            match cancel_kind {
-                Some(CancelKind::ByRequester) => tracing::info!(
-                    agreement_id = %agreement.id,
-                    "Agreement marked as CanceledByRequester (on-chain confirmation)"
-                ),
-                Some(CancelKind::ByIndexer) => tracing::info!(
-                    agreement_id = %agreement.id,
-                    indexer = %snapshot.indexer,
-                    "Agreement marked as CanceledByIndexer"
-                ),
-                None => {}
-            }
-        }
-
-        // Pending-cancellation bookkeeping is a worker-queue enqueue loop
-        // plus per-record deletes; it can't sit inside the atomic tx
-        // without holding DB locks across network calls. Run it after
-        // commit, gated on `did_accept` so it only fires on a fresh
-        // AcceptedOnChain write (not on a no-op where the row was
-        // already there from a prior crash-recovered run).
-        if outcome.did_accept {
-            execute_pending_cancellations(&agreement.id, registry, worker_queue).await?;
-        }
-    } else if already_terminal_cancel && snapshot.state.is_canceled() {
-        tracing::debug!(
-            agreement_id = %agreement.id,
-            status = %agreement.status,
-            "Agreement already canceled, ignoring snapshot"
+/// Log the transition that landed and, on fresh accepts, fan out the
+/// linked pending cancellations.
+async fn finalize_reconciliation<R, W>(
+    prep: &PreparedReconciliation,
+    outcome: crate::registry::ReconciliationOutcome,
+    registry: &R,
+    worker_queue: &W,
+) -> anyhow::Result<()>
+where
+    R: AgreementRegistry + PendingCancellationRegistry,
+    W: WorkerQueue,
+{
+    if outcome.did_accept {
+        let (old_status, reason) = match prep.agreement.status {
+            IndexingAgreementStatus::Expired => ("EXPIRED", "recovered_expired_on_chain"),
+            _ => ("CREATED", "accepted_on_chain"),
+        };
+        tracing::info!(
+            agreement_id = %prep.agreement.id,
+            indexing_request_id = %prep.agreement.indexing_request_id,
+            old_status,
+            new_status = "ACCEPTED_ON_CHAIN",
+            reason,
+            "agreement state transition"
         );
     }
 
+    if outcome.did_cancel {
+        match prep.item.cancel {
+            Some(CancelKind::ByRequester) => tracing::info!(
+                agreement_id = %prep.agreement.id,
+                "Agreement marked as CanceledByRequester (on-chain confirmation)"
+            ),
+            Some(CancelKind::ByIndexer) => tracing::info!(
+                agreement_id = %prep.agreement.id,
+                indexer = %prep.indexer,
+                "Agreement marked as CanceledByIndexer"
+            ),
+            None => {}
+        }
+    }
+
+    // Gated on `did_accept` so it only fires on a fresh AcceptedOnChain
+    // write — repeating it on a CAS no-op would re-enqueue work that
+    // already ran in a prior poll.
+    if outcome.did_accept {
+        execute_pending_cancellations(&prep.agreement.id, registry, worker_queue).await?;
+    }
+
     Ok(())
+}
+
+/// Reconcile a single agreement snapshot against dipper's local DB.
+///
+/// Compares the snapshot's remote state to the local `IndexingAgreementStatus`
+/// and applies whatever transitions the diff implies. See the module-level
+/// transition table for the full mapping.
+#[cfg(test)]
+async fn reconcile_agreement<R, W>(
+    snapshot: &AgreementStateSnapshot,
+    registry: &R,
+    worker_queue: &W,
+    signer_address: Address,
+) -> anyhow::Result<()>
+where
+    R: AgreementRegistry + PendingCancellationRegistry,
+    W: WorkerQueue,
+{
+    let agreement = registry
+        .get_indexing_agreement_by_id(&snapshot.agreement_id)
+        .await?;
+    let Some(prep) =
+        prepare_reconciliation(snapshot, agreement, worker_queue, signer_address).await?
+    else {
+        return Ok(());
+    };
+
+    let outcome = registry
+        .apply_reconciliation(&prep.agreement.id, prep.item.apply_accept, prep.item.cancel)
+        .await?;
+
+    finalize_reconciliation(&prep, outcome, registry, worker_queue).await
 }
 
 /// Execute pending cancellations linked to a newly-accepted agreement.
@@ -611,6 +942,61 @@ where
     Ok(())
 }
 
+/// Recover stranded pending cancellations from a partial-progress crash.
+///
+/// `execute_pending_cancellations` is invoked from `reconcile_agreement`
+/// only on a fresh `Created`/`Expired` -> `AcceptedOnChain` transition.
+/// If the process crashes after the local row is committed as
+/// `AcceptedOnChain` but before the cancellation fan-out completes, the
+/// pending_cancellation rows are left behind and the cursor advances
+/// past the snapshot that would have re-triggered them. This sweep runs
+/// once per chain_listener poll and re-feeds any such IDs through
+/// `execute_pending_cancellations`, which is idempotent on already-canceled
+/// old agreements and on already-deleted pending rows.
+///
+/// Per-orphan failures are logged and swallowed so one stuck cancellation
+/// cannot block the rest of the sweep.
+async fn sweep_executable_pending_cancellations<R, W>(registry: &R, worker_queue: &W)
+where
+    R: AgreementRegistry + PendingCancellationRegistry,
+    W: WorkerQueue,
+{
+    let targets = match registry
+        .list_executable_pending_cancellations(SWEEP_BATCH_SIZE)
+        .await
+    {
+        Ok(targets) => targets,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "Failed to list executable pending cancellations for sweep"
+            );
+            return;
+        }
+    };
+
+    if targets.is_empty() {
+        return;
+    }
+
+    tracing::debug!(
+        count = targets.len(),
+        "Sweeping pending cancellations on AcceptedOnChain agreements"
+    );
+
+    for new_agreement_id in targets {
+        if let Err(err) =
+            execute_pending_cancellations(&new_agreement_id, registry, worker_queue).await
+        {
+            tracing::warn!(
+                error = %err,
+                new_agreement_id = %new_agreement_id,
+                "Sweep failed to execute pending cancellations; will retry next poll"
+            );
+        }
+    }
+}
+
 /// Trait for chain listener state persistence
 #[async_trait::async_trait]
 pub trait ChainListenerStateRegistry {
@@ -624,7 +1010,7 @@ pub trait ChainListenerStateRegistry {
     async fn update_chain_listener_state(
         &self,
         chain_id: u64,
-        last_processed_block: u64,
+        cursor: &Cursor,
         last_processed_block_timestamp: Option<u64>,
     ) -> Result<(), crate::registry::Error>;
 }
@@ -709,6 +1095,9 @@ mod tests {
         >,
         deleted_pending_cancellations: Vec<(IndexingAgreementId, IndexingAgreementId)>,
         fail_cancel_for: std::collections::HashSet<IndexingAgreementId>,
+        chain_listener_state_updates: Vec<(Cursor, Option<u64>)>,
+        initial_last_processed_block: u64,
+        fail_batch: bool,
     }
 
     impl MockRegistry {
@@ -796,6 +1185,22 @@ mod tests {
                 .unwrap()
                 .deleted_pending_cancellations
                 .contains(&(*new_id, *old_id))
+        }
+
+        fn set_initial_last_processed_block(&self, block: u64) {
+            self.state.lock().unwrap().initial_last_processed_block = block;
+        }
+
+        fn chain_listener_state_updates(&self) -> Vec<(Cursor, Option<u64>)> {
+            self.state
+                .lock()
+                .unwrap()
+                .chain_listener_state_updates
+                .clone()
+        }
+
+        fn set_fail_batch(&self, fail: bool) {
+            self.state.lock().unwrap().fail_batch = fail;
         }
     }
 
@@ -916,27 +1321,10 @@ mod tests {
             apply_accept: bool,
             cancel: Option<crate::registry::CancelKind>,
         ) -> RegistryResult<crate::registry::ReconciliationOutcome> {
-            // The mock reuses the existing per-transition tracking lists
-            // instead of modelling a real Postgres transaction. That's
-            // enough for the chain_listener tests, which only assert which
-            // transitions were recorded; real transactional behaviour is
-            // exercised by dipper_pgregistry's own integration tests.
             let mut state = self.state.lock().unwrap();
 
-            let mut did_accept = false;
-            if apply_accept {
-                let agreement = state.agreements.get(id);
-                if matches!(
-                    agreement.map(|a| a.status),
-                    Some(IndexingAgreementStatus::Created | IndexingAgreementStatus::Expired),
-                ) {
-                    state.marked_accepted_on_chain.push(*id);
-                    did_accept = true;
-                }
-            }
-
-            let mut did_cancel = false;
-            if let Some(kind) = cancel {
+            if let Some(kind_check) = cancel {
+                let _ = kind_check;
                 if state.fail_cancel_for.contains(id) {
                     return Err(crate::registry::Error::BackendError(
                         dipper_pgregistry::Error::DbError(sqlx::Error::Protocol(
@@ -944,7 +1332,53 @@ mod tests {
                         )),
                     ));
                 }
-                match kind {
+            }
+
+            let original_status = state.agreements.get(id).map(|a| a.status);
+
+            let did_accept = apply_accept
+                && matches!(
+                    original_status,
+                    Some(IndexingAgreementStatus::Created | IndexingAgreementStatus::Expired),
+                );
+
+            // The cancel UPDATE in the real tx sees the post-accept status
+            // because the accept's UPDATE landed first inside the same
+            // transaction.
+            let effective_status_for_cancel = if did_accept {
+                Some(IndexingAgreementStatus::AcceptedOnChain)
+            } else {
+                original_status
+            };
+
+            let did_cancel = match cancel {
+                Some(crate::registry::CancelKind::ByRequester) => matches!(
+                    effective_status_for_cancel,
+                    Some(
+                        IndexingAgreementStatus::Created
+                            | IndexingAgreementStatus::AcceptedOnChain
+                            | IndexingAgreementStatus::Rejected,
+                    ),
+                ),
+                Some(crate::registry::CancelKind::ByIndexer) => matches!(
+                    effective_status_for_cancel,
+                    Some(IndexingAgreementStatus::AcceptedOnChain),
+                ),
+                None => false,
+            };
+
+            // Roll back only when an accept landed in this tx but the
+            // paired cancel matched no row. When both writes matched no
+            // row, commit the empty tx and return Ok(no-op).
+            if did_accept && !did_cancel && cancel.is_some() {
+                return Err(crate::registry::Error::NoRecordsUpdated);
+            }
+
+            if did_accept {
+                state.marked_accepted_on_chain.push(*id);
+            }
+            if did_cancel {
+                match cancel.expect("did_cancel implies cancel is Some") {
                     crate::registry::CancelKind::ByRequester => {
                         state.marked_canceled_by_requester.push(*id);
                     }
@@ -952,13 +1386,35 @@ mod tests {
                         state.marked_canceled_by_indexer.push(*id);
                     }
                 }
-                did_cancel = true;
             }
 
             Ok(crate::registry::ReconciliationOutcome {
                 did_accept,
                 did_cancel,
             })
+        }
+
+        async fn apply_reconciliation_batch(
+            &self,
+            items: &[crate::registry::ReconciliationItem],
+        ) -> RegistryResult<
+            std::collections::HashMap<IndexingAgreementId, crate::registry::ReconciliationOutcome>,
+        > {
+            if self.state.lock().unwrap().fail_batch {
+                return Err(crate::registry::Error::BackendError(
+                    dipper_pgregistry::Error::DbError(sqlx::Error::Protocol(
+                        "forced batch failure (test)".into(),
+                    )),
+                ));
+            }
+            let mut outcomes = std::collections::HashMap::with_capacity(items.len());
+            for item in items {
+                let outcome = self
+                    .apply_reconciliation(&item.agreement_id, item.apply_accept, item.cancel)
+                    .await?;
+                outcomes.insert(item.agreement_id, outcome);
+            }
+            Ok(outcomes)
         }
 
         async fn get_expired_created_agreements(
@@ -1003,7 +1459,19 @@ mod tests {
         async fn count_active_agreements_by_deployment(
             &self,
         ) -> RegistryResult<std::collections::HashMap<DeploymentId, usize>> {
-            Ok(std::collections::HashMap::new())
+            let mut counts: std::collections::HashMap<DeploymentId, usize> =
+                std::collections::HashMap::new();
+            for agreement in self.state.lock().unwrap().agreements.values() {
+                if matches!(
+                    agreement.status,
+                    IndexingAgreementStatus::Created | IndexingAgreementStatus::AcceptedOnChain,
+                ) {
+                    *counts
+                        .entry(agreement.terms.metadata.subgraph_deployment_id)
+                        .or_insert(0) += 1;
+                }
+            }
+            Ok(counts)
         }
 
         async fn mark_indexing_agreement_as_abandoned(
@@ -1059,6 +1527,28 @@ mod tests {
                 .deleted_pending_cancellations
                 .push((new_agreement_id, old_agreement_id));
             Ok(())
+        }
+
+        async fn list_executable_pending_cancellations(
+            &self,
+            limit: i64,
+        ) -> RegistryResult<Vec<IndexingAgreementId>> {
+            let state = self.state.lock().unwrap();
+            let mut ids: Vec<IndexingAgreementId> = state
+                .pending_cancellations
+                .iter()
+                .filter(|(_, pcs)| !pcs.is_empty())
+                .filter_map(|(new_id, _)| {
+                    state
+                        .agreements
+                        .get(new_id)
+                        .filter(|a| matches!(a.status, IndexingAgreementStatus::AcceptedOnChain))
+                        .map(|_| *new_id)
+                })
+                .collect();
+            ids.sort();
+            ids.truncate(limit.max(0) as usize);
+            Ok(ids)
         }
     }
 
@@ -1331,6 +1821,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_reconcile_no_op_when_local_status_blocks_cancel_filter() {
+        // Local is in a terminal-but-not-cancel status (DeliveryFailed),
+        // remote snapshot says canceled. The chain_listener's Rust-side
+        // already_terminal_cancel guard does not catch DeliveryFailed,
+        // so apply_reconciliation is invoked with apply_accept=false and
+        // cancel=Some(...). The cancel UPDATE matches no row because
+        // DeliveryFailed is not in the allowed_from list. The function
+        // must commit the empty tx and return Ok with both flags false,
+        // so the chain_listener treats the snapshot as a successful no-op
+        // rather than incrementing its `errors` counter.
+        let registry = MockRegistry::new();
+        let worker_queue = MockWorkerQueue::default();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
+        let signer_address: Address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .parse()
+            .unwrap();
+
+        registry.add_agreement(agreement_id, IndexingAgreementStatus::DeliveryFailed);
+
+        let snapshot = make_snapshot(
+            agreement_id,
+            AgreementState::CanceledByPayer,
+            signer_address,
+        );
+        let result = reconcile_agreement(&snapshot, &registry, &worker_queue, signer_address).await;
+
+        assert!(result.is_ok());
+        assert!(!registry.was_marked_canceled_by_requester(&agreement_id));
+        assert!(!registry.was_marked_canceled_by_indexer(&agreement_id));
+        assert!(!registry.was_marked_accepted_on_chain(&agreement_id));
+    }
+
+    #[tokio::test]
     async fn test_reconcile_applies_accept_then_cancel_in_one_snapshot() {
         // Transient case: dipper polls after both the accept and cancel
         // landed on-chain. Local is still Created, remote is CanceledByPayer.
@@ -1467,6 +1990,61 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    // -- sweep_executable_pending_cancellations tests --
+
+    #[tokio::test]
+    async fn test_sweep_recovers_orphaned_pending_cancellations() {
+        // Crash recovery scenario: a prior reconcile committed the new
+        // agreement to AcceptedOnChain but execute_pending_cancellations
+        // never ran (or crashed mid-fanout), so the pending row lingers
+        // and the old agreement is still alive. The sweep must complete
+        // the cancellation without needing another snapshot to arrive.
+        let registry = MockRegistry::new();
+        let worker_queue = MockWorkerQueue::default();
+        let new_id = IndexingAgreementId::from_bytes(rand::random());
+        let old_id = IndexingAgreementId::from_bytes(rand::random());
+        let request_id = IndexingRequestId::new();
+
+        registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
+        registry.add_agreement(old_id, IndexingAgreementStatus::AcceptedOnChain);
+        registry.add_pending_cancellation(new_id, old_id, request_id);
+
+        sweep_executable_pending_cancellations(&registry, &worker_queue).await;
+
+        assert!(registry.was_marked_canceled_by_requester(&old_id));
+        assert!(registry.was_pending_cancellation_deleted(&new_id, &old_id));
+    }
+
+    #[tokio::test]
+    async fn test_sweep_skips_when_new_agreement_not_accepted() {
+        // The sweep must not act on pending rows whose new agreement is
+        // still Created — those belong to the normal reconcile path and
+        // running the cancellation early would prematurely kill the old
+        // agreement before the replacement is on-chain.
+        let registry = MockRegistry::new();
+        let worker_queue = MockWorkerQueue::default();
+        let new_id = IndexingAgreementId::from_bytes(rand::random());
+        let old_id = IndexingAgreementId::from_bytes(rand::random());
+        let request_id = IndexingRequestId::new();
+
+        registry.add_agreement(new_id, IndexingAgreementStatus::Created);
+        registry.add_agreement(old_id, IndexingAgreementStatus::AcceptedOnChain);
+        registry.add_pending_cancellation(new_id, old_id, request_id);
+
+        sweep_executable_pending_cancellations(&registry, &worker_queue).await;
+
+        assert!(!registry.was_marked_canceled_by_requester(&old_id));
+        assert!(!registry.was_pending_cancellation_deleted(&new_id, &old_id));
+    }
+
+    #[tokio::test]
+    async fn test_sweep_no_orphans_is_noop() {
+        let registry = MockRegistry::new();
+        let worker_queue = MockWorkerQueue::default();
+
+        sweep_executable_pending_cancellations(&registry, &worker_queue).await;
+    }
+
     // -- notify wakeup integration test --
 
     #[async_trait::async_trait]
@@ -1475,9 +2053,11 @@ mod tests {
             &self,
             _chain_id: u64,
         ) -> crate::registry::Result<Option<ChainListenerState>> {
+            let last_processed_block = self.state.lock().unwrap().initial_last_processed_block;
             Ok(Some(ChainListenerState {
                 _chain_id: 1337,
-                last_processed_block: 0,
+                last_processed_block,
+                last_processed_id: None,
                 last_processed_block_timestamp: None,
             }))
         }
@@ -1485,9 +2065,14 @@ mod tests {
         async fn update_chain_listener_state(
             &self,
             _chain_id: u64,
-            _last_processed_block: u64,
-            _last_processed_block_timestamp: Option<u64>,
+            cursor: &Cursor,
+            last_processed_block_timestamp: Option<u64>,
         ) -> crate::registry::Result<()> {
+            self.state
+                .lock()
+                .unwrap()
+                .chain_listener_state_updates
+                .push((cursor.clone(), last_processed_block_timestamp));
             Ok(())
         }
     }
@@ -1501,7 +2086,8 @@ mod tests {
     impl super::super::chain_events::ChainEventSource for TimingEventSource {
         async fn get_changed_agreements(
             &self,
-            _since_block: u64,
+            _since: &Cursor,
+            _pinned_block: Option<u64>,
         ) -> Result<
             super::super::chain_events::ChangedAgreementsResult,
             super::super::chain_events::ChainEventError,
@@ -1514,8 +2100,283 @@ mod tests {
                 snapshots: vec![],
                 latest_block: 1,
                 latest_block_timestamp: Some(1000),
-                cursor_block: 1,
+                cursor: Cursor::at_block(1),
             })
+        }
+    }
+
+    /// Persist the freshly-fetched chain timestamp even when a parse
+    /// failure holds the cursor back. The expiration service reads the
+    /// persisted timestamp to decide which agreements are past their
+    /// deadline; coupling the timestamp write to a cursor advance lets
+    /// expiration go dormant whenever the cursor stalls.
+    #[tokio::test]
+    async fn test_persists_timestamp_when_cursor_held_back() {
+        let registry = MockRegistry::new();
+        // Pin the initial cursor at block 100 so the held-back cursor
+        // (also 100, no id) is not strictly greater and `advance_cursor`
+        // is false.
+        registry.set_initial_last_processed_block(100);
+
+        let event_source = super::super::chain_events::mock::MockEventSource::new();
+        event_source.set_latest_block(200);
+        event_source.set_latest_block_timestamp(Some(1_700_000_000));
+        event_source.set_cursor_override(Some(Cursor::at_block(100)));
+
+        let config = crate::config::ChainListenerConfig {
+            enabled: true,
+            subgraph_endpoint: "http://localhost:8000/subgraphs/name/test".parse().unwrap(),
+            subgraph_api_key: None,
+            chain_id: 1337,
+            poll_interval: Duration::from_millis(50),
+            request_timeout: Duration::from_secs(5),
+            max_retries: 0,
+            // Disable the reorg buffer for this test so the read-side
+            // cursor stays at the persisted value and the held-back
+            // assertion is unambiguous.
+            reorg_buffer_blocks: 0,
+        };
+
+        let ctx = Ctx {
+            registry: registry.clone(),
+            worker_queue: MockWorkerQueue::default(),
+            event_source,
+            config,
+            signer_address: Address::ZERO,
+            chain_listener_notify: Arc::new(tokio::sync::Notify::new()),
+        };
+
+        let (handle, service) = new(ctx);
+        let svc_handle = tokio::spawn(service);
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        handle.stop().await;
+        let _ = svc_handle.await;
+
+        let updates = registry.chain_listener_state_updates();
+        assert!(
+            !updates.is_empty(),
+            "expected at least one update_chain_listener_state call despite held-back cursor"
+        );
+        for (cursor, ts) in &updates {
+            assert_eq!(
+                cursor.block, 100,
+                "cursor must stay at 100 when get_changed_agreements returns a held-back cursor"
+            );
+            assert_eq!(
+                *ts,
+                Some(1_700_000_000),
+                "timestamp must be persisted on every poll while the subgraph reports it"
+            );
+        }
+    }
+
+    /// Drives a multi-page drain through the listener loop and asserts
+    /// every snapshot past the per-query cap still gets reconciled.
+    #[tokio::test]
+    async fn test_chain_listener_paginates_across_subgraph_page_cap() {
+        let registry = MockRegistry::new();
+        let event_source = super::super::chain_events::mock::MockEventSource::new();
+        event_source.set_latest_block(100);
+        event_source.set_latest_block_timestamp(Some(1_700_000_000));
+        // Cap of 2 per poll forces multiple pages over the 5 snapshots.
+        event_source.set_page_size(Some(2));
+
+        let agreement_ids: Vec<IndexingAgreementId> = (0..5)
+            .map(|_| IndexingAgreementId::from_bytes(rand::random()))
+            .collect();
+        for (i, id) in agreement_ids.iter().enumerate() {
+            registry.add_agreement(*id, IndexingAgreementStatus::Created);
+            event_source.add_snapshots(vec![AgreementStateSnapshot {
+                agreement_id: *id,
+                indexer: "0x1234567890123456789012345678901234567890"
+                    .parse()
+                    .unwrap(),
+                state: super::super::chain_events::AgreementState::Accepted,
+                canceled_by: Address::ZERO,
+                last_state_change_block: ((i + 1) as u64) * 10,
+            }]);
+        }
+
+        let config = crate::config::ChainListenerConfig {
+            enabled: true,
+            subgraph_endpoint: "http://localhost:8000/subgraphs/name/test".parse().unwrap(),
+            subgraph_api_key: None,
+            chain_id: 1337,
+            poll_interval: Duration::from_millis(20),
+            request_timeout: Duration::from_secs(5),
+            max_retries: 0,
+            reorg_buffer_blocks: 0,
+        };
+
+        let ctx = Ctx {
+            registry: registry.clone(),
+            worker_queue: MockWorkerQueue::default(),
+            event_source,
+            config,
+            signer_address: Address::ZERO,
+            chain_listener_notify: Arc::new(tokio::sync::Notify::new()),
+        };
+
+        let (handle, service) = new(ctx);
+        let svc_handle = tokio::spawn(service);
+
+        // Allow several poll intervals: at page_size=2 over 5 snapshots
+        // the loop needs ~3 polls to consume them all, plus one extra
+        // for the final cursor advance to latest_block.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        handle.stop().await;
+        let _ = svc_handle.await;
+
+        for id in &agreement_ids {
+            assert!(
+                registry.was_marked_accepted_on_chain(id),
+                "agreement {id} past the page cap was never reconciled; \
+                 cursor advanced past it"
+            );
+        }
+    }
+
+    /// When N agreements share one `lastStateChangeBlock` and N exceeds
+    /// the page cap, the keyset cursor's `id` discriminator must drain
+    /// the tie across multiple pages.
+    #[tokio::test]
+    async fn test_chain_listener_drains_same_block_tied_entries() {
+        let registry = MockRegistry::new();
+        let event_source = super::super::chain_events::mock::MockEventSource::new();
+        event_source.set_latest_block(100);
+        event_source.set_latest_block_timestamp(Some(1_700_000_000));
+        // Cap of 2 forces multiple pages over the 5 tied entries.
+        event_source.set_page_size(Some(2));
+
+        // Five agreements all at the same block. With distinct random ids
+        // they carry the implicit `(block, id)` order graph-node uses.
+        let agreement_ids: Vec<IndexingAgreementId> = (0..5)
+            .map(|_| IndexingAgreementId::from_bytes(rand::random()))
+            .collect();
+        for id in &agreement_ids {
+            registry.add_agreement(*id, IndexingAgreementStatus::Created);
+            event_source.add_snapshots(vec![AgreementStateSnapshot {
+                agreement_id: *id,
+                indexer: "0x1234567890123456789012345678901234567890"
+                    .parse()
+                    .unwrap(),
+                state: super::super::chain_events::AgreementState::Accepted,
+                canceled_by: Address::ZERO,
+                last_state_change_block: 50,
+            }]);
+        }
+
+        let config = crate::config::ChainListenerConfig {
+            enabled: true,
+            subgraph_endpoint: "http://localhost:8000/subgraphs/name/test".parse().unwrap(),
+            subgraph_api_key: None,
+            chain_id: 1337,
+            poll_interval: Duration::from_millis(20),
+            request_timeout: Duration::from_secs(5),
+            max_retries: 0,
+            reorg_buffer_blocks: 0,
+        };
+
+        let ctx = Ctx {
+            registry: registry.clone(),
+            worker_queue: MockWorkerQueue::default(),
+            event_source,
+            config,
+            signer_address: Address::ZERO,
+            chain_listener_notify: Arc::new(tokio::sync::Notify::new()),
+        };
+
+        let (handle, service) = new(ctx);
+        let svc_handle = tokio::spawn(service);
+
+        // 5 entries at cap=2 needs ~3 polls plus one tail tick.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        handle.stop().await;
+        let _ = svc_handle.await;
+
+        for id in &agreement_ids {
+            assert!(
+                registry.was_marked_accepted_on_chain(id),
+                "agreement {id} sharing block 50 with the others was never reconciled; \
+                 keyset cursor failed to drain the tie"
+            );
+        }
+    }
+
+    /// Drives the drain through a forced `apply_reconciliation_batch`
+    /// failure and asserts the row counters do not double-count: every
+    /// item lands in `errors` and none in `processed`. Without the fix
+    /// in `drain_once`, the per-prep finalize loop would tick
+    /// `processed += 1` for the same items already counted as errors.
+    #[tokio::test]
+    async fn test_drain_counters_no_double_count_on_batch_failure() {
+        let registry = MockRegistry::new();
+        registry.set_fail_batch(true);
+
+        let event_source = super::super::chain_events::mock::MockEventSource::new();
+        event_source.set_latest_block(100);
+        event_source.set_latest_block_timestamp(Some(1_700_000_000));
+
+        const ITEMS: usize = 4;
+        let agreement_ids: Vec<IndexingAgreementId> = (0..ITEMS)
+            .map(|_| IndexingAgreementId::from_bytes(rand::random()))
+            .collect();
+        for (i, id) in agreement_ids.iter().enumerate() {
+            registry.add_agreement(*id, IndexingAgreementStatus::Created);
+            event_source.add_snapshots(vec![AgreementStateSnapshot {
+                agreement_id: *id,
+                indexer: "0x1234567890123456789012345678901234567890"
+                    .parse()
+                    .unwrap(),
+                state: super::super::chain_events::AgreementState::Accepted,
+                canceled_by: Address::ZERO,
+                last_state_change_block: ((i + 1) as u64) * 10,
+            }]);
+        }
+
+        let mut cursor = Cursor::genesis();
+        let mut last_persisted_timestamp: Option<u64> = None;
+        let mut last_subgraph_head: u64 = 0;
+        let mut stall_count: u32 = 0;
+        let mut consecutive_failures: u32 = 0;
+        let (_tx_stop, mut rx_stop) = mpsc::channel::<()>(1);
+
+        let outcome = drain_once(
+            &mut cursor,
+            &mut last_persisted_timestamp,
+            &mut last_subgraph_head,
+            &mut stall_count,
+            &mut consecutive_failures,
+            1337,
+            0,
+            Address::ZERO,
+            &registry,
+            &MockWorkerQueue::default(),
+            &event_source,
+            &mut rx_stop,
+        )
+        .await
+        .expect("subgraph fetch itself succeeded; only the batch apply failed");
+
+        assert_eq!(
+            outcome.errors, ITEMS as u64,
+            "every batch-failed item must be counted exactly once as an error"
+        );
+        assert_eq!(
+            outcome.processed, 0,
+            "items whose batch failed must not also count as processed (double-count regression)"
+        );
+
+        // Side-effect cross-check: nothing was actually applied.
+        for id in &agreement_ids {
+            assert!(
+                !registry.was_marked_accepted_on_chain(id),
+                "batch failure must not leave per-row mock side-effects"
+            );
         }
     }
 
@@ -1534,6 +2395,7 @@ mod tests {
             poll_interval: Duration::from_millis(50),
             request_timeout: Duration::from_secs(5),
             max_retries: 0,
+            reorg_buffer_blocks: 0,
         };
 
         let ctx = Ctx {

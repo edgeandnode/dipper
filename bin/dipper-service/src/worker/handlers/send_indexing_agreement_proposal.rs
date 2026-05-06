@@ -631,6 +631,12 @@ mod tests {
         ) -> crate::registry::Result<()> {
             Ok(())
         }
+        async fn list_executable_pending_cancellations(
+            &self,
+            _limit: i64,
+        ) -> crate::registry::Result<Vec<IndexingAgreementId>> {
+            Ok(vec![])
+        }
     }
 
     #[derive(Default)]

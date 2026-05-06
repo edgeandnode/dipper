@@ -1102,6 +1102,12 @@ mod tests {
         ) -> RegistryResult<()> {
             Ok(())
         }
+        async fn list_executable_pending_cancellations(
+            &self,
+            _limit: i64,
+        ) -> RegistryResult<Vec<IndexingAgreementId>> {
+            Ok(vec![])
+        }
     }
 
     #[derive(Clone)]

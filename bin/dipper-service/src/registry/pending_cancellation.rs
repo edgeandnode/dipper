@@ -40,4 +40,15 @@ pub trait PendingCancellationRegistry {
         new_agreement_id: IndexingAgreementId,
         old_agreement_id: IndexingAgreementId,
     ) -> RegistryResult<()>;
+
+    /// List `new_agreement_id`s of pending cancellation rows whose linked
+    /// agreement is in `AcceptedOnChain` status. Used by the chain_listener
+    /// sweep to recover from a partial-progress crash inside
+    /// `execute_pending_cancellations`. Re-running the function on each
+    /// returned ID is idempotent. Capped at `limit` rows so a backlog
+    /// drains across polls instead of blocking one tick.
+    async fn list_executable_pending_cancellations(
+        &self,
+        limit: i64,
+    ) -> RegistryResult<Vec<IndexingAgreementId>>;
 }

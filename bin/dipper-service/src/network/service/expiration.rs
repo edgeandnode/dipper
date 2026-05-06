@@ -378,7 +378,7 @@ mod tests {
         async fn update_chain_listener_state(
             &self,
             _chain_id: u64,
-            _last_processed_block: u64,
+            _cursor: &super::super::chain_events::Cursor,
             _last_processed_block_timestamp: Option<u64>,
         ) -> RegistryResult<()> {
             Ok(())
@@ -592,6 +592,12 @@ mod tests {
         ) -> RegistryResult<()> {
             unimplemented!()
         }
+        async fn list_executable_pending_cancellations(
+            &self,
+            _limit: i64,
+        ) -> RegistryResult<Vec<IndexingAgreementId>> {
+            Ok(vec![])
+        }
     }
 
     #[derive(Clone, Default)]
@@ -734,6 +740,7 @@ mod tests {
         registry.set_chain_state(Some(ChainListenerState {
             _chain_id: 1337,
             last_processed_block: 100,
+            last_processed_id: None,
             last_processed_block_timestamp: None,
         }));
 
@@ -765,6 +772,7 @@ mod tests {
         registry.set_chain_state(Some(ChainListenerState {
             _chain_id: 1337,
             last_processed_block: 500,
+            last_processed_id: None,
             last_processed_block_timestamp: Some(1700000000),
         }));
 

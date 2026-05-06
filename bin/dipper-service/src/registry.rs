@@ -15,13 +15,13 @@ use thegraph_core::{
 
 // Re-export for tests only
 #[cfg(test)]
-pub use self::agreement::{Indexer, ReconciliationOutcome};
+pub use self::agreement::Indexer;
 use self::result::Result as RegistryResult;
 pub use self::{
     agreement::{
         AgreementFeeRate, AgreementRegistry, CancelKind, IndexingAgreement, NewAgreementParams,
-        Status as IndexingAgreementStatus, Terms as IndexingAgreementTerms,
-        TermsMetadata as IndexingAgreementTermsMetadata,
+        ReconciliationItem, ReconciliationOutcome, Status as IndexingAgreementStatus,
+        Terms as IndexingAgreementTerms, TermsMetadata as IndexingAgreementTermsMetadata,
     },
     indexer_denylist::IndexerDenylistRegistry,
     indexing_request::{IndexingRequest, IndexingRequestRegistry, Status as IndexingRequestStatus},
@@ -172,6 +172,24 @@ impl AgreementRegistry for RegistryProvider {
             .await?
             .map(TryInto::try_into)
             .and_then(Result::ok))
+    }
+
+    async fn get_indexing_agreements_by_ids(
+        &self,
+        ids: &[IndexingAgreementId],
+    ) -> RegistryResult<std::collections::HashMap<IndexingAgreementId, IndexingAgreement>> {
+        let raw = self.inner.get_indexing_agreements_by_ids(ids).await?;
+        Ok(raw
+            .into_iter()
+            .filter_map(|(id, raw_agreement)| {
+                IndexingAgreement::try_from(raw_agreement)
+                    .map(|a| (id, a))
+                    .map_err(|e| {
+                        tracing::warn!(error = %e, agreement_id = %id, "skipping agreement with conversion error");
+                    })
+                    .ok()
+            })
+            .collect())
     }
 
     async fn get_indexing_agreements_by_deployment_id(
@@ -336,6 +354,40 @@ impl AgreementRegistry for RegistryProvider {
         })
     }
 
+    async fn apply_reconciliation_batch(
+        &self,
+        items: &[agreement::ReconciliationItem],
+    ) -> RegistryResult<
+        std::collections::HashMap<IndexingAgreementId, agreement::ReconciliationOutcome>,
+    > {
+        let pg_items: Vec<dipper_pgregistry::ReconciliationItem> = items
+            .iter()
+            .map(|item| dipper_pgregistry::ReconciliationItem {
+                agreement_id: item.agreement_id,
+                apply_accept: item.apply_accept,
+                cancel: item.cancel.map(|k| match k {
+                    agreement::CancelKind::ByRequester => {
+                        dipper_pgregistry::CancelKind::ByRequester
+                    }
+                    agreement::CancelKind::ByIndexer => dipper_pgregistry::CancelKind::ByIndexer,
+                }),
+            })
+            .collect();
+        let outcomes = self.inner.apply_reconciliation_batch(&pg_items).await?;
+        Ok(outcomes
+            .into_iter()
+            .map(|(id, o)| {
+                (
+                    id,
+                    agreement::ReconciliationOutcome {
+                        did_accept: o.did_accept,
+                        did_cancel: o.did_cancel,
+                    },
+                )
+            })
+            .collect())
+    }
+
     async fn get_expired_created_agreements(
         &self,
         batch_size: i64,
@@ -403,6 +455,13 @@ impl AgreementRegistry for RegistryProvider {
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, usize>> {
         self.inner
             .count_active_agreements_by_deployment()
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn exists_active_agreements(&self) -> RegistryResult<bool> {
+        self.inner
+            .exists_active_agreements()
             .await
             .map_err(Into::into)
     }
@@ -488,6 +547,16 @@ impl PendingCancellationRegistry for RegistryProvider {
             .await
             .map_err(Into::into)
     }
+
+    async fn list_executable_pending_cancellations(
+        &self,
+        limit: i64,
+    ) -> RegistryResult<Vec<IndexingAgreementId>> {
+        self.inner
+            .list_executable_pending_cancellations(limit)
+            .await
+            .map_err(Into::into)
+    }
 }
 
 #[async_trait]
@@ -504,6 +573,7 @@ impl crate::network::service::chain_listener::ChainListenerStateRegistry for Reg
                 |row| crate::network::service::chain_listener::ChainListenerState {
                     _chain_id: row.chain_id,
                     last_processed_block: row.last_processed_block,
+                    last_processed_id: row.last_processed_id,
                     last_processed_block_timestamp: row.last_processed_block_timestamp,
                 },
             ))
@@ -512,13 +582,14 @@ impl crate::network::service::chain_listener::ChainListenerStateRegistry for Reg
     async fn update_chain_listener_state(
         &self,
         chain_id: u64,
-        last_processed_block: u64,
+        cursor: &crate::network::service::chain_events::Cursor,
         last_processed_block_timestamp: Option<u64>,
     ) -> RegistryResult<()> {
         self.inner
             .update_chain_listener_state(
                 chain_id,
-                last_processed_block,
+                cursor.block,
+                cursor.id,
                 last_processed_block_timestamp,
             )
             .await
