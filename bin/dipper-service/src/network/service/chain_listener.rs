@@ -2176,6 +2176,7 @@ mod tests {
             // cursor stays at the persisted value and the held-back
             // assertion is unambiguous.
             reorg_buffer_blocks: 0,
+            wall_clock_skew_tolerance_secs: 60,
         };
 
         let ctx = Ctx {
@@ -2249,6 +2250,7 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             max_retries: 0,
             reorg_buffer_blocks: 0,
+            wall_clock_skew_tolerance_secs: 60,
         };
 
         let ctx = Ctx {
@@ -2319,6 +2321,7 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             max_retries: 0,
             reorg_buffer_blocks: 0,
+            wall_clock_skew_tolerance_secs: 60,
         };
 
         let ctx = Ctx {
@@ -2524,6 +2527,7 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             max_retries: 0,
             reorg_buffer_blocks: 0,
+            wall_clock_skew_tolerance_secs: 60,
         };
 
         let ctx = Ctx {

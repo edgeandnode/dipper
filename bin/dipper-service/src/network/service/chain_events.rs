@@ -43,13 +43,6 @@ use serde::Deserialize;
 use thegraph_core::alloy::primitives::Address;
 use url::Url;
 
-/// Maximum tolerated drift between the subgraph's reported chain timestamp
-/// and the listener's wall clock. A subgraph reporting a timestamp past
-/// this bound is treated as corrupt or maliciously poisoned and the whole
-/// response is dropped — without this, a single bad value would ratchet
-/// the persisted timestamp into the future and never recover.
-const WALL_CLOCK_SKEW_TOLERANCE_SECS: u64 = 60;
-
 /// State of an agreement as recorded by the subgraph. Mirrors the
 /// `AgreementState` enum in the indexing-payments-subgraph schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +207,11 @@ pub struct SubgraphEventSourceConfig {
     pub request_timeout: Duration,
     /// Maximum retry attempts for transient failures
     pub max_retries: u32,
+    /// How far ahead of the host's wall clock the subgraph's reported
+    /// chain timestamp may sit before the response is rejected as
+    /// corrupt. Without this, a single poisoned value would ratchet the
+    /// persisted timestamp into the future and never recover.
+    pub wall_clock_skew_tolerance_secs: u64,
 }
 
 /// Subgraph-based implementation of chain event source.
@@ -466,12 +464,13 @@ impl ChainEventSource for SubgraphEventSource {
 
         if let Some(ts) = response.meta.block.timestamp {
             let now = now_secs();
-            if let Err(err) = check_subgraph_skew(ts, now, WALL_CLOCK_SKEW_TOLERANCE_SECS) {
+            let tolerance = self.config.wall_clock_skew_tolerance_secs;
+            if let Err(err) = check_subgraph_skew(ts, now, tolerance) {
                 tracing::warn!(
                     event = "subgraph_skew_drop",
                     subgraph_timestamp = ts,
                     now,
-                    tolerance_secs = WALL_CLOCK_SKEW_TOLERANCE_SECS,
+                    tolerance_secs = tolerance,
                     "Subgraph timestamp past wall-clock + tolerance; dropping response as corrupt"
                 );
                 return Err(err);

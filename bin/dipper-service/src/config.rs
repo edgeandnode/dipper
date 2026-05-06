@@ -452,6 +452,13 @@ pub struct ChainListenerConfig {
     /// still picked up. Set to 0 to disable.
     #[serde(default = "default_chain_listener_reorg_buffer_blocks")]
     pub reorg_buffer_blocks: u32,
+
+    /// How far ahead of the host's wall clock the subgraph's reported
+    /// chain timestamp may sit before the response is rejected as
+    /// corrupt. Default 60s covers typical NTP drift; widen if the
+    /// host clock is known to lag.
+    #[serde(default = "default_chain_listener_wall_clock_skew_tolerance_secs")]
+    pub wall_clock_skew_tolerance_secs: u64,
 }
 
 fn default_chain_listener_enabled() -> bool {
@@ -476,6 +483,10 @@ fn default_chain_listener_max_retries() -> u32 {
 
 fn default_chain_listener_reorg_buffer_blocks() -> u32 {
     20
+}
+
+fn default_chain_listener_wall_clock_skew_tolerance_secs() -> u64 {
+    60
 }
 
 fn default_gas_price_multiplier() -> f64 {
