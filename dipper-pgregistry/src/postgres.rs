@@ -43,6 +43,11 @@ mod indexing_request;
 pub struct ChainListenerStateRow {
     pub chain_id: u64,
     pub last_processed_block: u64,
+    /// `id` of the last consumed entity at `last_processed_block`. `None`
+    /// means the cursor sits at a block boundary (genesis or after a
+    /// strict block advance). Stored as `BYTEA` and surfaced here as the
+    /// strongly-typed `IndexingAgreementId`.
+    pub last_processed_id: Option<dipper_core::ids::IndexingAgreementId>,
     pub last_processed_block_timestamp: Option<u64>,
 }
 
@@ -60,10 +65,18 @@ pub enum CancelKind {
 /// report which transitions actually affected a row, so the caller can
 /// gate post-commit side effects (e.g. running pending-cancellation
 /// bookkeeping only when a fresh `AcceptedOnChain` write happened).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ReconciliationOutcome {
     pub did_accept: bool,
     pub did_cancel: bool,
+}
+
+/// One row's reconciliation request inside a batched apply.
+#[derive(Debug, Clone, Copy)]
+pub struct ReconciliationItem {
+    pub agreement_id: dipper_core::ids::IndexingAgreementId,
+    pub apply_accept: bool,
+    pub cancel: Option<CancelKind>,
 }
 
 /// A registry that stores indexing requests, agreements, and receipts in a PostgreSQL database.
@@ -328,6 +341,44 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
+    /// Batch lookup of agreements by id. Missing ids are absent from the
+    /// returned map. Single round-trip (`WHERE id = ANY($1)`) so the
+    /// chain listener's per-page reconcile prep doesn't issue one SELECT
+    /// per snapshot.
+    pub async fn get_indexing_agreements_by_ids(
+        &self,
+        agreement_ids: &[IndexingAgreementId],
+    ) -> Result<HashMap<IndexingAgreementId, IndexingAgreement>, Error> {
+        if agreement_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows: Vec<IndexingAgreement> = sqlx::query_as(
+            r#"
+            SELECT
+                id,
+                nonce_uuid,
+                created_at,
+                updated_at,
+                status,
+                indexing_request_id,
+                deployment_id,
+                indexer_id,
+                indexer_url,
+                terms,
+                last_block_height,
+                last_progress_at,
+                rejection_reason
+            FROM dipper_reg_indexing_agreements
+            WHERE id = ANY($1)
+            "#,
+        )
+        .bind(agreement_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|a| (a.id, a)).collect())
+    }
+
     pub async fn get_indexing_agreements_by_deployment_id(
         &self,
         deployment_id: &DeploymentId,
@@ -564,6 +615,13 @@ impl PgRegistry {
     /// for this agreement. Overwrites any prior value, so a resubmit after
     /// mempool eviction records the live hash rather than the dropped one.
     /// Observability-only: no status transition is performed here.
+    ///
+    /// Guarded on `status IN (Created, AcceptedOnChain)` so a delayed
+    /// receipt-confirmation cannot stamp `offer_tx_hash` onto a row that
+    /// has since transitioned to `Expired`, `DeliveryFailed`, `Rejected`,
+    /// or one of the cancel states. The caller treats any failure here
+    /// as non-fatal and just logs; a no-match result is also non-fatal
+    /// and silently skipped.
     pub async fn update_offer_tx_hash(
         &self,
         agreement_id: &IndexingAgreementId,
@@ -575,11 +633,13 @@ impl PgRegistry {
             SET
                 offer_tx_hash = $1,
                 updated_at = timezone('UTC', now())
-            WHERE id = $2
+            WHERE id = $2 AND status IN ($3, $4)
             "#,
         )
         .bind(&tx_hash[..])
         .bind(agreement_id)
+        .bind(IndexingAgreementStatus::Created)
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -650,10 +710,19 @@ impl PgRegistry {
     /// `did_accept` is false when the agreement was not in `Created` or
     /// `Expired` at UPDATE time; callers gate side effects like
     /// `execute_pending_cancellations` on this so it only fires on a fresh
-    /// accept write. `cancel` returns `NoRecordsUpdated` (rolling back the
-    /// whole tx) if the row is already in a terminal cancel state or the
-    /// source-status filter does not match — prevents the accept write
-    /// from landing alone.
+    /// accept write.
+    ///
+    /// Roll back with `NoRecordsUpdated` only when an accept landed in
+    /// this tx but the paired cancel matched no row — committing then
+    /// would leave the AcceptedOnChain write visible without its
+    /// follow-up cancel, which the Accept-then-Cancel-in-one-snapshot
+    /// invariant forbids. When both writes find no matching row (caller
+    /// passed `apply_accept = false` and the cancel filter rejected, e.g.
+    /// the row is in a terminal-but-not-cancel state like `DeliveryFailed`
+    /// that the chain_listener's Rust-side guard does not catch), commit
+    /// the empty tx and return `Ok` with both flags false. The
+    /// chain_listener treats that as a successful no-op rather than a
+    /// hard error.
     pub async fn apply_reconciliation(
         &self,
         agreement_id: &IndexingAgreementId,
@@ -695,7 +764,7 @@ impl PgRegistry {
             };
             did_cancel =
                 update_status_from(&mut tx, agreement_id, new_status, allowed_from).await?;
-            if !did_cancel {
+            if did_accept && !did_cancel {
                 return Err(Error::NoRecordsUpdated);
             }
         }
@@ -706,6 +775,143 @@ impl PgRegistry {
             did_accept,
             did_cancel,
         })
+    }
+
+    /// Batched `apply_reconciliation`. Collapses single-transition items
+    /// into one transaction with at most three batched `UPDATE`s
+    /// (accept, cancel-by-requester, cancel-by-indexer); items combining
+    /// accept+cancel still run per-row in the same tx so the rollback
+    /// rule on a paired-cancel miss is preserved. Every input id appears
+    /// in the returned map, with both flags `false` when no row flipped.
+    ///
+    /// Caller contract: input ids must be unique. Duplicates would leave
+    /// stale outcome flags from the first iteration; debug_asserted.
+    pub async fn apply_reconciliation_batch(
+        &self,
+        items: &[ReconciliationItem],
+    ) -> Result<HashMap<IndexingAgreementId, ReconciliationOutcome>, Error> {
+        debug_assert!(
+            {
+                let mut seen: std::collections::HashSet<IndexingAgreementId> =
+                    std::collections::HashSet::with_capacity(items.len());
+                items.iter().all(|i| seen.insert(i.agreement_id))
+            },
+            "apply_reconciliation_batch requires unique agreement_ids; duplicates would leave \
+             stale outcome flags from the first iteration",
+        );
+
+        let mut outcomes: HashMap<IndexingAgreementId, ReconciliationOutcome> =
+            HashMap::with_capacity(items.len());
+        for item in items {
+            outcomes.insert(item.agreement_id, ReconciliationOutcome::default());
+        }
+
+        if items.is_empty() {
+            return Ok(outcomes);
+        }
+
+        // Single-pass partition into the four item shapes.
+        let mut paired: Vec<&ReconciliationItem> = Vec::new();
+        let mut accept_only: Vec<IndexingAgreementId> = Vec::new();
+        let mut cancel_by_requester: Vec<IndexingAgreementId> = Vec::new();
+        let mut cancel_by_indexer: Vec<IndexingAgreementId> = Vec::new();
+        for item in items {
+            match (item.apply_accept, item.cancel) {
+                (true, Some(_)) => paired.push(item),
+                (true, None) => accept_only.push(item.agreement_id),
+                (false, Some(CancelKind::ByRequester)) => {
+                    cancel_by_requester.push(item.agreement_id)
+                }
+                (false, Some(CancelKind::ByIndexer)) => cancel_by_indexer.push(item.agreement_id),
+                (false, None) => {}
+            }
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        for item in paired {
+            let cancel_kind = item.cancel.expect("paired implies Some");
+            let did_accept = update_status_from(
+                &mut tx,
+                &item.agreement_id,
+                IndexingAgreementStatus::AcceptedOnChain,
+                &[
+                    IndexingAgreementStatus::Created,
+                    IndexingAgreementStatus::Expired,
+                ],
+            )
+            .await?;
+            let (new_status, allowed_from): (_, &[IndexingAgreementStatus]) = match cancel_kind {
+                CancelKind::ByRequester => (
+                    IndexingAgreementStatus::CanceledByRequester,
+                    &[
+                        IndexingAgreementStatus::Created,
+                        IndexingAgreementStatus::AcceptedOnChain,
+                        IndexingAgreementStatus::Rejected,
+                    ],
+                ),
+                CancelKind::ByIndexer => (
+                    IndexingAgreementStatus::CanceledByIndexer,
+                    &[IndexingAgreementStatus::AcceptedOnChain],
+                ),
+            };
+            let did_cancel =
+                update_status_from(&mut tx, &item.agreement_id, new_status, allowed_from).await?;
+            if did_accept && !did_cancel {
+                return Err(Error::NoRecordsUpdated);
+            }
+            outcomes.insert(
+                item.agreement_id,
+                ReconciliationOutcome {
+                    did_accept,
+                    did_cancel,
+                },
+            );
+        }
+
+        for id in batch_update_status_from(
+            &mut tx,
+            &accept_only,
+            IndexingAgreementStatus::AcceptedOnChain,
+            &[
+                IndexingAgreementStatus::Created,
+                IndexingAgreementStatus::Expired,
+            ],
+        )
+        .await?
+        {
+            outcomes.entry(id).or_default().did_accept = true;
+        }
+
+        for id in batch_update_status_from(
+            &mut tx,
+            &cancel_by_requester,
+            IndexingAgreementStatus::CanceledByRequester,
+            &[
+                IndexingAgreementStatus::Created,
+                IndexingAgreementStatus::AcceptedOnChain,
+                IndexingAgreementStatus::Rejected,
+            ],
+        )
+        .await?
+        {
+            outcomes.entry(id).or_default().did_cancel = true;
+        }
+
+        for id in batch_update_status_from(
+            &mut tx,
+            &cancel_by_indexer,
+            IndexingAgreementStatus::CanceledByIndexer,
+            &[IndexingAgreementStatus::AcceptedOnChain],
+        )
+        .await?
+        {
+            outcomes.entry(id).or_default().did_cancel = true;
+        }
+
+        tx.commit().await?;
+
+        Ok(outcomes)
     }
 
     pub async fn register_new_indexing_receipt(
@@ -1061,6 +1267,29 @@ impl PgRegistry {
             .collect())
     }
 
+    /// Whether any agreement is in `Created` or `AcceptedOnChain` status.
+    ///
+    /// Cheap `EXISTS` probe used by the chain listener's adaptive-interval
+    /// gate every poll; the per-deployment `count_active_agreements_by_deployment`
+    /// would scan the full active set just to discard the counts.
+    pub async fn exists_active_agreements(&self) -> Result<bool, Error> {
+        let (exists,): (bool,) = sqlx::query_as(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM dipper_reg_indexing_agreements
+                WHERE status IN ($1, $2)
+                LIMIT 1
+            )
+            "#,
+        )
+        .bind(IndexingAgreementStatus::Created)
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+
     /// Mark an agreement as `AbandonedByIndexer`.
     ///
     /// Transitions `AcceptedOnChain → AbandonedByIndexer`. Returns the full
@@ -1180,9 +1409,14 @@ impl PgRegistry {
         &self,
         chain_id: u64,
     ) -> Result<Option<ChainListenerStateRow>, Error> {
-        let row: Option<(i64, i64, Option<i64>)> = sqlx::query_as(
+        let row: Option<(
+            i64,
+            i64,
+            Option<dipper_core::ids::IndexingAgreementId>,
+            Option<i64>,
+        )> = sqlx::query_as(
             r#"
-            SELECT chain_id, last_processed_block, last_processed_block_timestamp
+            SELECT chain_id, last_processed_block, last_processed_id, last_processed_block_timestamp
             FROM dipper_chain_listener_state
             WHERE chain_id = $1
             "#,
@@ -1191,36 +1425,42 @@ impl PgRegistry {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|(chain_id, block, ts)| ChainListenerStateRow {
+        Ok(row.map(|(chain_id, block, id, ts)| ChainListenerStateRow {
             chain_id: chain_id as u64,
             last_processed_block: block as u64,
+            last_processed_id: id,
             last_processed_block_timestamp: ts.map(|t| t as u64),
         }))
     }
 
     /// Update the chain listener state for a given chain ID.
     ///
-    /// Creates the record if it doesn't exist (upsert).
+    /// Creates the record if it doesn't exist (upsert). `last_processed_id`
+    /// is the keyset's `id` discriminator at `last_processed_block`; `None`
+    /// means the cursor sits at a block boundary.
     pub async fn update_chain_listener_state(
         &self,
         chain_id: u64,
         last_processed_block: u64,
+        last_processed_id: Option<dipper_core::ids::IndexingAgreementId>,
         last_processed_block_timestamp: Option<u64>,
     ) -> Result<(), Error> {
         sqlx::query(
             r#"
             INSERT INTO dipper_chain_listener_state
-                (chain_id, last_processed_block, last_processed_block_timestamp, updated_at)
-            VALUES ($1, $2, $3, timezone('UTC', now()))
+                (chain_id, last_processed_block, last_processed_id, last_processed_block_timestamp, updated_at)
+            VALUES ($1, $2, $3, $4, timezone('UTC', now()))
             ON CONFLICT (chain_id)
             DO UPDATE SET
                 last_processed_block = EXCLUDED.last_processed_block,
+                last_processed_id = EXCLUDED.last_processed_id,
                 last_processed_block_timestamp = EXCLUDED.last_processed_block_timestamp,
                 updated_at = EXCLUDED.updated_at
             "#,
         )
         .bind(chain_id as i64)
         .bind(last_processed_block as i64)
+        .bind(last_processed_id)
         .bind(last_processed_block_timestamp.map(|t| t as i64))
         .execute(&self.pool)
         .await?;
@@ -1357,18 +1597,60 @@ impl PgRegistry {
 
         Ok(())
     }
+
+    /// List the distinct `new_agreement_id`s of pending cancellation rows
+    /// whose linked agreement has reached `AcceptedOnChain` locally.
+    ///
+    /// Each ID returned is a candidate for `execute_pending_cancellations`
+    /// re-run. The chain_listener uses this as a periodic sweep to recover
+    /// from a partial-progress crash inside that function: the local row
+    /// was transitioned to `AcceptedOnChain` but the cancellation fan-out
+    /// did not complete, so the rows linger here. Without the sweep the
+    /// next reconcile pass for the same agreement would not re-enter the
+    /// fan-out path (the gate at `chain_listener.rs:494` only fires on a
+    /// fresh transition, not on a no-op `AcceptedOnChain` row).
+    ///
+    /// `execute_pending_cancellations` is idempotent against
+    /// already-canceled old agreements and against deleted pending rows,
+    /// so feeding the same ID through it twice is safe.
+    pub async fn list_executable_pending_cancellations(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<IndexingAgreementId>, Error> {
+        let rows: Vec<(IndexingAgreementId,)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT pc.new_agreement_id
+            FROM dipper_pending_cancellations pc
+            INNER JOIN dipper_reg_indexing_agreements a
+                ON a.id = pc.new_agreement_id
+            WHERE a.status = $1
+            ORDER BY pc.new_agreement_id
+            LIMIT $2
+            "#,
+        )
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
 }
 
-/// Transition an agreement's status inside a transaction. Returns `true`
-/// if the row was updated (source status matched `allowed_from`), `false`
-/// otherwise. Placeholder indexes are fixed; `allowed_from` is rendered
-/// as a dynamic `IN` list whose length is 1 or more.
-async fn update_status_from(
+/// Batched form of `update_status_from`: transitions all rows whose `id`
+/// is in `agreement_ids` and whose current status is in `allowed_from` to
+/// `new_status`, in one statement. Returns the ids of the rows that
+/// actually flipped (matched the CAS guard) so callers can build per-id
+/// outcome maps. Empty input is a fast-path no-op.
+async fn batch_update_status_from(
     tx: &mut sqlx::Transaction<'_, Postgres>,
-    agreement_id: &IndexingAgreementId,
+    agreement_ids: &[IndexingAgreementId],
     new_status: IndexingAgreementStatus,
     allowed_from: &[IndexingAgreementStatus],
-) -> Result<bool, Error> {
+) -> Result<Vec<IndexingAgreementId>, Error> {
+    if agreement_ids.is_empty() {
+        return Ok(Vec::new());
+    }
     let placeholders = (0..allowed_from.len())
         .map(|i| format!("${}", i + 3))
         .collect::<Vec<_>>()
@@ -1377,17 +1659,34 @@ async fn update_status_from(
         r#"
         UPDATE dipper_reg_indexing_agreements
         SET status = $1, updated_at = timezone('UTC', now())
-        WHERE id = $2 AND status IN ({placeholders})
+        WHERE id = ANY($2) AND status IN ({placeholders})
         RETURNING id
         "#
     );
-
     let mut query = sqlx::query_as::<_, (IndexingAgreementId,)>(&sql)
         .bind(new_status)
-        .bind(agreement_id);
+        .bind(agreement_ids);
     for status in allowed_from {
         query = query.bind(*status);
     }
+    let rows: Vec<(IndexingAgreementId,)> = query.fetch_all(&mut **tx).await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
 
-    Ok(query.fetch_optional(&mut **tx).await?.is_some())
+/// Transition an agreement's status inside a transaction. Thin wrapper
+/// over `batch_update_status_from` for the single-row case.
+async fn update_status_from(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    agreement_id: &IndexingAgreementId,
+    new_status: IndexingAgreementStatus,
+    allowed_from: &[IndexingAgreementStatus],
+) -> Result<bool, Error> {
+    Ok(!batch_update_status_from(
+        tx,
+        std::slice::from_ref(agreement_id),
+        new_status,
+        allowed_from,
+    )
+    .await?
+    .is_empty())
 }
