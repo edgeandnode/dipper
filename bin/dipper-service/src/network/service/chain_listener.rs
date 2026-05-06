@@ -72,12 +72,6 @@ const SWEEP_BATCH_SIZE: i64 = 1000;
 /// crash-recovery; the steady-state fan-out fires from finalize on a
 /// fresh accept, so per-poll execution is wasted DB work.
 const SWEEP_POLLS: u64 = 60;
-/// How much faster than wall-clock the persisted chain timestamp may
-/// advance per poll, before the listener treats the response as a
-/// drift-poisoning attempt and caps it. Chain time legitimately moves
-/// at ~1s per wall-clock second, plus tolerance for poll-cadence
-/// jitter and subgraph-side rounding.
-const CHAIN_TS_DRIFT_TOLERANCE_SECS: u64 = 10;
 
 /// Handle for controlling the chain listener service lifecycle
 #[derive(Clone)]
@@ -158,6 +152,7 @@ where
 
         let chain_id = config.chain_id;
         let reorg_buffer_blocks = config.reorg_buffer_blocks;
+        let chain_ts_drift_tolerance_secs = config.chain_ts_drift_tolerance_secs;
 
         // Get initial state from DB or start at genesis. We track
         // `(block, id)` together so a same-block-tie that crashed mid-page
@@ -278,6 +273,7 @@ where
                 &mut consecutive_failures,
                 chain_id,
                 reorg_buffer_blocks,
+                chain_ts_drift_tolerance_secs,
                 signer_address,
                 &registry,
                 &worker_queue,
@@ -363,6 +359,7 @@ async fn drain_once<R, W, E>(
     consecutive_failures: &mut u32,
     chain_id: u64,
     reorg_buffer_blocks: u32,
+    chain_ts_drift_tolerance_secs: u64,
     signer_address: Address,
     registry: &R,
     worker_queue: &W,
@@ -581,7 +578,7 @@ where
         let wall_elapsed_secs = now_instant
             .duration_since(*last_chain_ts_persist_wall)
             .as_secs();
-        let max_chain_advance = wall_elapsed_secs.saturating_add(CHAIN_TS_DRIFT_TOLERANCE_SECS);
+        let max_chain_advance = wall_elapsed_secs.saturating_add(chain_ts_drift_tolerance_secs);
         let ratchet_timestamp = match (new_timestamp, *last_persisted_timestamp) {
             (Some(new_ts), Some(cached_ts)) if new_ts < cached_ts => {
                 tracing::warn!(
@@ -2177,6 +2174,7 @@ mod tests {
             // assertion is unambiguous.
             reorg_buffer_blocks: 0,
             wall_clock_skew_tolerance_secs: 60,
+            chain_ts_drift_tolerance_secs: 10,
         };
 
         let ctx = Ctx {
@@ -2251,6 +2249,7 @@ mod tests {
             max_retries: 0,
             reorg_buffer_blocks: 0,
             wall_clock_skew_tolerance_secs: 60,
+            chain_ts_drift_tolerance_secs: 10,
         };
 
         let ctx = Ctx {
@@ -2322,6 +2321,7 @@ mod tests {
             max_retries: 0,
             reorg_buffer_blocks: 0,
             wall_clock_skew_tolerance_secs: 60,
+            chain_ts_drift_tolerance_secs: 10,
         };
 
         let ctx = Ctx {
@@ -2399,6 +2399,7 @@ mod tests {
             &mut consecutive_failures,
             1337,
             0,
+            10,
             Address::ZERO,
             &registry,
             &MockWorkerQueue::default(),
@@ -2460,6 +2461,7 @@ mod tests {
             &mut consecutive_failures,
             1337,
             0,
+            10,
             Address::ZERO,
             &registry,
             &MockWorkerQueue::default(),
@@ -2485,6 +2487,7 @@ mod tests {
             &mut consecutive_failures,
             1337,
             0,
+            10,
             Address::ZERO,
             &registry,
             &MockWorkerQueue::default(),
@@ -2511,6 +2514,63 @@ mod tests {
         );
     }
 
+    /// Simulates a restart after a long downtime: the persisted timestamp
+    /// is loaded from the DB at its pre-downtime value, the in-memory
+    /// wall-clock tracker is set to "downtime ago", and the subgraph
+    /// reports a chain timestamp that has legitimately advanced by the
+    /// downtime amount. A single poll must catch up fully because the
+    /// chain advance is within the wall-elapsed + tolerance bound.
+    #[tokio::test]
+    async fn test_chain_ts_restart_catches_up_within_wall_elapsed() {
+        let registry = MockRegistry::new();
+        let event_source = super::super::chain_events::mock::MockEventSource::new();
+        let baseline_ts = 1_700_000_000u64;
+        let downtime_secs = 3_600u64; // 1 hour
+
+        event_source.set_latest_block(100);
+        event_source.set_latest_block_timestamp(Some(baseline_ts + downtime_secs));
+
+        // Restart state: persisted timestamp loaded from the DB at the
+        // pre-downtime value; in-memory wall tracker reflects the time
+        // the previous instance last persisted.
+        let mut cursor = Cursor::genesis();
+        let mut last_persisted_timestamp: Option<u64> = Some(baseline_ts);
+        let mut last_chain_ts_persist_wall = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(downtime_secs))
+            .expect("now - 1h must be representable");
+        let mut last_subgraph_head: u64 = 0;
+        let mut stall_count: u32 = 0;
+        let mut consecutive_failures: u32 = 0;
+        let (_tx_stop, mut rx_stop) = mpsc::channel::<()>(1);
+
+        drain_once(
+            &mut cursor,
+            &mut last_persisted_timestamp,
+            &mut last_chain_ts_persist_wall,
+            &mut last_subgraph_head,
+            &mut stall_count,
+            &mut consecutive_failures,
+            1337,
+            0,
+            10,
+            Address::ZERO,
+            &registry,
+            &MockWorkerQueue::default(),
+            &event_source,
+            &mut rx_stop,
+        )
+        .await
+        .expect("post-restart poll must succeed");
+
+        let persisted = last_persisted_timestamp.expect("must be set");
+        assert_eq!(
+            persisted,
+            baseline_ts + downtime_secs,
+            "after {downtime_secs}s downtime, a single poll must catch up \
+             fully because the chain advance is within wall_elapsed + tolerance"
+        );
+    }
+
     /// Verify that notify_one() wakes the chain_listener from its idle
     /// 300s interval and triggers a poll within a few seconds.
     #[tokio::test]
@@ -2528,6 +2588,7 @@ mod tests {
             max_retries: 0,
             reorg_buffer_blocks: 0,
             wall_clock_skew_tolerance_secs: 60,
+            chain_ts_drift_tolerance_secs: 10,
         };
 
         let ctx = Ctx {
