@@ -37,11 +37,18 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dipper_core::ids::IndexingAgreementId;
+use dipper_core::{ids::IndexingAgreementId, time::now_secs};
 use rand::Rng;
 use serde::Deserialize;
 use thegraph_core::alloy::primitives::Address;
 use url::Url;
+
+/// Maximum tolerated drift between the subgraph's reported chain timestamp
+/// and the listener's wall clock. A subgraph reporting a timestamp past
+/// this bound is treated as corrupt or maliciously poisoned and the whole
+/// response is dropped — without this, a single bad value would ratchet
+/// the persisted timestamp into the future and never recover.
+const WALL_CLOCK_SKEW_TOLERANCE_SECS: u64 = 60;
 
 /// State of an agreement as recorded by the subgraph. Mirrors the
 /// `AgreementState` enum in the indexing-payments-subgraph schema.
@@ -69,8 +76,41 @@ impl AgreementState {
     }
 }
 
+/// Cursor identifying a position in the `(lastStateChangeBlock, id)` total
+/// order used to paginate `IndexingAgreement` snapshots.
+///
+/// graph-node implicitly tiebreaks `orderBy: lastStateChangeBlock` by `id`
+/// ascending, so every entity has a unique position. `Ord` falls out of
+/// the derive: `block` first, then `Option<IndexingAgreementId>` (where
+/// `None < Some(_)` matches "block boundary < any row inside the block").
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Cursor {
+    pub(crate) block: u64,
+    pub(crate) id: Option<IndexingAgreementId>,
+}
+
+impl Cursor {
+    pub(super) fn genesis() -> Self {
+        Self::default()
+    }
+
+    pub(super) fn at_block(block: u64) -> Self {
+        Self { block, id: None }
+    }
+
+    /// Hex string for the keyset query's `id_gt` clause; falls back to
+    /// an all-zero sentinel below any real id when the cursor sits at a
+    /// block boundary.
+    fn id_hex(&self) -> String {
+        self.id
+            .unwrap_or_else(|| IndexingAgreementId::from_bytes([0u8; 16]))
+            .to_string()
+    }
+}
+
 /// Snapshot of an agreement's current state, pulled from the subgraph. One
-/// snapshot per agreement whose `lastStateChangeBlock > sinceBlock`.
+/// snapshot per agreement whose `(lastStateChangeBlock, id)` is strictly past
+/// the supplied cursor.
 #[derive(Debug, Clone)]
 pub struct AgreementStateSnapshot {
     /// The agreement ID (bytes16 from contract)
@@ -109,7 +149,7 @@ impl ChainEventError {
 /// Result of fetching changed agreement snapshots.
 pub struct ChangedAgreementsResult {
     /// Snapshots of agreements whose state changed since the last poll,
-    /// ordered ascending by `last_state_change_block`.
+    /// ordered ascending by `(last_state_change_block, id)`.
     pub snapshots: Vec<AgreementStateSnapshot>,
     /// The latest block the subgraph has indexed. Used for stall detection
     /// and idle-heartbeat checks, not for cursor advance.
@@ -119,10 +159,10 @@ pub struct ChangedAgreementsResult {
     pub latest_block_timestamp: Option<u64>,
     /// Safe cursor for the caller to advance to. Holds back before the
     /// earliest parse failure so dropped entities are re-read next poll.
-    /// `0` when a failure had no parseable block — caller's
-    /// `cursor_block > last_block` guard turns that into "don't advance"
-    /// rather than "reset to genesis".
-    pub cursor_block: u64,
+    /// Equal to the input cursor when a failure had no parseable block
+    /// (caller's `cursor > previous` guard turns that into "don't advance"
+    /// rather than "reset to genesis").
+    pub cursor: Cursor,
 }
 
 /// Trait for fetching agreement state snapshots from a subgraph.
@@ -131,24 +171,33 @@ pub struct ChangedAgreementsResult {
 /// but must provide the same interface for the chain listener service.
 #[async_trait]
 pub trait ChainEventSource: Send + Sync {
-    /// Fetch all agreements whose `lastStateChangeBlock > since_block`.
+    /// Fetch all agreements strictly past the supplied keyset cursor.
     ///
     /// Results are filtered to agreements where the payer matches the
-    /// configured signer address, and ordered by `last_state_change_block`
-    /// ascending so the consumer processes transitions in the order they
-    /// happened on-chain.
+    /// configured signer address, and ordered by
+    /// `(last_state_change_block, id)` ascending so the consumer processes
+    /// transitions in the order they happened on-chain (with `id` breaking
+    /// ties at the same block).
     ///
     /// # Arguments
-    /// * `since_block` - Fetch agreements whose last state change happened
-    ///   in a block strictly greater than this number.
+    /// * `since` - Cursor identifying the last consumed `(block, id)` pair.
+    ///   The query returns rows whose `(last_state_change_block, id)` is
+    ///   strictly greater than this cursor in lexicographic order.
+    /// * `pinned_block` - When `Some`, query the subgraph at exactly that
+    ///   block (graph-node's `block: { number: $pinned }` argument). The
+    ///   chain listener uses this to keep every page within a single drain
+    ///   reading from the same snapshot, so a row's
+    ///   `lastStateChangeBlock` cannot shift mid-drain. When `None`, query
+    ///   at the subgraph's latest indexed block.
     ///
     /// # Returns
-    /// * `Ok(ChangedAgreementsResult)` - Snapshots and the latest processed block
+    /// * `Ok(ChangedAgreementsResult)` - Snapshots and the new safe cursor
     /// * `Err(ChainEventError::Transient(_))` - Temporary failure, can retry
     /// * `Err(ChainEventError::Permanent(_))` - Permanent failure, should not retry
     async fn get_changed_agreements(
         &self,
-        since_block: u64,
+        since: &Cursor,
+        pinned_block: Option<u64>,
     ) -> Result<ChangedAgreementsResult, ChainEventError>;
 }
 
@@ -338,56 +387,110 @@ impl SubgraphEventSource {
     }
 }
 
+/// Substituted into the GraphQL `first:` clause below so the cursor
+/// logic and the query can never drift apart. Used by the chain_listener
+/// to decide when the page cap was hit.
+pub(super) const SUBGRAPH_PAGE_SIZE: usize = 1000;
+
 #[async_trait]
 impl ChainEventSource for SubgraphEventSource {
     async fn get_changed_agreements(
         &self,
-        since_block: u64,
+        since: &Cursor,
+        pinned_block: Option<u64>,
     ) -> Result<ChangedAgreementsResult, ChainEventError> {
-        const QUERY: &str = r#"
-            query ChangedAgreements($payer: Bytes!, $sinceBlock: BigInt!) {
+        // Composite-key (keyset) cursor: rows past `(cursorBlock, cursorId)`
+        // in lexicographic order. graph-node's implicit
+        // `orderBy: lastStateChangeBlock` tiebreak on `id` gives this query
+        // a total order. The optional `block: { number: $pinnedBlock }`
+        // argument pins every page in a multi-page drain to the same
+        // subgraph snapshot.
+        let (block_clause, meta_clause) = match pinned_block {
+            Some(_) => (
+                "block: { number: $pinnedBlock }",
+                "_meta(block: { number: $pinnedBlock })",
+            ),
+            None => ("", "_meta"),
+        };
+        let pinned_decl = if pinned_block.is_some() {
+            ", $pinnedBlock: Int!"
+        } else {
+            ""
+        };
+        let query = format!(
+            r#"
+            query ChangedAgreements($payer: Bytes!, $cursorBlock: BigInt!, $cursorId: Bytes!{pinned_decl}) {{
                 indexingAgreements(
-                    where: { payer: $payer, lastStateChangeBlock_gt: $sinceBlock }
+                    where: {{
+                        payer: $payer,
+                        or: [
+                            {{ lastStateChangeBlock_gt: $cursorBlock }},
+                            {{ lastStateChangeBlock: $cursorBlock, id_gt: $cursorId }}
+                        ]
+                    }}
                     orderBy: lastStateChangeBlock
                     orderDirection: asc
-                    first: 1000
-                ) {
+                    first: {SUBGRAPH_PAGE_SIZE}
+                    {block_clause}
+                ) {{
                     id
                     indexer
                     state
                     canceledBy
                     lastStateChangeBlock
-                }
-                _meta {
-                    block {
+                }}
+                {meta_clause} {{
+                    block {{
                         number
                         timestamp
-                    }
-                }
-            }
-        "#;
+                    }}
+                }}
+            }}
+            "#
+        );
 
-        let variables = serde_json::json!({
+        let mut variables = serde_json::json!({
             "payer": format!("{:#x}", self.config.payer_address),
-            "sinceBlock": since_block.to_string(),
+            "cursorBlock": since.block.to_string(),
+            "cursorId": since.id_hex(),
         });
+        if let Some(block) = pinned_block {
+            variables["pinnedBlock"] = serde_json::json!(block);
+        }
 
-        let response: ChangedAgreementsResponse = self.query_with_retry(QUERY, variables).await?;
+        let response: ChangedAgreementsResponse = self.query_with_retry(&query, variables).await?;
+
+        if let Some(ts) = response.meta.block.timestamp {
+            let now = now_secs();
+            if let Err(err) = check_subgraph_skew(ts, now, WALL_CLOCK_SKEW_TOLERANCE_SECS) {
+                tracing::warn!(
+                    event = "subgraph_skew_drop",
+                    subgraph_timestamp = ts,
+                    now,
+                    tolerance_secs = WALL_CLOCK_SKEW_TOLERANCE_SECS,
+                    "Subgraph timestamp past wall-clock + tolerance; dropping response as corrupt"
+                );
+                return Err(err);
+            }
+        }
 
         let latest_block = response.meta.block.number;
         let mut snapshots: Vec<AgreementStateSnapshot> = Vec::new();
-        let mut min_failed_block: Option<u64> = None;
+        let mut earliest_failure: Option<Cursor> = None;
         let mut unlocatable_failures: usize = 0;
 
         for entity in &response.indexing_agreements {
             match parse_snapshot(entity) {
                 Some(snapshot) => snapshots.push(snapshot),
-                None => match entity.last_state_change_block.parse::<u64>().ok() {
-                    Some(block) => {
-                        min_failed_block = Some(min_failed_block.map_or(block, |m| m.min(block)));
+                None => match parse_failure_cursor(entity) {
+                    Some(failed) => {
+                        earliest_failure = Some(match earliest_failure.take() {
+                            Some(existing) => existing.min(failed),
+                            None => failed,
+                        });
                         tracing::warn!(
                             entity_id = %entity.id,
-                            last_state_change_block = block,
+                            last_state_change_block = entity.last_state_change_block,
                             "Dropping malformed IndexingAgreement entity; cursor will hold back so it gets re-read"
                         );
                     }
@@ -402,23 +505,46 @@ impl ChainEventSource for SubgraphEventSource {
             }
         }
 
-        let cursor_block = if unlocatable_failures > 0 {
-            // Can't locate where the failure was, so hold the cursor back. The
-            // caller's `cursor_block > last_block` guard turns `0` into
-            // "do not advance" without rewinding.
-            0
-        } else if let Some(failed) = min_failed_block {
-            failed.saturating_sub(1)
+        let cursor = if unlocatable_failures > 0 {
+            // Failure with no parseable position — hold at the input cursor.
+            since.clone()
+        } else if let Some(failed) = earliest_failure {
+            // Drop snapshots at or past the failure and use the last good
+            // one as the cursor; reconcile is idempotent.
+            snapshots.retain(|s| {
+                Cursor {
+                    block: s.last_state_change_block,
+                    id: Some(s.agreement_id),
+                } < failed
+            });
+            snapshots
+                .last()
+                .map(|s| Cursor {
+                    block: s.last_state_change_block,
+                    id: Some(s.agreement_id),
+                })
+                .unwrap_or_else(|| since.clone())
+        } else if response.indexing_agreements.len() >= SUBGRAPH_PAGE_SIZE {
+            // Page cap hit; resume past the last row we got.
+            snapshots
+                .last()
+                .map(|s| Cursor {
+                    block: s.last_state_change_block,
+                    id: Some(s.agreement_id),
+                })
+                .unwrap_or_else(|| since.clone())
         } else {
-            latest_block
+            // Drained — advance past `latest_block` so the keyset's
+            // `block_eq` branch doesn't re-read already-consumed rows.
+            Cursor::at_block(latest_block.saturating_add(1))
         };
 
-        if cursor_block < latest_block {
+        if cursor.block < latest_block {
             tracing::warn!(
-                cursor_block,
+                cursor_block = cursor.block,
                 subgraph_head = latest_block,
                 unlocatable_failures,
-                "Parse failures held the cursor back this poll"
+                "Parse failures or page cap held the cursor back this poll"
             );
         }
 
@@ -426,9 +552,34 @@ impl ChainEventSource for SubgraphEventSource {
             snapshots,
             latest_block,
             latest_block_timestamp: response.meta.block.timestamp,
-            cursor_block,
+            cursor,
         })
     }
+}
+
+/// Reject a subgraph response whose reported chain timestamp sits past
+/// the listener's wall clock by more than `tolerance_secs`. Pulled out
+/// of `get_changed_agreements` so the boundary condition (`ts ==
+/// now + tolerance`) is unit-testable without an HTTP mock.
+fn check_subgraph_skew(ts: u64, now: u64, tolerance_secs: u64) -> Result<(), ChainEventError> {
+    let upper_bound = now.saturating_add(tolerance_secs);
+    if ts > upper_bound {
+        Err(ChainEventError::Transient(format!(
+            "Subgraph returned timestamp {ts} > now+{tolerance_secs}s ({upper_bound}); response dropped as corrupt"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+/// Build a hold-back cursor pointing at a malformed entity: its block is
+/// known, but its id may be malformed, in which case we cannot construct a
+/// keyset position — return None and let the caller fall through to the
+/// unlocatable_failures path.
+fn parse_failure_cursor(entity: &IndexingAgreementEntity) -> Option<Cursor> {
+    let block = entity.last_state_change_block.parse::<u64>().ok()?;
+    let id = entity.id.parse().ok();
+    Some(Cursor { block, id })
 }
 
 /// Parse a GraphQL `IndexingAgreement` entity into a snapshot. Returns
@@ -502,7 +653,8 @@ pub mod mock {
         snapshots: Arc<Mutex<Vec<AgreementStateSnapshot>>>,
         latest_block: Arc<Mutex<u64>>,
         latest_block_timestamp: Arc<Mutex<Option<u64>>>,
-        cursor_block_override: Arc<Mutex<Option<u64>>>,
+        cursor_override: Arc<Mutex<Option<Cursor>>>,
+        page_size: Arc<Mutex<Option<usize>>>,
         error: Arc<Mutex<Option<ChainEventError>>>,
     }
 
@@ -512,7 +664,8 @@ pub mod mock {
                 snapshots: Arc::new(Mutex::new(Vec::new())),
                 latest_block: Arc::new(Mutex::new(0)),
                 latest_block_timestamp: Arc::new(Mutex::new(None)),
-                cursor_block_override: Arc::new(Mutex::new(None)),
+                cursor_override: Arc::new(Mutex::new(None)),
+                page_size: Arc::new(Mutex::new(None)),
                 error: Arc::new(Mutex::new(None)),
             }
         }
@@ -532,13 +685,16 @@ pub mod mock {
             *self.latest_block_timestamp.lock().unwrap() = timestamp;
         }
 
-        /// Override the cursor_block the mock returns. When `None` (default),
-        /// the mock returns `cursor_block = latest_block`, matching the
-        /// happy-path where every entity parsed cleanly. Tests that want to
-        /// simulate a held-back cursor (parse failure) set this to a lower
-        /// value.
-        pub fn set_cursor_block_override(&self, cursor_block: Option<u64>) {
-            *self.cursor_block_override.lock().unwrap() = cursor_block;
+        /// Force a specific cursor return; used by tests that simulate
+        /// parse-failure / held-back paths.
+        pub fn set_cursor_override(&self, cursor: Option<Cursor>) {
+            *self.cursor_override.lock().unwrap() = cursor;
+        }
+
+        /// Mirror the real subgraph's `first:` cap so multi-page drains
+        /// can be exercised end-to-end.
+        pub fn set_page_size(&self, page_size: Option<usize>) {
+            *self.page_size.lock().unwrap() = page_size;
         }
 
         /// Set an error to return on next query.
@@ -557,34 +713,73 @@ pub mod mock {
     impl ChainEventSource for MockEventSource {
         async fn get_changed_agreements(
             &self,
-            since_block: u64,
+            since: &Cursor,
+            // The mock ignores `pinned_block`; tests that care about
+            // pinning observe it through a dedicated mock if needed.
+            _pinned_block: Option<u64>,
         ) -> Result<ChangedAgreementsResult, ChainEventError> {
             if let Some(error) = self.error.lock().unwrap().take() {
                 return Err(error);
             }
 
-            let snapshots: Vec<_> = self
+            // Filter on the keyset boundary `(since.block, since.id)` and
+            // order by `(block, id)` ascending so the mock matches the
+            // real subgraph's traversal order.
+            let mut snapshots: Vec<_> = self
                 .snapshots
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|s| s.last_state_change_block > since_block)
+                .filter(|s| {
+                    since
+                        < &Cursor {
+                            block: s.last_state_change_block,
+                            id: Some(s.agreement_id),
+                        }
+                })
                 .cloned()
                 .collect();
+            snapshots.sort_by_key(|s| (s.last_state_change_block, s.agreement_id));
 
             let latest_block = *self.latest_block.lock().unwrap();
             let latest_block_timestamp = *self.latest_block_timestamp.lock().unwrap();
-            let cursor_block = self
-                .cursor_block_override
+            let page_size = *self.page_size.lock().unwrap();
+
+            // Mirror `SubgraphEventSource`'s page-cap cursor derivation
+            // so tests exercise the same drain shape as production.
+            let truncated_at_cap = match page_size {
+                Some(cap) if snapshots.len() > cap => {
+                    snapshots.truncate(cap);
+                    true
+                }
+                Some(cap) => snapshots.len() == cap,
+                None => false,
+            };
+
+            let derived_cursor = if truncated_at_cap {
+                snapshots
+                    .last()
+                    .map(|s| Cursor {
+                        block: s.last_state_change_block,
+                        id: Some(s.agreement_id),
+                    })
+                    .unwrap_or_else(|| Cursor::at_block(latest_block.saturating_add(1)))
+            } else {
+                Cursor::at_block(latest_block.saturating_add(1))
+            };
+
+            let cursor = self
+                .cursor_override
                 .lock()
                 .unwrap()
-                .unwrap_or(latest_block);
+                .clone()
+                .unwrap_or(derived_cursor);
 
             Ok(ChangedAgreementsResult {
                 snapshots,
                 latest_block,
                 latest_block_timestamp,
-                cursor_block,
+                cursor,
             })
         }
     }
@@ -719,5 +914,45 @@ mod tests {
     fn test_chain_event_error_is_transient() {
         assert!(ChainEventError::Transient("test".into()).is_transient());
         assert!(!ChainEventError::Permanent("test".into()).is_transient());
+    }
+
+    #[test]
+    fn test_check_subgraph_skew_within_tolerance_is_ok() {
+        // ts == now: trivially fine.
+        assert!(check_subgraph_skew(1_700_000_000, 1_700_000_000, 60).is_ok());
+        // ts within tolerance: still fine.
+        assert!(check_subgraph_skew(1_700_000_059, 1_700_000_000, 60).is_ok());
+        // ts == now + tolerance: boundary, still fine (strict > guard).
+        assert!(check_subgraph_skew(1_700_000_060, 1_700_000_000, 60).is_ok());
+    }
+
+    #[test]
+    fn test_check_subgraph_skew_past_tolerance_is_transient_error() {
+        // One second past the boundary: response is dropped.
+        let err = check_subgraph_skew(1_700_000_061, 1_700_000_000, 60)
+            .expect_err("ts past now+tolerance must reject");
+        assert!(err.is_transient(), "skew rejection must be transient");
+        let msg = err.to_string();
+        assert!(msg.contains("1700000061"));
+        assert!(msg.contains("dropped as corrupt"));
+    }
+
+    #[test]
+    fn test_check_subgraph_skew_far_future_timestamp_rejected() {
+        // Models the "subgraph poisoned" case the bound is meant to catch:
+        // a timestamp far past wall clock that, without this check, would
+        // ratchet the persisted timestamp into the future and freeze the
+        // expiration service indefinitely.
+        let err = check_subgraph_skew(u64::MAX / 2, 1_700_000_000, 60)
+            .expect_err("far-future ts must reject");
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn test_check_subgraph_skew_ts_in_past_is_ok() {
+        // The bound only rejects future drift; the listener tolerates any
+        // amount of subgraph lag (operators have a separate `subgraph_lag_seconds`
+        // metric for that).
+        assert!(check_subgraph_skew(1_699_000_000, 1_700_000_000, 60).is_ok());
     }
 }
