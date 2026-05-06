@@ -400,9 +400,13 @@ impl ChainEventSource for SubgraphEventSource {
         pinned_block: Option<u64>,
     ) -> Result<ChangedAgreementsResult, ChainEventError> {
         // Composite-key (keyset) cursor: rows past `(cursorBlock, cursorId)`
-        // in lexicographic order. graph-node's implicit
-        // `orderBy: lastStateChangeBlock` tiebreak on `id` gives this query
-        // a total order. The optional `block: { number: $pinnedBlock }`
+        // in lexicographic order. We rely on graph-node's documented
+        // tiebreak — when `orderBy` matches across rows, results are sorted
+        // by `id` ascending — to give this query a total order over
+        // `(lastStateChangeBlock, id)`. The response is validated against
+        // that ordering before any cursor advance: a hostile or buggy
+        // backend that returns rows out of order is rejected as transient,
+        // not silently trusted. The optional `block: { number: $pinnedBlock }`
         // argument pins every page in a multi-page drain to the same
         // subgraph snapshot.
         let (block_clause, meta_clause) = match pinned_block {
@@ -505,6 +509,20 @@ impl ChainEventSource for SubgraphEventSource {
             }
         }
 
+        // Reject the page if any pair is out of (block, id) order. The
+        // keyset cursor advances to the last accepted entity assuming
+        // it is the maximum so far; a misordered response would let a
+        // non-maximum become the cursor and silently skip entities on
+        // the next poll.
+        if let Err(err) = validate_sorted_keyset(&snapshots) {
+            tracing::warn!(
+                event = "subgraph_response_unsorted",
+                error = %err,
+                "Subgraph response is not sorted by (block, id) ascending; rejecting page"
+            );
+            return Err(err);
+        }
+
         let cursor = if unlocatable_failures > 0 {
             // Failure with no parseable position — hold at the input cursor.
             since.clone()
@@ -570,6 +588,36 @@ fn check_subgraph_skew(ts: u64, now: u64, tolerance_secs: u64) -> Result<(), Cha
     } else {
         Ok(())
     }
+}
+
+/// Reject responses where any consecutive pair of parsed snapshots is not
+/// strictly ascending on `(last_state_change_block, agreement_id)` byte-lex.
+/// The keyset cursor takes the last accepted entity as its new position
+/// assuming it is the maximum so far; a misordered response would let a
+/// non-maximum entity become the cursor and silently skip rows on the
+/// next poll. Treats any violation as transient so the listener retries.
+fn validate_sorted_keyset(snapshots: &[AgreementStateSnapshot]) -> Result<(), ChainEventError> {
+    for window in snapshots.windows(2) {
+        let prev_key = (
+            window[0].last_state_change_block,
+            window[0].agreement_id.as_bytes(),
+        );
+        let cur_key = (
+            window[1].last_state_change_block,
+            window[1].agreement_id.as_bytes(),
+        );
+        if prev_key >= cur_key {
+            return Err(ChainEventError::Transient(format!(
+                "subgraph response not sorted by (block, id) ascending: \
+                 prev=(block {}, id {}), cur=(block {}, id {})",
+                window[0].last_state_change_block,
+                window[0].agreement_id,
+                window[1].last_state_change_block,
+                window[1].agreement_id,
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Build a hold-back cursor pointing at a malformed entity: its block is
@@ -954,5 +1002,79 @@ mod tests {
         // amount of subgraph lag (operators have a separate `subgraph_lag_seconds`
         // metric for that).
         assert!(check_subgraph_skew(1_699_000_000, 1_700_000_000, 60).is_ok());
+    }
+
+    fn snapshot_at(block: u64, id_bytes: [u8; 16]) -> AgreementStateSnapshot {
+        AgreementStateSnapshot {
+            agreement_id: IndexingAgreementId::from_bytes(id_bytes),
+            indexer: Address::ZERO,
+            state: AgreementState::Accepted,
+            canceled_by: Address::ZERO,
+            last_state_change_block: block,
+        }
+    }
+
+    #[test]
+    fn test_validate_sorted_keyset_accepts_strictly_ascending() {
+        let mut id_low = [0u8; 16];
+        id_low[0] = 0x01;
+        let mut id_mid = [0u8; 16];
+        id_mid[0] = 0x55;
+        let mut id_high = [0u8; 16];
+        id_high[0] = 0xff;
+
+        // Same-block tie sorted by id ascending, plus a later block.
+        let snapshots = vec![
+            snapshot_at(50, id_low),
+            snapshot_at(50, id_mid),
+            snapshot_at(50, id_high),
+            snapshot_at(60, id_low),
+        ];
+        assert!(validate_sorted_keyset(&snapshots).is_ok());
+    }
+
+    #[test]
+    fn test_validate_sorted_keyset_rejects_block_regression() {
+        let id = [0x42u8; 16];
+        let snapshots = vec![snapshot_at(60, id), snapshot_at(50, id)];
+        let err = validate_sorted_keyset(&snapshots).expect_err("must reject");
+        assert!(err.is_transient());
+        assert!(err.to_string().contains("not sorted"));
+    }
+
+    #[test]
+    fn test_validate_sorted_keyset_rejects_id_regression_within_block() {
+        // graph-node tiebreak: id ascending. A response with id descending
+        // inside the same block must be rejected — the keyset cursor would
+        // otherwise advance to a non-maximum and skip rows.
+        let mut id_high = [0u8; 16];
+        id_high[0] = 0xff;
+        let mut id_low = [0u8; 16];
+        id_low[0] = 0x01;
+
+        let snapshots = vec![snapshot_at(50, id_high), snapshot_at(50, id_low)];
+        let err = validate_sorted_keyset(&snapshots).expect_err("must reject");
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn test_validate_sorted_keyset_rejects_duplicate() {
+        // Same (block, id) twice means a duplicate entity, which violates
+        // the strict-ascending invariant the keyset relies on.
+        let id = [0x42u8; 16];
+        let snapshots = vec![snapshot_at(50, id), snapshot_at(50, id)];
+        let err = validate_sorted_keyset(&snapshots).expect_err("must reject");
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn test_validate_sorted_keyset_empty_is_ok() {
+        assert!(validate_sorted_keyset(&[]).is_ok());
+    }
+
+    #[test]
+    fn test_validate_sorted_keyset_single_is_ok() {
+        let id = [0x42u8; 16];
+        assert!(validate_sorted_keyset(&[snapshot_at(50, id)]).is_ok());
     }
 }
