@@ -462,6 +462,16 @@ impl ChainEventSource for SubgraphEventSource {
 
         let response: ChangedAgreementsResponse = self.query_with_retry(&query, variables).await?;
 
+        if let Err(err) = check_pinned_block(pinned_block, response.meta.block.number) {
+            tracing::warn!(
+                event = "subgraph_pin_mismatch",
+                requested_block = ?pinned_block,
+                response_block = response.meta.block.number,
+                "Subgraph response did not honour the requested pinned block; dropping page"
+            );
+            return Err(err);
+        }
+
         if let Some(ts) = response.meta.block.timestamp {
             let now = now_secs();
             let tolerance = self.config.wall_clock_skew_tolerance_secs;
@@ -571,6 +581,23 @@ impl ChainEventSource for SubgraphEventSource {
             latest_block_timestamp: response.meta.block.timestamp,
             cursor,
         })
+    }
+}
+
+/// Reject a response whose `_meta.block.number` does not match the
+/// pinned block requested. graph-node enforces this server-side, but a
+/// non-graph-node backend could quietly serve data from a different
+/// snapshot — which would break multi-page drains, where every page
+/// must read from the same chain state. No-op when no pin was set.
+fn check_pinned_block(
+    pinned_block: Option<u64>,
+    response_block: u64,
+) -> Result<(), ChainEventError> {
+    match pinned_block {
+        Some(pinned) if pinned != response_block => Err(ChainEventError::Transient(format!(
+            "subgraph returned block {response_block} when {pinned} was pinned; response dropped"
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -1001,6 +1028,35 @@ mod tests {
         // amount of subgraph lag (operators have a separate `subgraph_lag_seconds`
         // metric for that).
         assert!(check_subgraph_skew(1_699_000_000, 1_700_000_000, 60).is_ok());
+    }
+
+    #[test]
+    fn test_check_pinned_block_no_pin_is_ok() {
+        // No pin requested: the response block is whatever the subgraph's
+        // current head is, and we accept it.
+        assert!(check_pinned_block(None, 12_345).is_ok());
+    }
+
+    #[test]
+    fn test_check_pinned_block_match_is_ok() {
+        assert!(check_pinned_block(Some(12_345), 12_345).is_ok());
+    }
+
+    #[test]
+    fn test_check_pinned_block_lower_response_rejected() {
+        // Subgraph responded from an older snapshot than we asked for.
+        let err = check_pinned_block(Some(12_345), 12_344).expect_err("mismatch must reject");
+        assert!(err.is_transient());
+        assert!(err.to_string().contains("12344"));
+        assert!(err.to_string().contains("12345"));
+    }
+
+    #[test]
+    fn test_check_pinned_block_higher_response_rejected() {
+        // Subgraph responded from a newer snapshot than we asked for.
+        // Equally a violation — multi-page drains rely on a stable view.
+        let err = check_pinned_block(Some(12_345), 12_346).expect_err("mismatch must reject");
+        assert!(err.is_transient());
     }
 
     fn snapshot_at(block: u64, id_bytes: [u8; 16]) -> AgreementStateSnapshot {
