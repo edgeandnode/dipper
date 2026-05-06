@@ -71,11 +71,13 @@ pub enum Message {
     /// See [`CancelRejectedAgreementOnChain`] for more details.
     CancelRejectedAgreementOnChain(CancelRejectedAgreementOnChain),
 
-    /// Submit an RCA offer on-chain before dispatching a proposal.
+    /// Submit an RCA offer on-chain after the indexer has accepted the
+    /// proposal terms.
     ///
-    /// Step between registering a new agreement and sending the gRPC proposal
-    /// to the indexer: posts the RCA via `RecurringCollector.offer()`, then
-    /// enqueues `send_indexing_agreement_proposal` with the same agreement.
+    /// Runs after `send_indexing_agreement_proposal` receives an Accept
+    /// response: posts the RCA via `RecurringCollector.offer()` so the
+    /// contract has the offer hash when the indexer-agent later calls
+    /// `acceptIndexingAgreement` on-chain.
     ///
     /// See [`SubmitOffer`] for more details.
     SubmitOffer(SubmitOffer),
