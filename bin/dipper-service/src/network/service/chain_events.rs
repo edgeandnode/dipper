@@ -424,10 +424,9 @@ impl ChainEventSource for SubgraphEventSource {
             query ChangedAgreements($payer: Bytes!, $cursorBlock: BigInt!, $cursorId: Bytes!{pinned_decl}) {{
                 indexingAgreements(
                     where: {{
-                        payer: $payer,
                         or: [
-                            {{ lastStateChangeBlock_gt: $cursorBlock }},
-                            {{ lastStateChangeBlock: $cursorBlock, id_gt: $cursorId }}
+                            {{ payer: $payer, lastStateChangeBlock_gt: $cursorBlock }},
+                            {{ payer: $payer, lastStateChangeBlock: $cursorBlock, id_gt: $cursorId }}
                         ]
                     }}
                     orderBy: lastStateChangeBlock
