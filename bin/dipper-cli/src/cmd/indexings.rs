@@ -24,7 +24,7 @@ pub(super) async fn run(matches: &clap::ArgMatches) -> Result<()> {
 
             status(conf, matches).await
         }
-        Some(("target", matches)) => {
+        Some(("set-target-candidates", matches)) => {
             let conf = common::load_conf(matches)?;
             tracing::debug!("Configuration loaded: {:?}", conf);
 
@@ -107,7 +107,7 @@ pub async fn status(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
     }
 }
 
-/// The `indexings target` command.
+/// The `indexings set-target-candidates` command.
 ///
 /// Idempotent upsert keyed on `(requester, deployment, chain)`. Run with
 /// `--num-candidates N` to request N indexers; run with `--num-candidates 0`
@@ -187,7 +187,7 @@ pub(super) fn cmd() -> Command {
                     arg!(<INDEXING_ID> "The indexing request's ID (UUID, Subgraph ID or Deployment ID)")
                         .value_parser(value_parser!(IndexingRequestSelector)),
                 ),
-            command!("target")
+            command!("set-target-candidates")
                 .about("Set the target number of indexer candidates for a deployment; use --num-candidates 0 to cancel")
                 .args([
                     arg!(<SUBGRAPH> "The indexing request's Subgraph (or Deployment) ID")

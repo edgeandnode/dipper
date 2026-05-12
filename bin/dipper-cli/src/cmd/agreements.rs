@@ -1,8 +1,8 @@
 //! Implementation of the `agreements` command and its subcommands.
 //!
-//! Currently read-only — cancellation goes through `indexings target` with
-//! `--num-candidates 0`, which terminates the parent request and fires the
-//! on-chain cancel for every agreement under it.
+//! Currently read-only — cancellation goes through `indexings
+//! set-target-candidates --num-candidates 0`, which terminates the parent
+//! request and fires the on-chain cancel for every agreement under it.
 
 use std::str::FromStr;
 
