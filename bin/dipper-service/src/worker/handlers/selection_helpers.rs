@@ -1,7 +1,4 @@
 //! Shared selection helpers for indexing-request handlers.
-//!
-//! Moved out of the deprecated `process_new_indexing_request` module so the
-//! reassessment handler can use them without depending on that module.
 
 use std::collections::BTreeMap;
 
