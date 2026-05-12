@@ -1576,14 +1576,13 @@ impl PgRegistry {
         sqlx::query(
             r#"
             INSERT INTO dipper_pending_cancellations
-                (new_agreement_id, old_agreement_id, indexing_request_id)
-            VALUES ($1, $2, $3)
+                (new_agreement_id, old_agreement_id)
+            VALUES ($1, $2)
             ON CONFLICT DO NOTHING
             "#,
         )
         .bind(new_id)
         .bind(old_agreement_id)
-        .bind(request_id)
         .execute(&mut *tx)
         .await?;
 
@@ -1596,10 +1595,10 @@ impl PgRegistry {
     pub async fn get_pending_cancellations_by_new_agreement(
         &self,
         new_agreement_id: IndexingAgreementId,
-    ) -> Result<Vec<(IndexingAgreementId, IndexingRequestId)>, Error> {
-        let rows: Vec<(IndexingAgreementId, IndexingRequestId)> = sqlx::query_as(
+    ) -> Result<Vec<IndexingAgreementId>, Error> {
+        let rows: Vec<(IndexingAgreementId,)> = sqlx::query_as(
             r#"
-            SELECT old_agreement_id, indexing_request_id
+            SELECT old_agreement_id
             FROM dipper_pending_cancellations
             WHERE new_agreement_id = $1
             "#,
@@ -1608,7 +1607,7 @@ impl PgRegistry {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows)
+        Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
     /// Delete all pending cancellation records for a new agreement.

@@ -1281,12 +1281,8 @@ mod tests {
             &self,
             new_agreement_id: IndexingAgreementId,
             old_agreement_id: IndexingAgreementId,
-            indexing_request_id: IndexingRequestId,
         ) {
-            let pc = crate::registry::PendingCancellation {
-                old_agreement_id,
-                indexing_request_id,
-            };
+            let pc = crate::registry::PendingCancellation { old_agreement_id };
             self.state
                 .lock()
                 .unwrap()
@@ -1465,7 +1461,6 @@ mod tests {
             state.marked_canceled_by_requester.push(*id);
             Ok(())
         }
-
 
         async fn apply_reconciliation(
             &self,
@@ -1947,11 +1942,10 @@ mod tests {
         let worker_queue = MockWorkerQueue::default();
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let old_agreement_id = IndexingAgreementId::from_bytes(rand::random());
-        let request_id = IndexingRequestId::new();
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::Expired);
         registry.add_agreement(old_agreement_id, IndexingAgreementStatus::AcceptedOnChain);
-        registry.add_pending_cancellation(agreement_id, old_agreement_id, request_id);
+        registry.add_pending_cancellation(agreement_id, old_agreement_id);
 
         let snapshot = make_snapshot(agreement_id, AgreementState::Accepted, Address::ZERO);
         let result = reconcile_agreement(
@@ -2117,14 +2111,13 @@ mod tests {
         let worker_queue = MockWorkerQueue::default();
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let old_agreement_id = IndexingAgreementId::from_bytes(rand::random());
-        let request_id = IndexingRequestId::new();
         let signer_address: Address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             .parse()
             .unwrap();
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::Created);
         registry.add_agreement(old_agreement_id, IndexingAgreementStatus::AcceptedOnChain);
-        registry.add_pending_cancellation(agreement_id, old_agreement_id, request_id);
+        registry.add_pending_cancellation(agreement_id, old_agreement_id);
 
         let snapshot = make_snapshot(
             agreement_id,
@@ -2158,13 +2151,12 @@ mod tests {
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         let old_id_1 = IndexingAgreementId::from_bytes(rand::random());
         let old_id_2 = IndexingAgreementId::from_bytes(rand::random());
-        let request_id = IndexingRequestId::new();
 
         registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
         registry.add_agreement(old_id_1, IndexingAgreementStatus::AcceptedOnChain);
         registry.add_agreement(old_id_2, IndexingAgreementStatus::AcceptedOnChain);
-        registry.add_pending_cancellation(new_id, old_id_1, request_id);
-        registry.add_pending_cancellation(new_id, old_id_2, request_id);
+        registry.add_pending_cancellation(new_id, old_id_1);
+        registry.add_pending_cancellation(new_id, old_id_2);
 
         let result = execute_pending_cancellations(&new_id, &registry, &chain_client).await;
 
@@ -2187,13 +2179,12 @@ mod tests {
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         let old_ok = IndexingAgreementId::from_bytes(rand::random());
         let old_fail = IndexingAgreementId::from_bytes(rand::random());
-        let request_id = IndexingRequestId::new();
 
         registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
         registry.add_agreement(old_ok, IndexingAgreementStatus::AcceptedOnChain);
         registry.add_agreement(old_fail, IndexingAgreementStatus::AcceptedOnChain);
-        registry.add_pending_cancellation(new_id, old_ok, request_id);
-        registry.add_pending_cancellation(new_id, old_fail, request_id);
+        registry.add_pending_cancellation(new_id, old_ok);
+        registry.add_pending_cancellation(new_id, old_fail);
         registry.fail_cancel_for(old_fail);
 
         let result = execute_pending_cancellations(&new_id, &registry, &chain_client).await;
@@ -2225,10 +2216,9 @@ mod tests {
         let chain_client = MockChainClient::default();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         let old_id = IndexingAgreementId::from_bytes(rand::random());
-        let request_id = IndexingRequestId::new();
 
         registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
-        registry.add_pending_cancellation(new_id, old_id, request_id);
+        registry.add_pending_cancellation(new_id, old_id);
         // old_id never added -- simulates a stale pending cancellation whose
         // referenced agreement no longer exists.
 
@@ -2264,11 +2254,10 @@ mod tests {
         let chain_client = MockChainClient::default();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         let old_id = IndexingAgreementId::from_bytes(rand::random());
-        let request_id = IndexingRequestId::new();
 
         registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
         registry.add_agreement(old_id, IndexingAgreementStatus::AcceptedOnChain);
-        registry.add_pending_cancellation(new_id, old_id, request_id);
+        registry.add_pending_cancellation(new_id, old_id);
         chain_client.mark_already_canceled_on_chain(&old_id);
 
         let result = execute_pending_cancellations(&new_id, &registry, &chain_client).await;
@@ -2291,11 +2280,10 @@ mod tests {
         let chain_client = MockChainClient::default();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         let old_id = IndexingAgreementId::from_bytes(rand::random());
-        let request_id = IndexingRequestId::new();
 
         registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
         registry.add_agreement(old_id, IndexingAgreementStatus::AcceptedOnChain);
-        registry.add_pending_cancellation(new_id, old_id, request_id);
+        registry.add_pending_cancellation(new_id, old_id);
         chain_client.mark_already_canceled_on_chain(&old_id);
 
         sweep_executable_pending_cancellations(&registry, &chain_client).await;
@@ -2322,11 +2310,10 @@ mod tests {
         let chain_client = MockChainClient::default();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         let old_id = IndexingAgreementId::from_bytes(rand::random());
-        let request_id = IndexingRequestId::new();
 
         registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
         registry.add_agreement(old_id, IndexingAgreementStatus::AcceptedOnChain);
-        registry.add_pending_cancellation(new_id, old_id, request_id);
+        registry.add_pending_cancellation(new_id, old_id);
 
         sweep_executable_pending_cancellations(&registry, &chain_client).await;
 
@@ -2344,11 +2331,10 @@ mod tests {
         let chain_client = MockChainClient::default();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         let old_id = IndexingAgreementId::from_bytes(rand::random());
-        let request_id = IndexingRequestId::new();
 
         registry.add_agreement(new_id, IndexingAgreementStatus::Created);
         registry.add_agreement(old_id, IndexingAgreementStatus::AcceptedOnChain);
-        registry.add_pending_cancellation(new_id, old_id, request_id);
+        registry.add_pending_cancellation(new_id, old_id);
 
         sweep_executable_pending_cancellations(&registry, &chain_client).await;
 

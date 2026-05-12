@@ -515,12 +515,7 @@ impl PendingCancellationRegistry for RegistryProvider {
             .await?;
         Ok(rows
             .into_iter()
-            .map(
-                |(old_agreement_id, indexing_request_id)| PendingCancellation {
-                    old_agreement_id,
-                    indexing_request_id,
-                },
-            )
+            .map(|old_agreement_id| PendingCancellation { old_agreement_id })
             .collect())
     }
 
