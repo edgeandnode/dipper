@@ -431,6 +431,20 @@ impl AgreementRegistry for RegistryProvider {
             .collect())
     }
 
+    async fn get_agreements_pending_chain_cancel(
+        &self,
+        batch_size: i64,
+    ) -> RegistryResult<Vec<IndexingAgreement>> {
+        Ok(self
+            .inner
+            .get_agreements_pending_chain_cancel(batch_size)
+            .await?
+            .into_iter()
+            .map(IndexingAgreement::try_from)
+            .filter_map(filter_map_with_logging)
+            .collect())
+    }
+
     async fn update_agreement_sync_progress(
         &self,
         id: &IndexingAgreementId,

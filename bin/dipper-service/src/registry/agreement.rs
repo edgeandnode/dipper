@@ -289,6 +289,21 @@ pub trait AgreementRegistry {
         batch_size: i64,
     ) -> RegistryResult<Vec<IndexingAgreement>>;
 
+    /// Get agreements that should be canceled on-chain but haven't been.
+    ///
+    /// Returns agreements still in `AcceptedOnChain` whose parent indexing
+    /// request has already been canceled. These are the orphans left behind
+    /// when a `set_indexing_target_candidates(num_candidates = 0)` call
+    /// flipped the request row but a transient chain-client error stopped
+    /// reassessment from completing the on-chain cancel for every agreement.
+    ///
+    /// Results are ordered by `updated_at` ascending so the longest-orphaned
+    /// agreements are retried first.
+    async fn get_agreements_pending_chain_cancel(
+        &self,
+        batch_size: i64,
+    ) -> RegistryResult<Vec<IndexingAgreement>>;
+
     /// Update the sync progress for an agreement.
     ///
     /// Called when the liveness checker observes the block height has changed

@@ -1280,6 +1280,48 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
+    /// Get agreements still `AcceptedOnChain` whose parent request is `Canceled`.
+    ///
+    /// Used by the chain listener's periodic orphan-cancel sweep to retry
+    /// on-chain `cancelIndexingAgreementByPayer` calls that failed during the
+    /// reassessment that flipped the request row.
+    pub async fn get_agreements_pending_chain_cancel(
+        &self,
+        batch_size: i64,
+    ) -> Result<Vec<IndexingAgreement>, Error> {
+        sqlx::query_as(
+            r#"
+            SELECT
+                a.id,
+                a.nonce_uuid,
+                a.created_at,
+                a.updated_at,
+                a.status,
+                a.indexing_request_id,
+                a.deployment_id,
+                a.indexer_id,
+                a.indexer_url,
+                a.terms,
+                a.last_block_height,
+                a.last_progress_at,
+                a.rejection_reason
+            FROM dipper_reg_indexing_agreements a
+            JOIN dipper_reg_indexing_requests r
+              ON a.indexing_request_id = r.id
+            WHERE a.status = $1
+              AND r.status = $2
+            ORDER BY a.updated_at ASC
+            LIMIT CASE WHEN $3 > 0 THEN $3 ELSE NULL END
+            "#,
+        )
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
+        .bind(IndexingRequestStatus::Canceled)
+        .bind(batch_size)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
     /// Update the sync progress for an agreement.
     ///
     /// Called when the liveness checker observes the block height has changed

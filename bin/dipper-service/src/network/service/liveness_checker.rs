@@ -1007,6 +1007,12 @@ mod tests {
         ) -> RegistryResult<Vec<IndexingAgreement>> {
             unimplemented!()
         }
+        async fn get_agreements_pending_chain_cancel(
+            &self,
+            _batch_size: i64,
+        ) -> RegistryResult<Vec<IndexingAgreement>> {
+            unimplemented!()
+        }
         async fn update_agreement_sync_progress(
             &self,
             id: &IndexingAgreementId,

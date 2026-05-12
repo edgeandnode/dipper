@@ -425,11 +425,20 @@ where
     }
 
     if cancel_failures > 0 {
+        // Two recovery paths cover any agreements left AcceptedOnChain here:
+        //
+        // - Shrink-to-zero (request now Canceled): the chain_listener's
+        //   `sweep_orphan_canceled_agreements` retries on every sweep tick
+        //   (default ~5 min at fast poll, ~5 h at slow poll).
+        // - Shrink-not-zero (request still Open with too many agreements):
+        //   the periodic reassignment service re-queues reassessment at its
+        //   configured cadence (default 24 h).
         tracing::warn!(
             indexing_request_id=%indexing_request_id,
             failures=cancel_failures,
-            "some agreement cancels failed during reassessment; the next \
-             reassessment tick will retry them"
+            "some agreement cancels failed during reassessment; retry will fire \
+             via the orphan-cancel sweep (Canceled requests) or the periodic \
+             reassignment service (Open requests over-target)"
         );
     }
 

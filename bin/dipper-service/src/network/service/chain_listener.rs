@@ -327,6 +327,7 @@ where
             polls_since_sweep += 1;
             if polls_since_sweep >= SWEEP_POLLS {
                 sweep_executable_pending_cancellations(&registry, &chain_client).await;
+                sweep_orphan_canceled_agreements(&registry, &chain_client).await;
                 polls_since_sweep = 0;
             }
         }
@@ -1006,6 +1007,89 @@ where
     Ok(())
 }
 
+/// Retry on-chain cancels for agreements orphaned by a failed shrink-to-zero.
+///
+/// When a `set_indexing_target_candidates(num_candidates = 0)` call flips the
+/// request row to `Canceled`, reassessment fires `cancelIndexingAgreementByPayer`
+/// for every agreement under it. A transient chain-client error during that
+/// fan-out leaves the request row `Canceled` and at least one agreement still
+/// `AcceptedOnChain` — the local intent and on-chain state disagree, and the
+/// admin RPC has nothing left to trigger.
+///
+/// This sweep runs periodically on the chain_listener tick and re-fires the
+/// on-chain cancel for each such orphan. The chain-side cancel is idempotent
+/// (the `Ok(None)` revert path handles already-canceled agreements), and the
+/// DB transition is gated on chain success, so this is safe to run on every
+/// sweep without coordination with reassessment.
+async fn sweep_orphan_canceled_agreements<R, T>(registry: &R, chain_client: &T)
+where
+    R: AgreementRegistry,
+    T: ChainClient,
+{
+    let orphans = match registry
+        .get_agreements_pending_chain_cancel(SWEEP_BATCH_SIZE)
+        .await
+    {
+        Ok(orphans) => orphans,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "Failed to query orphan canceled agreements for sweep"
+            );
+            return;
+        }
+    };
+
+    if orphans.is_empty() {
+        return;
+    }
+
+    tracing::debug!(
+        count = orphans.len(),
+        "Sweeping orphan agreements whose parent request is Canceled"
+    );
+
+    for agreement in orphans {
+        match chain_client
+            .cancel_indexing_agreement_by_payer(agreement.id.as_bytes())
+            .await
+        {
+            Ok(Some(tx_hash)) => {
+                tracing::info!(
+                    agreement_id = %agreement.id,
+                    %tx_hash,
+                    "Submitted on-chain cancel for orphan agreement"
+                );
+            }
+            Ok(None) => {
+                tracing::info!(
+                    agreement_id = %agreement.id,
+                    "Orphan agreement already canceled on-chain; cleaning up local state"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    agreement_id = %agreement.id,
+                    "Failed to cancel orphan agreement on-chain; will retry next sweep"
+                );
+                continue;
+            }
+        }
+
+        if let Err(err) = registry
+            .mark_indexing_agreement_as_canceled_by_requester(&agreement.id)
+            .await
+        {
+            tracing::error!(
+                error = %err,
+                agreement_id = %agreement.id,
+                "Failed to mark orphan agreement as canceled in local DB"
+            );
+        }
+    }
+}
+
 /// Recover stranded pending cancellations from a partial-progress crash.
 ///
 /// `execute_pending_cancellations` is invoked from `reconcile_agreement`
@@ -1159,6 +1243,7 @@ mod tests {
         >,
         deleted_pending_cancellations: Vec<(IndexingAgreementId, IndexingAgreementId)>,
         fail_cancel_for: std::collections::HashSet<IndexingAgreementId>,
+        canceled_request_ids: std::collections::HashSet<IndexingRequestId>,
         chain_listener_state_updates: Vec<(Cursor, Option<u64>)>,
         initial_last_processed_block: u64,
         fail_batch: bool,
@@ -1213,6 +1298,20 @@ mod tests {
 
         fn fail_cancel_for(&self, id: IndexingAgreementId) {
             self.state.lock().unwrap().fail_cancel_for.insert(id);
+        }
+
+        fn mark_request_canceled(&self, id: IndexingRequestId) {
+            self.state.lock().unwrap().canceled_request_ids.insert(id);
+        }
+
+        fn set_agreement_request_id(
+            &self,
+            agreement_id: IndexingAgreementId,
+            request_id: IndexingRequestId,
+        ) {
+            if let Some(a) = self.state.lock().unwrap().agreements.get_mut(&agreement_id) {
+                a.indexing_request_id = request_id;
+            }
         }
 
         fn was_marked_accepted_on_chain(&self, id: &IndexingAgreementId) -> bool {
@@ -1509,6 +1608,25 @@ mod tests {
             _batch_size: i64,
         ) -> RegistryResult<Vec<IndexingAgreement>> {
             Ok(vec![])
+        }
+
+        async fn get_agreements_pending_chain_cancel(
+            &self,
+            batch_size: i64,
+        ) -> RegistryResult<Vec<IndexingAgreement>> {
+            let state = self.state.lock().unwrap();
+            let mut out: Vec<IndexingAgreement> = state
+                .agreements
+                .values()
+                .filter(|a| a.status == IndexingAgreementStatus::AcceptedOnChain)
+                .filter(|a| state.canceled_request_ids.contains(&a.indexing_request_id))
+                .cloned()
+                .collect();
+            out.sort_by_key(|a| a.updated_at);
+            if batch_size > 0 {
+                out.truncate(batch_size as usize);
+            }
+            Ok(out)
         }
 
         async fn update_agreement_sync_progress(
@@ -2805,5 +2923,88 @@ mod tests {
 
         handle.stop().await;
         let _ = svc_handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_orphan_sweep_cancels_when_parent_request_canceled() {
+        // An AcceptedOnChain agreement whose parent request was flipped to
+        // Canceled is the orphan signature: reassessment fired the chain
+        // cancel and failed, then bailed out. The sweep must pick it up.
+        let registry = MockRegistry::new();
+        let chain_client = MockChainClient::default();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
+        let request_id = IndexingRequestId::new();
+
+        registry.add_agreement(agreement_id, IndexingAgreementStatus::AcceptedOnChain);
+        registry.set_agreement_request_id(agreement_id, request_id);
+        registry.mark_request_canceled(request_id);
+
+        sweep_orphan_canceled_agreements(&registry, &chain_client).await;
+
+        assert!(
+            chain_client.was_on_chain_cancel_attempted(&agreement_id),
+            "sweep should have called cancel_indexing_agreement_by_payer"
+        );
+        assert!(
+            registry.was_marked_canceled_by_requester(&agreement_id),
+            "sweep should have marked the agreement CanceledByRequester"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_orphan_sweep_handles_already_canceled_on_chain() {
+        // Idempotency check: the chain reports the agreement is already
+        // canceled (Ok(None)). The sweep must still clean up the local row.
+        let registry = MockRegistry::new();
+        let chain_client = MockChainClient::default();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
+        let request_id = IndexingRequestId::new();
+
+        registry.add_agreement(agreement_id, IndexingAgreementStatus::AcceptedOnChain);
+        registry.set_agreement_request_id(agreement_id, request_id);
+        registry.mark_request_canceled(request_id);
+        chain_client.mark_already_canceled_on_chain(&agreement_id);
+
+        sweep_orphan_canceled_agreements(&registry, &chain_client).await;
+
+        assert!(chain_client.was_on_chain_cancel_attempted(&agreement_id));
+        assert!(registry.was_marked_canceled_by_requester(&agreement_id));
+    }
+
+    #[tokio::test]
+    async fn test_orphan_sweep_skips_when_parent_request_still_open() {
+        // An AcceptedOnChain agreement whose parent request is still Open is
+        // not an orphan: it's the steady-state happy case. The sweep must
+        // leave it alone.
+        let registry = MockRegistry::new();
+        let chain_client = MockChainClient::default();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
+        let request_id = IndexingRequestId::new();
+
+        registry.add_agreement(agreement_id, IndexingAgreementStatus::AcceptedOnChain);
+        registry.set_agreement_request_id(agreement_id, request_id);
+        // Note: request_id NOT marked canceled.
+
+        sweep_orphan_canceled_agreements(&registry, &chain_client).await;
+
+        assert!(
+            !chain_client.was_on_chain_cancel_attempted(&agreement_id),
+            "sweep should not touch agreements whose parent request is Open"
+        );
+        assert!(!registry.was_marked_canceled_by_requester(&agreement_id));
+    }
+
+    #[tokio::test]
+    async fn test_orphan_sweep_noop_when_no_orphans() {
+        // Empty DB: the sweep should make no chain calls and no DB writes.
+        let registry = MockRegistry::new();
+        let chain_client = MockChainClient::default();
+
+        sweep_orphan_canceled_agreements(&registry, &chain_client).await;
+
+        // Nothing observable to assert beyond "didn't panic"; chain_client's
+        // cancels list stays empty by definition because no agreement IDs
+        // were registered.
+        assert!(chain_client.cancels.lock().unwrap().is_empty());
     }
 }
