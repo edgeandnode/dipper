@@ -103,8 +103,12 @@ where
         context.max_grt_per_30_days = ctx.agreement_conf.max_grt_per_30_days().get(name).copied();
     }
 
-    // Select the target group of indexers via IISA — no random fallback for reassessment,
-    // since canceling good indexers to assign random ones would be destructive
+    // Select the target group of indexers via IISA. If IISA is unreachable
+    // we retry with exponential backoff rather than falling back to a
+    // different selection mechanism: cancelling existing good indexers to
+    // assign random ones would be destructive, and there is no per-indexer
+    // /dips/info fallback for new requests either. Prolonged IISA outages
+    // stall new requests until IISA recovers — see README "IISA dependency".
     let target_selected: Vec<SelectedIndexer> = match ctx
         .iisa
         .select_indexers(*deployment_id, *num_candidates, &context)
