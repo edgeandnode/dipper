@@ -13,11 +13,23 @@ use thegraph_core::alloy::{
         ProviderBuilder, RootProvider,
         fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller},
     },
-    transports::TransportError,
+    transports::{RpcError, TransportError, TransportErrorKind},
 };
 use url::Url;
 
 use crate::chain_client::ChainClientError;
+
+/// Pull a `ChainClientError` back out of a `TransportError` if a closure
+/// boxed it in via `TransportErrorKind::custom` (see `build_and_send_call`).
+/// Returns `None` if the transport error came from elsewhere.
+fn extract_chain_client_error(err: TransportError) -> Option<ChainClientError> {
+    match err {
+        RpcError::Transport(TransportErrorKind::Custom(boxed)) => {
+            boxed.downcast::<ChainClientError>().ok().map(|b| *b)
+        }
+        _ => None,
+    }
+}
 
 /// Error patterns that indicate a transient failure worth retrying.
 ///
@@ -189,16 +201,20 @@ impl RpcProviderPool {
 
             // Check if we've tried all providers
             if providers_tried >= self.providers.len() {
-                let err_msg = last_error
-                    .as_ref()
-                    .map(|e| e.to_string())
-                    .unwrap_or_else(|| "unknown error".to_string());
+                let final_err =
+                    last_error.unwrap_or_else(|| TransportErrorKind::custom_str("unknown error"));
+
+                // Preserve structured ChainClientError instances boxed in via
+                // TransportErrorKind::custom (e.g. ContractRevert from gas
+                // estimation). Otherwise fall back to the generic wrap.
+                if let Some(typed) = extract_chain_client_error(final_err) {
+                    return Err(typed);
+                }
 
                 return Err(ChainClientError::RpcError(anyhow::anyhow!(
-                    "All {} RPC providers failed for '{}': {}",
+                    "All {} RPC providers failed for '{}'",
                     self.providers.len(),
                     operation,
-                    err_msg
                 )));
             }
 

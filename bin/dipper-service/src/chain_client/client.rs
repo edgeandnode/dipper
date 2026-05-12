@@ -20,7 +20,7 @@ use thegraph_core::alloy::{
     providers::{Provider, ProviderBuilder},
     rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
-    sol_types::{SolCall, SolStruct, SolValue},
+    sol_types::{SolCall, SolError, SolStruct, SolValue},
 };
 use tokio::sync::Mutex;
 use url::Url;
@@ -266,7 +266,12 @@ impl AlloyChainClient {
             .to(to)
             .input(calldata.into());
 
-        // 2. Estimate gas with safety bounds
+        // 2. Estimate gas with safety bounds.
+        //
+        // The estimator may surface a structured contract revert (e.g. an
+        // already-canceled agreement). Box the typed error through alloy's
+        // Custom transport variant so `rpc_pool.execute` can hand it back
+        // without losing the selector and revert payload.
         let gas_limit = self
             .inner
             .rpc_pool
@@ -275,9 +280,7 @@ impl AlloyChainClient {
                 let estimator = self.inner.gas_estimator.clone();
                 async move {
                     estimator.estimate(&provider, &tx).await.map_err(|e| {
-                        thegraph_core::alloy::transports::TransportError::local_usage_str(
-                            &e.to_string(),
-                        )
+                        thegraph_core::alloy::transports::TransportErrorKind::custom(e)
                     })
                 }
             })
@@ -627,17 +630,43 @@ impl ChainClient for AlloyChainClient {
     async fn cancel_indexing_agreement_by_payer(
         &self,
         agreement_id: &[u8; 16],
-    ) -> Result<B256, ChainClientError> {
+    ) -> Result<Option<B256>, ChainClientError> {
+        let agreement_hex = format!(
+            "0x{}",
+            agreement_id
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+
         tracing::info!(
-            agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            agreement_id = %agreement_hex,
             contract = %self.inner.subgraph_service_address,
             "Canceling indexing agreement on-chain"
         );
 
         let calldata = self.encode_cancel_call(agreement_id);
-        self.build_and_send_call(self.inner.subgraph_service_address, calldata, agreement_id)
+        match self
+            .build_and_send_call(self.inner.subgraph_service_address, calldata, agreement_id)
             .await
-            .map(|tx| tx.hash)
+        {
+            Ok(tx) => Ok(Some(tx.hash)),
+            // SubgraphService returns IndexingAgreementNotActive when the
+            // agreement is no longer in the active set (already canceled,
+            // settled, or expired). The cancel becomes a no-op: there is
+            // nothing left on the contract to flip. Callers can proceed
+            // with any local cleanup that would have followed a submission.
+            Err(ChainClientError::ContractRevert { selector, .. })
+                if selector == ISubgraphService::IndexingAgreementNotActive::SELECTOR =>
+            {
+                tracing::info!(
+                    agreement_id = %agreement_hex,
+                    "Agreement already canceled on-chain (IndexingAgreementNotActive); treating as idempotent success"
+                );
+                Ok(None)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     async fn post_offer(

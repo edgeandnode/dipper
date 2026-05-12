@@ -18,6 +18,13 @@ sol! {
         ///
         /// Can only be called by the original payer of the agreement.
         function cancelIndexingAgreementByPayer(bytes16 agreementId) external;
+
+        /// Reverted by SubgraphService when the agreement is not in an active
+        /// state at the moment of the call. The cancel path treats this as an
+        /// idempotent no-op: the agreement is already canceled (or settled or
+        /// expired) on-chain, so resubmission is unnecessary. Dipper matches
+        /// the 4-byte selector to drop into the success branch.
+        error IndexingAgreementNotActive(bytes16 agreementId);
     }
 
     /// RecurringCollector contract interface (minimal subset for offer-based RCA authorization).

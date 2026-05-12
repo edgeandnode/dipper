@@ -932,12 +932,19 @@ where
             .cancel_indexing_agreement_by_payer(cancellation.old_agreement_id.as_bytes())
             .await
         {
-            Ok(tx_hash) => {
+            Ok(Some(tx_hash)) => {
                 tracing::info!(
                     new_agreement_id = %agreement_id,
                     old_agreement_id = %cancellation.old_agreement_id,
                     %tx_hash,
                     "Submitted on-chain cancellation for replaced agreement"
+                );
+            }
+            Ok(None) => {
+                tracing::info!(
+                    new_agreement_id = %agreement_id,
+                    old_agreement_id = %cancellation.old_agreement_id,
+                    "Agreement already canceled on-chain; proceeding with local cleanup"
                 );
             }
             Err(err) => {
@@ -1622,16 +1629,23 @@ mod tests {
     }
 
     /// Minimal `ChainClient` mock for chain_listener tests. Records every
-    /// on-chain cancel attempt and returns a zero tx hash. `post_offer` is
-    /// not exercised in this module so it returns Ok(None).
+    /// on-chain cancel attempt. Tests can mark specific agreements as
+    /// already-canceled-on-chain (cancel returns `Ok(None)`); unmarked
+    /// agreements get a successful `Ok(Some(zero))`. `post_offer` is not
+    /// exercised in this module.
     #[derive(Clone, Default)]
     struct MockChainClient {
         cancels: Arc<Mutex<Vec<[u8; 16]>>>,
+        already_canceled: Arc<Mutex<Vec<[u8; 16]>>>,
     }
 
     impl MockChainClient {
         fn was_on_chain_cancel_attempted(&self, id: &IndexingAgreementId) -> bool {
             self.cancels.lock().unwrap().contains(id.as_bytes())
+        }
+
+        fn mark_already_canceled_on_chain(&self, id: &IndexingAgreementId) {
+            self.already_canceled.lock().unwrap().push(*id.as_bytes());
         }
     }
 
@@ -1640,10 +1654,19 @@ mod tests {
         async fn cancel_indexing_agreement_by_payer(
             &self,
             agreement_id: &[u8; 16],
-        ) -> Result<thegraph_core::alloy::primitives::B256, crate::chain_client::ChainClientError>
-        {
+        ) -> Result<
+            Option<thegraph_core::alloy::primitives::B256>,
+            crate::chain_client::ChainClientError,
+        > {
             self.cancels.lock().unwrap().push(*agreement_id);
-            Ok(thegraph_core::alloy::primitives::B256::ZERO)
+            // Test mock surfaces the call to the recorder; the dummy hash
+            // distinguishes "submitted" from "already-canceled" (Ok(None)),
+            // letting tests assert either path explicitly per-agreement.
+            if self.already_canceled.lock().unwrap().contains(agreement_id) {
+                Ok(None)
+            } else {
+                Ok(Some(thegraph_core::alloy::primitives::B256::ZERO))
+            }
         }
 
         async fn post_offer(
@@ -2144,6 +2167,64 @@ mod tests {
         let result = execute_pending_cancellations(&new_id, &registry, &chain_client).await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_pending_cancellations_already_canceled_on_chain_succeeds() {
+        // Crash-recovery edge case: the cancel tx confirmed on-chain on a
+        // prior pass, but dipper crashed before deleting the pending row.
+        // On the next sweep the chain call surfaces as Ok(None) (the
+        // SubgraphService contract reverts with IndexingAgreementNotActive;
+        // the chain client translates that into "already canceled"). The
+        // handler must still flip the local row to CanceledByRequester and
+        // delete the pending row, not loop forever.
+        let registry = MockRegistry::new();
+        let chain_client = MockChainClient::default();
+        let new_id = IndexingAgreementId::from_bytes(rand::random());
+        let old_id = IndexingAgreementId::from_bytes(rand::random());
+        let request_id = IndexingRequestId::new();
+
+        registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
+        registry.add_agreement(old_id, IndexingAgreementStatus::AcceptedOnChain);
+        registry.add_pending_cancellation(new_id, old_id, request_id);
+        chain_client.mark_already_canceled_on_chain(&old_id);
+
+        let result = execute_pending_cancellations(&new_id, &registry, &chain_client).await;
+
+        assert!(
+            result.is_ok(),
+            "expected idempotent success, got {result:?}"
+        );
+        assert!(chain_client.was_on_chain_cancel_attempted(&old_id));
+        assert!(registry.was_marked_canceled_by_requester(&old_id));
+        assert!(registry.was_pending_cancellation_deleted(&new_id, &old_id));
+    }
+
+    #[tokio::test]
+    async fn test_sweep_clears_already_canceled_pending_rows() {
+        // The sweep is the long-lived recovery path. If the on-chain cancel
+        // has already happened but the pending row survived, the sweep must
+        // tear it down on the next poll cycle without an error.
+        let registry = MockRegistry::new();
+        let chain_client = MockChainClient::default();
+        let new_id = IndexingAgreementId::from_bytes(rand::random());
+        let old_id = IndexingAgreementId::from_bytes(rand::random());
+        let request_id = IndexingRequestId::new();
+
+        registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
+        registry.add_agreement(old_id, IndexingAgreementStatus::AcceptedOnChain);
+        registry.add_pending_cancellation(new_id, old_id, request_id);
+        chain_client.mark_already_canceled_on_chain(&old_id);
+
+        sweep_executable_pending_cancellations(&registry, &chain_client).await;
+
+        assert!(registry.was_marked_canceled_by_requester(&old_id));
+        assert!(registry.was_pending_cancellation_deleted(&new_id, &old_id));
+        let remaining = registry
+            .get_pending_cancellations_by_new_agreement(new_id)
+            .await
+            .unwrap();
+        assert!(remaining.is_empty());
     }
 
     // -- sweep_executable_pending_cancellations tests --
