@@ -599,15 +599,6 @@ mod tests {
 
     #[async_trait]
     impl WorkerQueue for MockWorkerQueue {
-        async fn process_new_indexing_request(
-            &self,
-            _indexing_request_id: IndexingRequestId,
-            _deployment_id: DeploymentId,
-            _deployment_chain_id: ChainId,
-            _num_candidates: usize,
-        ) -> anyhow::Result<JobId> {
-            unimplemented!()
-        }
         async fn send_indexing_agreement_proposal(
             &self,
             _candidate_url: Url,
@@ -615,19 +606,6 @@ mod tests {
             _indexing_request_id: IndexingRequestId,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
-        ) -> anyhow::Result<JobId> {
-            unimplemented!()
-        }
-        async fn process_indexing_request_cancellation(
-            &self,
-            _indexing_request_id: IndexingRequestId,
-        ) -> anyhow::Result<JobId> {
-            unimplemented!()
-        }
-        async fn process_indexing_agreement_requester_cancellation(
-            &self,
-            _indexing_request_id: IndexingRequestId,
-            _agreement_id: IndexingAgreementId,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }

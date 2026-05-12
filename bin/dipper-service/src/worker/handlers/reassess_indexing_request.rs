@@ -93,7 +93,7 @@ where
     .await?;
 
     // Map numeric chain ID to chain name for IISA ceiling/filtering
-    let chain_name = super::process_new_indexing_request::resolve_chain_name(
+    let chain_name = super::selection_helpers::resolve_chain_name(
         *deployment_chain_id,
         &ctx.networks_registry,
         &ctx.additional_networks,
@@ -192,7 +192,7 @@ where
             .get(indexer_id)
             .expect("ID from to_add must exist in target_pricing");
         let (tokens_per_second, tokens_per_entity_per_second) =
-            match super::process_new_indexing_request::resolve_pricing(
+            match super::selection_helpers::resolve_pricing(
                 selected,
                 fallback_prices,
                 deployment_chain_id,

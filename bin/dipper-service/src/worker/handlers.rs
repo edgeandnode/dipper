@@ -1,28 +1,13 @@
 mod cancel_rejected_agreement_on_chain;
-mod process_indexing_agreement_cancellation;
-mod process_indexing_request_cancellation;
-mod process_new_indexing_request;
 mod reassess_indexing_request;
 mod selection_context;
+mod selection_helpers;
 mod send_indexing_agreement_proposal;
 mod submit_offer;
 
 pub use cancel_rejected_agreement_on_chain::{
     Ctx as CancelRejectedAgreementOnChainCtx, Message as CancelRejectedAgreementOnChain,
     handle as cancel_rejected_agreement_on_chain,
-};
-pub use process_indexing_agreement_cancellation::{
-    Ctx as ProcessIndexingAgreementCancellationCtx,
-    Message as ProcessIndexingAgreementCancellation,
-    handle_requester_cancellation as process_indexing_agreement_requester_cancellation,
-};
-pub use process_indexing_request_cancellation::{
-    Ctx as ProcessIndexingRequestCancellationCtx, Message as ProcessIndexingRequestCancellation,
-    handle as process_indexing_request_cancellation,
-};
-pub use process_new_indexing_request::{
-    Ctx as ProcessNewIndexingRequestCtx, Message as ProcessNewIndexingRequest,
-    handle as process_new_indexing_request,
 };
 pub use reassess_indexing_request::{
     Ctx as ReassessIndexingRequestCtx, Message as ReassessIndexingRequest,

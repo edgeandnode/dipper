@@ -9,9 +9,8 @@ pub use super::service_queue::{WorkerQueue, WorkerQueueHandle};
 use super::{
     context::{Ctx, InnerCtx},
     handlers::{
-        self, CancelRejectedAgreementOnChainCtx, ProcessIndexingAgreementCancellationCtx,
-        ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
-        ReassessIndexingRequestCtx, SendIndexingAgreementProposalCtx, SubmitOfferCtx,
+        self, CancelRejectedAgreementOnChainCtx, ReassessIndexingRequestCtx,
+        SendIndexingAgreementProposalCtx, SubmitOfferCtx,
     },
     messages::Message,
     queue::Queue,
@@ -174,11 +173,8 @@ where
     C: IndexerClient,
     I: CandidateSelection,
     T: ChainClient,
-    ProcessNewIndexingRequestCtx<R, N, W, I>: FromState<S>,
-    ProcessIndexingRequestCancellationCtx<R, W>: FromState<S>,
     ReassessIndexingRequestCtx<R, N, W, I, T>: FromState<S>,
     SendIndexingAgreementProposalCtx<R, W, C>: FromState<S>,
-    ProcessIndexingAgreementCancellationCtx<R, W>: FromState<S>,
     CancelRejectedAgreementOnChainCtx<R, T>: FromState<S>,
     SubmitOfferCtx<R, T>: FromState<S>,
 {
@@ -195,11 +191,8 @@ where
     }
 
     _dispatch!(state, message, job_meta, {
-        Message::ProcessNewIndexingRequest => handlers::process_new_indexing_request,
-        Message::ProcessIndexingRequestCancellation => handlers::process_indexing_request_cancellation,
         Message::ReassessIndexingRequest => handlers::reassess_indexing_request,
         Message::SendIndexingAgreementProposal => handlers::send_indexing_agreement_proposal,
-        Message::ProcessIndexingAgreementRequesterCancellation => handlers::process_indexing_agreement_requester_cancellation,
         Message::CancelRejectedAgreementOnChain => handlers::cancel_rejected_agreement_on_chain,
         Message::SubmitOffer => handlers::submit_offer,
     })

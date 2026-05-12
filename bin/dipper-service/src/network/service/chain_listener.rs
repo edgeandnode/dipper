@@ -1682,15 +1682,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::worker::service::WorkerQueue for MockWorkerQueue {
-        async fn process_new_indexing_request(
-            &self,
-            _indexing_request_id: IndexingRequestId,
-            _deployment_id: DeploymentId,
-            _deployment_chain_id: ChainId,
-            _num_candidates: usize,
-        ) -> anyhow::Result<dipper_pgmq::JobId> {
-            Ok(dipper_pgmq::JobId::default())
-        }
 
         async fn send_indexing_agreement_proposal(
             &self,
@@ -1703,20 +1694,7 @@ mod tests {
             Ok(dipper_pgmq::JobId::default())
         }
 
-        async fn process_indexing_request_cancellation(
-            &self,
-            _indexing_request_id: IndexingRequestId,
-        ) -> anyhow::Result<dipper_pgmq::JobId> {
-            Ok(dipper_pgmq::JobId::default())
-        }
 
-        async fn process_indexing_agreement_requester_cancellation(
-            &self,
-            _indexing_request_id: IndexingRequestId,
-            _agreement_id: IndexingAgreementId,
-        ) -> anyhow::Result<dipper_pgmq::JobId> {
-            Ok(dipper_pgmq::JobId::default())
-        }
 
         async fn reassess_indexing_request(
             &self,

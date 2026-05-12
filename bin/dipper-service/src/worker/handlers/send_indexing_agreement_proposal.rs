@@ -651,15 +651,6 @@ mod tests {
 
     #[async_trait]
     impl WorkerQueue for MockQueue {
-        async fn process_new_indexing_request(
-            &self,
-            _request_id: IndexingRequestId,
-            _deployment_id: DeploymentId,
-            _chain_id: ChainId,
-            _num_candidates: usize,
-        ) -> anyhow::Result<JobId> {
-            Ok(JobId::default())
-        }
 
         async fn send_indexing_agreement_proposal(
             &self,
@@ -688,20 +679,7 @@ mod tests {
             Ok(JobId::default())
         }
 
-        async fn process_indexing_request_cancellation(
-            &self,
-            _request_id: IndexingRequestId,
-        ) -> anyhow::Result<JobId> {
-            Ok(JobId::default())
-        }
 
-        async fn process_indexing_agreement_requester_cancellation(
-            &self,
-            _indexing_request_id: IndexingRequestId,
-            _agreement_id: IndexingAgreementId,
-        ) -> anyhow::Result<JobId> {
-            Ok(JobId::default())
-        }
 
         async fn cancel_rejected_agreement_on_chain(
             &self,
