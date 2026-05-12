@@ -131,10 +131,8 @@ pub async fn main() -> anyhow::Result<()> {
     tracing::info!("initialized Graph network service");
 
     //- The network provider component
-    let network_provider = network::provider::NetworkProviderService::new(
-        network_topology_handle.clone(),
-        conf.indexer_rpc.allowlist.clone(),
-    );
+    let network_provider =
+        network::provider::NetworkProviderService::new(network_topology_handle.clone());
 
     //- The IISA HTTP client
     // Verify IISA is reachable before accepting traffic (deployment ordering)
