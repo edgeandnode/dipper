@@ -9,8 +9,7 @@ use tokio::sync::Notify;
 use super::handlers::{
     CancelRejectedAgreementOnChainCtx, ProcessIndexingAgreementCancellationCtx,
     ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
-    ReassessIndexingRequestCtx, SendIndexingAgreementCancellationCtx,
-    SendIndexingAgreementProposalCtx, SubmitOfferCtx,
+    ReassessIndexingRequestCtx, SendIndexingAgreementProposalCtx, SubmitOfferCtx,
 };
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
@@ -166,11 +165,6 @@ impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I> {
     additional_networks,
     entity_count_cache,
     chain_listener_notify,
-});
-
-impl_from_state!(SendIndexingAgreementCancellationCtx<R, C> {
-    registry,
-    indexer_client: client,
 });
 
 impl_from_state!(ProcessIndexingRequestCancellationCtx<R, W> {

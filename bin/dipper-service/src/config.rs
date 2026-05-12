@@ -750,15 +750,17 @@ pub struct AdminRpcConfig {
     pub gateway_operator_allowlist: BTreeSet<Address>,
 }
 
-/// The Indexer RPC server configuration
+/// Indexer allowlist for the network provider.
+///
+/// The dipper service no longer exposes an indexer-facing RPC server (cancellation
+/// and collection live on-chain), but the allowlist still filters which indexers
+/// the network provider surfaces to selection. Configs may carry legacy fields
+/// like `listen_addr`; serde ignores them.
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
 pub struct IndexerRpcConfig {
-    /// The RPC server listen address
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    pub listen_addr: std::net::SocketAddr,
-
-    /// The set of addresses that are allowed to access the RPC server
+    /// The set of indexer addresses the network provider may consider.
+    /// Empty means "no filter" (all indexers visible).
     #[serde_as(as = "serde_with::SetLastValueWins<_>")]
     pub allowlist: BTreeSet<IndexerId>,
 }

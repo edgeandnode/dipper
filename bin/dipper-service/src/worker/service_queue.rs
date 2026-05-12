@@ -7,7 +7,7 @@ use super::{
     handlers::{
         CancelRejectedAgreementOnChain, ProcessIndexingAgreementCancellation,
         ProcessIndexingRequestCancellation, ProcessNewIndexingRequest, ReassessIndexingRequest,
-        SendIndexingAgreementCancellation, SendIndexingAgreementProposal, SubmitOffer,
+        SendIndexingAgreementProposal, SubmitOffer,
     },
     messages::Message,
     queue::{JobId, Queue},
@@ -32,25 +32,12 @@ pub trait WorkerQueue {
         deployment_chain_id: ChainId,
     ) -> anyhow::Result<JobId>;
 
-    async fn send_indexing_agreement_cancellation(
-        &self,
-        indexer_url: Url,
-        indexing_request_id: IndexingRequestId,
-        agreement_id: IndexingAgreementId,
-    ) -> anyhow::Result<JobId>;
-
     async fn process_indexing_request_cancellation(
         &self,
         indexing_request_id: IndexingRequestId,
     ) -> anyhow::Result<JobId>;
 
     async fn process_indexing_agreement_requester_cancellation(
-        &self,
-        indexing_request_id: IndexingRequestId,
-        agreement_id: IndexingAgreementId,
-    ) -> anyhow::Result<JobId>;
-
-    async fn process_indexing_agreement_indexer_cancellation(
         &self,
         indexing_request_id: IndexingRequestId,
         agreement_id: IndexingAgreementId,
@@ -142,23 +129,6 @@ where
             .await
     }
 
-    async fn send_indexing_agreement_cancellation(
-        &self,
-        indexer_url: Url,
-        indexing_request_id: IndexingRequestId,
-        agreement_id: IndexingAgreementId,
-    ) -> anyhow::Result<JobId> {
-        self.queue
-            .push(Message::SendIndexingAgreementCancellation(
-                SendIndexingAgreementCancellation {
-                    indexer_url,
-                    indexing_request_id,
-                    agreement_id,
-                },
-            ))
-            .await
-    }
-
     async fn process_indexing_request_cancellation(
         &self,
         indexing_request_id: IndexingRequestId,
@@ -179,21 +149,6 @@ where
     ) -> anyhow::Result<JobId> {
         self.queue
             .push(Message::ProcessIndexingAgreementRequesterCancellation(
-                ProcessIndexingAgreementCancellation {
-                    indexing_request_id,
-                    agreement_id,
-                },
-            ))
-            .await
-    }
-
-    async fn process_indexing_agreement_indexer_cancellation(
-        &self,
-        indexing_request_id: IndexingRequestId,
-        agreement_id: IndexingAgreementId,
-    ) -> anyhow::Result<JobId> {
-        self.queue
-            .push(Message::ProcessIndexingAgreementIndexerCancellation(
                 ProcessIndexingAgreementCancellation {
                     indexing_request_id,
                     agreement_id,

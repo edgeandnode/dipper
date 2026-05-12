@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::Address};
+use thegraph_core::{DeploymentId, IndexerId};
 
 use super::{
     api::{Indexer, NetworkProvider},
@@ -60,13 +60,5 @@ impl NetworkProvider for NetworkProviderService {
                 id: indexer.id,
                 url: indexer.url.clone(),
             })
-    }
-
-    fn get_indexer_id_for_operator_address(&self, operator_address: &Address) -> Option<IndexerId> {
-        self.topology
-            .snapshot()
-            .indexers_iter()
-            .find(|indexer| indexer.operators.contains(operator_address))
-            .map(|indexer| indexer.id)
     }
 }

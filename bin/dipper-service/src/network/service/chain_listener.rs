@@ -319,7 +319,7 @@ where
 
             polls_since_sweep += 1;
             if polls_since_sweep >= SWEEP_POLLS {
-                sweep_executable_pending_cancellations(&registry, &worker_queue).await;
+                sweep_executable_pending_cancellations(&registry).await;
                 polls_since_sweep = 0;
             }
         }
@@ -554,7 +554,7 @@ where
             let Some(outcome) = outcomes.get(&prep.agreement.id).copied() else {
                 continue;
             };
-            match finalize_reconciliation(&prep, outcome, registry, worker_queue).await {
+            match finalize_reconciliation(&prep, outcome, registry).await {
                 Ok(()) => drain_processed += 1,
                 Err(err) => {
                     tracing::warn!(
@@ -792,15 +792,13 @@ where
 
 /// Log the transition that landed and, on fresh accepts, fan out the
 /// linked pending cancellations.
-async fn finalize_reconciliation<R, W>(
+async fn finalize_reconciliation<R>(
     prep: &PreparedReconciliation,
     outcome: crate::registry::ReconciliationOutcome,
     registry: &R,
-    worker_queue: &W,
 ) -> anyhow::Result<()>
 where
     R: AgreementRegistry + PendingCancellationRegistry,
-    W: WorkerQueue,
 {
     if outcome.did_accept {
         let (old_status, reason) = match prep.agreement.status {
@@ -836,7 +834,7 @@ where
     // write — repeating it on a CAS no-op would re-enqueue work that
     // already ran in a prior poll.
     if outcome.did_accept {
-        execute_pending_cancellations(&prep.agreement.id, registry, worker_queue).await?;
+        execute_pending_cancellations(&prep.agreement.id, registry).await?;
     }
 
     Ok(())
@@ -871,7 +869,7 @@ where
         .apply_reconciliation(&prep.agreement.id, prep.item.apply_accept, prep.item.cancel)
         .await?;
 
-    finalize_reconciliation(&prep, outcome, registry, worker_queue).await
+    finalize_reconciliation(&prep, outcome, registry).await
 }
 
 /// Execute pending cancellations linked to a newly-accepted agreement.
@@ -880,14 +878,12 @@ where
 /// transitions. Each pending cancellation record is deleted individually
 /// after successful processing. Transient failures retain the record so
 /// the next reconcile pass can retry.
-async fn execute_pending_cancellations<R, W>(
+async fn execute_pending_cancellations<R>(
     agreement_id: &IndexingAgreementId,
     registry: &R,
-    worker_queue: &W,
 ) -> anyhow::Result<()>
 where
     R: AgreementRegistry + PendingCancellationRegistry,
-    W: WorkerQueue,
 {
     let pending = registry
         .get_pending_cancellations_by_new_agreement(*agreement_id)
@@ -900,22 +896,20 @@ where
     let mut transient_failures: u32 = 0;
 
     for cancellation in &pending {
-        let old_agreement = match registry
+        if registry
             .get_indexing_agreement_by_id(&cancellation.old_agreement_id)
             .await?
+            .is_none()
         {
-            Some(a) => a,
-            None => {
-                tracing::warn!(
-                    old_agreement_id = %cancellation.old_agreement_id,
-                    "Pending cancellation references non-existent agreement, cleaning up"
-                );
-                registry
-                    .delete_pending_cancellation(*agreement_id, cancellation.old_agreement_id)
-                    .await?;
-                continue;
-            }
-        };
+            tracing::warn!(
+                old_agreement_id = %cancellation.old_agreement_id,
+                "Pending cancellation references non-existent agreement, cleaning up"
+            );
+            registry
+                .delete_pending_cancellation(*agreement_id, cancellation.old_agreement_id)
+                .await?;
+            continue;
+        }
 
         match registry
             .mark_indexing_agreement_as_canceled_by_requester(&cancellation.old_agreement_id)
@@ -947,26 +941,11 @@ where
             .delete_pending_cancellation(*agreement_id, cancellation.old_agreement_id)
             .await?;
 
-        if let Err(err) = worker_queue
-            .send_indexing_agreement_cancellation(
-                old_agreement.indexer.url,
-                cancellation.indexing_request_id,
-                cancellation.old_agreement_id,
-            )
-            .await
-        {
-            tracing::error!(
-                error = %err,
-                old_agreement_id = %cancellation.old_agreement_id,
-                "Failed to queue cancellation notification for replaced agreement"
-            );
-        } else {
-            tracing::info!(
-                new_agreement_id = %agreement_id,
-                old_agreement_id = %cancellation.old_agreement_id,
-                "Cancelled old agreement after replacement confirmed on-chain"
-            );
-        }
+        tracing::info!(
+            new_agreement_id = %agreement_id,
+            old_agreement_id = %cancellation.old_agreement_id,
+            "Marked old agreement canceled in dipper DB after replacement confirmed on-chain"
+        );
     }
 
     if transient_failures > 0 {
@@ -994,10 +973,9 @@ where
 ///
 /// Per-orphan failures are logged and swallowed so one stuck cancellation
 /// cannot block the rest of the sweep.
-async fn sweep_executable_pending_cancellations<R, W>(registry: &R, worker_queue: &W)
+async fn sweep_executable_pending_cancellations<R>(registry: &R)
 where
     R: AgreementRegistry + PendingCancellationRegistry,
-    W: WorkerQueue,
 {
     let targets = match registry
         .list_executable_pending_cancellations(SWEEP_BATCH_SIZE)
@@ -1023,9 +1001,7 @@ where
     );
 
     for new_agreement_id in targets {
-        if let Err(err) =
-            execute_pending_cancellations(&new_agreement_id, registry, worker_queue).await
-        {
+        if let Err(err) = execute_pending_cancellations(&new_agreement_id, registry).await {
             tracing::warn!(
                 error = %err,
                 new_agreement_id = %new_agreement_id,
@@ -1625,15 +1601,6 @@ mod tests {
             Ok(dipper_pgmq::JobId::default())
         }
 
-        async fn send_indexing_agreement_cancellation(
-            &self,
-            _indexer_url: Url,
-            _indexing_request_id: IndexingRequestId,
-            _agreement_id: IndexingAgreementId,
-        ) -> anyhow::Result<dipper_pgmq::JobId> {
-            Ok(dipper_pgmq::JobId::default())
-        }
-
         async fn process_indexing_request_cancellation(
             &self,
             _indexing_request_id: IndexingRequestId,
@@ -1642,14 +1609,6 @@ mod tests {
         }
 
         async fn process_indexing_agreement_requester_cancellation(
-            &self,
-            _indexing_request_id: IndexingRequestId,
-            _agreement_id: IndexingAgreementId,
-        ) -> anyhow::Result<dipper_pgmq::JobId> {
-            Ok(dipper_pgmq::JobId::default())
-        }
-
-        async fn process_indexing_agreement_indexer_cancellation(
             &self,
             _indexing_request_id: IndexingRequestId,
             _agreement_id: IndexingAgreementId,
@@ -1931,7 +1890,6 @@ mod tests {
     #[tokio::test]
     async fn test_pending_cancellations_all_succeed_records_deleted() {
         let registry = MockRegistry::new();
-        let worker_queue = MockWorkerQueue::default();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         let old_id_1 = IndexingAgreementId::from_bytes(rand::random());
         let old_id_2 = IndexingAgreementId::from_bytes(rand::random());
@@ -1943,7 +1901,7 @@ mod tests {
         registry.add_pending_cancellation(new_id, old_id_1, request_id);
         registry.add_pending_cancellation(new_id, old_id_2, request_id);
 
-        let result = execute_pending_cancellations(&new_id, &registry, &worker_queue).await;
+        let result = execute_pending_cancellations(&new_id, &registry).await;
 
         assert!(result.is_ok());
         assert!(registry.was_marked_canceled_by_requester(&old_id_1));
@@ -1960,7 +1918,6 @@ mod tests {
     #[tokio::test]
     async fn test_pending_cancellations_transient_failure_retains_record() {
         let registry = MockRegistry::new();
-        let worker_queue = MockWorkerQueue::default();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         let old_ok = IndexingAgreementId::from_bytes(rand::random());
         let old_fail = IndexingAgreementId::from_bytes(rand::random());
@@ -1973,7 +1930,7 @@ mod tests {
         registry.add_pending_cancellation(new_id, old_fail, request_id);
         registry.fail_cancel_for(old_fail);
 
-        let result = execute_pending_cancellations(&new_id, &registry, &worker_queue).await;
+        let result = execute_pending_cancellations(&new_id, &registry).await;
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
@@ -1999,7 +1956,6 @@ mod tests {
     #[tokio::test]
     async fn test_pending_cancellations_nonexistent_agreement_cleans_up() {
         let registry = MockRegistry::new();
-        let worker_queue = MockWorkerQueue::default();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         let old_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
@@ -2009,7 +1965,7 @@ mod tests {
         // old_id never added -- simulates a stale pending cancellation whose
         // referenced agreement no longer exists.
 
-        let result = execute_pending_cancellations(&new_id, &registry, &worker_queue).await;
+        let result = execute_pending_cancellations(&new_id, &registry).await;
 
         assert!(result.is_ok());
         assert!(!registry.was_marked_canceled_by_requester(&old_id));
@@ -2019,11 +1975,10 @@ mod tests {
     #[tokio::test]
     async fn test_pending_cancellations_empty_is_noop() {
         let registry = MockRegistry::new();
-        let worker_queue = MockWorkerQueue::default();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
 
-        let result = execute_pending_cancellations(&new_id, &registry, &worker_queue).await;
+        let result = execute_pending_cancellations(&new_id, &registry).await;
 
         assert!(result.is_ok());
     }
@@ -2038,7 +1993,6 @@ mod tests {
         // and the old agreement is still alive. The sweep must complete
         // the cancellation without needing another snapshot to arrive.
         let registry = MockRegistry::new();
-        let worker_queue = MockWorkerQueue::default();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         let old_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
@@ -2047,7 +2001,7 @@ mod tests {
         registry.add_agreement(old_id, IndexingAgreementStatus::AcceptedOnChain);
         registry.add_pending_cancellation(new_id, old_id, request_id);
 
-        sweep_executable_pending_cancellations(&registry, &worker_queue).await;
+        sweep_executable_pending_cancellations(&registry).await;
 
         assert!(registry.was_marked_canceled_by_requester(&old_id));
         assert!(registry.was_pending_cancellation_deleted(&new_id, &old_id));
@@ -2060,7 +2014,6 @@ mod tests {
         // running the cancellation early would prematurely kill the old
         // agreement before the replacement is on-chain.
         let registry = MockRegistry::new();
-        let worker_queue = MockWorkerQueue::default();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         let old_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
@@ -2069,7 +2022,7 @@ mod tests {
         registry.add_agreement(old_id, IndexingAgreementStatus::AcceptedOnChain);
         registry.add_pending_cancellation(new_id, old_id, request_id);
 
-        sweep_executable_pending_cancellations(&registry, &worker_queue).await;
+        sweep_executable_pending_cancellations(&registry).await;
 
         assert!(!registry.was_marked_canceled_by_requester(&old_id));
         assert!(!registry.was_pending_cancellation_deleted(&new_id, &old_id));
@@ -2078,9 +2031,8 @@ mod tests {
     #[tokio::test]
     async fn test_sweep_no_orphans_is_noop() {
         let registry = MockRegistry::new();
-        let worker_queue = MockWorkerQueue::default();
 
-        sweep_executable_pending_cancellations(&registry, &worker_queue).await;
+        sweep_executable_pending_cancellations(&registry).await;
     }
 
     // -- notify wakeup integration test --

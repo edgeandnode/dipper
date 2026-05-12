@@ -1,54 +1,46 @@
-//! An EIP-712 signer implementation
+//! An EIP-712 signer-recovery helper.
 //!
-//! The EIP-712 signer is a wrapper around an ECDSA signer and an EIP-712 domain separator.
+//! Wraps an EIP-712 domain separator plus the signer's address and chain ID,
+//! and exposes recovery for signed admin-RPC messages.
 
-use dipper_rpc::indexer::{gateway_server, indexer_client};
+use std::marker::PhantomData;
+
 use thegraph_core::{
     alloy::{
         primitives::{Address, ChainId},
         signers::{SignerSync, local::PrivateKeySigner},
         sol_types::{Eip712Domain, SolStruct},
     },
-    signed_message::{
-        RecoverSignerError, SignedMessage, SigningError, ToSolStruct, recover_signer_address, sign,
-    },
+    signed_message::{RecoverSignerError, SignedMessage, ToSolStruct, recover_signer_address},
 };
 
-/// An [`Eip712Signer`] using a [`PrivateKeySigner`] as the ECDSA signer
+/// An [`Eip712Signer`] backed by a [`PrivateKeySigner`].
 pub type PrivateKeyEip712Signer = Eip712Signer<PrivateKeySigner>;
 
-/// An [`Eip712Signer`] wraps a ECDSA signer and an [EIP-712] domain separator.
+/// Carries the signer's identity and the EIP-712 domain used to verify
+/// inbound admin-RPC messages.
 ///
-/// It provides a convenient way to sign and verify messages using the [EIP-712] standard.
-///
-/// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
+/// The generic parameter exists for backwards compatibility with callers that
+/// type their handles as `Eip712Signer<PrivateKeySigner>`; it is no longer used
+/// to sign because dipper only verifies inbound signatures.
 pub struct Eip712Signer<S> {
-    /// The ECDSA signer
-    signer: S,
-    /// The signer's address
     signer_address: Address,
-    /// The signer's chain ID
     signer_chain: ChainId,
-    /// The EIP-712 domain separator (admin RPC messages)
     domain: Eip712Domain,
+    _phantom: PhantomData<S>,
 }
 
 impl<S> Eip712Signer<S>
 where
     S: SignerSync,
 {
-    /// Create a new [`Eip712Signer`] instance
-    pub fn new(
-        signer: S,
-        signer_address: Address,
-        signer_chain: ChainId,
-        domain: Eip712Domain,
-    ) -> Self {
+    /// Create a new [`Eip712Signer`] instance.
+    pub fn new(signer_address: Address, signer_chain: ChainId, domain: Eip712Domain) -> Self {
         Self {
-            signer,
             signer_address,
             signer_chain,
             domain,
+            _phantom: PhantomData,
         }
     }
 
@@ -62,9 +54,7 @@ where
         self.signer_chain
     }
 
-    /// Recover the signer's address from an [EIP-712] signed message
-    ///
-    /// Returns the signer's address
+    /// Recover the signer's address from an [EIP-712] signed message.
     ///
     /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
     pub fn recover_signer<M, MSol>(
@@ -76,41 +66,6 @@ where
         MSol: SolStruct,
     {
         recover_signer_address(&self.domain, signed_message)
-    }
-
-    /// Sign a DIPs Cancellation message using the [EIP-712] standard.
-    ///
-    /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
-    pub fn sign_dips_cancellation_msg<M, MSol>(
-        &self,
-        msg: M,
-    ) -> Result<SignedMessage<M>, SigningError>
-    where
-        M: ToSolStruct<MSol>,
-        MSol: SolStruct,
-    {
-        sign(
-            &self.signer,
-            &indexer_client::dips_cancellation_eip712_domain(self.signer_chain),
-            msg,
-        )
-    }
-
-    /// Recover the signer's address from an [EIP-712] signed DIPs cancellation message.
-    ///
-    /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
-    pub fn recover_dips_cancellation_msg_signer<M, MSol>(
-        &self,
-        msg: &SignedMessage<M>,
-    ) -> Result<Address, RecoverSignerError>
-    where
-        M: ToSolStruct<MSol>,
-        MSol: SolStruct,
-    {
-        recover_signer_address(
-            &gateway_server::dips_cancellation_eip712_domain(self.signer_chain),
-            msg,
-        )
     }
 }
 
@@ -149,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn signer_sing_and_verify() {
+    fn signer_sign_and_verify() {
         //* Given
         let signer = wallet();
         let signer_address = signer.address();
@@ -161,12 +116,12 @@ mod tests {
             data: keccak256(b"Hello, world!"),
         };
 
-        // Create an Eip712Signer instance
-        let eip712_signer = Eip712Signer::new(signer, signer_address, signer_chain, domain);
+        // Create an Eip712Signer instance for verifying inbound messages
+        let eip712_signer: Eip712Signer<PrivateKeySigner> =
+            Eip712Signer::new(signer_address, signer_chain, domain.clone());
 
-        // Sign the message
-        let signed_message = sign(&eip712_signer.signer, &eip712_signer.domain, message)
-            .expect("message signing failed");
+        // Sign the message with a freestanding signer
+        let signed_message = sign(&signer, &domain, message).expect("message signing failed");
 
         //* When
         // Verify the signed message

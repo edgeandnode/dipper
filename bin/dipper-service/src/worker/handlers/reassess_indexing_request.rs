@@ -365,21 +365,9 @@ where
             "agreement state transition"
         );
 
-        if let Err(err) = ctx
-            .queue
-            .send_indexing_agreement_cancellation(
-                old_agreement.indexer.url.clone(),
-                *indexing_request_id,
-                old_agreement.id,
-            )
-            .await
-        {
-            tracing::error!(
-                error=%err,
-                agreement_id=%old_agreement.id,
-                "Failed to queue cancellation notification for unpaired old agreement"
-            );
-        }
+        // TODO(PR 2): trigger on-chain cancel_indexing_agreement_by_payer for
+        // each old_agreement here. PR 1b only removes the dead-letter gRPC
+        // notification; the on-chain state is still untouched (same as today).
 
         directly_cancelled += 1;
     }

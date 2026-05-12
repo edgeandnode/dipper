@@ -708,23 +708,6 @@ mod tests {
             Ok(JobId::default())
         }
 
-        async fn process_indexing_agreement_indexer_cancellation(
-            &self,
-            _indexing_request_id: IndexingRequestId,
-            _agreement_id: IndexingAgreementId,
-        ) -> anyhow::Result<JobId> {
-            Ok(JobId::default())
-        }
-
-        async fn send_indexing_agreement_cancellation(
-            &self,
-            _indexer_url: Url,
-            _indexing_request_id: IndexingRequestId,
-            _agreement_id: IndexingAgreementId,
-        ) -> anyhow::Result<JobId> {
-            Ok(JobId::default())
-        }
-
         async fn cancel_rejected_agreement_on_chain(
             &self,
             _agreement_id: IndexingAgreementId,
@@ -818,14 +801,6 @@ mod tests {
                     "connection failed".to_string().into(),
                 )),
             }
-        }
-
-        async fn send_indexing_agreement_cancellation_notification(
-            &self,
-            _indexer: &Url,
-            _indexing_agreement_id: IndexingAgreementId,
-        ) -> Result<(), DipsError> {
-            Ok(())
         }
     }
 
