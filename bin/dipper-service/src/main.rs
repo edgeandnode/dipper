@@ -310,6 +310,7 @@ pub async fn main() -> anyhow::Result<()> {
                 registry: registry.clone(),
                 worker_queue: worker_handle.queue().clone(),
                 event_source,
+                chain_client: chain_client.clone(),
                 config: chain_listener_conf.clone(),
                 signer_address: signer.address(),
                 chain_listener_notify: chain_listener_notify.clone(),
