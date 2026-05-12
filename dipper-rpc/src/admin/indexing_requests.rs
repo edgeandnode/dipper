@@ -74,6 +74,10 @@ impl ToSolStruct<SetIndexingTargetCandidatesSol> for SetIndexingTargetCandidates
         SetIndexingTargetCandidatesSol {
             deployment_id: self.deployment_id.into(),
             chain_id: self.chain_id,
+            // `as u64` is safe on every target dipper builds for (all 64-bit);
+            // `usize` is at most 64 bits on those platforms. The cast would
+            // truncate on a hypothetical 128-bit target but no such build
+            // exists today.
             num_candidates: self.num_candidates.unwrap_or(0) as u64,
         }
     }
@@ -125,6 +129,12 @@ pub enum IndexingRequestStatus {
     /// The indexing request is the active target for its `(requester,
     /// deployment, chain)` key. The current `num_candidates` field on the
     /// underlying row is the desired indexer count.
+    ///
+    /// Under the declarative model this is the only non-terminal state for
+    /// an active assignment. Agreement churn (cancels, rejections, indexer
+    /// abandonment) is absorbed by reassessment without flipping the row
+    /// back from any other state — once an `Open` row exists, it stays
+    /// `Open` until a `num_candidates = 0` call retires it.
     Open,
 
     /// The indexing request was terminated by a `num_candidates = 0` call.

@@ -138,6 +138,12 @@ pub enum Status {
     /// The indexing request is the active target for its `(requester,
     /// deployment, chain)` key. The current `num_candidates` field on the
     /// row is the desired indexer count.
+    ///
+    /// Under the declarative model this is the only non-terminal state for
+    /// an active assignment. Agreement churn (cancels, rejections, indexer
+    /// abandonment) is absorbed by reassessment without flipping the request
+    /// row back from any other state — once an `Open` row exists, it stays
+    /// `Open` until a `num_candidates = 0` call retires it.
     #[default]
     Open,
 
