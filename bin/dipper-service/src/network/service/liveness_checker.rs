@@ -1044,13 +1044,13 @@ mod tests {
 
     #[async_trait]
     impl IndexingRequestRegistry for MockRegistry {
-        async fn register_new_indexing_request(
+        async fn set_indexing_target_candidates(
             &self,
             _by: Address,
             _dep: DeploymentId,
             _chain: ChainId,
             _n: usize,
-        ) -> RegistryResult<IndexingRequestId> {
+        ) -> RegistryResult<crate::registry::SetTargetOutcome> {
             unimplemented!()
         }
         async fn get_all_indexing_requests(&self) -> RegistryResult<Vec<IndexingRequest>> {
@@ -1070,12 +1070,6 @@ mod tests {
             &self,
             _dep: &DeploymentId,
         ) -> RegistryResult<Vec<IndexingRequest>> {
-            unimplemented!()
-        }
-        async fn mark_indexing_request_as_canceled(
-            &self,
-            _id: &IndexingRequestId,
-        ) -> RegistryResult<()> {
             unimplemented!()
         }
         async fn get_open_indexing_requests_for_reassessment(

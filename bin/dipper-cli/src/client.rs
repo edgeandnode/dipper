@@ -1,4 +1,6 @@
-pub use dipper_rpc::admin::indexing_requests::IndexingRequestsRpcClient;
+pub use dipper_rpc::admin::{
+    indexing_agreements::IndexingAgreementsRpcClient, indexing_requests::IndexingRequestsRpcClient,
+};
 use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
 use url::Url;
 

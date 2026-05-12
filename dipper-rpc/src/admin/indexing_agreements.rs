@@ -2,10 +2,8 @@ use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use jsonrpsee::{client_transport::ws::Url, core::RpcResult, proc_macros::rpc};
 use serde::Serializer;
 use serde_with::serde_as;
-use thegraph_core::{DeploymentId, IndexerId, signed_message::ToSolStruct};
+use thegraph_core::{DeploymentId, IndexerId};
 use time::OffsetDateTime;
-
-use super::message::SignedMessage;
 
 /// The _indexing agreement_ RPC methods
 #[rpc(server, client)]
@@ -37,37 +35,6 @@ pub trait IndexingAgreementsRpc {
         &self,
         request_id: IndexingRequestId,
     ) -> RpcResult<Vec<IndexingAgreement>>;
-
-    /// Cancel an _indexing agreement_
-    #[method(name = "cancel_indexing_agreement")]
-    async fn cancel_indexing_agreement(
-        &self,
-        req: SignedMessage<CancelIndexingAgreement>,
-    ) -> RpcResult<()>;
-}
-
-/// The cancel indexing request message
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct CancelIndexingAgreement {
-    /// The ID of the indexing agreement to cancel
-    pub id: IndexingAgreementId,
-}
-
-impl ToSolStruct<CancelIndexingAgreementSol> for CancelIndexingAgreement {
-    fn to_sol_struct(&self) -> CancelIndexingAgreementSol {
-        CancelIndexingAgreementSol {
-            id: self.id.as_bytes().into(),
-        }
-    }
-}
-
-thegraph_core::alloy::sol! {
-    /// The cancel indexing agreement message (Solidity version)
-    ///
-    /// See: [`CancelIndexingAgreement::to_sol_struct(...)`](struct.CancelIndexingAgreement.html#method.to_sol_struct)
-    struct CancelIndexingAgreementSol {
-        bytes16 id;
-    }
 }
 
 /// The _indexing agreement_ response entity

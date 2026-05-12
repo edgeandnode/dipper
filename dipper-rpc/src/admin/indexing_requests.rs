@@ -31,36 +31,47 @@ pub trait IndexingRequestsRpc {
         deployment_id: DeploymentId,
     ) -> RpcResult<Vec<IndexingRequest>>;
 
-    /// Register a new _indexing request_
-    #[method(name = "register_new_indexing_request")]
-    async fn register_new_indexing_request(
+    /// Set the target number of indexer candidates for an indexing assignment.
+    ///
+    /// Idempotent upsert keyed on `(requester, deployment_id, chain_id)`:
+    ///
+    /// - First call for a key inserts a new request and queues selection.
+    /// - Subsequent calls with the same `num_candidates` are a no-op.
+    /// - Subsequent calls with a different `num_candidates` update the existing
+    ///   Open row and queue reassessment to grow or shrink the indexer set.
+    /// - A call with `num_candidates = 0` cancels every agreement under the
+    ///   request and flips the row to Canceled. The next non-zero call for the
+    ///   same key creates a fresh request.
+    /// - A call with `num_candidates = 0` against a key with no Open row is a
+    ///   no-op and logs a warning (nothing to cancel).
+    ///
+    /// Returns the canonical request ID for the key when one exists (insert,
+    /// update, no-op, or cancel). Returns `None` for the only edge case where
+    /// no ID exists: `num_candidates = 0` against a key that has never been
+    /// registered or whose request has already been canceled.
+    #[method(name = "set_indexing_target_candidates")]
+    async fn set_indexing_target_candidates(
         &self,
-        req: SignedMessage<NewIndexingRequest>,
-    ) -> RpcResult<IndexingRequestId>;
-
-    /// Cancel an _indexing request_
-    #[method(name = "cancel_indexing_request")]
-    async fn cancel_indexing_request(
-        &self,
-        req: SignedMessage<CancelIndexingRequest>,
-    ) -> RpcResult<()>;
+        req: SignedMessage<SetIndexingTargetCandidates>,
+    ) -> RpcResult<Option<IndexingRequestId>>;
 }
 
-/// The new _indexing request_ message
+/// Payload for [`IndexingRequestsRpc::set_indexing_target_candidates`].
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct NewIndexingRequest {
+pub struct SetIndexingTargetCandidates {
     /// The deployment ID of the subgraph
     pub deployment_id: DeploymentId,
     /// The chain ID the subgraph is indexing
     pub chain_id: ChainId,
-    /// The desired number of indexers to assign. Defaults to the server-side maximum when omitted.
+    /// The target number of indexers to assign. Zero terminates the request.
+    /// Defaults to the server-side maximum when omitted.
     #[serde(default)]
     pub num_candidates: Option<usize>,
 }
 
-impl ToSolStruct<NewIndexingRequestSol> for NewIndexingRequest {
-    fn to_sol_struct(&self) -> NewIndexingRequestSol {
-        NewIndexingRequestSol {
+impl ToSolStruct<SetIndexingTargetCandidatesSol> for SetIndexingTargetCandidates {
+    fn to_sol_struct(&self) -> SetIndexingTargetCandidatesSol {
+        SetIndexingTargetCandidatesSol {
             deployment_id: self.deployment_id.into(),
             chain_id: self.chain_id,
             num_candidates: self.num_candidates.unwrap_or(0) as u64,
@@ -69,37 +80,13 @@ impl ToSolStruct<NewIndexingRequestSol> for NewIndexingRequest {
 }
 
 thegraph_core::alloy::sol! {
-    /// The new indexing request message (Solidity version)
+    /// Solidity-side struct for EIP-712 signing.
     ///
-    /// See: [`NewIndexingRequest::to_sol_struct(...)`](struct.NewIndexingRequest.html#method.to_sol_struct)
-    struct NewIndexingRequestSol {
+    /// See: [`SetIndexingTargetCandidates::to_sol_struct`].
+    struct SetIndexingTargetCandidatesSol {
         bytes32 deployment_id;
         uint64 chain_id;
         uint64 num_candidates;
-    }
-}
-
-/// The cancel indexing request message
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct CancelIndexingRequest {
-    /// The ID of the indexing request to cancel
-    pub id: IndexingRequestId,
-}
-
-impl ToSolStruct<CancelIndexingRequestSol> for CancelIndexingRequest {
-    fn to_sol_struct(&self) -> CancelIndexingRequestSol {
-        CancelIndexingRequestSol {
-            id: self.id.as_bytes().into(),
-        }
-    }
-}
-
-thegraph_core::alloy::sol! {
-    /// The cancel indexing request message (Solidity version)
-    ///
-    /// See: [`CancelIndexingRequest::to_sol_struct(...)`](struct.CancelIndexingRequest.html#method.to_sol_struct)
-    struct CancelIndexingRequestSol {
-        bytes16 id;
     }
 }
 
@@ -135,20 +122,13 @@ pub struct IndexingRequest {
 /// The status of the [`IndexingRequest`].
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub enum IndexingRequestStatus {
-    /// The indexing request was registered.
-    ///
-    /// There are no active agreements associated with the request, as no indexers have accepted
-    /// the request yet. This is the initial state when the request is created.
-    ///
-    /// This is an intermediate state when all agreements associated with the request are cancelled
-    /// or expired.
+    /// The indexing request is the active target for its `(requester,
+    /// deployment, chain)` key. The current `num_candidates` field on the
+    /// underlying row is the desired indexer count.
     Open,
 
-    /// The indexing request was cancelled by the customer.
-    ///
-    /// Any associated agreements MUST be marked as `CANCELLED`.
-    ///
-    /// This is a terminal state.
+    /// The indexing request was terminated by a `num_candidates = 0` call.
+    /// All associated agreements are cancelled. Terminal state.
     Canceled,
 
     /// The indexing request is in an unknown state.

@@ -44,9 +44,8 @@ async fn run_fixture(db: &Pool<Postgres>, sql: &str) -> Result<(), sqlx::Error> 
 }
 
 #[tokio::test]
-async fn register_new_indexing_request() {
+async fn set_indexing_target_candidates_inserts_when_no_open_row_exists() {
     //* Given
-    // Indexing request
     let requested_by = FakeAlloy.fake();
     let deployment_id = deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv");
     let deployment_chain_id = Faker.fake::<ChainId>();
@@ -55,12 +54,182 @@ async fn register_new_indexing_request() {
     let registry = PgRegistry::new(db);
 
     //* When
-    let res = registry
-        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id, 3)
-        .await;
+    let outcome = registry
+        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 3)
+        .await
+        .expect("Failed to set indexing target candidates");
 
     //* Then
-    let _indexing_request_id = res.expect("Failed to register new indexing request");
+    assert!(matches!(
+        outcome,
+        dipper_pgregistry::IndexingRequestSetTargetOutcome::Inserted { .. }
+    ));
+}
+
+#[tokio::test]
+async fn set_indexing_target_candidates_updates_when_count_changes() {
+    //* Given
+    let requested_by = FakeAlloy.fake();
+    let deployment_id = deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv");
+    let deployment_chain_id = Faker.fake::<ChainId>();
+
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+    let initial = registry
+        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 3)
+        .await
+        .expect("seed insert failed");
+    let dipper_pgregistry::IndexingRequestSetTargetOutcome::Inserted { id: initial_id } = initial
+    else {
+        panic!("seed insert did not produce an Inserted outcome");
+    };
+
+    //* When
+    let outcome = registry
+        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 5)
+        .await
+        .expect("update call failed");
+
+    //* Then
+    match outcome {
+        dipper_pgregistry::IndexingRequestSetTargetOutcome::Updated {
+            id,
+            new_num_candidates,
+        } => {
+            assert_eq!(id, initial_id);
+            assert_eq!(new_num_candidates, 5);
+        }
+        other => panic!("expected Updated, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn set_indexing_target_candidates_noop_when_count_unchanged() {
+    //* Given
+    let requested_by = FakeAlloy.fake();
+    let deployment_id = deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv");
+    let deployment_chain_id = Faker.fake::<ChainId>();
+
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+    let initial = registry
+        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 3)
+        .await
+        .expect("seed insert failed");
+    let dipper_pgregistry::IndexingRequestSetTargetOutcome::Inserted { id: initial_id } = initial
+    else {
+        panic!("seed insert did not produce an Inserted outcome");
+    };
+
+    //* When
+    let outcome = registry
+        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 3)
+        .await
+        .expect("no-op call failed");
+
+    //* Then
+    match outcome {
+        dipper_pgregistry::IndexingRequestSetTargetOutcome::NoOp { id } => {
+            assert_eq!(id, initial_id)
+        }
+        other => panic!("expected NoOp, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn set_indexing_target_candidates_cancels_on_zero() {
+    //* Given
+    let requested_by = FakeAlloy.fake();
+    let deployment_id = deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv");
+    let deployment_chain_id = Faker.fake::<ChainId>();
+
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+    let initial = registry
+        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 3)
+        .await
+        .expect("seed insert failed");
+    let dipper_pgregistry::IndexingRequestSetTargetOutcome::Inserted { id: initial_id } = initial
+    else {
+        panic!("seed insert did not produce an Inserted outcome");
+    };
+
+    //* When
+    let outcome = registry
+        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 0)
+        .await
+        .expect("cancel call failed");
+
+    //* Then
+    match outcome {
+        dipper_pgregistry::IndexingRequestSetTargetOutcome::Canceled { id } => {
+            assert_eq!(id, initial_id);
+            let request = registry
+                .get_indexing_request_by_id(&initial_id)
+                .await
+                .expect("get by id failed")
+                .expect("request should still exist");
+            assert_eq!(
+                request.status,
+                dipper_pgregistry::IndexingRequestStatus::Canceled
+            );
+        }
+        other => panic!("expected Canceled, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn set_indexing_target_candidates_noop_when_zero_against_empty_key() {
+    //* Given
+    let requested_by = FakeAlloy.fake();
+    let deployment_id = deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv");
+    let deployment_chain_id = Faker.fake::<ChainId>();
+
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let outcome = registry
+        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 0)
+        .await
+        .expect("empty-key cancel call failed");
+
+    //* Then
+    assert!(matches!(
+        outcome,
+        dipper_pgregistry::IndexingRequestSetTargetOutcome::NoOpAlreadyEmpty
+    ));
+}
+
+#[tokio::test]
+async fn set_indexing_target_candidates_reinsert_after_cancel() {
+    //* Given: open then cancel
+    let requested_by = FakeAlloy.fake();
+    let deployment_id = deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv");
+    let deployment_chain_id = Faker.fake::<ChainId>();
+
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+    let _ = registry
+        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 3)
+        .await
+        .expect("seed insert failed");
+    let _ = registry
+        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 0)
+        .await
+        .expect("cancel call failed");
+
+    //* When: re-register the same key
+    let outcome = registry
+        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 5)
+        .await
+        .expect("re-register call failed");
+
+    //* Then: produces a fresh Open row
+    assert!(matches!(
+        outcome,
+        dipper_pgregistry::IndexingRequestSetTargetOutcome::Inserted { .. }
+    ));
 }
 
 #[tokio::test]
@@ -318,10 +487,14 @@ async fn register_new_indexing_agreement() {
     let registry = PgRegistry::new(db);
 
     // Register a new indexing request
-    let indexing_request_id = registry
-        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id, 3)
+    let indexing_request_id = match registry
+        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 3)
         .await
-        .expect("Failed to register new indexing request");
+        .expect("Failed to set indexing target candidates")
+    {
+        dipper_pgregistry::IndexingRequestSetTargetOutcome::Inserted { id } => id,
+        other => panic!("seed insert did not produce an Inserted outcome: {other:?}"),
+    };
 
     //* When
     let res = registry
@@ -361,10 +534,14 @@ async fn register_new_and_get_indexing_agreement_by_id() {
     };
 
     // Register a new indexing request
-    let indexing_request_id = registry
-        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id, 3)
+    let indexing_request_id = match registry
+        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 3)
         .await
-        .expect("Failed to register new indexing request");
+        .expect("Failed to set indexing target candidates")
+    {
+        dipper_pgregistry::IndexingRequestSetTargetOutcome::Inserted { id } => id,
+        other => panic!("seed insert did not produce an Inserted outcome: {other:?}"),
+    };
 
     // Register a new indexing agreement
     let indexing_agreement_id = registry
@@ -486,10 +663,14 @@ async fn register_new_indexing_receipt() {
     let registry = PgRegistry::new(db);
 
     // Register a new indexing request
-    let indexing_request_id = registry
-        .register_new_indexing_request(requested_by, deployment_id, deployment_chain_id, 3)
+    let indexing_request_id = match registry
+        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 3)
         .await
-        .expect("Failed to register new indexing request");
+        .expect("Failed to set indexing target candidates")
+    {
+        dipper_pgregistry::IndexingRequestSetTargetOutcome::Inserted { id } => id,
+        other => panic!("seed insert did not produce an Inserted outcome: {other:?}"),
+    };
 
     // Register a new indexing agreement
     let indexing_agreement_id = registry

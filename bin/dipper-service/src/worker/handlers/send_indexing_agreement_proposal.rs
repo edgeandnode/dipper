@@ -565,14 +565,16 @@ mod tests {
 
     #[async_trait]
     impl IndexingRequestRegistry for MockRegistry {
-        async fn register_new_indexing_request(
+        async fn set_indexing_target_candidates(
             &self,
             _requested_by: thegraph_core::alloy::primitives::Address,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
             _num_candidates: usize,
-        ) -> crate::registry::Result<IndexingRequestId> {
-            Ok(IndexingRequestId::new())
+        ) -> crate::registry::Result<crate::registry::SetTargetOutcome> {
+            Ok(crate::registry::SetTargetOutcome::Inserted {
+                id: IndexingRequestId::new(),
+            })
         }
 
         async fn get_all_indexing_requests(&self) -> crate::registry::Result<Vec<IndexingRequest>> {
@@ -591,13 +593,6 @@ mod tests {
             _deployment_id: &DeploymentId,
         ) -> crate::registry::Result<Vec<IndexingRequest>> {
             Ok(vec![])
-        }
-
-        async fn mark_indexing_request_as_canceled(
-            &self,
-            _id: &IndexingRequestId,
-        ) -> crate::registry::Result<()> {
-            Ok(())
         }
 
         async fn get_open_indexing_requests_for_reassessment(

@@ -5,17 +5,13 @@ use dipper_core::{
     ids::{IndexingAgreementId, IndexingRequestId},
     state::FromState,
 };
-use dipper_rpc::admin::{
-    SignedMessage,
-    indexing_agreements::{
-        CancelIndexingAgreement, IndexingAgreement, IndexingAgreementsRpcServer,
-        Status as IndexingAgreementStatus,
-    },
+use dipper_rpc::admin::indexing_agreements::{
+    IndexingAgreement, IndexingAgreementsRpcServer, Status as IndexingAgreementStatus,
 };
-use jsonrpsee::{core::RpcResult, types::ErrorObject};
+use jsonrpsee::core::RpcResult;
 use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::Address};
 
-use super::error_handling::{handle_list_result, handle_optional_result, require_exists};
+use super::error_handling::{handle_list_result, handle_optional_result};
 use crate::{
     registry::{
         AgreementRegistry, IndexingAgreement as IndexingAgreementRecord,
@@ -111,50 +107,6 @@ where
             "Failed to get indexing agreements by indexing request id",
             into_indexing_agreement,
         )
-    }
-
-    async fn cancel_indexing_agreement(
-        &self,
-        req: SignedMessage<CancelIndexingAgreement>,
-    ) -> RpcResult<()> {
-        // Check if the signer is authorized to make this request
-        let requested_by = match self.signer.recover_signer(&req) {
-            Ok(requested_by) => requested_by,
-            Err(err) => {
-                tracing::debug!(error=?err, "Failed to recover signer");
-                return Err(ErrorObject::borrowed(401, "Unauthorized", None));
-            }
-        };
-        if !self.gateway_operator_allowlist.contains(&requested_by) {
-            return Err(ErrorObject::borrowed(403, "Forbidden", None));
-        }
-
-        let CancelIndexingAgreement { id: agreement_id } = req.into_message();
-
-        tracing::debug!(%agreement_id, %requested_by, "Canceling indexing agreement");
-
-        // Check if the agreement exists
-        let agreement = require_exists(
-            self.registry
-                .get_indexing_agreement_by_id(&agreement_id)
-                .await,
-            "Failed to get indexing agreement",
-        )?;
-
-        // Process the indexing request cancellation
-        if let Err(err) = self
-            .worker
-            .process_indexing_agreement_requester_cancellation(
-                agreement.indexing_request_id,
-                agreement.id,
-            )
-            .await
-        {
-            tracing::error!(error=?err, "Failed to queue task: 'process_indexing_agreement_requester_cancellation'");
-            return Err(ErrorObject::borrowed(500, "Internal error", None));
-        };
-
-        Ok(())
     }
 }
 

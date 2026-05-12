@@ -20,16 +20,17 @@ use super::result::Result as RegistryResult;
 /// indexing requests.
 #[async_trait]
 pub trait IndexingRequestRegistry {
-    /// Register a new indexing request.
+    /// Idempotent upsert keyed on `(requested_by, deployment_id, deployment_chain_id)`.
     ///
-    /// If successful, the method returns the ID of the newly created indexing request.
-    async fn register_new_indexing_request(
+    /// Returns a [`SetTargetOutcome`] describing what changed so the caller can
+    /// dispatch the right follow-up worker job.
+    async fn set_indexing_target_candidates(
         &self,
         requested_by: Address,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
         num_candidates: usize,
-    ) -> RegistryResult<IndexingRequestId>;
+    ) -> RegistryResult<SetTargetOutcome>;
 
     /// Get all indexing requests.
     async fn get_all_indexing_requests(&self) -> RegistryResult<Vec<IndexingRequest>>;
@@ -46,13 +47,6 @@ pub trait IndexingRequestRegistry {
         deployment_id: &DeploymentId,
     ) -> RegistryResult<Vec<IndexingRequest>>;
 
-    /// Mark an indexing request as `CANCELED`.
-    ///
-    /// If there is no indexing request with the given ID, or if the request is not in the
-    /// `OPEN` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
-    async fn mark_indexing_request_as_canceled(&self, id: &IndexingRequestId)
-    -> RegistryResult<()>;
-
     /// Get open indexing requests eligible for reassessment.
     ///
     /// Returns requests that are in the `OPEN` status and were created at least
@@ -66,6 +60,41 @@ pub trait IndexingRequestRegistry {
         min_age_seconds: i64,
         batch_size: i64,
     ) -> RegistryResult<Vec<IndexingRequest>>;
+}
+
+/// What `set_indexing_target_candidates` actually did.
+///
+/// The admin RPC handler inspects this to decide which worker job to queue
+/// after the row mutation.
+#[derive(Debug, Clone)]
+pub enum SetTargetOutcome {
+    /// No Open row existed for the key; a new row was inserted with the
+    /// requested `num_candidates`. The caller should queue reassessment to
+    /// drive the indexer set up from zero.
+    Inserted { id: IndexingRequestId },
+
+    /// An Open row already existed and its `num_candidates` was updated to a
+    /// new non-zero value. The caller should queue reassessment to grow or
+    /// shrink the indexer set to the new target.
+    Updated {
+        id: IndexingRequestId,
+        new_num_candidates: usize,
+    },
+
+    /// An Open row existed with the same `num_candidates` as requested.
+    /// Nothing to do; the caller should return the existing ID.
+    NoOp { id: IndexingRequestId },
+
+    /// `num_candidates = 0` was requested for an existing Open row. The row
+    /// was flipped to Canceled. The caller should queue reassessment with
+    /// `num_candidates = 0` so the shrink path cancels every agreement
+    /// on-chain.
+    Canceled { id: IndexingRequestId },
+
+    /// `num_candidates = 0` was requested for a key with no Open row.
+    /// The caller should warn and return `None` to the RPC client; there
+    /// is nothing to cancel.
+    NoOpAlreadyEmpty,
 }
 
 /// An Indexing Request represents the request for indexing services initiated by the customer.
@@ -106,21 +135,14 @@ pub struct IndexingRequest {
 /// The status of the [`IndexingRequest`].
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Default)]
 pub enum Status {
-    /// The indexing request was registered.
-    ///
-    /// There are no active agreements associated with the request, as no indexers have accepted
-    /// the request yet. This is the initial state when the request is created.
-    ///
-    /// This is an intermediate state when all agreements associated with the request are cancelled
-    /// or expired.
+    /// The indexing request is the active target for its `(requester,
+    /// deployment, chain)` key. The current `num_candidates` field on the
+    /// row is the desired indexer count.
     #[default]
     Open,
 
-    /// The indexing request was cancelled by the customer.
-    ///
-    /// Any associated agreements MUST be marked as `CANCELLED`.
-    ///
-    /// This is a terminal state.
+    /// The indexing request was terminated by a `num_candidates = 0` call.
+    /// All associated agreements MUST be cancelled. Terminal state.
     Canceled,
 }
 
@@ -159,6 +181,25 @@ impl TryFrom<dipper_pgregistry::IndexingRequestStatus> for Status {
             dipper_pgregistry::IndexingRequestStatus::Open => Ok(Status::Open),
             dipper_pgregistry::IndexingRequestStatus::Canceled => Ok(Status::Canceled),
             _ => Err(anyhow::anyhow!("invalid indexing request status")),
+        }
+    }
+}
+
+impl From<dipper_pgregistry::IndexingRequestSetTargetOutcome> for SetTargetOutcome {
+    fn from(value: dipper_pgregistry::IndexingRequestSetTargetOutcome) -> Self {
+        use dipper_pgregistry::IndexingRequestSetTargetOutcome as Pg;
+        match value {
+            Pg::Inserted { id } => SetTargetOutcome::Inserted { id },
+            Pg::Updated {
+                id,
+                new_num_candidates,
+            } => SetTargetOutcome::Updated {
+                id,
+                new_num_candidates: new_num_candidates as usize,
+            },
+            Pg::NoOp { id } => SetTargetOutcome::NoOp { id },
+            Pg::Canceled { id } => SetTargetOutcome::Canceled { id },
+            Pg::NoOpAlreadyEmpty => SetTargetOutcome::NoOpAlreadyEmpty,
         }
     }
 }

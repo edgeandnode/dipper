@@ -1,16 +1,16 @@
 //! Implementation of the `agreements` command and its subcommands.
+//!
+//! Currently read-only — cancellation goes through `indexings target` with
+//! `--num-candidates 0`, which terminates the parent request and fires the
+//! on-chain cancel for every agreement under it.
 
 use std::str::FromStr;
 
 use clap::{Command, arg, command};
-use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
-use dipper_rpc::admin::indexing_agreements::{
-    CancelIndexingAgreement, IndexingAgreementsRpcClient,
-};
-use thegraph_core::signed_message;
+use dipper_core::ids::IndexingRequestId;
 
 use super::{common, result::Result};
-use crate::{client, config::Config, signer};
+use crate::{client, client::IndexingAgreementsRpcClient, config::Config};
 
 /// The `agreements` command implementation
 pub(super) async fn run(matches: &clap::ArgMatches) -> Result<()> {
@@ -20,12 +20,6 @@ pub(super) async fn run(matches: &clap::ArgMatches) -> Result<()> {
             tracing::debug!("Configuration loaded: {:?}", conf);
 
             list(conf, matches).await
-        }
-        Some(("cancel", matches)) => {
-            let conf = common::load_conf(matches)?;
-            tracing::debug!("Configuration loaded: {:?}", conf);
-
-            cancel(conf, matches).await
         }
         _ => Err(anyhow::anyhow!("No agreements command specified").into()),
     }
@@ -58,43 +52,10 @@ async fn list(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
     Ok(())
 }
 
-/// The `agreements cancel` command
-///
-/// This function cancels a specific agreement by its ID.
-///
-/// This function calls the `cancel_indexing_agreement` RPC method on the DIPs gateway server.
-async fn cancel(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
-    let rpc_client = client::new(&conf.server_url);
-    let agreement_id = matches
-        .get_one::<IndexingAgreementId>("AGREEMENT_ID")
-        .ok_or_else(|| anyhow::anyhow!("No AGREEMENT_ID provided"))?;
-
-    // Create signer and domain
-    let signer = signer::new_private_key_eip712_signer(&conf.signing_key);
-    let signer_eip712_domain = signer::eip712_domain();
-
-    // Create the cancellation payload
-    let cancel_payload = CancelIndexingAgreement { id: *agreement_id };
-
-    // Sign the payload
-    let req = signed_message::sign(&signer, &signer_eip712_domain, cancel_payload)
-        .map_err(|err| anyhow::anyhow!("Failed to sign cancel agreement request: {err}"))?;
-
-    // Call the correct RPC method with the signed request
-    rpc_client
-        .cancel_indexing_agreement(req.into())
-        .await
-        .map_err(|err| anyhow::anyhow!("Failed to cancel agreement '{agreement_id}': {err}"))?;
-
-    println!("Agreement {} cancelled successfully.", agreement_id);
-
-    Ok(())
-}
-
 /// Create the `agreements` DIPs agreements admin command
 pub(super) fn cmd() -> Command {
     command!("agreements")
-        .about("Manage agreements")
+        .about("Inspect agreements")
         .args(
             // Common arg options to be used by all subcommands
             [
@@ -103,21 +64,13 @@ pub(super) fn cmd() -> Command {
                 common::signing_key_arg().global(true),
             ],
         )
-        .subcommands(&[
-            command!("list")
-                .alias("ls")
-                .about("List all agreements for a given indexing request ID")
-                .arg(
-                    arg!(<INDEXING_REQUEST_ID> "The indexing request ID (UUIDv7)")
-                        .value_parser(parse_indexing_request_id),
-                ),
-            command!("cancel")
-                .about("Cancel a specific agreement by ID")
-                .arg(
-                    arg!(<AGREEMENT_ID> "The agreement ID (0x-prefixed hex bytes16)")
-                        .value_parser(parse_agreement_id),
-                ),
-        ])
+        .subcommands(&[command!("list")
+            .alias("ls")
+            .about("List all agreements for a given indexing request ID")
+            .arg(
+                arg!(<INDEXING_REQUEST_ID> "The indexing request ID (UUIDv7)")
+                    .value_parser(parse_indexing_request_id),
+            )])
 }
 
 /// Parses an IndexingRequestId from a string.
@@ -125,10 +78,4 @@ fn parse_indexing_request_id(s: &str) -> Result<IndexingRequestId, anyhow::Error
     uuid::Uuid::from_str(s)
         .map(Into::into)
         .map_err(|err| anyhow::anyhow!("Invalid Indexing Request ID (UUIDv7) '{s}': {err}"))
-}
-
-/// Parses an IndexingAgreementId from a hex string (with optional 0x prefix).
-fn parse_agreement_id(s: &str) -> Result<IndexingAgreementId, anyhow::Error> {
-    IndexingAgreementId::from_str(s)
-        .map_err(|err| anyhow::anyhow!("Invalid Agreement ID (hex bytes16) '{s}': {err}"))
 }
