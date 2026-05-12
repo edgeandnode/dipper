@@ -1,4 +1,4 @@
-use thegraph_core::{DeploymentId, IndexerId};
+use thegraph_core::IndexerId;
 
 use super::{
     api::{Indexer, NetworkProvider},
@@ -19,21 +19,6 @@ impl NetworkProviderService {
 }
 
 impl NetworkProvider for NetworkProviderService {
-    fn get_indexers_not_indexing_a_deployment_id(
-        &self,
-        deployment_id: &DeploymentId,
-    ) -> Vec<Indexer> {
-        self.topology
-            .snapshot()
-            .indexers_iter()
-            .filter(|indexer| !indexer.indexings.contains(deployment_id))
-            .map(|indexer| Indexer {
-                id: indexer.id,
-                url: indexer.url.clone(),
-            })
-            .collect()
-    }
-
     fn get_indexer_by_id(&self, indexer_id: &IndexerId) -> Option<Indexer> {
         self.topology
             .snapshot()

@@ -1,5 +1,5 @@
 use reqwest::Url;
-use thegraph_core::{DeploymentId, IndexerId};
+use thegraph_core::IndexerId;
 
 /// An indexer.
 pub struct Indexer {
@@ -14,12 +14,6 @@ pub struct Indexer {
 /// Provides a set of methods to interact with the network provider abstracting the
 /// access to the Graph network snapshot.
 pub trait NetworkProvider {
-    /// Get a list of indexers not indexing the subgraph [`DeploymentId`].
-    fn get_indexers_not_indexing_a_deployment_id(
-        &self,
-        deployment_id: &DeploymentId,
-    ) -> Vec<Indexer>;
-
     /// Get an indexer by its ID.
     fn get_indexer_by_id(&self, indexer_id: &IndexerId) -> Option<Indexer>;
 }

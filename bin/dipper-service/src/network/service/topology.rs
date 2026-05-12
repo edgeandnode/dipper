@@ -253,18 +253,6 @@ impl Snapshot {
         }
     }
 
-    /// Get an iterator over the indexers in the network snapshot.
-    ///
-    /// As the indexers are stored in a BTreeMap-based table, the iterator
-    /// will return the indexers in ascending order of their IDs.
-    ///
-    /// # Returns
-    ///
-    /// An iterator over references to the indexers in the snapshot.
-    pub fn indexers_iter(&self) -> impl Iterator<Item = &Indexer> {
-        self.indexers.values()
-    }
-
     /// Get an [Indexer] by its [IndexerId].
     pub fn get_indexer(&self, id: &IndexerId) -> Option<&Indexer> {
         self.indexers.get(id)
