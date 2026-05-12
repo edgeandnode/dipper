@@ -1466,17 +1466,6 @@ mod tests {
             Ok(())
         }
 
-        async fn mark_indexing_agreement_as_canceled_by_indexer(
-            &self,
-            id: &IndexingAgreementId,
-        ) -> RegistryResult<()> {
-            self.state
-                .lock()
-                .unwrap()
-                .marked_canceled_by_indexer
-                .push(*id);
-            Ok(())
-        }
 
         async fn apply_reconciliation(
             &self,

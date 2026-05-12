@@ -317,16 +317,6 @@ impl AgreementRegistry for RegistryProvider {
             .map_err(Into::into)
     }
 
-    async fn mark_indexing_agreement_as_canceled_by_indexer(
-        &self,
-        id: &IndexingAgreementId,
-    ) -> RegistryResult<()> {
-        self.inner
-            .mark_indexing_agreement_as_canceled_by_indexer(id)
-            .await
-            .map_err(Into::into)
-    }
-
     async fn apply_reconciliation(
         &self,
         id: &IndexingAgreementId,

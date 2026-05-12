@@ -967,12 +967,6 @@ mod tests {
         ) -> RegistryResult<()> {
             unimplemented!()
         }
-        async fn mark_indexing_agreement_as_canceled_by_indexer(
-            &self,
-            _id: &IndexingAgreementId,
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
         async fn apply_reconciliation(
             &self,
             _id: &IndexingAgreementId,
