@@ -3,14 +3,6 @@ use std::time::Duration;
 /// The result of processing a job.
 pub type JobResult<T, E = JobError> = Result<T, E>;
 
-/// Metadata about the current job being processed.
-#[derive(Debug, Clone, Copy)]
-pub struct JobMeta {
-    /// Number of failed attempts so far (available for handler use)
-    #[allow(dead_code)]
-    pub failed_attempts: u32,
-}
-
 /// Calculate retry delay with exponential backoff.
 ///
 /// - First 5 attempts: exponential (base * 2^attempt)

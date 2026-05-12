@@ -45,7 +45,7 @@ use url::Url;
 use crate::{
     chain_client::{ChainClient, ChainClientError},
     config::LivenessCheckerConfig,
-    network::api::NetworkProvider,
+    network::provider::NetworkProviderService,
     registry::{
         AgreementRegistry, IndexingAgreement, IndexingRequestRegistry, PendingCancellationRegistry,
     },
@@ -70,7 +70,7 @@ impl Handle {
 }
 
 /// Context required by the liveness checker service.
-pub struct Ctx<R, W, C, N> {
+pub struct Ctx<R, W, C> {
     /// Registry for querying and updating agreements.
     pub registry: R,
     /// Worker queue for submitting reassessment jobs.
@@ -78,7 +78,7 @@ pub struct Ctx<R, W, C, N> {
     /// Chain client for canceling agreements on-chain.
     pub chain_client: C,
     /// Network provider for looking up fresh indexer URLs.
-    pub network: N,
+    pub network: NetworkProviderService,
     /// Service configuration.
     pub config: LivenessCheckerConfig,
 }
@@ -88,12 +88,11 @@ pub struct Ctx<R, W, C, N> {
 /// Returns a handle for controlling the service and a future that must be spawned
 /// on a runtime. The service periodically polls indexer status endpoints and cancels
 /// agreements where no indexing progress is observed within the tolerance window.
-pub fn new<R, W, C, N>(ctx: Ctx<R, W, C, N>) -> (Handle, impl Future<Output = anyhow::Result<()>>)
+pub fn new<R, W, C>(ctx: Ctx<R, W, C>) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
     R: AgreementRegistry + IndexingRequestRegistry + PendingCancellationRegistry + Send + Sync,
     W: WorkerQueue + Send + Sync,
     C: ChainClient + Send + Sync,
-    N: NetworkProvider + Send + Sync,
 {
     let (tx_stop, mut rx_stop) = mpsc::channel(1);
 

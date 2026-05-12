@@ -11,7 +11,7 @@ use dipper_core::ids::IndexingAgreementId;
 use crate::{
     chain_client::ChainClient,
     registry::{AgreementRegistry, IndexingAgreementStatus},
-    worker::result::{JobError, JobMeta, JobResult},
+    worker::result::{JobError, JobResult},
 };
 
 pub struct Ctx<R, T> {
@@ -30,11 +30,7 @@ pub struct Message {
 /// This is called when an indexer rejected the proposal off-chain but then accepted
 /// on-chain anyway. We cancel the agreement via `cancelIndexingAgreementByPayer` to
 /// ensure the indexer doesn't receive payment for work we didn't want.
-pub async fn handle<R, T>(
-    ctx: Ctx<R, T>,
-    Message { agreement_id }: &Message,
-    _job_meta: JobMeta,
-) -> JobResult<()>
+pub async fn handle<R, T>(ctx: Ctx<R, T>, Message { agreement_id }: &Message) -> JobResult<()>
 where
     R: AgreementRegistry,
     T: ChainClient,

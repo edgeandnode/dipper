@@ -16,7 +16,7 @@ use crate::{
     chain_client::ChainClient,
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
     indexer_rpc_client::compute_on_chain_id,
-    network::{NetworkProvider, service::entity_count_cache::EntityCountCache},
+    network::{provider::NetworkProviderService, service::entity_count_cache::EntityCountCache},
     registry::{
         AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementTerms,
         IndexingAgreementTermsMetadata, IndexingRequestRegistry, NewAgreementParams,
@@ -24,17 +24,17 @@ use crate::{
     },
     signing::eip712::Eip712Signer,
     worker::{
-        result::{JobError, JobMeta, JobResult},
+        result::{JobError, JobResult},
         service::WorkerQueue,
     },
 };
 
-pub struct Ctx<R, N, W, I, T> {
+pub struct Ctx<R, W, I, T> {
     pub signer: Arc<Eip712Signer>,
     pub agreement_conf: Arc<IndexingAgreementConfig>,
     pub chain_price: Arc<BTreeMap<ChainId, IndexingAgreementChainPrices>>,
     pub registry: R,
-    pub network: N,
+    pub network: NetworkProviderService,
     pub queue: W,
     pub iisa: I,
     pub chain_client: T,
@@ -61,22 +61,20 @@ pub struct Message {
     pub num_candidates: usize,
 }
 
-pub async fn handle<R, N, W, I, T>(
-    ctx: Ctx<R, N, W, I, T>,
+pub async fn handle<R, W, I, T>(
+    ctx: Ctx<R, W, I, T>,
     Message {
         indexing_request_id,
         deployment_id,
         deployment_chain_id,
         num_candidates,
     }: &Message,
-    _job_meta: JobMeta,
 ) -> JobResult<()>
 where
     R: IndexingRequestRegistry
         + AgreementRegistry
         + IndexerDenylistRegistry
         + PendingCancellationRegistry,
-    N: NetworkProvider,
     W: WorkerQueue,
     I: CandidateSelection,
     T: ChainClient,
