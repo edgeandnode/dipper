@@ -1,7 +1,7 @@
 use std::{env, path::PathBuf, sync::Arc};
 
 use async_signal::{Signal, Signals};
-use dipper_iisa::{self as iisa, FallbackFilter, FallbackFilterConfig};
+use dipper_iisa::{self as iisa};
 use futures_lite::StreamExt;
 use thegraph_core::alloy::signers::local::PrivateKeySigner;
 use tokio::task::JoinSet;
@@ -181,17 +181,6 @@ pub async fn main() -> anyhow::Result<()> {
 
     let additional_networks = Arc::new(conf.additional_networks);
 
-    //- The fallback filter (for when IISA is unavailable)
-    let fallback_filter = Arc::new(FallbackFilter::new(FallbackFilterConfig {
-        request_timeout: conf.iisa.fallback.request_timeout,
-        max_concurrent: conf.iisa.fallback.max_concurrent,
-    }));
-    tracing::info!(
-        request_timeout_secs = %conf.iisa.fallback.request_timeout.as_secs(),
-        max_concurrent = %conf.iisa.fallback.max_concurrent,
-        "initialized fallback filter"
-    );
-
     // Application services
 
     //- The chain client (for on-chain transactions)
@@ -249,7 +238,6 @@ pub async fn main() -> anyhow::Result<()> {
             client: indexer_client,
             iisa: iisa_client.clone(),
             chain_client: chain_client.clone(),
-            fallback_filter,
             networks_registry,
             additional_networks,
             entity_count_cache,

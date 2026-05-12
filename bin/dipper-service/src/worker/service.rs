@@ -58,7 +58,6 @@ where
         client,
         iisa,
         chain_client,
-        fallback_filter,
         networks_registry,
         additional_networks,
         entity_count_cache,
@@ -81,7 +80,6 @@ where
             client,
             iisa,
             chain_client,
-            fallback_filter,
             networks_registry,
             additional_networks,
             entity_count_cache,
@@ -117,7 +115,6 @@ where
 
             let _span = tracing::debug_span!("process_job", job = %job.id());
             let job_meta = JobMeta {
-                created_at: *job.created_at(),
                 failed_attempts: job.failed_attempts(),
             };
             match process_job(&state, job.desc(), job_meta).await {

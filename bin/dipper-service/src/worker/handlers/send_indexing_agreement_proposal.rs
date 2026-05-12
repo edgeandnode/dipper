@@ -482,7 +482,6 @@ mod tests {
             Ok(())
         }
 
-
         async fn apply_reconciliation(
             &self,
             _id: &IndexingAgreementId,
@@ -838,10 +837,7 @@ mod tests {
     }
 
     fn test_job_meta() -> JobMeta {
-        JobMeta {
-            created_at: time::OffsetDateTime::now_utc(),
-            failed_attempts: 0,
-        }
+        JobMeta { failed_attempts: 0 }
     }
 
     // =========================================================================

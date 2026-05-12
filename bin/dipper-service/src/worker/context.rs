@@ -1,7 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use dipper_core::state::FromState;
-use dipper_iisa::FallbackFilter;
 use graph_networks_registry::NetworksRegistry;
 use thegraph_core::alloy::primitives::ChainId;
 use tokio::sync::Notify;
@@ -88,9 +87,6 @@ pub struct Ctx<Q, R, N, C, I, T> {
     /// The chain client for on-chain transactions
     pub chain_client: T,
 
-    /// The fallback filter for direct indexer /dips/info queries
-    pub fallback_filter: Arc<FallbackFilter>,
-
     /// The graph networks registry (maps chain IDs to network names)
     pub networks_registry: Arc<NetworksRegistry>,
 
@@ -135,9 +131,6 @@ pub(super) struct InnerCtx<R, N, W, C, I, T> {
 
     /// The chain client for on-chain transactions
     pub chain_client: T,
-
-    /// The fallback filter for direct indexer /dips/info queries
-    pub fallback_filter: Arc<FallbackFilter>,
 
     /// The graph networks registry (maps chain IDs to network names)
     pub networks_registry: Arc<NetworksRegistry>,
