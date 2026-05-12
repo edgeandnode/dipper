@@ -52,23 +52,3 @@ where
         }
     }
 }
-
-/// Check that a registry result contains a value (existence check).
-///
-/// Returns:
-/// - `Ok(value)` if the result is `Ok(Some(value))`
-/// - `Err(404)` if the result is `Ok(None)`
-/// - `Err(503)` if the result is `Err(_)`, after logging the error
-pub fn require_exists<T, E>(result: Result<Option<T>, E>, error_context: &str) -> RpcResult<T>
-where
-    E: std::fmt::Debug,
-{
-    match result {
-        Ok(Some(value)) => Ok(value),
-        Ok(None) => Err(ErrorObject::borrowed(404, "Not found", None)),
-        Err(err) => {
-            tracing::error!(error = ?err, "{}", error_context);
-            Err(ErrorObject::borrowed(503, "Service unavailable", None))
-        }
-    }
-}

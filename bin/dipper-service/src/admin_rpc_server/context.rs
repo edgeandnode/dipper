@@ -41,17 +41,13 @@ where
     }
 }
 
-impl<R, W> FromState<Ctx<R, W>> for IndexingAgreementsCtx<R, W>
+impl<R, W> FromState<Ctx<R, W>> for IndexingAgreementsCtx<R>
 where
     R: Clone,
-    W: Clone,
 {
     fn from_state(ctx: &Ctx<R, W>) -> Self {
         Self {
-            signer: ctx.signer.clone(),
-            gateway_operator_allowlist: ctx.gateway_operator_allowlist.clone(),
             registry: ctx.registry.clone(),
-            worker: ctx.worker.clone(),
         }
     }
 }
