@@ -176,7 +176,7 @@ where
     T: ChainClient,
     ProcessNewIndexingRequestCtx<R, N, W, I>: FromState<S>,
     ProcessIndexingRequestCancellationCtx<R, W>: FromState<S>,
-    ReassessIndexingRequestCtx<R, N, W, I>: FromState<S>,
+    ReassessIndexingRequestCtx<R, N, W, I, T>: FromState<S>,
     SendIndexingAgreementProposalCtx<R, W, C>: FromState<S>,
     ProcessIndexingAgreementCancellationCtx<R, W>: FromState<S>,
     CancelRejectedAgreementOnChainCtx<R, T>: FromState<S>,

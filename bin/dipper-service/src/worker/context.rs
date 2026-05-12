@@ -153,7 +153,7 @@ pub(super) struct InnerCtx<R, N, W, C, I, T> {
     pub chain_listener_notify: Arc<Notify>,
 }
 
-impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I> {
+impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I, T> {
     signer,
     agreement_conf,
     chain_price: pricing_table,
@@ -161,6 +161,7 @@ impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I> {
     network,
     queue: worker,
     iisa,
+    chain_client,
     networks_registry,
     additional_networks,
     entity_count_cache,

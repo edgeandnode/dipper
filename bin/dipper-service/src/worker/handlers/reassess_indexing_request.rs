@@ -13,6 +13,7 @@ use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::ChainId};
 
 use super::selection_context::gather_selection_context;
 use crate::{
+    chain_client::ChainClient,
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
     indexer_rpc_client::compute_on_chain_id,
     network::{NetworkProvider, service::entity_count_cache::EntityCountCache},
@@ -28,7 +29,7 @@ use crate::{
     },
 };
 
-pub struct Ctx<R, N, W, I> {
+pub struct Ctx<R, N, W, I, T> {
     pub signer: Arc<Eip712Signer>,
     pub agreement_conf: Arc<IndexingAgreementConfig>,
     pub chain_price: Arc<BTreeMap<ChainId, IndexingAgreementChainPrices>>,
@@ -36,6 +37,7 @@ pub struct Ctx<R, N, W, I> {
     pub network: N,
     pub queue: W,
     pub iisa: I,
+    pub chain_client: T,
     pub networks_registry: Arc<NetworksRegistry>,
     pub additional_networks: Arc<BTreeMap<ChainId, String>>,
     pub entity_count_cache: EntityCountCache,
@@ -59,8 +61,8 @@ pub struct Message {
     pub num_candidates: usize,
 }
 
-pub async fn handle<R, N, W, I>(
-    ctx: Ctx<R, N, W, I>,
+pub async fn handle<R, N, W, I, T>(
+    ctx: Ctx<R, N, W, I, T>,
     Message {
         indexing_request_id,
         deployment_id,
@@ -77,6 +79,7 @@ where
     N: NetworkProvider,
     W: WorkerQueue,
     I: CandidateSelection,
+    T: ChainClient,
 {
     // Gather load balancing context for IISA, including chain/ceiling info
     let mut context = gather_selection_context(
@@ -340,9 +343,53 @@ where
 
     // Cancel old agreements that have no replacement to pair with.
     // These indexers are leaving the target group with nothing taking
-    // their place, so there is no on-chain acceptance to wait for.
+    // their place. Fire the on-chain cancel first; only mark the local row
+    // CanceledByRequester after the chain tx is accepted, so retry on a
+    // transient chain-client failure does the right thing.
     let mut directly_cancelled = 0u32;
+    let mut cancel_failures = 0u32;
     for old_agreement in old_iter {
+        // Skip agreements that haven't been accepted on-chain yet -- there is
+        // nothing on the contract to cancel. The local row goes straight to
+        // CanceledByRequester so the indexer never picks it up.
+        let needs_on_chain_cancel = matches!(
+            old_agreement.status,
+            crate::registry::IndexingAgreementStatus::AcceptedOnChain
+        );
+
+        if needs_on_chain_cancel {
+            match ctx
+                .chain_client
+                .cancel_indexing_agreement_by_payer(old_agreement.id.as_bytes())
+                .await
+            {
+                Ok(Some(tx_hash)) => {
+                    tracing::info!(
+                        agreement_id = %old_agreement.id,
+                        indexing_request_id = %indexing_request_id,
+                        %tx_hash,
+                        "Submitted on-chain cancellation for unpaired old agreement"
+                    );
+                }
+                Ok(None) => {
+                    tracing::info!(
+                        agreement_id = %old_agreement.id,
+                        indexing_request_id = %indexing_request_id,
+                        "Unpaired old agreement already canceled on-chain; proceeding with local cleanup"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        agreement_id = %old_agreement.id,
+                        "On-chain cancel failed; will retry on next reassessment"
+                    );
+                    cancel_failures += 1;
+                    continue;
+                }
+            }
+        }
+
         if let Err(err) = ctx
             .registry
             .mark_indexing_agreement_as_canceled_by_requester(&old_agreement.id)
@@ -351,8 +398,9 @@ where
             tracing::error!(
                 error=%err,
                 agreement_id=%old_agreement.id,
-                "Failed to cancel unpaired old agreement"
+                "Failed to mark unpaired old agreement as canceled in local DB"
             );
+            cancel_failures += 1;
             continue;
         }
 
@@ -365,10 +413,6 @@ where
             "agreement state transition"
         );
 
-        // TODO(PR 2): trigger on-chain cancel_indexing_agreement_by_payer for
-        // each old_agreement here. PR 1b only removes the dead-letter gRPC
-        // notification; the on-chain state is still untouched (same as today).
-
         directly_cancelled += 1;
     }
 
@@ -380,12 +424,22 @@ where
         );
     }
 
+    if cancel_failures > 0 {
+        tracing::warn!(
+            indexing_request_id=%indexing_request_id,
+            failures=cancel_failures,
+            "some agreement cancels failed during reassessment; the next \
+             reassessment tick will retry them"
+        );
+    }
+
     tracing::info!(
         indexing_request_id = %indexing_request_id,
         deployment_id = %deployment_id,
         created = successful_new_ids.len(),
         canceled = directly_cancelled,
-        failed = add_failures,
+        cancel_failures,
+        add_failures,
         "reassessment summary"
     );
 
