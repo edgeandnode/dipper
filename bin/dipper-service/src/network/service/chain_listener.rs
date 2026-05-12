@@ -1682,7 +1682,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::worker::service::WorkerQueue for MockWorkerQueue {
-
         async fn send_indexing_agreement_proposal(
             &self,
             _candidate_url: Url,
@@ -1693,8 +1692,6 @@ mod tests {
         ) -> anyhow::Result<dipper_pgmq::JobId> {
             Ok(dipper_pgmq::JobId::default())
         }
-
-
 
         async fn reassess_indexing_request(
             &self,

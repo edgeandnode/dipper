@@ -651,7 +651,6 @@ mod tests {
 
     #[async_trait]
     impl WorkerQueue for MockQueue {
-
         async fn send_indexing_agreement_proposal(
             &self,
             _indexer_url: Url,
@@ -678,8 +677,6 @@ mod tests {
             ));
             Ok(JobId::default())
         }
-
-
 
         async fn cancel_rejected_agreement_on_chain(
             &self,
