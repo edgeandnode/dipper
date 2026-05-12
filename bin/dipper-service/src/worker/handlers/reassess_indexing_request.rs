@@ -21,7 +21,7 @@ use crate::{
         IndexingAgreementTermsMetadata, IndexingRequestRegistry, NewAgreementParams,
         PendingCancellationRegistry,
     },
-    signing::eip712::PrivateKeyEip712Signer,
+    signing::eip712::Eip712Signer,
     worker::{
         result::{JobError, JobMeta, JobResult},
         service::WorkerQueue,
@@ -29,7 +29,7 @@ use crate::{
 };
 
 pub struct Ctx<R, N, W, I> {
-    pub signer: Arc<PrivateKeyEip712Signer>,
+    pub signer: Arc<Eip712Signer>,
     pub agreement_conf: Arc<IndexingAgreementConfig>,
     pub chain_price: Arc<BTreeMap<ChainId, IndexingAgreementChainPrices>>,
     pub registry: R,

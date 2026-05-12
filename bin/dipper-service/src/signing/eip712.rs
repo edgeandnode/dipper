@@ -3,44 +3,29 @@
 //! Wraps an EIP-712 domain separator plus the signer's address and chain ID,
 //! and exposes recovery for signed admin-RPC messages.
 
-use std::marker::PhantomData;
-
 use thegraph_core::{
     alloy::{
         primitives::{Address, ChainId},
-        signers::{SignerSync, local::PrivateKeySigner},
         sol_types::{Eip712Domain, SolStruct},
     },
     signed_message::{RecoverSignerError, SignedMessage, ToSolStruct, recover_signer_address},
 };
 
-/// An [`Eip712Signer`] backed by a [`PrivateKeySigner`].
-pub type PrivateKeyEip712Signer = Eip712Signer<PrivateKeySigner>;
-
 /// Carries the signer's identity and the EIP-712 domain used to verify
-/// inbound admin-RPC messages.
-///
-/// The generic parameter exists for backwards compatibility with callers that
-/// type their handles as `Eip712Signer<PrivateKeySigner>`; it is no longer used
-/// to sign because dipper only verifies inbound signatures.
-pub struct Eip712Signer<S> {
+/// inbound admin-RPC messages. Dipper does not produce outbound signatures.
+pub struct Eip712Signer {
     signer_address: Address,
     signer_chain: ChainId,
     domain: Eip712Domain,
-    _phantom: PhantomData<S>,
 }
 
-impl<S> Eip712Signer<S>
-where
-    S: SignerSync,
-{
+impl Eip712Signer {
     /// Create a new [`Eip712Signer`] instance.
     pub fn new(signer_address: Address, signer_chain: ChainId, domain: Eip712Domain) -> Self {
         Self {
             signer_address,
             signer_chain,
             domain,
-            _phantom: PhantomData,
         }
     }
 
@@ -117,8 +102,7 @@ mod tests {
         };
 
         // Create an Eip712Signer instance for verifying inbound messages
-        let eip712_signer: Eip712Signer<PrivateKeySigner> =
-            Eip712Signer::new(signer_address, signer_chain, domain.clone());
+        let eip712_signer = Eip712Signer::new(signer_address, signer_chain, domain.clone());
 
         // Sign the message with a freestanding signer
         let signed_message = sign(&signer, &domain, message).expect("message signing failed");

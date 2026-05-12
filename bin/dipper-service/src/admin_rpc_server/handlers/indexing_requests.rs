@@ -18,7 +18,7 @@ use crate::{
         Error as RegistryError, IndexingRequest as IndexingRequestRecord, IndexingRequestRegistry,
         IndexingRequestStatus as IndexingRequestRecordStatus,
     },
-    signing::eip712::PrivateKeyEip712Signer,
+    signing::eip712::Eip712Signer,
     worker::service::WorkerQueue,
 };
 
@@ -26,7 +26,7 @@ use crate::{
 ///
 /// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
 pub struct Ctx<R, W> {
-    pub signer: Arc<PrivateKeyEip712Signer>,
+    pub signer: Arc<Eip712Signer>,
     pub gateway_operator_allowlist: Arc<BTreeSet<Address>>,
     pub registry: R,
     pub worker: W,

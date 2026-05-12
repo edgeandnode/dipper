@@ -18,7 +18,7 @@ use crate::{
         AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementTerms,
         IndexingAgreementTermsMetadata, IndexingRequestRegistry, NewAgreementParams,
     },
-    signing::eip712::PrivateKeyEip712Signer,
+    signing::eip712::Eip712Signer,
     worker::{
         result::{IISA_FALLBACK_THRESHOLD, JobError, JobMeta, JobResult},
         service::WorkerQueue,
@@ -26,7 +26,7 @@ use crate::{
 };
 
 pub struct Ctx<R, N, W, I> {
-    pub signer: Arc<PrivateKeyEip712Signer>,
+    pub signer: Arc<Eip712Signer>,
     pub agreement_conf: Arc<IndexingAgreementConfig>,
     pub chain_price: Arc<BTreeMap<ChainId, IndexingAgreementChainPrices>>,
     pub registry: R,

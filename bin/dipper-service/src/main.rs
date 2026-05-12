@@ -58,7 +58,7 @@ pub async fn main() -> anyhow::Result<()> {
         let private_key_signer_address = private_key_signer.address();
         let domain = dipper_rpc::admin::eip712_domain();
 
-        Arc::new(Eip712Signer::<PrivateKeySigner>::new(
+        Arc::new(Eip712Signer::new(
             private_key_signer_address,
             conf.signer.chain_id,
             domain,
