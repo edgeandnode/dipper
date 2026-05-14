@@ -242,6 +242,12 @@ pub async fn main() -> anyhow::Result<()> {
             additional_networks,
             entity_count_cache,
             chain_listener_notify: chain_listener_notify.clone(),
+            bypass_chain_clock_defenses: conf
+                .chain_listener
+                .as_ref()
+                .map(|c| c.bypass_chain_clock_defenses)
+                .unwrap_or(false),
+            chain_listener_chain_id: conf.chain_listener.as_ref().map(|c| c.chain_id),
         };
         worker::service::new(ctx)
     };
@@ -288,6 +294,7 @@ pub async fn main() -> anyhow::Result<()> {
                 request_timeout: chain_listener_conf.request_timeout,
                 max_retries: chain_listener_conf.max_retries,
                 wall_clock_skew_tolerance_secs: chain_listener_conf.wall_clock_skew_tolerance_secs,
+                bypass_chain_clock_defenses: chain_listener_conf.bypass_chain_clock_defenses,
             };
             let event_source =
                 network::service::chain_events::SubgraphEventSource::new(event_source_config);

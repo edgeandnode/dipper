@@ -159,6 +159,7 @@ where
         let chain_id = config.chain_id;
         let reorg_buffer_blocks = config.reorg_buffer_blocks;
         let chain_ts_drift_tolerance_secs = config.chain_ts_drift_tolerance_secs;
+        let bypass_chain_clock_defenses = config.bypass_chain_clock_defenses;
 
         // Get initial state from DB or start at genesis. We track
         // `(block, id)` together so a same-block-tie that crashed mid-page
@@ -280,6 +281,7 @@ where
                 chain_id,
                 reorg_buffer_blocks,
                 chain_ts_drift_tolerance_secs,
+                bypass_chain_clock_defenses,
                 signer_address,
                 &registry,
                 &worker_queue,
@@ -368,6 +370,7 @@ async fn drain_once<R, W, E, T>(
     chain_id: u64,
     reorg_buffer_blocks: u32,
     chain_ts_drift_tolerance_secs: u64,
+    bypass_chain_clock_defenses: bool,
     signer_address: Address,
     registry: &R,
     worker_queue: &W,
@@ -583,12 +586,14 @@ where
         // can't drag expiration's clock backwards. Forward advances are
         // bounded by wall-clock elapsed so a hostile response that stays
         // just under the per-poll skew tolerance can't ratchet the
-        // persisted timestamp forward faster than real time.
+        // persisted timestamp forward faster than real time. When
+        // `bypass_chain_clock_defenses` is true the cap is skipped so
+        // `evm_increaseTime`-style chain jumps in local-network testing
+        // don't get clamped.
         let now_instant = std::time::Instant::now();
         let wall_elapsed_secs = now_instant
             .duration_since(*last_chain_ts_persist_wall)
             .as_secs();
-        let max_chain_advance = wall_elapsed_secs.saturating_add(chain_ts_drift_tolerance_secs);
         let ratchet_timestamp = match (new_timestamp, *last_persisted_timestamp) {
             (Some(new_ts), Some(cached_ts)) if new_ts < cached_ts => {
                 tracing::warn!(
@@ -598,22 +603,13 @@ where
                 );
                 Some(cached_ts)
             }
-            (Some(new_ts), Some(cached_ts)) => {
-                let max_allowed = cached_ts.saturating_add(max_chain_advance);
-                if new_ts > max_allowed {
-                    tracing::warn!(
-                        event = "chain_ts_drift_capped",
-                        new_timestamp_secs = new_ts,
-                        persisted_timestamp_secs = cached_ts,
-                        max_allowed_secs = max_allowed,
-                        wall_elapsed_secs,
-                        "Chain timestamp advance exceeds wall-clock elapsed; capping"
-                    );
-                    Some(max_allowed)
-                } else {
-                    Some(new_ts)
-                }
-            }
+            (Some(new_ts), Some(cached_ts)) => Some(apply_chain_ts_drift_cap(
+                new_ts,
+                cached_ts,
+                wall_elapsed_secs,
+                chain_ts_drift_tolerance_secs,
+                bypass_chain_clock_defenses,
+            )),
             (Some(new_ts), None) => Some(new_ts),
             (None, _) => *last_persisted_timestamp,
         };
@@ -699,6 +695,40 @@ struct PreparedReconciliation {
     item: ReconciliationItem,
     agreement: IndexingAgreement,
     indexer: Address,
+}
+
+/// Cap the per-poll ratchet on the persisted chain timestamp. The cap
+/// bounds the new timestamp to `cached_ts + wall_elapsed_secs +
+/// chain_ts_drift_tolerance_secs` so a subgraph that ratchets faster
+/// than real time can't drive expiration's clock past wall-clock.
+/// When `bypass` is true the cap is skipped entirely and the new
+/// timestamp is accepted as-is. Pulled out of `drain_once` so the
+/// decision is unit-testable without a chain or subgraph harness.
+fn apply_chain_ts_drift_cap(
+    new_ts: u64,
+    cached_ts: u64,
+    wall_elapsed_secs: u64,
+    chain_ts_drift_tolerance_secs: u64,
+    bypass: bool,
+) -> u64 {
+    if bypass {
+        return new_ts;
+    }
+    let max_chain_advance = wall_elapsed_secs.saturating_add(chain_ts_drift_tolerance_secs);
+    let max_allowed = cached_ts.saturating_add(max_chain_advance);
+    if new_ts > max_allowed {
+        tracing::warn!(
+            event = "chain_ts_drift_capped",
+            new_timestamp_secs = new_ts,
+            persisted_timestamp_secs = cached_ts,
+            max_allowed_secs = max_allowed,
+            wall_elapsed_secs,
+            "Chain timestamp advance exceeds wall-clock elapsed; capping"
+        );
+        max_allowed
+    } else {
+        new_ts
+    }
 }
 
 /// Compute the apply decision for one snapshot and run any side effects
@@ -2442,6 +2472,7 @@ mod tests {
             reorg_buffer_blocks: 0,
             wall_clock_skew_tolerance_secs: 60,
             chain_ts_drift_tolerance_secs: 10,
+            bypass_chain_clock_defenses: false,
         };
 
         let ctx = Ctx {
@@ -2518,6 +2549,7 @@ mod tests {
             reorg_buffer_blocks: 0,
             wall_clock_skew_tolerance_secs: 60,
             chain_ts_drift_tolerance_secs: 10,
+            bypass_chain_clock_defenses: false,
         };
 
         let ctx = Ctx {
@@ -2591,6 +2623,7 @@ mod tests {
             reorg_buffer_blocks: 0,
             wall_clock_skew_tolerance_secs: 60,
             chain_ts_drift_tolerance_secs: 10,
+            bypass_chain_clock_defenses: false,
         };
 
         let ctx = Ctx {
@@ -2671,6 +2704,7 @@ mod tests {
             1337,
             0,
             10,
+            false,
             Address::ZERO,
             &registry,
             &MockWorkerQueue::default(),
@@ -2735,6 +2769,7 @@ mod tests {
             1337,
             0,
             10,
+            false,
             Address::ZERO,
             &registry,
             &MockWorkerQueue::default(),
@@ -2762,6 +2797,7 @@ mod tests {
             1337,
             0,
             10,
+            false,
             Address::ZERO,
             &registry,
             &MockWorkerQueue::default(),
@@ -2787,6 +2823,42 @@ mod tests {
             "persisted ({persisted}) should be within seconds of baseline ({baseline_ts}), \
              not near the attempted jump ({attempted})"
         );
+    }
+
+    /// `apply_chain_ts_drift_cap` clamps a hostile jump when bypass is off.
+    #[test]
+    fn test_apply_chain_ts_drift_cap_bypass_off_clamps_jump() {
+        // baseline 1.7e9, cached at baseline, wall barely moved, tolerance 10s.
+        // Attempting a 100_000s jump should clamp to baseline + (wall + tol).
+        let baseline_ts = 1_700_000_000u64;
+        let attempted = baseline_ts + 100_000;
+        let capped = apply_chain_ts_drift_cap(attempted, baseline_ts, 0, 10, false);
+        assert_eq!(
+            capped,
+            baseline_ts + 10,
+            "must clamp to cached_ts + tolerance"
+        );
+    }
+
+    /// `apply_chain_ts_drift_cap` accepts the new timestamp unchanged when
+    /// bypass is on, regardless of how far past the wall-bound cap it would
+    /// otherwise be clamped.
+    #[test]
+    fn test_apply_chain_ts_drift_cap_bypass_on_skips_cap() {
+        let baseline_ts = 1_700_000_000u64;
+        let attempted = baseline_ts + 100_000;
+        let unclamped = apply_chain_ts_drift_cap(attempted, baseline_ts, 0, 10, true);
+        assert_eq!(unclamped, attempted, "bypass must accept the jump as-is");
+    }
+
+    /// Within-bound advances are accepted unchanged even with bypass off.
+    #[test]
+    fn test_apply_chain_ts_drift_cap_within_bound_passes_through() {
+        let baseline_ts = 1_700_000_000u64;
+        // wall_elapsed 5s + tolerance 10s = 15s allowed; advance 7s.
+        let advance = baseline_ts + 7;
+        let result = apply_chain_ts_drift_cap(advance, baseline_ts, 5, 10, false);
+        assert_eq!(result, advance, "advances inside the bound are not clamped");
     }
 
     /// Simulates a restart after a long downtime: the persisted timestamp
@@ -2829,6 +2901,7 @@ mod tests {
             1337,
             0,
             10,
+            false,
             Address::ZERO,
             &registry,
             &MockWorkerQueue::default(),
@@ -2866,6 +2939,7 @@ mod tests {
             reorg_buffer_blocks: 0,
             wall_clock_skew_tolerance_secs: 60,
             chain_ts_drift_tolerance_secs: 10,
+            bypass_chain_clock_defenses: false,
         };
 
         let ctx = Ctx {

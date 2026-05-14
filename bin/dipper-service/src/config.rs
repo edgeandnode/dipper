@@ -424,6 +424,24 @@ pub struct ChainListenerConfig {
     /// Widen for environments with choppy poll cadence.
     #[serde(default = "default_chain_listener_chain_ts_drift_tolerance_secs")]
     pub chain_ts_drift_tolerance_secs: u64,
+
+    /// Bypass every defense that compares chain timestamps against
+    /// the host's wall clock. Intended exclusively for local-network
+    /// testing, where `evm_increaseTime` deliberately advances chain
+    /// time by hours or days while wall-clock stays put.
+    ///
+    /// When true:
+    ///   * the subgraph timestamp skew check is skipped
+    ///   * the per-poll chain timestamp drift cap is skipped
+    ///   * agreement deadlines are computed from chain time instead
+    ///     of wall time, so freshly created agreements do not appear
+    ///     born-expired against an advanced chain
+    ///
+    /// MUST be false in production. With the flag on, a hostile
+    /// subgraph can poison the persisted chain timestamp without
+    /// restraint, prematurely expiring real agreements.
+    #[serde(default)]
+    pub bypass_chain_clock_defenses: bool,
 }
 
 fn default_chain_listener_enabled() -> bool {

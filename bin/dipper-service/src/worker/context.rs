@@ -98,6 +98,17 @@ pub struct Ctx<Q, R, C, I, T> {
 
     /// Wakes the chain_listener when proposals are dispatched
     pub chain_listener_notify: Arc<Notify>,
+
+    /// Mirrors `ChainListenerConfig::bypass_chain_clock_defenses`.
+    /// When true, the reassess handler computes agreement deadlines
+    /// from chain time instead of wall clock. Must stay false in
+    /// production.
+    pub bypass_chain_clock_defenses: bool,
+
+    /// The chain ID the chain_listener tracks, used to look up
+    /// `last_processed_block_timestamp` when bypass is on. `None`
+    /// when the chain_listener is not configured.
+    pub chain_listener_chain_id: Option<u64>,
 }
 
 /// The inner worker context.
@@ -143,6 +154,12 @@ pub(super) struct InnerCtx<R, W, C, I, T> {
 
     /// Wakes the chain_listener when proposals are dispatched
     pub chain_listener_notify: Arc<Notify>,
+
+    /// See `Ctx::bypass_chain_clock_defenses`.
+    pub bypass_chain_clock_defenses: bool,
+
+    /// See `Ctx::chain_listener_chain_id`.
+    pub chain_listener_chain_id: Option<u64>,
 }
 
 impl_from_state!(ReassessIndexingRequestCtx<R, W, I, T> {
@@ -158,6 +175,8 @@ impl_from_state!(ReassessIndexingRequestCtx<R, W, I, T> {
     additional_networks,
     entity_count_cache,
     chain_listener_notify,
+    bypass_chain_clock_defenses,
+    chain_listener_chain_id,
 });
 
 impl_from_state!(SendIndexingAgreementProposalCtx<R, W, C> {
