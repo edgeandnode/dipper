@@ -163,6 +163,22 @@ where
     let to_cancel: HashSet<&IndexerId> = current_ids.difference(&target_ids).collect();
     let to_add: HashSet<&IndexerId> = target_ids.difference(&current_ids).collect();
 
+    // Surface the IISA outcome alongside the diff so the operator can tell
+    // "everyone is declined" apart from "we're already synced" without
+    // cross-referencing IISA logs. `requested_num_candidates` vs
+    // `iisa_returned_count` is the key diagnostic — a shortfall means
+    // IISA filtered candidates out (typically the declined/denylist sets).
+    tracing::info!(
+        indexing_request_id=%indexing_request_id,
+        deployment_id=%deployment_id,
+        requested_num_candidates = num_candidates,
+        iisa_returned_count = target_selected.len(),
+        current_active_count = current_ids.len(),
+        to_add_count = to_add.len(),
+        to_cancel_count = to_cancel.len(),
+        "reassessment diff computed"
+    );
+
     if to_cancel.is_empty() && to_add.is_empty() {
         tracing::debug!(
             indexing_request_id=%indexing_request_id,
