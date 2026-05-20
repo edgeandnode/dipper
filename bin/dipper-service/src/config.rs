@@ -606,6 +606,7 @@ fn default_gas_max_addition() -> u64 {
 
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DipsAgreementConfig {
     /// The data service address (SubgraphService contract).
     pub data_service: Address,
@@ -682,13 +683,22 @@ fn default_deadline_seconds() -> u64 {
 }
 
 /// Indexer-rs minimum GRT/30-days, per chain. Used by
-/// `default_max_grt_per_30_days` (the per-chain selection-filter ceiling).
+/// `default_max_grt_per_30_days` to derive a per-chain
+/// **selection-filter** ceiling.
+///
+/// The default `max_grt_per_30_days` map multiplies each value by 10:
+/// an indexer is dropped from selection if its advertised base price
+/// exceeds that ceiling on the relevant chain. This is a filter, not
+/// a payment rate — actual payment per indexer is set by IISA's
+/// reported price (or the fallback `pricing_table`), bounded above
+/// by `max_agreement_grt_per_30_days`. Operators do not pay 10x by
+/// default; they simply tolerate indexers asking up to 10x the
+/// indexer-rs published minimum on a given chain.
 ///
 /// Synced from https://github.com/graphprotocol/indexer-rs/blob/cd456bf8bbc377a531a0dcd72cf5a7c6e498f24a/crates/config/maximal-config-example.toml#L212-L308
 ///
-/// To refresh: re-read the linked `[dips.min_grt_per_30_days]` section and
-/// copy the value pairs. The default ceiling multiplies these by 10 —
-/// operators willing to pay up to 10x an indexer's published minimum.
+/// To refresh: re-read the linked `[dips.min_grt_per_30_days]` section
+/// and copy the value pairs.
 const INDEXER_RS_MIN_GRT_PER_30_DAYS: &[(&str, f64)] = &[
     ("arbitrum-one", 450.0),
     ("matic", 300.0),
@@ -1173,5 +1183,82 @@ mod tests {
             u64::MAX,
             "duration_seconds None should convert to u64::MAX"
         );
+    }
+
+    /// Guards against silent typos and accidental duplicates in the
+    /// indexer-rs mirror. Failure modes the test catches:
+    ///   * a chain name is mistyped on either side of the multiplier
+    ///   * the multiplier itself drifts away from 10x
+    ///   * two rows accidentally share a chain name (BTreeMap would mask the
+    ///     duplicate by silently dropping the earlier value)
+    #[test]
+    fn test_default_max_grt_per_30_days_const() {
+        let map = default_max_grt_per_30_days();
+
+        // Spot-check three values: high-traffic mainnet chains and a small
+        // testnet, picked to cover both ends of the value range.
+        assert_eq!(map.get("arbitrum-one"), Some(&4500.0), "arbitrum-one");
+        assert_eq!(map.get("mainnet"), Some(&450.0), "mainnet");
+        assert_eq!(map.get("sepolia"), Some(&50.0), "sepolia");
+
+        // The const should mirror indexer-rs's published minimum table.
+        // Updates that change the row count are intentional — refresh
+        // this number alongside the const.
+        assert_eq!(
+            INDEXER_RS_MIN_GRT_PER_30_DAYS.len(),
+            97,
+            "row count drifted from indexer-rs mirror"
+        );
+
+        // No duplicate keys hidden by BTreeMap's last-write-wins behaviour.
+        let unique_count = INDEXER_RS_MIN_GRT_PER_30_DAYS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        assert_eq!(
+            unique_count,
+            INDEXER_RS_MIN_GRT_PER_30_DAYS.len(),
+            "duplicate chain name in INDEXER_RS_MIN_GRT_PER_30_DAYS"
+        );
+
+        // Every output entry is 10x its source entry — confirms the
+        // multiplier wired through without rounding surprises.
+        for (name, min) in INDEXER_RS_MIN_GRT_PER_30_DAYS {
+            let want = *min * PAYMENT_CEILING_MULTIPLIER;
+            assert_eq!(map.get(*name), Some(&want), "ceiling for {name}");
+        }
+    }
+
+    /// Stale `max_initial_tokens` and `max_ongoing_tokens_per_second` keys
+    /// from the pre-refactor config schema should fail deserialization
+    /// rather than be silently ignored, so operators surface the migration
+    /// instead of running with caps that no longer take effect.
+    #[test]
+    fn test_dips_agreement_config_rejects_stale_keys() {
+        let stale_keys = [
+            "max_initial_tokens",
+            "max_ongoing_tokens_per_second",
+            "completely_made_up_key",
+        ];
+
+        for stale_key in stale_keys {
+            let json = format!(
+                r#"{{
+                    "data_service": "0x1111111111111111111111111111111111111111",
+                    "recurring_collector": "0x2222222222222222222222222222222222222222",
+                    "min_seconds_per_collection": 60,
+                    "max_seconds_per_collection": 3600,
+                    "pricing_table": {{}},
+                    "{stale_key}": "anything"
+                }}"#
+            );
+            let err = serde_json::from_str::<DipsAgreementConfig>(&json)
+                .expect_err(&format!("expected rejection for key {stale_key}"));
+            assert!(
+                err.to_string().contains(stale_key),
+                "error for {stale_key} should name the unknown key, got: {err}"
+            );
+        }
     }
 }
