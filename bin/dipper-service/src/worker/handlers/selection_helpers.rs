@@ -15,12 +15,18 @@ const SECONDS_PER_30_DAYS: u128 = 2_592_000;
 const WEI_PER_GRT: u128 = 1_000_000_000_000_000_000;
 
 /// Convert GRT per 30 days to wei per second (ceiling division to protect indexers).
-fn grt_per_30_days_to_wei_per_second(grt: f64) -> U256 {
+pub(crate) fn grt_per_30_days_to_wei_per_second(grt: f64) -> U256 {
     // Convert to integer wei, then divide by seconds using ceiling division.
     // The ceiling protects indexers from rounding losses.
     let total_wei = (grt * WEI_PER_GRT as f64) as u128;
     let wei_per_second = total_wei.div_ceil(SECONDS_PER_30_DAYS);
     U256::from(wei_per_second)
+}
+
+/// Convert a total GRT amount to wei. Used to derive the RCA's
+/// `maxInitialTokens` from the operator's `max_agreement_grt_per_30_days`.
+pub(crate) fn grt_to_wei(grt: f64) -> U256 {
+    U256::from((grt * WEI_PER_GRT as f64) as u128)
 }
 
 /// Convert GRT per billion entities per 30 days to wei per entity per second.

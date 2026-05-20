@@ -264,13 +264,24 @@ where
             chain_id: *deployment_chain_id,
         };
 
+        // The RCA's contract caps don't need to be per-chain. At large
+        // subgraph sizes the entity-driven contribution dominates the
+        // per-second base rate, so per-chain variation is noise relative
+        // to that. One flat cap across all chains keeps the on-chain
+        // ceiling meaningful (it actually bites if metadata is bad)
+        // without per-chain accounting that the entity component would
+        // swamp anyway. `max_initial_tokens` uses the same number as a
+        // lump-sum cap on the one-time initial-sync claim.
+        let agreement_cap_grt = ctx.agreement_conf.max_agreement_grt_per_30_days();
+
         let terms = IndexingAgreementTerms {
             payer: ctx.signer.address(),
             service_provider: candidate.id.into_inner(),
             data_service: ctx.agreement_conf.data_service(),
             ends_at: now.saturating_add(ctx.agreement_conf.duration_seconds()),
-            max_initial_tokens: ctx.agreement_conf.max_initial_tokens(),
-            max_ongoing_tokens_per_second: ctx.agreement_conf.max_ongoing_tokens_per_second(),
+            max_initial_tokens: super::selection_helpers::grt_to_wei(agreement_cap_grt),
+            max_ongoing_tokens_per_second:
+                super::selection_helpers::grt_per_30_days_to_wei_per_second(agreement_cap_grt),
             min_seconds_per_collection: ctx.agreement_conf.min_seconds_per_collection(),
             max_seconds_per_collection: ctx.agreement_conf.max_seconds_per_collection(),
             deadline: now.saturating_add(ctx.agreement_conf.deadline_seconds()),
