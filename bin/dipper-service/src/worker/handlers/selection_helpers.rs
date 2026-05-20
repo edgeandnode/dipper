@@ -23,12 +23,6 @@ pub(crate) fn grt_per_30_days_to_wei_per_second(grt: f64) -> U256 {
     U256::from(wei_per_second)
 }
 
-/// Convert a total GRT amount to wei. Used to derive the RCA's
-/// `maxInitialTokens` from the operator's `max_agreement_grt_per_30_days`.
-pub(crate) fn grt_to_wei(grt: f64) -> U256 {
-    U256::from((grt * WEI_PER_GRT as f64) as u128)
-}
-
 /// Convert GRT per billion entities per 30 days to wei per entity per second.
 fn grt_per_billion_entities_per_30_days_to_wei_per_entity_per_second(grt: f64) -> U256 {
     // 1 billion entities = 1_000_000_000

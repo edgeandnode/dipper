@@ -613,8 +613,10 @@ pub struct DipsAgreementConfig {
     /// here via `RecurringCollector.offer()` before dispatching gRPC proposals.
     pub recurring_collector: Address,
     /// Flat per-agreement payment ceiling (GRT per 30 days). Applied to every
-    /// RCA regardless of chain: drives both `maxOngoingTokensPerSecond` (as a
-    /// rate) and `maxInitialTokens` (as a one-month lump sum) on chain.
+    /// RCA regardless of chain. Drives the RCA's `maxOngoingTokensPerSecond`
+    /// (as a rate). `maxInitialTokens` is hard-coded to zero in v1 of the
+    /// pricing system, so this value alone determines the on-chain monthly
+    /// ceiling.
     ///
     /// Per-chain variation is left to `max_grt_per_30_days` (selection filter
     /// on the indexer's advertised base price). The on-chain cap is flat
@@ -912,8 +914,9 @@ pub struct IndexingAgreementConfig {
     /// The RecurringCollector contract address.
     pub recurring_collector: Address,
     /// Flat per-agreement payment ceiling (GRT per 30 days). Drives the RCA's
-    /// `maxOngoingTokensPerSecond` (as a rate) and `maxInitialTokens` (as a
-    /// one-month lump sum). Applied to every agreement regardless of chain.
+    /// `maxOngoingTokensPerSecond` (as a rate); `maxInitialTokens` is
+    /// hard-coded to zero in v1. Applied to every agreement regardless of
+    /// chain.
     pub max_agreement_grt_per_30_days: f64,
     /// Maximum seconds per collection.
     pub max_seconds_per_collection: u32,

@@ -9,7 +9,10 @@ use dipper_iisa::{CandidateSelection, SelectedIndexer, SelectionError};
 use graph_networks_registry::NetworksRegistry;
 use jsonrpsee::core::Serialize;
 use serde::Deserialize;
-use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::ChainId};
+use thegraph_core::{
+    DeploymentId, IndexerId,
+    alloy::primitives::{ChainId, U256},
+};
 
 use super::selection_context::gather_selection_context;
 use crate::{
@@ -270,8 +273,15 @@ where
         // to that. One flat cap across all chains keeps the on-chain
         // ceiling meaningful (it actually bites if metadata is bad)
         // without per-chain accounting that the entity component would
-        // swamp anyway. `max_initial_tokens` uses the same number as a
-        // lump-sum cap on the one-time initial-sync claim.
+        // swamp anyway.
+        //
+        // `max_initial_tokens` is set to zero for v1 of the pricing
+        // system. The contract adds `maxInitialTokens` to the first
+        // `collect()`'s allowance on top of `maxOngoingTokensPerSecond *
+        // elapsed`, so any non-zero value lets the first month claim
+        // beyond the configured monthly ceiling. Initial-sync
+        // compensation is left to ongoing rate accumulation while we
+        // gather data on how indexers actually exercise the cap.
         let agreement_cap_grt = ctx.agreement_conf.max_agreement_grt_per_30_days();
 
         let terms = IndexingAgreementTerms {
@@ -279,7 +289,7 @@ where
             service_provider: candidate.id.into_inner(),
             data_service: ctx.agreement_conf.data_service(),
             ends_at: now.saturating_add(ctx.agreement_conf.duration_seconds()),
-            max_initial_tokens: super::selection_helpers::grt_to_wei(agreement_cap_grt),
+            max_initial_tokens: U256::ZERO,
             max_ongoing_tokens_per_second:
                 super::selection_helpers::grt_per_30_days_to_wei_per_second(agreement_cap_grt),
             min_seconds_per_collection: ctx.agreement_conf.min_seconds_per_collection(),
