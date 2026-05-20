@@ -679,15 +679,123 @@ fn default_deadline_seconds() -> u64 {
     600
 }
 
-/// Default ceiling: 10x the indexer-rs minimum defaults.
+/// Indexer-rs minimum GRT/30-days, per chain. Used by
+/// `default_max_grt_per_30_days` (the per-chain selection-filter ceiling).
+///
+/// Synced from https://github.com/graphprotocol/indexer-rs/blob/cd456bf8bbc377a531a0dcd72cf5a7c6e498f24a/crates/config/maximal-config-example.toml#L212-L308
+///
+/// To refresh: re-read the linked `[dips.min_grt_per_30_days]` section and
+/// copy the value pairs. The default ceiling multiplies these by 10 —
+/// operators willing to pay up to 10x an indexer's published minimum.
+const INDEXER_RS_MIN_GRT_PER_30_DAYS: &[(&str, f64)] = &[
+    ("arbitrum-one", 450.0),
+    ("matic", 300.0),
+    ("fantom", 300.0),
+    ("avalanche", 225.0),
+    ("bsc", 200.0),
+    ("base", 80.0),
+    ("gnosis", 45.0),
+    ("near-mainnet", 45.0),
+    ("fuji", 45.0),
+    ("mainnet", 45.0),
+    ("optimism", 30.0),
+    ("xdai", 30.0),
+    ("polygon-zkevm", 30.0),
+    ("polygon-amoy", 30.0),
+    ("xlayer-mainnet", 30.0),
+    ("soneium", 30.0),
+    ("abstract", 30.0),
+    ("fantom-testnet", 30.0),
+    ("lens", 30.0),
+    ("rootstock-testnet", 30.0),
+    ("kaia", 30.0),
+    ("chiliz", 30.0),
+    ("linea-sepolia", 30.0),
+    ("joc-testnet", 30.0),
+    ("etherlink-mainnet", 30.0),
+    ("apechain", 30.0),
+    ("ink", 30.0),
+    ("unichain-testnet", 30.0),
+    ("blast-testnet", 30.0),
+    ("megaeth", 30.0),
+    ("sei-atlantic", 30.0),
+    ("zksync-era-sepolia", 30.0),
+    ("arbitrum-nova", 30.0),
+    ("hoodi", 30.0),
+    ("celo-sepolia", 30.0),
+    ("vana", 30.0),
+    ("joc", 30.0),
+    ("swellchain", 30.0),
+    ("soneium-testnet", 30.0),
+    ("zetachain", 30.0),
+    ("hemi-sepolia", 30.0),
+    ("megaeth-testnet", 30.0),
+    ("iotex", 30.0),
+    ("stable", 30.0),
+    ("cronos", 30.0),
+    ("ronin", 30.0),
+    ("fraxtal", 30.0),
+    ("kaia-testnet", 30.0),
+    ("abstract-testnet", 30.0),
+    ("neox-testnet", 30.0),
+    ("fuse-testnet", 30.0),
+    ("manta", 30.0),
+    ("viction", 30.0),
+    ("peaq", 30.0),
+    ("boba-testnet", 30.0),
+    ("hashkeychain", 30.0),
+    ("vana-moksha", 30.0),
+    ("botanix-testnet", 30.0),
+    ("corn", 30.0),
+    ("chiliz-testnet", 30.0),
+    ("apechain-curtis", 30.0),
+    ("megaeth-timothy", 30.0),
+    ("status-sepolia", 30.0),
+    ("etherlink-shadownet", 30.0),
+    ("etherlink-testnet", 30.0),
+    ("mint", 30.0),
+    ("ink-sepolia", 30.0),
+    ("iotex-testnet", 30.0),
+    ("neox", 30.0),
+    ("lumia", 30.0),
+    ("mint-sepolia", 30.0),
+    ("lens-testnet", 30.0),
+    ("berachain", 30.0),
+    ("sonic", 25.0),
+    ("katana", 25.0),
+    ("hemi", 20.0),
+    ("zksync-era", 20.0),
+    ("sei-mainnet", 20.0),
+    ("scroll", 15.0),
+    ("optimism-sepolia", 15.0),
+    ("celo", 15.0),
+    ("linea", 15.0),
+    ("base-sepolia", 15.0),
+    ("unichain", 15.0),
+    ("monad-testnet", 10.0),
+    ("monad", 10.0),
+    ("fuse", 10.0),
+    ("scroll-sepolia", 10.0),
+    ("rootstock", 10.0),
+    ("near-testnet", 10.0),
+    ("moonriver", 10.0),
+    ("chapel", 10.0),
+    ("moonbeam", 10.0),
+    ("blast-mainnet", 5.0),
+    ("arbitrum-sepolia", 5.0),
+    ("boba", 5.0),
+    ("sepolia", 5.0),
+];
+
+/// Multiplier applied to indexer-rs minimums to derive dipper's max ceilings.
+const PAYMENT_CEILING_MULTIPLIER: f64 = 10.0;
+
+/// Default selection ceiling: 10x the indexer-rs minimum per chain.
 fn default_max_grt_per_30_days() -> BTreeMap<String, f64> {
-    BTreeMap::from([
-        ("arbitrum-one".to_string(), 4500.0),
-        ("mainnet".to_string(), 450.0),
-        ("base".to_string(), 2000.0),
-        ("optimism".to_string(), 1500.0),
-        ("matic".to_string(), 3000.0),
-    ])
+    INDEXER_RS_MIN_GRT_PER_30_DAYS
+        .iter()
+        .map(|(name, min)| ((*name).to_string(), min * PAYMENT_CEILING_MULTIPLIER))
+        .collect()
 }
 
 fn default_max_grt_per_billion_entities_per_30_days() -> f64 {
