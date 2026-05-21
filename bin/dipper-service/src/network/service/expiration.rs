@@ -450,6 +450,13 @@ mod tests {
         ) -> RegistryResult<()> {
             unimplemented!()
         }
+        async fn update_offer_tx_hash(
+            &self,
+            _id: &IndexingAgreementId,
+            _tx_hash: &[u8; 32],
+        ) -> RegistryResult<()> {
+            unimplemented!()
+        }
         async fn mark_indexing_agreement_as_canceled_by_requester(
             &self,
             _id: &IndexingAgreementId,
@@ -462,10 +469,12 @@ mod tests {
         ) -> RegistryResult<()> {
             unimplemented!()
         }
-        async fn mark_indexing_agreement_as_accepted_on_chain(
+        async fn apply_reconciliation(
             &self,
             _id: &IndexingAgreementId,
-        ) -> RegistryResult<()> {
+            _apply_accept: bool,
+            _cancel: Option<crate::registry::CancelKind>,
+        ) -> RegistryResult<crate::registry::ReconciliationOutcome> {
             unimplemented!()
         }
         async fn get_expired_created_agreements(

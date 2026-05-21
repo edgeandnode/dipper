@@ -467,6 +467,14 @@ mod tests {
             Ok(())
         }
 
+        async fn update_offer_tx_hash(
+            &self,
+            _id: &IndexingAgreementId,
+            _tx_hash: &[u8; 32],
+        ) -> crate::registry::Result<()> {
+            Ok(())
+        }
+
         async fn mark_indexing_agreement_as_canceled_by_requester(
             &self,
             _id: &IndexingAgreementId,
@@ -481,11 +489,16 @@ mod tests {
             Ok(())
         }
 
-        async fn mark_indexing_agreement_as_accepted_on_chain(
+        async fn apply_reconciliation(
             &self,
             _id: &IndexingAgreementId,
-        ) -> crate::registry::Result<()> {
-            Ok(())
+            _apply_accept: bool,
+            _cancel: Option<crate::registry::CancelKind>,
+        ) -> crate::registry::Result<crate::registry::ReconciliationOutcome> {
+            Ok(crate::registry::ReconciliationOutcome {
+                did_accept: false,
+                did_cancel: false,
+            })
         }
 
         async fn get_expired_created_agreements(

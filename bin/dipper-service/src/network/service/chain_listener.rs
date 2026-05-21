@@ -1,18 +1,33 @@
-//! On-chain event listener service
+//! On-chain agreement state reconciler
 //!
-//! This service monitors the SubgraphService contract for indexing agreement events:
-//! - `IndexingAgreementAccepted`: When an indexer accepts an RCA on-chain
-//! - `IndexingAgreementCanceled`: When an agreement is canceled on-chain
+//! This service polls a subgraph for changes to indexing agreements and
+//! reconciles dipper's local view of each agreement against the on-chain
+//! truth. Every poll returns agreements whose `lastStateChangeBlock` has
+//! advanced since the last processed block; for each returned snapshot
+//! dipper computes the transition from local status to remote state and
+//! applies it.
 //!
-//! The primary use case is detecting when an indexer who previously `Rejected` an
-//! agreement off-chain later accepts it on-chain. In this case, we automatically
-//! cancel via `cancelIndexingAgreementByPayer` to ensure they don't receive payment.
+//! ## Transitions
+//!
+//! | Local status       | Remote state        | Action                                                                 |
+//! |--------------------|---------------------|------------------------------------------------------------------------|
+//! | Created            | Accepted            | mark AcceptedOnChain, run pending cancellations                         |
+//! | Created            | CanceledBy*         | mark AcceptedOnChain, run pending cancellations, then mark canceled    |
+//! | AcceptedOnChain    | Accepted            | no-op                                                                  |
+//! | AcceptedOnChain    | CanceledBy*         | mark canceled (by requester vs indexer based on `canceled_by` address) |
+//! | Expired            | Accepted            | mark AcceptedOnChain (recovery), run pending cancellations              |
+//! | Expired            | CanceledBy*         | recover to AcceptedOnChain, run pending cancellations, then cancel     |
+//! | Rejected           | Accepted            | queue cancel-on-chain (adversarial path, dead code under proposal-first) |
+//! | Canceled*          | *                   | no-op (terminal)                                                       |
 //!
 //! ## Data Source
 //!
-//! Events are fetched from a subgraph that indexes the SubgraphService contract.
-//! This provides reliable, scalable event retrieval without the block range limits
-//! and rate limiting concerns of direct RPC polling.
+//! Snapshots come from the indexing-payments-subgraph's aggregated
+//! `IndexingAgreement` entity (see [`AgreementStateSnapshot`]). The subgraph
+//! exposes `lastStateChangeBlock` for cursor pagination and `canceledBy`
+//! as the actual canceler address, which dipper compares against its own
+//! signer to distinguish self-initiated cancels from indexer-initiated
+//! cancels.
 
 use std::{future::Future, sync::Arc, time::Duration};
 
@@ -23,10 +38,12 @@ use tokio::{
     time::MissedTickBehavior,
 };
 
-use super::chain_events::{AcceptedAgreementEvent, CanceledAgreementEvent, ChainEventSource};
+use super::chain_events::{AgreementStateSnapshot, ChainEventSource};
 use crate::{
     config::ChainListenerConfig,
-    registry::{AgreementRegistry, IndexingAgreementStatus, PendingCancellationRegistry},
+    registry::{
+        AgreementRegistry, CancelKind, IndexingAgreementStatus, PendingCancellationRegistry,
+    },
     worker::service::WorkerQueue,
 };
 
@@ -77,7 +94,8 @@ pub struct ChainListenerState {
 /// Create a new chain listener service
 ///
 /// Returns a handle for controlling the service and a future that must be spawned
-/// on a runtime. The service polls the subgraph for on-chain events and processes them.
+/// on a runtime. The service polls the subgraph for agreement state snapshots
+/// and reconciles them against the local DB.
 pub fn new<R, W, E>(ctx: Ctx<R, W, E>) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
     R: AgreementRegistry + ChainListenerStateRegistry + PendingCancellationRegistry + Send + Sync,
@@ -102,8 +120,6 @@ where
             "chain listener service started"
         );
 
-        // Use a fixed chain_id for state tracking (could be made configurable)
-        // Using 42161 for Arbitrum One as default
         let chain_id = config.chain_id;
 
         // Get initial state from DB or start from block 0
@@ -201,8 +217,8 @@ where
                 tokio::time::sleep(backoff).await;
             }
 
-            // Fetch accepted events from subgraph
-            let accepted_result = match event_source.get_accepted_agreements(last_block).await {
+            // Fetch changed agreement snapshots since the last processed block
+            let result = match event_source.get_changed_agreements(last_block).await {
                 Ok(result) => {
                     if consecutive_failures > 0 {
                         tracing::info!(
@@ -219,49 +235,23 @@ where
                         tracing::error!(
                             error = %err,
                             consecutive_failures,
-                            "Too many consecutive failures fetching accepted events"
+                            "Too many consecutive failures fetching changed agreements"
                         );
                     } else {
                         tracing::warn!(
                             error = %err,
                             consecutive_failures,
-                            "Failed to fetch accepted events from subgraph"
+                            "Failed to fetch changed agreements from subgraph"
                         );
                     }
                     continue;
                 }
             };
 
-            // Fetch canceled events from subgraph
-            let canceled_result = match event_source.get_canceled_agreements(last_block).await {
-                Ok(result) => result,
-                Err(err) => {
-                    // Log but continue - we still want to process accepted events
-                    tracing::warn!(
-                        error = %err,
-                        "Failed to fetch canceled events from subgraph"
-                    );
-                    super::chain_events::CanceledEventsResult {
-                        events: vec![],
-                        latest_block: accepted_result.latest_block,
-                        latest_block_timestamp: accepted_result.latest_block_timestamp,
-                    }
-                }
-            };
-
-            // Use the minimum of the two latest blocks to ensure we don't miss events
-            let new_block = accepted_result
-                .latest_block
-                .min(canceled_result.latest_block);
-            // Use the minimum timestamp (conservative: if one source is behind, use the older time)
-            let new_timestamp = match (
-                accepted_result.latest_block_timestamp,
-                canceled_result.latest_block_timestamp,
-            ) {
-                (Some(a), Some(c)) => Some(a.min(c)),
-                (t, None) | (None, t) => t,
-            };
-            let total_events = accepted_result.events.len() + canceled_result.events.len();
+            let new_block = result.latest_block;
+            let new_cursor = result.cursor_block;
+            let new_timestamp = result.latest_block_timestamp;
+            let total_changes = result.snapshots.len();
 
             // Stall detection: subgraph head not advancing
             if new_block == last_subgraph_head && new_block > 0 {
@@ -290,7 +280,7 @@ where
             }
             last_subgraph_head = new_block;
 
-            if new_block <= last_block && total_events == 0 {
+            if new_block <= last_block && total_changes == 0 {
                 polls_since_last_event += 1;
                 if polls_since_last_event.is_multiple_of(HEARTBEAT_POLLS) || !using_fast_interval {
                     tracing::info!(
@@ -307,79 +297,56 @@ where
             tracing::debug!(
                 from_block = last_block + 1,
                 to_block = new_block,
-                accepted_count = accepted_result.events.len(),
-                canceled_count = canceled_result.events.len(),
-                "Processing events"
+                snapshot_count = total_changes,
+                "Reconciling agreement snapshots"
             );
 
-            let mut accepted_processed = 0;
-            let mut canceled_processed = 0;
+            let mut processed = 0;
             let mut errors = 0;
 
-            // Process accepted events
-            for event in accepted_result.events {
-                // Check for shutdown between event processing
+            for snapshot in result.snapshots {
                 if rx_stop.try_recv().is_ok() {
                     tracing::debug!("chain listener stopping mid-cycle");
                     return Ok(());
                 }
 
-                match process_accepted_event(&event, &registry, &worker_queue).await {
-                    Ok(()) => accepted_processed += 1,
+                match reconcile_agreement(&snapshot, &registry, &worker_queue, signer_address).await
+                {
+                    Ok(()) => processed += 1,
                     Err(err) => {
                         tracing::warn!(
                             error = %err,
-                            agreement_id = %event.agreement_id,
-                            "Failed to process accepted event"
+                            agreement_id = %snapshot.agreement_id,
+                            "Failed to reconcile agreement snapshot"
                         );
                         errors += 1;
                     }
                 }
             }
 
-            // Process canceled events
-            for event in canceled_result.events {
-                // Check for shutdown between event processing
-                if rx_stop.try_recv().is_ok() {
-                    tracing::debug!("chain listener stopping mid-cycle");
-                    return Ok(());
-                }
-
-                match process_canceled_event(&event, &registry, signer_address).await {
-                    Ok(()) => canceled_processed += 1,
-                    Err(err) => {
-                        tracing::warn!(
-                            error = %err,
-                            agreement_id = %event.agreement_id,
-                            "Failed to process canceled event"
-                        );
-                        errors += 1;
-                    }
-                }
-            }
-
-            if accepted_processed > 0 || canceled_processed > 0 || errors > 0 {
+            if processed > 0 || errors > 0 {
                 tracing::info!(
                     from_block = last_block + 1,
                     to_block = new_block,
-                    accepted_processed,
-                    canceled_processed,
+                    processed,
                     errors,
-                    "Processed chain events"
+                    "Reconciled agreement snapshots"
                 );
                 polls_since_last_event = 0;
             }
 
-            // Update last processed block and timestamp
-            if new_block > last_block {
+            // Advance to `new_cursor` (not the subgraph head) so a held-back
+            // cursor from a parse failure does not skip dropped entities.
+            // The `> last_block` guard prevents rewinding when a failure on
+            // the first entity of a batch leaves the cursor at its prior value.
+            if new_cursor > last_block {
                 if let Err(err) = registry
-                    .update_chain_listener_state(chain_id, new_block, new_timestamp)
+                    .update_chain_listener_state(chain_id, new_cursor, new_timestamp)
                     .await
                 {
                     tracing::error!(error = %err, "Failed to update chain listener state");
-                    // Continue processing - we may re-process some events on restart
                 }
-                last_block = new_block;
+                last_block = new_cursor;
             }
         }
 
@@ -390,117 +357,160 @@ where
     (Handle { tx_stop }, service)
 }
 
-/// Process an IndexingAgreementAccepted event
-async fn process_accepted_event<R, W>(
-    event: &AcceptedAgreementEvent,
+/// Reconcile a single agreement snapshot against dipper's local DB.
+///
+/// Compares the snapshot's remote state to the local `IndexingAgreementStatus`
+/// and applies whatever transitions the diff implies. See the module-level
+/// transition table for the full mapping.
+async fn reconcile_agreement<R, W>(
+    snapshot: &AgreementStateSnapshot,
     registry: &R,
     worker_queue: &W,
+    signer_address: Address,
 ) -> anyhow::Result<()>
 where
     R: AgreementRegistry + PendingCancellationRegistry,
     W: WorkerQueue,
 {
     tracing::debug!(
-        agreement_id = %event.agreement_id,
-        indexer = %event.indexer,
-        allocation = %event.allocation_id,
-        block = event.block_number,
-        "Processing IndexingAgreementAccepted event"
+        agreement_id = %snapshot.agreement_id,
+        indexer = %snapshot.indexer,
+        state = ?snapshot.state,
+        last_state_change_block = snapshot.last_state_change_block,
+        "Reconciling agreement against snapshot"
     );
 
-    // The event's agreement_id is the on-chain bytes16, which IS the PK now.
     let agreement = match registry
-        .get_indexing_agreement_by_id(&event.agreement_id)
+        .get_indexing_agreement_by_id(&snapshot.agreement_id)
         .await?
     {
         Some(a) => a,
         None => {
             tracing::debug!(
-                agreement_id = %event.agreement_id,
+                agreement_id = %snapshot.agreement_id,
                 "Agreement not found (may be from another payer)"
             );
             return Ok(());
         }
     };
 
-    match agreement.status {
-        IndexingAgreementStatus::Created => {
-            // Normal case: agreement was Created, now accepted on-chain
-            registry
-                .mark_indexing_agreement_as_accepted_on_chain(&agreement.id)
-                .await?;
+    // Adversarial-indexer guard: if local is Rejected but remote reached an
+    // accepted state, queue an on-chain cancel so the indexer does not
+    // collect payment. Dead code under proposal-first dispatch (dipper does
+    // not post offer() after a gRPC rejection, so on-chain acceptance
+    // cannot succeed) but kept as a defensive response to any flow
+    // violation. Only queue when the agreement is not already canceled
+    // remotely — otherwise the cancel tx would just revert against the
+    // already-canceled contract state. Runs before the DB transitions
+    // below; it enqueues a worker job rather than writing to the agreement
+    // row, so it does not need to share the atomic transaction.
+    if matches!(agreement.status, IndexingAgreementStatus::Rejected)
+        && snapshot.state.reached_accepted()
+        && !snapshot.state.is_canceled()
+    {
+        tracing::warn!(
+            agreement_id = %agreement.id,
+            indexer = %snapshot.indexer,
+            "Rejected agreement accepted on-chain, queuing cancellation"
+        );
+        worker_queue
+            .cancel_rejected_agreement_on_chain(agreement.id)
+            .await?;
+    }
+
+    // Compute the transitions to apply:
+    //
+    // - `apply_accept`: local is Created or Expired and remote reached an
+    //   accepted state. We don't mark Rejected -> AcceptedOnChain; the
+    //   Rejected branch jumps straight to the terminal cancel status
+    //   below.
+    // - `cancel`: remote is canceled and local is not already in a
+    //   terminal cancel. The canceler identity is derived by comparing
+    //   snapshot.canceled_by to our signer address.
+    //
+    // Both are applied atomically via apply_reconciliation so the
+    // Accept-then-Cancel-in-one-snapshot path does not leave an
+    // intermediate AcceptedOnChain row visible to concurrent readers.
+    let apply_accept = matches!(
+        agreement.status,
+        IndexingAgreementStatus::Created | IndexingAgreementStatus::Expired,
+    ) && snapshot.state.reached_accepted();
+
+    let already_terminal_cancel = matches!(
+        agreement.status,
+        IndexingAgreementStatus::CanceledByRequester | IndexingAgreementStatus::CanceledByIndexer,
+    );
+    let cancel_kind = if snapshot.state.is_canceled() && !already_terminal_cancel {
+        Some(if snapshot.canceled_by == signer_address {
+            CancelKind::ByRequester
+        } else {
+            CancelKind::ByIndexer
+        })
+    } else {
+        None
+    };
+
+    if apply_accept || cancel_kind.is_some() {
+        let outcome = registry
+            .apply_reconciliation(&agreement.id, apply_accept, cancel_kind)
+            .await?;
+
+        if outcome.did_accept {
+            let (old_status, reason) = match agreement.status {
+                IndexingAgreementStatus::Expired => ("EXPIRED", "recovered_expired_on_chain"),
+                _ => ("CREATED", "accepted_on_chain"),
+            };
             tracing::info!(
                 agreement_id = %agreement.id,
                 indexing_request_id = %agreement.indexing_request_id,
-                old_status = "CREATED",
+                old_status,
                 new_status = "ACCEPTED_ON_CHAIN",
-                reason = "accepted_on_chain",
+                reason,
                 "agreement state transition"
             );
+        }
 
+        if outcome.did_cancel {
+            match cancel_kind {
+                Some(CancelKind::ByRequester) => tracing::info!(
+                    agreement_id = %agreement.id,
+                    "Agreement marked as CanceledByRequester (on-chain confirmation)"
+                ),
+                Some(CancelKind::ByIndexer) => tracing::info!(
+                    agreement_id = %agreement.id,
+                    indexer = %snapshot.indexer,
+                    "Agreement marked as CanceledByIndexer"
+                ),
+                None => {}
+            }
+        }
+
+        // Pending-cancellation bookkeeping is a worker-queue enqueue loop
+        // plus per-record deletes; it can't sit inside the atomic tx
+        // without holding DB locks across network calls. Run it after
+        // commit, gated on `did_accept` so it only fires on a fresh
+        // AcceptedOnChain write (not on a no-op where the row was
+        // already there from a prior crash-recovered run).
+        if outcome.did_accept {
             execute_pending_cancellations(&agreement.id, registry, worker_queue).await?;
         }
-        IndexingAgreementStatus::AcceptedOnChain => {
-            // Crash recovery: if dipper crashed after marking AcceptedOnChain but
-            // before executing pending cancellations, this re-processes the event.
-            tracing::debug!(
-                agreement_id = %agreement.id,
-                "Re-processing AcceptedOnChain event (crash recovery)"
-            );
-
-            execute_pending_cancellations(&agreement.id, registry, worker_queue).await?;
-        }
-        IndexingAgreementStatus::Expired => {
-            // The expiration service marked this as expired, but the indexer
-            // did accept on-chain (the contract enforces the deadline). Should
-            // not happen with chain-time expiration; the WARN log will surface
-            // it if it does.
-            tracing::warn!(
-                agreement_id = %agreement.id,
-                indexing_request_id = %agreement.indexing_request_id,
-                old_status = "EXPIRED",
-                new_status = "ACCEPTED_ON_CHAIN",
-                reason = "recovered_expired_on_chain",
-                "agreement state transition"
-            );
-            registry
-                .mark_indexing_agreement_as_accepted_on_chain(&agreement.id)
-                .await?;
-
-            execute_pending_cancellations(&agreement.id, registry, worker_queue).await?;
-        }
-        IndexingAgreementStatus::Rejected => {
-            // Indexer rejected off-chain but accepted on-chain anyway
-            // Queue a cancellation job
-            tracing::warn!(
-                agreement_id = %agreement.id,
-                indexer = %event.indexer,
-                "Rejected agreement accepted on-chain, queuing cancellation"
-            );
-            worker_queue
-                .cancel_rejected_agreement_on_chain(agreement.id)
-                .await?;
-        }
-        status => {
-            tracing::debug!(
-                agreement_id = %agreement.id,
-                status = %status,
-                "Ignoring acceptance for agreement in status: {status}"
-            );
-        }
+    } else if already_terminal_cancel && snapshot.state.is_canceled() {
+        tracing::debug!(
+            agreement_id = %agreement.id,
+            status = %agreement.status,
+            "Agreement already canceled, ignoring snapshot"
+        );
     }
 
     Ok(())
 }
 
-/// Execute pending cancellations linked to an accepted agreement.
+/// Execute pending cancellations linked to a newly-accepted agreement.
 ///
-/// Called both on initial AcceptedOnChain processing and on crash recovery
-/// (when the agreement is already AcceptedOnChain from a previous run).
-///
-/// Each pending cancellation record is deleted individually after successful
-/// processing. If a cancellation fails with a transient error, its record is
-/// retained so it can be retried on the next crash-recovery replay.
+/// Called from the Created -> AcceptedOnChain and Expired -> AcceptedOnChain
+/// transitions. Each pending cancellation record is deleted individually
+/// after successful processing. Transient failures retain the record so
+/// the next reconcile pass can retry.
 async fn execute_pending_cancellations<R, W>(
     agreement_id: &IndexingAgreementId,
     registry: &R,
@@ -531,7 +541,6 @@ where
                     old_agreement_id = %cancellation.old_agreement_id,
                     "Pending cancellation references non-existent agreement, cleaning up"
                 );
-                // Agreement is gone permanently — clean up the stale record
                 registry
                     .delete_pending_cancellation(*agreement_id, cancellation.old_agreement_id)
                     .await?;
@@ -545,7 +554,6 @@ where
         {
             Ok(()) => {}
             Err(crate::registry::Error::NoRecordsUpdated) => {
-                // Already cancelled or in a terminal state — clean up and move on
                 tracing::debug!(
                     old_agreement_id = %cancellation.old_agreement_id,
                     "Old agreement already in terminal state, skipping cancellation"
@@ -556,7 +564,6 @@ where
                 continue;
             }
             Err(err) => {
-                // Transient failure — retain the record for retry
                 tracing::error!(
                     old_agreement_id = %cancellation.old_agreement_id,
                     error = %err,
@@ -567,8 +574,6 @@ where
             }
         }
 
-        // DB cancellation succeeded — remove the pending record before
-        // attempting the best-effort notification to the indexer.
         registry
             .delete_pending_cancellation(*agreement_id, cancellation.old_agreement_id)
             .await?;
@@ -606,87 +611,6 @@ where
     Ok(())
 }
 
-/// Process an IndexingAgreementCanceled event
-async fn process_canceled_event<R>(
-    event: &CanceledAgreementEvent,
-    registry: &R,
-    signer_address: Address,
-) -> anyhow::Result<()>
-where
-    R: AgreementRegistry,
-{
-    tracing::debug!(
-        agreement_id = %event.agreement_id,
-        indexer = %event.indexer,
-        canceled_by = %event.canceled_by,
-        block = event.block_number,
-        "Processing IndexingAgreementCanceled event"
-    );
-
-    // The event's agreement_id is the on-chain bytes16, which IS the PK now.
-    let agreement = match registry
-        .get_indexing_agreement_by_id(&event.agreement_id)
-        .await?
-    {
-        Some(a) => a,
-        None => {
-            tracing::debug!(
-                agreement_id = %event.agreement_id,
-                "Agreement not found (may be from another payer)"
-            );
-            return Ok(());
-        }
-    };
-
-    // Determine who canceled based on the canceled_by field
-    let canceled_by_us = event.canceled_by == signer_address;
-
-    match agreement.status {
-        IndexingAgreementStatus::AcceptedOnChain => {
-            if canceled_by_us {
-                // We initiated the cancellation - update to CanceledByRequester
-                registry
-                    .mark_indexing_agreement_as_canceled_by_requester(&agreement.id)
-                    .await?;
-                tracing::info!(
-                    agreement_id = %agreement.id,
-                    "Agreement marked as CanceledByRequester (on-chain confirmation)"
-                );
-            } else {
-                // Indexer initiated the cancellation
-                registry
-                    .mark_indexing_agreement_as_canceled_by_indexer(&agreement.id)
-                    .await?;
-                tracing::info!(
-                    agreement_id = %agreement.id,
-                    indexer = %event.indexer,
-                    "Agreement marked as CanceledByIndexer"
-                );
-            }
-        }
-        IndexingAgreementStatus::CanceledByRequester
-        | IndexingAgreementStatus::CanceledByIndexer => {
-            // Already in a canceled state, nothing to do
-            tracing::debug!(
-                agreement_id = %agreement.id,
-                status = %agreement.status,
-                "Agreement already canceled, ignoring event"
-            );
-        }
-        status => {
-            // Unexpected status for a cancellation event
-            tracing::warn!(
-                agreement_id = %agreement.id,
-                status = %status,
-                canceled_by = %event.canceled_by,
-                "Received cancellation event for agreement in unexpected status"
-            );
-        }
-    }
-
-    Ok(())
-}
-
 /// Trait for chain listener state persistence
 #[async_trait::async_trait]
 pub trait ChainListenerStateRegistry {
@@ -714,7 +638,7 @@ mod tests {
     use time::OffsetDateTime;
     use url::Url;
 
-    use super::*;
+    use super::{super::chain_events::AgreementState, *};
     use crate::registry::{
         AgreementFeeRate, Indexer, IndexingAgreement, IndexingAgreementTerms as Terms,
         IndexingAgreementTermsMetadata as TermsMetadata, Result as RegistryResult,
@@ -744,7 +668,22 @@ mod tests {
         }
     }
 
-    // Basic tests for the service structure
+    fn make_snapshot(
+        agreement_id: IndexingAgreementId,
+        state: AgreementState,
+        canceled_by: Address,
+    ) -> AgreementStateSnapshot {
+        AgreementStateSnapshot {
+            agreement_id,
+            indexer: "0x1234567890123456789012345678901234567890"
+                .parse()
+                .unwrap(),
+            state,
+            canceled_by,
+            last_state_change_block: 100,
+        }
+    }
+
     #[test]
     fn test_handle_clone() {
         let (tx, _rx) = mpsc::channel(1);
@@ -935,6 +874,14 @@ mod tests {
             Ok(())
         }
 
+        async fn update_offer_tx_hash(
+            &self,
+            _id: &IndexingAgreementId,
+            _tx_hash: &[u8; 32],
+        ) -> RegistryResult<()> {
+            Ok(())
+        }
+
         async fn mark_indexing_agreement_as_canceled_by_requester(
             &self,
             id: &IndexingAgreementId,
@@ -963,16 +910,55 @@ mod tests {
             Ok(())
         }
 
-        async fn mark_indexing_agreement_as_accepted_on_chain(
+        async fn apply_reconciliation(
             &self,
             id: &IndexingAgreementId,
-        ) -> RegistryResult<()> {
-            self.state
-                .lock()
-                .unwrap()
-                .marked_accepted_on_chain
-                .push(*id);
-            Ok(())
+            apply_accept: bool,
+            cancel: Option<crate::registry::CancelKind>,
+        ) -> RegistryResult<crate::registry::ReconciliationOutcome> {
+            // The mock reuses the existing per-transition tracking lists
+            // instead of modelling a real Postgres transaction. That's
+            // enough for the chain_listener tests, which only assert which
+            // transitions were recorded; real transactional behaviour is
+            // exercised by dipper_pgregistry's own integration tests.
+            let mut state = self.state.lock().unwrap();
+
+            let mut did_accept = false;
+            if apply_accept {
+                let agreement = state.agreements.get(id);
+                if matches!(
+                    agreement.map(|a| a.status),
+                    Some(IndexingAgreementStatus::Created | IndexingAgreementStatus::Expired),
+                ) {
+                    state.marked_accepted_on_chain.push(*id);
+                    did_accept = true;
+                }
+            }
+
+            let mut did_cancel = false;
+            if let Some(kind) = cancel {
+                if state.fail_cancel_for.contains(id) {
+                    return Err(crate::registry::Error::BackendError(
+                        dipper_pgregistry::Error::DbError(sqlx::Error::Protocol(
+                            "simulated transient failure".into(),
+                        )),
+                    ));
+                }
+                match kind {
+                    crate::registry::CancelKind::ByRequester => {
+                        state.marked_canceled_by_requester.push(*id);
+                    }
+                    crate::registry::CancelKind::ByIndexer => {
+                        state.marked_canceled_by_indexer.push(*id);
+                    }
+                }
+                did_cancel = true;
+            }
+
+            Ok(crate::registry::ReconciliationOutcome {
+                did_accept,
+                did_cancel,
+            })
         }
 
         async fn get_expired_created_agreements(
@@ -1173,26 +1159,18 @@ mod tests {
         }
     }
 
+    // -- reconcile_agreement tests --
+
     #[tokio::test]
-    async fn test_process_accepted_event_transitions_created_to_accepted() {
+    async fn test_reconcile_transitions_created_to_accepted() {
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::Created);
 
-        let event = AcceptedAgreementEvent {
-            agreement_id,
-            indexer: "0x1234567890123456789012345678901234567890"
-                .parse()
-                .unwrap(),
-            allocation_id: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
-                .parse()
-                .unwrap(),
-            block_number: 100,
-        };
-
-        let result = process_accepted_event(&event, &registry, &worker_queue).await;
+        let snapshot = make_snapshot(agreement_id, AgreementState::Accepted, Address::ZERO);
+        let result = reconcile_agreement(&snapshot, &registry, &worker_queue, Address::ZERO).await;
 
         assert!(result.is_ok());
         assert!(registry.was_marked_accepted_on_chain(&agreement_id));
@@ -1200,25 +1178,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_accepted_event_queues_cancellation_for_rejected() {
+    async fn test_reconcile_queues_cancellation_for_rejected() {
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::Rejected);
 
-        let event = AcceptedAgreementEvent {
-            agreement_id,
-            indexer: "0x1234567890123456789012345678901234567890"
-                .parse()
-                .unwrap(),
-            allocation_id: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
-                .parse()
-                .unwrap(),
-            block_number: 100,
-        };
-
-        let result = process_accepted_event(&event, &registry, &worker_queue).await;
+        let snapshot = make_snapshot(agreement_id, AgreementState::Accepted, Address::ZERO);
+        let result = reconcile_agreement(&snapshot, &registry, &worker_queue, Address::ZERO).await;
 
         assert!(result.is_ok());
         assert!(!registry.was_marked_accepted_on_chain(&agreement_id));
@@ -1226,25 +1194,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_accepted_event_ignores_unknown_agreement() {
+    async fn test_reconcile_rejected_already_canceled_skips_queue_and_marks_local_cancel() {
+        // The Rejected agreement was canceled on-chain between polls. Dipper
+        // should not queue another cancel job (it would just revert against
+        // the already-canceled contract state), and step 2 should drive the
+        // local status from Rejected straight to the terminal cancel matching
+        // the canceler address.
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
+        let signer_address: Address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .parse()
+            .unwrap();
 
+        registry.add_agreement(agreement_id, IndexingAgreementStatus::Rejected);
+
+        let snapshot = make_snapshot(
+            agreement_id,
+            AgreementState::CanceledByPayer,
+            signer_address,
+        );
+        let result = reconcile_agreement(&snapshot, &registry, &worker_queue, signer_address).await;
+
+        assert!(result.is_ok());
+        assert!(!worker_queue.was_cancellation_queued(&agreement_id));
+        assert!(registry.was_marked_canceled_by_requester(&agreement_id));
+        assert!(!registry.was_marked_accepted_on_chain(&agreement_id));
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_ignores_unknown_agreement() {
+        let registry = MockRegistry::new();
+        let worker_queue = MockWorkerQueue::default();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         // Don't add the agreement to the registry
 
-        let event = AcceptedAgreementEvent {
-            agreement_id,
-            indexer: "0x1234567890123456789012345678901234567890"
-                .parse()
-                .unwrap(),
-            allocation_id: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
-                .parse()
-                .unwrap(),
-            block_number: 100,
-        };
-
-        let result = process_accepted_event(&event, &registry, &worker_queue).await;
+        let snapshot = make_snapshot(agreement_id, AgreementState::Accepted, Address::ZERO);
+        let result = reconcile_agreement(&snapshot, &registry, &worker_queue, Address::ZERO).await;
 
         assert!(result.is_ok());
         assert!(!registry.was_marked_accepted_on_chain(&agreement_id));
@@ -1252,43 +1238,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_accepted_event_recovers_expired_agreement() {
+    async fn test_reconcile_recovers_expired_agreement() {
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let old_agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
 
-        // Agreement was marked Expired by the expiration service before the
-        // chain_listener saw the on-chain acceptance. The contract guarantees
-        // the acceptance was within the RCA deadline, so we should recover.
         registry.add_agreement(agreement_id, IndexingAgreementStatus::Expired);
         registry.add_agreement(old_agreement_id, IndexingAgreementStatus::AcceptedOnChain);
         registry.add_pending_cancellation(agreement_id, old_agreement_id, request_id);
 
-        let event = AcceptedAgreementEvent {
-            agreement_id,
-            indexer: "0x1234567890123456789012345678901234567890"
-                .parse()
-                .unwrap(),
-            allocation_id: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
-                .parse()
-                .unwrap(),
-            block_number: 100,
-        };
-
-        let result = process_accepted_event(&event, &registry, &worker_queue).await;
+        let snapshot = make_snapshot(agreement_id, AgreementState::Accepted, Address::ZERO);
+        let result = reconcile_agreement(&snapshot, &registry, &worker_queue, Address::ZERO).await;
 
         assert!(result.is_ok());
         assert!(registry.was_marked_accepted_on_chain(&agreement_id));
-        // Verify execute_pending_cancellations ran
         assert!(registry.was_marked_canceled_by_requester(&old_agreement_id));
         assert!(registry.was_pending_cancellation_deleted(&agreement_id, &old_agreement_id));
     }
 
     #[tokio::test]
-    async fn test_process_canceled_event_marks_canceled_by_indexer() {
+    async fn test_reconcile_marks_canceled_by_indexer() {
         let registry = MockRegistry::new();
+        let worker_queue = MockWorkerQueue::default();
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let signer_address: Address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             .parse()
@@ -1299,14 +1272,12 @@ mod tests {
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::AcceptedOnChain);
 
-        let event = CanceledAgreementEvent {
+        let snapshot = make_snapshot(
             agreement_id,
-            indexer: indexer_address,
-            canceled_by: indexer_address, // Indexer canceled
-            block_number: 100,
-        };
-
-        let result = process_canceled_event(&event, &registry, signer_address).await;
+            AgreementState::CanceledByServiceProvider,
+            indexer_address,
+        );
+        let result = reconcile_agreement(&snapshot, &registry, &worker_queue, signer_address).await;
 
         assert!(result.is_ok());
         assert!(registry.was_marked_canceled_by_indexer(&agreement_id));
@@ -1314,26 +1285,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_canceled_event_marks_canceled_by_requester() {
+    async fn test_reconcile_marks_canceled_by_requester() {
         let registry = MockRegistry::new();
+        let worker_queue = MockWorkerQueue::default();
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let signer_address: Address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            .parse()
-            .unwrap();
-        let indexer_address: Address = "0x1234567890123456789012345678901234567890"
             .parse()
             .unwrap();
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::AcceptedOnChain);
 
-        let event = CanceledAgreementEvent {
+        let snapshot = make_snapshot(
             agreement_id,
-            indexer: indexer_address,
-            canceled_by: signer_address, // We canceled
-            block_number: 100,
-        };
-
-        let result = process_canceled_event(&event, &registry, signer_address).await;
+            AgreementState::CanceledByPayer,
+            signer_address,
+        );
+        let result = reconcile_agreement(&snapshot, &registry, &worker_queue, signer_address).await;
 
         assert!(result.is_ok());
         assert!(!registry.was_marked_canceled_by_indexer(&agreement_id));
@@ -1341,38 +1308,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_canceled_event_ignores_already_canceled() {
+    async fn test_reconcile_ignores_already_canceled() {
         let registry = MockRegistry::new();
+        let worker_queue = MockWorkerQueue::default();
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let signer_address: Address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            .parse()
-            .unwrap();
-        let indexer_address: Address = "0x1234567890123456789012345678901234567890"
             .parse()
             .unwrap();
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::CanceledByIndexer);
 
-        let event = CanceledAgreementEvent {
+        let snapshot = make_snapshot(
             agreement_id,
-            indexer: indexer_address,
-            canceled_by: indexer_address,
-            block_number: 100,
-        };
-
-        let result = process_canceled_event(&event, &registry, signer_address).await;
+            AgreementState::CanceledByServiceProvider,
+            Address::ZERO,
+        );
+        let result = reconcile_agreement(&snapshot, &registry, &worker_queue, signer_address).await;
 
         assert!(result.is_ok());
-        // Should not mark again
         assert!(!registry.was_marked_canceled_by_indexer(&agreement_id));
         assert!(!registry.was_marked_canceled_by_requester(&agreement_id));
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_applies_accept_then_cancel_in_one_snapshot() {
+        // Transient case: dipper polls after both the accept and cancel
+        // landed on-chain. Local is still Created, remote is CanceledByPayer.
+        // We should run the acceptance-side bookkeeping (pending cancellations)
+        // AND mark the agreement as CanceledByRequester.
+        let registry = MockRegistry::new();
+        let worker_queue = MockWorkerQueue::default();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
+        let old_agreement_id = IndexingAgreementId::from_bytes(rand::random());
+        let request_id = IndexingRequestId::new();
+        let signer_address: Address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .parse()
+            .unwrap();
+
+        registry.add_agreement(agreement_id, IndexingAgreementStatus::Created);
+        registry.add_agreement(old_agreement_id, IndexingAgreementStatus::AcceptedOnChain);
+        registry.add_pending_cancellation(agreement_id, old_agreement_id, request_id);
+
+        let snapshot = make_snapshot(
+            agreement_id,
+            AgreementState::CanceledByPayer,
+            signer_address,
+        );
+        let result = reconcile_agreement(&snapshot, &registry, &worker_queue, signer_address).await;
+
+        assert!(result.is_ok());
+        // Accepted-side bookkeeping ran
+        assert!(registry.was_marked_accepted_on_chain(&agreement_id));
+        assert!(registry.was_marked_canceled_by_requester(&old_agreement_id));
+        assert!(registry.was_pending_cancellation_deleted(&agreement_id, &old_agreement_id));
+        // Cancellation applied on top
+        assert!(registry.was_marked_canceled_by_requester(&agreement_id));
     }
 
     // -- execute_pending_cancellations tests --
 
     #[tokio::test]
     async fn test_pending_cancellations_all_succeed_records_deleted() {
-        // Arrange
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
@@ -1386,16 +1382,13 @@ mod tests {
         registry.add_pending_cancellation(new_id, old_id_1, request_id);
         registry.add_pending_cancellation(new_id, old_id_2, request_id);
 
-        // Act
         let result = execute_pending_cancellations(&new_id, &registry, &worker_queue).await;
 
-        // Assert
         assert!(result.is_ok());
         assert!(registry.was_marked_canceled_by_requester(&old_id_1));
         assert!(registry.was_marked_canceled_by_requester(&old_id_2));
         assert!(registry.was_pending_cancellation_deleted(&new_id, &old_id_1));
         assert!(registry.was_pending_cancellation_deleted(&new_id, &old_id_2));
-        // Pending cancellation store should be empty
         let remaining = registry
             .get_pending_cancellations_by_new_agreement(new_id)
             .await
@@ -1405,7 +1398,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_pending_cancellations_transient_failure_retains_record() {
-        // Arrange
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
@@ -1420,10 +1412,8 @@ mod tests {
         registry.add_pending_cancellation(new_id, old_fail, request_id);
         registry.fail_cancel_for(old_fail);
 
-        // Act
         let result = execute_pending_cancellations(&new_id, &registry, &worker_queue).await;
 
-        // Assert: function returns error due to transient failure
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -1431,15 +1421,12 @@ mod tests {
             "unexpected error: {err_msg}"
         );
 
-        // The successful one was cancelled and its record deleted
         assert!(registry.was_marked_canceled_by_requester(&old_ok));
         assert!(registry.was_pending_cancellation_deleted(&new_id, &old_ok));
 
-        // The failed one was NOT cancelled and its record is retained
         assert!(!registry.was_marked_canceled_by_requester(&old_fail));
         assert!(!registry.was_pending_cancellation_deleted(&new_id, &old_fail));
 
-        // The failed record remains in the store for retry
         let remaining = registry
             .get_pending_cancellations_by_new_agreement(new_id)
             .await
@@ -1449,8 +1436,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_pending_cancellations_already_terminal_cleans_up() {
-        // Arrange: old agreement is already in terminal state (NoRecordsUpdated path)
+    async fn test_pending_cancellations_nonexistent_agreement_cleans_up() {
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
@@ -1458,41 +1444,26 @@ mod tests {
         let request_id = IndexingRequestId::new();
 
         registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
-        registry.add_agreement(old_id, IndexingAgreementStatus::CanceledByIndexer);
         registry.add_pending_cancellation(new_id, old_id, request_id);
-        // Simulate terminal state: mark_canceled_by_requester will return NoRecordsUpdated
-        // We need a way to make the mock return NoRecordsUpdated for this ID.
-        // The current mock always returns Ok(()) -- but the agreement status is
-        // CanceledByIndexer, which the real DB would reject. For this test, we use
-        // fail_cancel_for which returns BackendError. Instead, let's verify the
-        // non-existent agreement path which also cleans up.
-        //
-        // Actually, let's test the non-existent agreement path directly.
-        // Remove the old agreement so get_indexing_agreement_by_id returns None.
-        registry.state.lock().unwrap().agreements.remove(&old_id);
+        // old_id never added -- simulates a stale pending cancellation whose
+        // referenced agreement no longer exists.
 
-        // Act
         let result = execute_pending_cancellations(&new_id, &registry, &worker_queue).await;
 
-        // Assert
         assert!(result.is_ok());
         assert!(!registry.was_marked_canceled_by_requester(&old_id));
-        // Record should be cleaned up since the agreement no longer exists
         assert!(registry.was_pending_cancellation_deleted(&new_id, &old_id));
     }
 
     #[tokio::test]
     async fn test_pending_cancellations_empty_is_noop() {
-        // Arrange
         let registry = MockRegistry::new();
         let worker_queue = MockWorkerQueue::default();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         registry.add_agreement(new_id, IndexingAgreementStatus::AcceptedOnChain);
 
-        // Act
         let result = execute_pending_cancellations(&new_id, &registry, &worker_queue).await;
 
-        // Assert
         assert!(result.is_ok());
     }
 
@@ -1528,35 +1499,22 @@ mod tests {
 
     #[async_trait::async_trait]
     impl super::super::chain_events::ChainEventSource for TimingEventSource {
-        async fn get_accepted_agreements(
+        async fn get_changed_agreements(
             &self,
             _since_block: u64,
         ) -> Result<
-            super::super::chain_events::AcceptedEventsResult,
+            super::super::chain_events::ChangedAgreementsResult,
             super::super::chain_events::ChainEventError,
         > {
             self.poll_times
                 .lock()
                 .unwrap()
                 .push(tokio::time::Instant::now());
-            Ok(super::super::chain_events::AcceptedEventsResult {
-                events: vec![],
+            Ok(super::super::chain_events::ChangedAgreementsResult {
+                snapshots: vec![],
                 latest_block: 1,
                 latest_block_timestamp: Some(1000),
-            })
-        }
-
-        async fn get_canceled_agreements(
-            &self,
-            _since_block: u64,
-        ) -> Result<
-            super::super::chain_events::CanceledEventsResult,
-            super::super::chain_events::ChainEventError,
-        > {
-            Ok(super::super::chain_events::CanceledEventsResult {
-                events: vec![],
-                latest_block: 1,
-                latest_block_timestamp: Some(1000),
+                cursor_block: 1,
             })
         }
     }
@@ -1573,7 +1531,7 @@ mod tests {
             subgraph_endpoint: "http://localhost:8000/subgraphs/name/test".parse().unwrap(),
             subgraph_api_key: None,
             chain_id: 1337,
-            poll_interval: Duration::from_millis(50), // fast interval = 50ms for test speed
+            poll_interval: Duration::from_millis(50),
             request_timeout: Duration::from_secs(5),
             max_retries: 0,
         };
@@ -1592,15 +1550,10 @@ mod tests {
         let (handle, service) = new(ctx);
         let svc_handle = tokio::spawn(service);
 
-        // Wait for the initial fast poll to happen, then let it settle into idle (300s).
-        // The listener switches to slow after seeing no pending agreements.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         let polls_before = poll_times.lock().unwrap().len();
 
-        // Now we're in the 300s idle interval. Without the notify, no poll
-        // would happen for 300s. Signal the notify and check that a poll
-        // happens promptly.
         notify.notify_one();
         tokio::time::sleep(Duration::from_millis(200)).await;
 

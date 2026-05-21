@@ -662,7 +662,7 @@ pub struct DipsAgreementConfig {
 }
 
 fn default_deadline_seconds() -> u64 {
-    300 // 5 minutes
+    600
 }
 
 /// Default ceiling: 10x the indexer-rs minimum defaults.
@@ -1047,8 +1047,8 @@ mod tests {
             "duration_seconds should default to None"
         );
         assert_eq!(
-            config.deadline_seconds, 300,
-            "deadline_seconds should default to 300"
+            config.deadline_seconds, 600,
+            "deadline_seconds should default to 600"
         );
 
         // Test the From conversion - None should map to u64::MAX

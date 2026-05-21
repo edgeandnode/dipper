@@ -92,12 +92,21 @@ where
     E: sqlx::Executor<'q, Database = Postgres>,
     T: for<'de> serde::Deserialize<'de> + Send + Unpin + 'static,
 {
+    // NOTE: the `WITH ... AS MATERIALIZED` CTE is required for correctness, not
+    // just a planner hint. With `WHERE id IN (subquery)`, Postgres plans a
+    // Nested Loop Semi Join that re-evaluates the subquery once per candidate
+    // outer row. Each re-evaluation of `FOR UPDATE SKIP LOCKED LIMIT 1` locks
+    // and returns a *different* row (the previous iteration's row is now
+    // skip-locked). The outer UPDATE then matches every id the subquery ever
+    // produced, marking N rows `Running` in a single statement. `fetch_optional`
+    // only consumes the first row from RETURNING, so the remaining rows become
+    // orphaned `Running` jobs that the worker never processes.
+    //
+    // MATERIALIZED pins the CTE result: the inner SELECT runs exactly once and
+    // its one-row output is reused by the UPDATE, so only that one row is
+    // updated.
     let res = sqlx::query_as(
-        r#"UPDATE pgmq_queue
-            SET
-                updated_at = timezone('UTC', now()),
-                status = $1
-            WHERE id IN (
+        r#"WITH next_job AS MATERIALIZED (
                 SELECT id
                 FROM pgmq_queue
                 WHERE status = $2 AND scheduled_for <= timezone('UTC', now())
@@ -105,7 +114,13 @@ where
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
             )
-            RETURNING *"#,
+            UPDATE pgmq_queue
+            SET
+                updated_at = timezone('UTC', now()),
+                status = $1
+            FROM next_job
+            WHERE pgmq_queue.id = next_job.id
+            RETURNING pgmq_queue.*"#,
     )
     .bind(PgJobStatus::Running)
     .bind(PgJobStatus::Queued)

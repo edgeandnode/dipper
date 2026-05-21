@@ -15,11 +15,11 @@ use thegraph_core::{
 
 // Re-export for tests only
 #[cfg(test)]
-pub use self::agreement::Indexer;
+pub use self::agreement::{Indexer, ReconciliationOutcome};
 use self::result::Result as RegistryResult;
 pub use self::{
     agreement::{
-        AgreementFeeRate, AgreementRegistry, IndexingAgreement, NewAgreementParams,
+        AgreementFeeRate, AgreementRegistry, CancelKind, IndexingAgreement, NewAgreementParams,
         Status as IndexingAgreementStatus, Terms as IndexingAgreementTerms,
         TermsMetadata as IndexingAgreementTermsMetadata,
     },
@@ -285,6 +285,17 @@ impl AgreementRegistry for RegistryProvider {
             .map_err(Into::into)
     }
 
+    async fn update_offer_tx_hash(
+        &self,
+        id: &IndexingAgreementId,
+        tx_hash: &[u8; 32],
+    ) -> RegistryResult<()> {
+        self.inner
+            .update_offer_tx_hash(id, tx_hash)
+            .await
+            .map_err(Into::into)
+    }
+
     async fn mark_indexing_agreement_as_canceled_by_requester(
         &self,
         id: &IndexingAgreementId,
@@ -305,14 +316,24 @@ impl AgreementRegistry for RegistryProvider {
             .map_err(Into::into)
     }
 
-    async fn mark_indexing_agreement_as_accepted_on_chain(
+    async fn apply_reconciliation(
         &self,
         id: &IndexingAgreementId,
-    ) -> RegistryResult<()> {
-        self.inner
-            .mark_indexing_agreement_as_accepted_on_chain(id)
-            .await
-            .map_err(Into::into)
+        apply_accept: bool,
+        cancel: Option<agreement::CancelKind>,
+    ) -> RegistryResult<agreement::ReconciliationOutcome> {
+        let pg_cancel = cancel.map(|k| match k {
+            agreement::CancelKind::ByRequester => dipper_pgregistry::CancelKind::ByRequester,
+            agreement::CancelKind::ByIndexer => dipper_pgregistry::CancelKind::ByIndexer,
+        });
+        let outcome = self
+            .inner
+            .apply_reconciliation(id, apply_accept, pg_cancel)
+            .await?;
+        Ok(agreement::ReconciliationOutcome {
+            did_accept: outcome.did_accept,
+            did_cancel: outcome.did_cancel,
+        })
     }
 
     async fn get_expired_created_agreements(

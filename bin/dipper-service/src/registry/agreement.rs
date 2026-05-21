@@ -32,6 +32,21 @@ pub struct NewAgreementParams {
     pub terms: Terms,
 }
 
+/// Which party cancelled an agreement. Passed to `apply_reconciliation`
+/// so the atomic state transition chooses the right terminal status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelKind {
+    ByRequester,
+    ByIndexer,
+}
+
+/// Outcome of an atomic `apply_reconciliation` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReconciliationOutcome {
+    pub did_accept: bool,
+    pub did_cancel: bool,
+}
+
 #[async_trait]
 pub trait AgreementRegistry {
     /// Get agreement by ID.
@@ -127,6 +142,16 @@ pub trait AgreementRegistry {
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;
 
+    /// Record the on-chain tx hash of the most recent `offer()` submission
+    /// for this agreement. Observability-only; does not transition status.
+    /// Called once per submit (including resubmits after a dropped tx) so
+    /// the DB reflects the live hash rather than an evicted one.
+    async fn update_offer_tx_hash(
+        &self,
+        id: &IndexingAgreementId,
+        tx_hash: &[u8; 32],
+    ) -> RegistryResult<()>;
+
     /// Mark an indexing agreement as `CANCELED_BY_REQUESTER`.
     ///
     /// If there is no indexing agreement with the given ID, or if the agreement is not in the
@@ -147,16 +172,28 @@ pub trait AgreementRegistry {
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;
 
-    /// Mark an indexing agreement as `ACCEPTED_ON_CHAIN`.
+    /// Apply a reconciliation-driven state transition atomically.
     ///
-    /// The on-chain `IndexingAgreementAccepted` event was observed for this agreement.
-    /// Transitions from `Created` (normal) or `Expired` (recovery -- the contract
-    /// enforces the deadline, so the acceptance is valid). Returns
-    /// [`NoRecordUpdated`](Error::NoRecordsUpdated) for any other status.
-    async fn mark_indexing_agreement_as_accepted_on_chain(
+    /// Used by `chain_listener::reconcile_agreement` so the
+    /// Accept-then-Cancel-in-one-snapshot path writes both status
+    /// transitions in a single database transaction, preventing
+    /// concurrent readers from seeing the intermediate `AcceptedOnChain`
+    /// row.
+    ///
+    /// - `apply_accept`: attempt `Created | Expired → AcceptedOnChain`.
+    ///   May be a no-op if the row is already in another status.
+    /// - `cancel`: optionally apply `CanceledByRequester` or
+    ///   `CanceledByIndexer` from an accepting/pre-accept state.
+    ///
+    /// Returns which transitions actually affected a row so callers can
+    /// gate post-commit side effects (e.g. running
+    /// `execute_pending_cancellations` only on a fresh accept).
+    async fn apply_reconciliation(
         &self,
         id: &IndexingAgreementId,
-    ) -> RegistryResult<()>;
+        apply_accept: bool,
+        cancel: Option<CancelKind>,
+    ) -> RegistryResult<ReconciliationOutcome>;
 
     /// Get `Created` agreements whose deadline has passed (by block timestamp).
     async fn get_expired_created_agreements(

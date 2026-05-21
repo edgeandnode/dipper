@@ -1,36 +1,38 @@
 //! Chain event source abstraction
 //!
-//! This module provides a trait-based abstraction for fetching on-chain events
-//! related to indexing agreements. The primary implementation uses a subgraph
-//! for reliable, scalable event retrieval.
+//! This module provides a trait-based abstraction for fetching the current
+//! state of indexing agreements from a subgraph. `chain_listener` polls
+//! agreements whose `lastStateChangeBlock` has advanced since the last poll
+//! and reconciles the returned state against dipper's local DB.
 //!
 //! ## Expected Subgraph Schema
 //!
-//! The subgraph must index the SubgraphService contract's indexing agreement events.
-//! Expected entity schemas (field names use camelCase as per Graph conventions):
+//! The subgraph must expose the aggregated `IndexingAgreement` entity with
+//! at least the fields dipper's state-diff logic reads:
 //!
 //! ```graphql
-//! type IndexingAgreementAccepted @entity {
-//!   id: ID!
-//!   agreementId: Bytes!      # bytes16
-//!   indexer: Bytes!          # address
-//!   payer: Bytes!            # address
-//!   allocationId: Bytes!     # address
-//!   blockNumber: BigInt!
+//! type IndexingAgreement @entity {
+//!   id: Bytes!                       # bytes16 agreement ID
+//!   payer: Bytes!                    # address
+//!   indexer: Bytes!                  # address
+//!   allocationId: Bytes!             # address
+//!   state: AgreementState!
+//!   canceledBy: Bytes!               # address (zero if not canceled)
+//!   lastStateChangeBlock: BigInt!    # block of the latest state change
 //! }
 //!
-//! type IndexingAgreementCanceled @entity {
-//!   id: ID!
-//!   agreementId: Bytes!      # bytes16
-//!   indexer: Bytes!          # address
-//!   payer: Bytes!            # address
-//!   canceledBy: Bytes!       # address (who initiated the cancellation)
-//!   blockNumber: BigInt!
+//! enum AgreementState {
+//!   NotAccepted
+//!   Accepted
+//!   CanceledByServiceProvider
+//!   CanceledByPayer
 //! }
 //! ```
 //!
-//! If the actual subgraph schema differs, update the GraphQL queries and response
-//! types in this module accordingly.
+//! `canceledBy` is `Bytes.empty()` for agreements that have not been
+//! canceled, which serialises as `"0x"` over GraphQL. The parser here maps
+//! that to `Address::ZERO` so consumers can compare against a real canceler
+//! address without optional-unwrapping.
 
 use std::time::Duration;
 
@@ -38,36 +40,54 @@ use async_trait::async_trait;
 use dipper_core::ids::IndexingAgreementId;
 use rand::Rng;
 use serde::Deserialize;
-use thegraph_core::alloy::{hex, primitives::Address};
+use thegraph_core::alloy::primitives::Address;
 use url::Url;
 
-/// An on-chain event indicating an indexing agreement was accepted.
-#[derive(Debug, Clone)]
-pub struct AcceptedAgreementEvent {
-    /// The agreement ID (bytes16 from contract)
-    pub agreement_id: IndexingAgreementId,
-    /// The indexer address
-    pub indexer: Address,
-    /// The allocation ID
-    pub allocation_id: Address,
-    /// The block number where this event was emitted
-    pub block_number: u64,
+/// State of an agreement as recorded by the subgraph. Mirrors the
+/// `AgreementState` enum in the indexing-payments-subgraph schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgreementState {
+    NotAccepted,
+    Accepted,
+    CanceledByServiceProvider,
+    CanceledByPayer,
 }
 
-/// An on-chain event indicating an indexing agreement was canceled.
+impl AgreementState {
+    /// Whether this state represents a canceled agreement.
+    pub fn is_canceled(self) -> bool {
+        matches!(
+            self,
+            AgreementState::CanceledByServiceProvider | AgreementState::CanceledByPayer,
+        )
+    }
+
+    /// Whether the agreement ever reached `Accepted` (including post-accept
+    /// cancellation states). `NotAccepted` is the only case where it hasn't.
+    pub fn reached_accepted(self) -> bool {
+        !matches!(self, AgreementState::NotAccepted)
+    }
+}
+
+/// Snapshot of an agreement's current state, pulled from the subgraph. One
+/// snapshot per agreement whose `lastStateChangeBlock > sinceBlock`.
 #[derive(Debug, Clone)]
-pub struct CanceledAgreementEvent {
+pub struct AgreementStateSnapshot {
     /// The agreement ID (bytes16 from contract)
     pub agreement_id: IndexingAgreementId,
     /// The indexer address
     pub indexer: Address,
-    /// The address that initiated the cancellation (payer or indexer)
+    /// Current lifecycle state
+    pub state: AgreementState,
+    /// Address that initiated the cancel. `Address::ZERO` when the
+    /// agreement is not canceled.
     pub canceled_by: Address,
-    /// The block number where this event was emitted
-    pub block_number: u64,
+    /// Block number of the latest state change. Used as the pagination
+    /// cursor for subsequent polls.
+    pub last_state_change_block: u64,
 }
 
-/// Errors that can occur when fetching chain events.
+/// Errors that can occur when fetching snapshots.
 #[derive(Debug, thiserror::Error)]
 pub enum ChainEventError {
     /// Transient error - can be retried
@@ -86,65 +106,50 @@ impl ChainEventError {
     }
 }
 
-/// Result of fetching accepted agreement events.
-pub struct AcceptedEventsResult {
-    /// The accepted agreement events found
-    pub events: Vec<AcceptedAgreementEvent>,
-    /// The latest block number processed (use this for next query)
+/// Result of fetching changed agreement snapshots.
+pub struct ChangedAgreementsResult {
+    /// Snapshots of agreements whose state changed since the last poll,
+    /// ordered ascending by `last_state_change_block`.
+    pub snapshots: Vec<AgreementStateSnapshot>,
+    /// The latest block the subgraph has indexed. Used for stall detection
+    /// and idle-heartbeat checks, not for cursor advance.
     pub latest_block: u64,
-    /// The timestamp of the latest block (seconds since epoch), if available
+    /// Timestamp of the latest indexed block (seconds since epoch), if
+    /// available. Used by the expiration service for chain-time comparisons.
     pub latest_block_timestamp: Option<u64>,
+    /// Safe cursor for the caller to advance to. Holds back before the
+    /// earliest parse failure so dropped entities are re-read next poll.
+    /// `0` when a failure had no parseable block — caller's
+    /// `cursor_block > last_block` guard turns that into "don't advance"
+    /// rather than "reset to genesis".
+    pub cursor_block: u64,
 }
 
-/// Result of fetching canceled agreement events.
-pub struct CanceledEventsResult {
-    /// The canceled agreement events found
-    pub events: Vec<CanceledAgreementEvent>,
-    /// The latest block number processed (use this for next query)
-    pub latest_block: u64,
-    /// The timestamp of the latest block (seconds since epoch), if available
-    pub latest_block_timestamp: Option<u64>,
-}
-
-/// Trait for fetching on-chain indexing agreement events.
+/// Trait for fetching agreement state snapshots from a subgraph.
 ///
 /// Implementations may use different data sources (subgraph, RPC, etc.)
 /// but must provide the same interface for the chain listener service.
 #[async_trait]
 pub trait ChainEventSource: Send + Sync {
-    /// Fetch accepted agreement events since the given block.
+    /// Fetch all agreements whose `lastStateChangeBlock > since_block`.
     ///
-    /// Returns events where the payer matches the configured signer address,
-    /// along with the latest block number that was processed.
-    ///
-    /// # Arguments
-    /// * `since_block` - Fetch events from blocks after this number
-    ///
-    /// # Returns
-    /// * `Ok(AcceptedEventsResult)` - Events found and the latest processed block
-    /// * `Err(ChainEventError::Transient(_))` - Temporary failure, can retry
-    /// * `Err(ChainEventError::Permanent(_))` - Permanent failure, should not retry
-    async fn get_accepted_agreements(
-        &self,
-        since_block: u64,
-    ) -> Result<AcceptedEventsResult, ChainEventError>;
-
-    /// Fetch canceled agreement events since the given block.
-    ///
-    /// Returns events where the payer matches the configured signer address,
-    /// along with the latest block number that was processed.
+    /// Results are filtered to agreements where the payer matches the
+    /// configured signer address, and ordered by `last_state_change_block`
+    /// ascending so the consumer processes transitions in the order they
+    /// happened on-chain.
     ///
     /// # Arguments
-    /// * `since_block` - Fetch events from blocks after this number
+    /// * `since_block` - Fetch agreements whose last state change happened
+    ///   in a block strictly greater than this number.
     ///
     /// # Returns
-    /// * `Ok(CanceledEventsResult)` - Events found and the latest processed block
+    /// * `Ok(ChangedAgreementsResult)` - Snapshots and the latest processed block
     /// * `Err(ChainEventError::Transient(_))` - Temporary failure, can retry
     /// * `Err(ChainEventError::Permanent(_))` - Permanent failure, should not retry
-    async fn get_canceled_agreements(
+    async fn get_changed_agreements(
         &self,
         since_block: u64,
-    ) -> Result<CanceledEventsResult, ChainEventError>;
+    ) -> Result<ChangedAgreementsResult, ChainEventError>;
 }
 
 /// Configuration for the subgraph event source.
@@ -164,32 +169,34 @@ pub struct SubgraphEventSourceConfig {
 
 /// Subgraph-based implementation of chain event source.
 ///
-/// Queries a subgraph that indexes SubgraphService contract events.
+/// Queries a subgraph that indexes the aggregated `IndexingAgreement` entity.
 pub struct SubgraphEventSource {
     client: reqwest::Client,
     config: SubgraphEventSourceConfig,
 }
 
-/// GraphQL response for accepted agreements query.
+/// GraphQL response wrapping the `indexingAgreements` list and subgraph meta.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AcceptedAgreementsResponse {
-    indexing_agreement_accepteds: Vec<AcceptedAgreementEntity>,
+struct ChangedAgreementsResponse {
+    indexing_agreements: Vec<IndexingAgreementEntity>,
     #[serde(rename = "_meta")]
     meta: SubgraphMeta,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AcceptedAgreementEntity {
-    /// Hex-encoded agreement ID (bytes16)
-    agreement_id: String,
+struct IndexingAgreementEntity {
+    /// Hex-encoded bytes16 agreement ID
+    id: String,
     /// Hex-encoded indexer address
     indexer: String,
-    /// Hex-encoded allocation ID
-    allocation_id: String,
+    /// Agreement state enum (as string)
+    state: String,
+    /// Hex-encoded canceler address (`"0x"` when not canceled)
+    canceled_by: String,
     /// Block number as string (BigInt in GraphQL)
-    block_number: String,
+    last_state_change_block: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,28 +208,6 @@ struct SubgraphMeta {
 struct SubgraphBlock {
     number: u64,
     timestamp: Option<u64>,
-}
-
-/// GraphQL response for canceled agreements query.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CanceledAgreementsResponse {
-    indexing_agreement_canceleds: Vec<CanceledAgreementEntity>,
-    #[serde(rename = "_meta")]
-    meta: SubgraphMeta,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CanceledAgreementEntity {
-    /// Hex-encoded agreement ID (bytes16)
-    agreement_id: String,
-    /// Hex-encoded indexer address
-    indexer: String,
-    /// Hex-encoded address of who initiated the cancellation
-    canceled_by: String,
-    /// Block number as string (BigInt in GraphQL)
-    block_number: String,
 }
 
 impl SubgraphEventSource {
@@ -355,82 +340,23 @@ impl SubgraphEventSource {
 
 #[async_trait]
 impl ChainEventSource for SubgraphEventSource {
-    async fn get_accepted_agreements(
+    async fn get_changed_agreements(
         &self,
         since_block: u64,
-    ) -> Result<AcceptedEventsResult, ChainEventError> {
-        // GraphQL query for accepted agreements
+    ) -> Result<ChangedAgreementsResult, ChainEventError> {
         const QUERY: &str = r#"
-            query AcceptedAgreements($payer: Bytes!, $sinceBlock: BigInt!) {
-                indexingAgreementAccepteds(
-                    where: { payer: $payer, blockNumber_gt: $sinceBlock }
-                    orderBy: blockNumber
+            query ChangedAgreements($payer: Bytes!, $sinceBlock: BigInt!) {
+                indexingAgreements(
+                    where: { payer: $payer, lastStateChangeBlock_gt: $sinceBlock }
+                    orderBy: lastStateChangeBlock
                     orderDirection: asc
                     first: 1000
                 ) {
-                    agreementId
+                    id
                     indexer
-                    allocationId
-                    blockNumber
-                }
-                _meta {
-                    block {
-                        number
-                        timestamp
-                    }
-                }
-            }
-        "#;
-
-        let variables = serde_json::json!({
-            "payer": format!("{:#x}", self.config.payer_address),
-            "sinceBlock": since_block.to_string(),
-        });
-
-        let response: AcceptedAgreementsResponse = self.query_with_retry(QUERY, variables).await?;
-
-        let events = response
-            .indexing_agreement_accepteds
-            .into_iter()
-            .filter_map(|entity| {
-                let agreement_id = parse_agreement_id(&entity.agreement_id)?;
-                let indexer = entity.indexer.parse().ok()?;
-                let allocation_id = entity.allocation_id.parse().ok()?;
-                let block_number = entity.block_number.parse().ok()?;
-
-                Some(AcceptedAgreementEvent {
-                    agreement_id,
-                    indexer,
-                    allocation_id,
-                    block_number,
-                })
-            })
-            .collect();
-
-        Ok(AcceptedEventsResult {
-            events,
-            latest_block: response.meta.block.number,
-            latest_block_timestamp: response.meta.block.timestamp,
-        })
-    }
-
-    async fn get_canceled_agreements(
-        &self,
-        since_block: u64,
-    ) -> Result<CanceledEventsResult, ChainEventError> {
-        // GraphQL query for canceled agreements
-        const QUERY: &str = r#"
-            query CanceledAgreements($payer: Bytes!, $sinceBlock: BigInt!) {
-                indexingAgreementCanceleds(
-                    where: { payer: $payer, blockNumber_gt: $sinceBlock }
-                    orderBy: blockNumber
-                    orderDirection: asc
-                    first: 1000
-                ) {
-                    agreementId
-                    indexer
+                    state
                     canceledBy
-                    blockNumber
+                    lastStateChangeBlock
                 }
                 _meta {
                     block {
@@ -446,44 +372,98 @@ impl ChainEventSource for SubgraphEventSource {
             "sinceBlock": since_block.to_string(),
         });
 
-        let response: CanceledAgreementsResponse = self.query_with_retry(QUERY, variables).await?;
+        let response: ChangedAgreementsResponse = self.query_with_retry(QUERY, variables).await?;
 
-        let events = response
-            .indexing_agreement_canceleds
-            .into_iter()
-            .filter_map(|entity| {
-                let agreement_id = parse_agreement_id(&entity.agreement_id)?;
-                let indexer = entity.indexer.parse().ok()?;
-                let canceled_by = entity.canceled_by.parse().ok()?;
-                let block_number = entity.block_number.parse().ok()?;
+        let latest_block = response.meta.block.number;
+        let mut snapshots: Vec<AgreementStateSnapshot> = Vec::new();
+        let mut min_failed_block: Option<u64> = None;
+        let mut unlocatable_failures: usize = 0;
 
-                Some(CanceledAgreementEvent {
-                    agreement_id,
-                    indexer,
-                    canceled_by,
-                    block_number,
-                })
-            })
-            .collect();
+        for entity in &response.indexing_agreements {
+            match parse_snapshot(entity) {
+                Some(snapshot) => snapshots.push(snapshot),
+                None => match entity.last_state_change_block.parse::<u64>().ok() {
+                    Some(block) => {
+                        min_failed_block = Some(min_failed_block.map_or(block, |m| m.min(block)));
+                        tracing::warn!(
+                            entity_id = %entity.id,
+                            last_state_change_block = block,
+                            "Dropping malformed IndexingAgreement entity; cursor will hold back so it gets re-read"
+                        );
+                    }
+                    None => {
+                        unlocatable_failures += 1;
+                        tracing::warn!(
+                            entity_id = %entity.id,
+                            "Dropping malformed IndexingAgreement entity with unparseable block; cursor will not advance"
+                        );
+                    }
+                },
+            }
+        }
 
-        Ok(CanceledEventsResult {
-            events,
-            latest_block: response.meta.block.number,
+        let cursor_block = if unlocatable_failures > 0 {
+            // Can't locate where the failure was, so hold the cursor back. The
+            // caller's `cursor_block > last_block` guard turns `0` into
+            // "do not advance" without rewinding.
+            0
+        } else if let Some(failed) = min_failed_block {
+            failed.saturating_sub(1)
+        } else {
+            latest_block
+        };
+
+        if cursor_block < latest_block {
+            tracing::warn!(
+                cursor_block,
+                subgraph_head = latest_block,
+                unlocatable_failures,
+                "Parse failures held the cursor back this poll"
+            );
+        }
+
+        Ok(ChangedAgreementsResult {
+            snapshots,
+            latest_block,
             latest_block_timestamp: response.meta.block.timestamp,
+            cursor_block,
         })
     }
 }
 
-/// Parse a hex-encoded bytes16 agreement ID.
-fn parse_agreement_id(hex: &str) -> Option<IndexingAgreementId> {
-    let hex = hex.strip_prefix("0x").unwrap_or(hex);
-    let bytes = hex::decode(hex).ok()?;
-    if bytes.len() != 16 {
-        return None;
+/// Parse a GraphQL `IndexingAgreement` entity into a snapshot. Returns
+/// `None` if any field is malformed so the caller can filter it out without
+/// halting the whole batch — individual corrupt entities log elsewhere.
+fn parse_snapshot(entity: &IndexingAgreementEntity) -> Option<AgreementStateSnapshot> {
+    Some(AgreementStateSnapshot {
+        agreement_id: entity.id.parse().ok()?,
+        indexer: entity.indexer.parse().ok()?,
+        state: parse_state(&entity.state)?,
+        canceled_by: parse_address_or_zero(&entity.canceled_by)?,
+        last_state_change_block: entity.last_state_change_block.parse().ok()?,
+    })
+}
+
+/// Parse the GraphQL state enum string into the Rust enum.
+fn parse_state(s: &str) -> Option<AgreementState> {
+    match s {
+        "NotAccepted" => Some(AgreementState::NotAccepted),
+        "Accepted" => Some(AgreementState::Accepted),
+        "CanceledByServiceProvider" => Some(AgreementState::CanceledByServiceProvider),
+        "CanceledByPayer" => Some(AgreementState::CanceledByPayer),
+        _ => None,
     }
-    let mut arr = [0u8; 16];
-    arr.copy_from_slice(&bytes);
-    Some(IndexingAgreementId::from_bytes(arr))
+}
+
+/// Parse a hex-encoded address field. Graph-node serializes unset Bytes
+/// fields with unpredictable padding (observed: `"0x"`, `"0x00000000"`),
+/// so any hex shorter than a 20-byte address is treated as `Address::ZERO`.
+fn parse_address_or_zero(hex_str: &str) -> Option<Address> {
+    let stripped = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+    if stripped.len() < 40 {
+        return Some(Address::ZERO);
+    }
+    hex_str.parse().ok()
 }
 
 /// Calculate retry delay with exponential backoff and jitter.
@@ -519,34 +499,27 @@ pub mod mock {
 
     /// A mock chain event source for testing.
     pub struct MockEventSource {
-        accepted_events: Arc<Mutex<Vec<AcceptedAgreementEvent>>>,
-        canceled_events: Arc<Mutex<Vec<CanceledAgreementEvent>>>,
+        snapshots: Arc<Mutex<Vec<AgreementStateSnapshot>>>,
         latest_block: Arc<Mutex<u64>>,
         latest_block_timestamp: Arc<Mutex<Option<u64>>>,
-        accepted_error: Arc<Mutex<Option<ChainEventError>>>,
-        canceled_error: Arc<Mutex<Option<ChainEventError>>>,
+        cursor_block_override: Arc<Mutex<Option<u64>>>,
+        error: Arc<Mutex<Option<ChainEventError>>>,
     }
 
     impl MockEventSource {
         pub fn new() -> Self {
             Self {
-                accepted_events: Arc::new(Mutex::new(Vec::new())),
-                canceled_events: Arc::new(Mutex::new(Vec::new())),
+                snapshots: Arc::new(Mutex::new(Vec::new())),
                 latest_block: Arc::new(Mutex::new(0)),
                 latest_block_timestamp: Arc::new(Mutex::new(None)),
-                accepted_error: Arc::new(Mutex::new(None)),
-                canceled_error: Arc::new(Mutex::new(None)),
+                cursor_block_override: Arc::new(Mutex::new(None)),
+                error: Arc::new(Mutex::new(None)),
             }
         }
 
-        /// Add accepted events to return on next query.
-        pub fn add_accepted_events(&self, events: Vec<AcceptedAgreementEvent>) {
-            self.accepted_events.lock().unwrap().extend(events);
-        }
-
-        /// Add canceled events to return on next query.
-        pub fn add_canceled_events(&self, events: Vec<CanceledAgreementEvent>) {
-            self.canceled_events.lock().unwrap().extend(events);
+        /// Add snapshots to return on next query.
+        pub fn add_snapshots(&self, snapshots: Vec<AgreementStateSnapshot>) {
+            self.snapshots.lock().unwrap().extend(snapshots);
         }
 
         /// Set the latest block number.
@@ -559,14 +532,18 @@ pub mod mock {
             *self.latest_block_timestamp.lock().unwrap() = timestamp;
         }
 
-        /// Set an error to return on next accepted query.
-        pub fn set_accepted_error(&self, error: Option<ChainEventError>) {
-            *self.accepted_error.lock().unwrap() = error;
+        /// Override the cursor_block the mock returns. When `None` (default),
+        /// the mock returns `cursor_block = latest_block`, matching the
+        /// happy-path where every entity parsed cleanly. Tests that want to
+        /// simulate a held-back cursor (parse failure) set this to a lower
+        /// value.
+        pub fn set_cursor_block_override(&self, cursor_block: Option<u64>) {
+            *self.cursor_block_override.lock().unwrap() = cursor_block;
         }
 
-        /// Set an error to return on next canceled query.
-        pub fn set_canceled_error(&self, error: Option<ChainEventError>) {
-            *self.canceled_error.lock().unwrap() = error;
+        /// Set an error to return on next query.
+        pub fn set_error(&self, error: Option<ChainEventError>) {
+            *self.error.lock().unwrap() = error;
         }
     }
 
@@ -578,59 +555,36 @@ pub mod mock {
 
     #[async_trait]
     impl ChainEventSource for MockEventSource {
-        async fn get_accepted_agreements(
+        async fn get_changed_agreements(
             &self,
             since_block: u64,
-        ) -> Result<AcceptedEventsResult, ChainEventError> {
-            // Check for configured error
-            if let Some(error) = self.accepted_error.lock().unwrap().take() {
+        ) -> Result<ChangedAgreementsResult, ChainEventError> {
+            if let Some(error) = self.error.lock().unwrap().take() {
                 return Err(error);
             }
 
-            let events: Vec<_> = self
-                .accepted_events
+            let snapshots: Vec<_> = self
+                .snapshots
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|e| e.block_number > since_block)
+                .filter(|s| s.last_state_change_block > since_block)
                 .cloned()
                 .collect();
 
             let latest_block = *self.latest_block.lock().unwrap();
             let latest_block_timestamp = *self.latest_block_timestamp.lock().unwrap();
-
-            Ok(AcceptedEventsResult {
-                events,
-                latest_block,
-                latest_block_timestamp,
-            })
-        }
-
-        async fn get_canceled_agreements(
-            &self,
-            since_block: u64,
-        ) -> Result<CanceledEventsResult, ChainEventError> {
-            // Check for configured error
-            if let Some(error) = self.canceled_error.lock().unwrap().take() {
-                return Err(error);
-            }
-
-            let events: Vec<_> = self
-                .canceled_events
+            let cursor_block = self
+                .cursor_block_override
                 .lock()
                 .unwrap()
-                .iter()
-                .filter(|e| e.block_number > since_block)
-                .cloned()
-                .collect();
+                .unwrap_or(latest_block);
 
-            let latest_block = *self.latest_block.lock().unwrap();
-            let latest_block_timestamp = *self.latest_block_timestamp.lock().unwrap();
-
-            Ok(CanceledEventsResult {
-                events,
+            Ok(ChangedAgreementsResult {
+                snapshots,
                 latest_block,
                 latest_block_timestamp,
+                cursor_block,
             })
         }
     }
@@ -641,29 +595,109 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_agreement_id_with_prefix() {
-        let hex = "0x0102030405060708090a0b0c0d0e0f10";
-        let id = parse_agreement_id(hex).unwrap();
+    fn test_parse_address_or_zero_short_hex_is_zero() {
+        // Graph-node may serialize unset Bytes fields as any of these
+        // variants depending on internal padding; all represent "no address".
+        assert_eq!(parse_address_or_zero("0x").unwrap(), Address::ZERO);
+        assert_eq!(parse_address_or_zero("").unwrap(), Address::ZERO);
+        assert_eq!(parse_address_or_zero("0x00000000").unwrap(), Address::ZERO);
         assert_eq!(
-            id.into_bytes(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+            parse_address_or_zero("0x00000000000000000000000000000000000000").unwrap(),
+            Address::ZERO,
         );
     }
 
     #[test]
-    fn test_parse_agreement_id_without_prefix() {
-        let hex = "0102030405060708090a0b0c0d0e0f10";
-        let id = parse_agreement_id(hex).unwrap();
+    fn test_parse_address_or_zero_real_address() {
+        let hex = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+        assert_ne!(parse_address_or_zero(hex).unwrap(), Address::ZERO);
+    }
+
+    #[test]
+    fn test_parse_address_or_zero_full_zero_address() {
+        let hex = "0x0000000000000000000000000000000000000000";
+        assert_eq!(parse_address_or_zero(hex).unwrap(), Address::ZERO);
+    }
+
+    #[test]
+    fn test_parse_state_known_variants() {
         assert_eq!(
-            id.into_bytes(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+            parse_state("NotAccepted"),
+            Some(AgreementState::NotAccepted)
+        );
+        assert_eq!(parse_state("Accepted"), Some(AgreementState::Accepted));
+        assert_eq!(
+            parse_state("CanceledByServiceProvider"),
+            Some(AgreementState::CanceledByServiceProvider)
+        );
+        assert_eq!(
+            parse_state("CanceledByPayer"),
+            Some(AgreementState::CanceledByPayer)
         );
     }
 
     #[test]
-    fn test_parse_agreement_id_wrong_length() {
-        let hex = "0x010203";
-        assert!(parse_agreement_id(hex).is_none());
+    fn test_parse_state_unknown() {
+        assert_eq!(parse_state("Garbage"), None);
+    }
+
+    #[test]
+    fn test_agreement_state_is_canceled() {
+        assert!(!AgreementState::NotAccepted.is_canceled());
+        assert!(!AgreementState::Accepted.is_canceled());
+        assert!(AgreementState::CanceledByServiceProvider.is_canceled());
+        assert!(AgreementState::CanceledByPayer.is_canceled());
+    }
+
+    #[test]
+    fn test_agreement_state_reached_accepted() {
+        assert!(!AgreementState::NotAccepted.reached_accepted());
+        assert!(AgreementState::Accepted.reached_accepted());
+        assert!(AgreementState::CanceledByServiceProvider.reached_accepted());
+        assert!(AgreementState::CanceledByPayer.reached_accepted());
+    }
+
+    fn valid_entity() -> IndexingAgreementEntity {
+        IndexingAgreementEntity {
+            id: "0x0102030405060708090a0b0c0d0e0f10".to_string(),
+            indexer: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(),
+            state: "Accepted".to_string(),
+            canceled_by: "0x".to_string(),
+            last_state_change_block: "150".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_parse_snapshot_happy_path() {
+        let snapshot = parse_snapshot(&valid_entity()).expect("should parse");
+        assert_eq!(snapshot.last_state_change_block, 150);
+        assert_eq!(snapshot.state, AgreementState::Accepted);
+        assert_eq!(snapshot.canceled_by, Address::ZERO);
+    }
+
+    #[test]
+    fn test_parse_snapshot_bad_state_returns_none_but_block_parseable() {
+        // A malformed state drops the snapshot, but the block field remains
+        // parseable so the caller can hold the cursor back to this block
+        // and re-read on the next poll.
+        let mut entity = valid_entity();
+        entity.state = "UnknownVariant".to_string();
+        assert!(parse_snapshot(&entity).is_none());
+        assert_eq!(
+            entity.last_state_change_block.parse::<u64>().ok(),
+            Some(150)
+        );
+    }
+
+    #[test]
+    fn test_parse_snapshot_bad_block_and_bad_state_unlocatable() {
+        // Both state AND block malformed: caller has no block to hold the
+        // cursor at, so it falls through to `unlocatable_failures`.
+        let mut entity = valid_entity();
+        entity.state = "UnknownVariant".to_string();
+        entity.last_state_change_block = "not-a-number".to_string();
+        assert!(parse_snapshot(&entity).is_none());
+        assert!(entity.last_state_change_block.parse::<u64>().is_err());
     }
 
     #[test]

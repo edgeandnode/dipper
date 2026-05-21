@@ -58,6 +58,21 @@ pub enum ChainClientError {
         stored: B256,
         expected: B256,
     },
+
+    /// Tx was accepted by the RPC (returned a hash) but no receipt appeared
+    /// within the poll window.
+    ///
+    /// In practice this means the tx was evicted from the mempool before
+    /// being mined — typically because another tx from the same sender
+    /// claimed the same nonce with a higher fee. Callers should re-sync
+    /// their nonce and resubmit; `post_offer`'s subgraph idempotency check
+    /// will short-circuit if the original tx eventually did land.
+    #[error("tx {tx_hash} did not mine within the receipt-poll window")]
+    TxDropped { tx_hash: B256 },
+
+    /// Tx was mined but reverted on-chain (receipt status = 0).
+    #[error("tx {tx_hash} reverted on-chain")]
+    TxReverted { tx_hash: B256 },
 }
 
 /// Trait for sending on-chain transactions related to indexing agreements

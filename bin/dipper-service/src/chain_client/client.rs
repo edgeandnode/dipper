@@ -3,9 +3,12 @@
 //! This is the production implementation of the `ChainClient` trait using
 //! alloy for Ethereum interactions.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -39,6 +42,18 @@ const SUBGRAPH_QUERY_TIMEOUT_SECS: u64 = 10;
 /// OFFER_TYPE_NEW from `RecurringCollector.sol`. Used when submitting a new
 /// agreement offer on-chain.
 const OFFER_TYPE_NEW: u8 = 0;
+
+/// Time to wait for a tx receipt to appear before declaring the tx dropped
+/// from the mempool. On hardhat this is ~15 blocks at 1s each; on Arbitrum
+/// at 0.25s block time this is 60 confirmations. Short enough that the
+/// pgmq retry budget can recover within the 300s RCA deadline, long enough
+/// to tolerate typical network glitches.
+const RECEIPT_POLL_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Interval between `eth_getTransactionReceipt` polls while waiting for a
+/// tx to mine. Tight enough to respond quickly on sub-second block times,
+/// loose enough to avoid hammering the RPC.
+const RECEIPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Error patterns that indicate a nonce-related issue.
 ///
@@ -465,6 +480,48 @@ impl AlloyChainClient {
 
         Ok(*pending.tx_hash())
     }
+
+    /// Poll `eth_getTransactionReceipt` until the tx has mined or the timeout
+    /// elapses. `Ok(Some(status))` reports the receipt's success flag;
+    /// `Ok(None)` signals the tx never appeared in time (dropped from the
+    /// mempool). Transient RPC errors are retried silently until timeout.
+    async fn wait_for_receipt(
+        &self,
+        tx_hash: B256,
+        timeout: Duration,
+    ) -> Result<Option<bool>, ChainClientError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let receipt = self
+                .inner
+                .rpc_pool
+                .execute("get_transaction_receipt", |provider| async move {
+                    provider.get_transaction_receipt(tx_hash).await
+                })
+                .await;
+
+            match receipt {
+                Ok(Some(r)) => return Ok(Some(r.status())),
+                Ok(None) => {} // not mined yet
+                Err(e) => {
+                    // Transient RPC error — log and keep polling. If the
+                    // error is persistent, the outer handler will see the
+                    // eventual timeout as `Ok(None)` and resubmit, which is
+                    // the safe default.
+                    tracing::debug!(
+                        tx_hash = %tx_hash,
+                        error = %e,
+                        "RPC error polling tx receipt, will retry until timeout"
+                    );
+                }
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            tokio::time::sleep(RECEIPT_POLL_INTERVAL).await;
+        }
+    }
 }
 
 #[async_trait]
@@ -555,7 +612,25 @@ impl ChainClient for AlloyChainClient {
             )
             .await?;
 
-        Ok(Some(tx_hash))
+        // Confirm the tx actually mined. Submission success only means the
+        // RPC accepted the tx into the mempool; colliding-nonce or gas
+        // spikes can evict it before inclusion. On eviction, resync the
+        // in-memory nonce counter and surface `TxDropped` so the caller
+        // can resubmit through the worker-queue retry path.
+        match self.wait_for_receipt(tx_hash, RECEIPT_POLL_TIMEOUT).await? {
+            Some(true) => Ok(Some(tx_hash)),
+            Some(false) => Err(ChainClientError::TxReverted { tx_hash }),
+            None => {
+                tracing::warn!(
+                    agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                    tx_hash = %tx_hash,
+                    timeout_secs = RECEIPT_POLL_TIMEOUT.as_secs(),
+                    "Offer tx did not mine within receipt-poll window; treating as dropped"
+                );
+                self.resync_nonce().await?;
+                Err(ChainClientError::TxDropped { tx_hash })
+            }
+        }
     }
 }
 
