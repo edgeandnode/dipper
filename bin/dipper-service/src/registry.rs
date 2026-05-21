@@ -317,16 +317,6 @@ impl AgreementRegistry for RegistryProvider {
             .map_err(Into::into)
     }
 
-    async fn mark_indexing_agreement_as_canceled_by_indexer(
-        &self,
-        id: &IndexingAgreementId,
-    ) -> RegistryResult<()> {
-        self.inner
-            .mark_indexing_agreement_as_canceled_by_indexer(id)
-            .await
-            .map_err(Into::into)
-    }
-
     async fn apply_reconciliation(
         &self,
         id: &IndexingAgreementId,
@@ -525,12 +515,7 @@ impl PendingCancellationRegistry for RegistryProvider {
             .await?;
         Ok(rows
             .into_iter()
-            .map(
-                |(old_agreement_id, indexing_request_id)| PendingCancellation {
-                    old_agreement_id,
-                    indexing_request_id,
-                },
-            )
+            .map(|old_agreement_id| PendingCancellation { old_agreement_id })
             .collect())
     }
 

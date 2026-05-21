@@ -1,5 +1,3 @@
-use std::{collections::BTreeSet, sync::Arc};
-
 use async_trait::async_trait;
 use dipper_core::{
     ids::{IndexingAgreementId, IndexingRequestId},
@@ -9,42 +7,35 @@ use dipper_rpc::admin::indexing_agreements::{
     IndexingAgreement, IndexingAgreementsRpcServer, Status as IndexingAgreementStatus,
 };
 use jsonrpsee::core::RpcResult;
-use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::Address};
+use thegraph_core::{DeploymentId, IndexerId};
 
 use super::error_handling::{handle_list_result, handle_optional_result};
-use crate::{
-    registry::{
-        AgreementRegistry, IndexingAgreement as IndexingAgreementRecord,
-        IndexingAgreementStatus as IndexingAgreementRecordStatus,
-    },
-    signing::eip712::Eip712Signer,
-    worker::service::WorkerQueue,
+use crate::registry::{
+    AgreementRegistry, IndexingAgreement as IndexingAgreementRecord,
+    IndexingAgreementStatus as IndexingAgreementRecordStatus,
 };
 
 /// The substate for the [`IndexingAgreementsRpc`] handler
 ///
 /// See: https://docs.rs/axum/0.7.7/axum/extract/struct.State.html#substates
-pub struct Ctx<R, W> {
-    pub signer: Arc<Eip712Signer>,
-    pub gateway_operator_allowlist: Arc<BTreeSet<Address>>,
+pub struct Ctx<R> {
     pub registry: R,
-    pub worker: W,
 }
 
-pub struct RpcServerImpl<R, W>(Ctx<R, W>);
+pub struct RpcServerImpl<R>(Ctx<R>);
 
-impl<R, W> RpcServerImpl<R, W> {
+impl<R> RpcServerImpl<R> {
     /// Create a new instance of the `IndexingAgreementsRpcServerImpl` with the given context
     pub fn with_context<C>(ctx: &C) -> Self
     where
-        Ctx<R, W>: FromState<C>,
+        Ctx<R>: FromState<C>,
     {
         Self(FromState::from_state(ctx))
     }
 }
 
-impl<R, W> std::ops::Deref for RpcServerImpl<R, W> {
-    type Target = Ctx<R, W>;
+impl<R> std::ops::Deref for RpcServerImpl<R> {
+    type Target = Ctx<R>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -52,10 +43,9 @@ impl<R, W> std::ops::Deref for RpcServerImpl<R, W> {
 }
 
 #[async_trait]
-impl<R, W> IndexingAgreementsRpcServer for RpcServerImpl<R, W>
+impl<R> IndexingAgreementsRpcServer for RpcServerImpl<R>
 where
     R: AgreementRegistry + Clone + Send + Sync + 'static,
-    W: WorkerQueue + Clone + Send + Sync + 'static,
 {
     async fn get_agreement_by_id(
         &self,

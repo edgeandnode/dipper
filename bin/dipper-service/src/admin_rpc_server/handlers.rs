@@ -24,7 +24,7 @@ where
     R: IndexingRequestRegistry + AgreementRegistry + Clone + Send + Sync + 'static,
     W: WorkerQueue + Clone + Send + Sync + 'static,
     IndexingRequestsCtx<R, W>: FromState<S>,
-    IndexingAgreementsCtx<R, W>: FromState<S>,
+    IndexingAgreementsCtx<R>: FromState<S>,
 {
     let indexing_requests = indexing_requests::RpcServerImpl::with_context(&ctx);
     let indexing_agreements = indexing_agreements::RpcServerImpl::with_context(&ctx);

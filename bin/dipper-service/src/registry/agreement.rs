@@ -192,16 +192,6 @@ pub trait AgreementRegistry {
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;
 
-    /// Mark an indexing agreement as `CANCELED_BY_INDEXER`.
-    ///
-    /// If there is no indexing agreement with the given ID, or if the agreement is not in the
-    /// `ACCEPTED_ON_CHAIN` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated)
-    /// error.
-    async fn mark_indexing_agreement_as_canceled_by_indexer(
-        &self,
-        id: &IndexingAgreementId,
-    ) -> RegistryResult<()>;
-
     /// Apply a reconciliation-driven state transition atomically.
     ///
     /// Used by `chain_listener::reconcile_agreement` so the

@@ -14,12 +14,11 @@ use super::{
     },
     messages::Message,
     queue::Queue,
-    result::{JobError, JobMeta, JobResult, calculate_backoff_delay},
+    result::{JobError, JobResult, calculate_backoff_delay},
 };
 use crate::{
     chain_client::ChainClient,
     indexer_rpc_client::IndexerClient,
-    network::NetworkProvider,
     registry::{
         AgreementRegistry, IndexerDenylistRegistry, IndexingRequestRegistry,
         PendingCancellationRegistry,
@@ -32,7 +31,7 @@ const DEFAULT_QUEUE_POLL_PERIOD: Duration = Duration::from_secs(1);
 /// Create a new worker and a future that processes jobs from the queue.
 ///
 /// The worker pulls jobs from the queue and processes them concurrently every 1 second.
-pub fn new<S, Q, R, N, C, I, T>(state: S) -> (Handle<Q>, impl Future<Output = anyhow::Result<()>>)
+pub fn new<S, Q, R, C, I, T>(state: S) -> (Handle<Q>, impl Future<Output = anyhow::Result<()>>)
 where
     Q: Queue<Message> + Clone + Send + Sync,
     R: IndexingRequestRegistry
@@ -42,11 +41,10 @@ where
         + Clone
         + Send
         + Sync,
-    N: NetworkProvider + Clone + Send + Sync,
     C: IndexerClient + Clone + Send + Sync,
     I: CandidateSelection + Clone + Send + Sync,
     T: ChainClient + Clone + Send + Sync,
-    S: Into<Ctx<Q, R, N, C, I, T>>,
+    S: Into<Ctx<Q, R, C, I, T>>,
 {
     let Ctx {
         queue,
@@ -58,7 +56,6 @@ where
         client,
         iisa,
         chain_client,
-        fallback_filter,
         networks_registry,
         additional_networks,
         entity_count_cache,
@@ -81,7 +78,6 @@ where
             client,
             iisa,
             chain_client,
-            fallback_filter,
             networks_registry,
             additional_networks,
             entity_count_cache,
@@ -116,11 +112,7 @@ where
             };
 
             let _span = tracing::debug_span!("process_job", job = %job.id());
-            let job_meta = JobMeta {
-                created_at: *job.created_at(),
-                failed_attempts: job.failed_attempts(),
-            };
-            match process_job(&state, job.desc(), job_meta).await {
+            match process_job(&state, job.desc()).await {
                 Ok(..) => {
                     if let Err(err) = job.remove().await {
                         tracing::debug!(error=?err, "Failed to remove job from queue");
@@ -158,39 +150,33 @@ where
     (handle, fut)
 }
 
-async fn process_job<S, W, N, R, C, I, T>(
-    state: &S,
-    message: &Message,
-    job_meta: JobMeta,
-) -> JobResult<()>
+async fn process_job<S, W, R, C, I, T>(state: &S, message: &Message) -> JobResult<()>
 where
     R: IndexingRequestRegistry
         + AgreementRegistry
         + IndexerDenylistRegistry
         + PendingCancellationRegistry,
-    N: NetworkProvider,
     W: WorkerQueue,
     C: IndexerClient,
     I: CandidateSelection,
     T: ChainClient,
-    ReassessIndexingRequestCtx<R, N, W, I, T>: FromState<S>,
+    ReassessIndexingRequestCtx<R, W, I, T>: FromState<S>,
     SendIndexingAgreementProposalCtx<R, W, C>: FromState<S>,
     CancelRejectedAgreementOnChainCtx<R, T>: FromState<S>,
     SubmitOfferCtx<R, T>: FromState<S>,
 {
-    /// Dispatch a message to the appropriate message handler, based on the message type, with
-    /// the given state and job metadata.
+    /// Dispatch a message to the appropriate message handler, based on the message type.
     macro_rules! _dispatch {
-        ($state:expr, $message:expr, $job_meta:expr, {$($msg_pat:path => $handler_fn:path),* $(,)?}) => {
+        ($state:expr, $message:expr, {$($msg_pat:path => $handler_fn:path),* $(,)?}) => {
             match $message {
                 $(
-                    $msg_pat(msg) => $handler_fn(FromState::from_state($state), msg, $job_meta).await,
+                    $msg_pat(msg) => $handler_fn(FromState::from_state($state), msg).await,
                 )*
             }
         };
     }
 
-    _dispatch!(state, message, job_meta, {
+    _dispatch!(state, message, {
         Message::ReassessIndexingRequest => handlers::reassess_indexing_request,
         Message::SendIndexingAgreementProposal => handlers::send_indexing_agreement_proposal,
         Message::CancelRejectedAgreementOnChain => handlers::cancel_rejected_agreement_on_chain,

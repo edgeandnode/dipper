@@ -13,7 +13,7 @@ use crate::{
         PendingCancellationRegistry,
     },
     worker::{
-        result::{JobError, JobMeta, JobResult},
+        result::{JobError, JobResult},
         service::WorkerQueue,
     },
 };
@@ -54,7 +54,6 @@ pub async fn handle<R, W, C>(
         deployment_id,
         deployment_chain_id,
     }: &Message,
-    _job_meta: JobMeta,
 ) -> JobResult<()>
 where
     R: IndexingRequestRegistry + AgreementRegistry + PendingCancellationRegistry,
@@ -482,13 +481,6 @@ mod tests {
             Ok(())
         }
 
-        async fn mark_indexing_agreement_as_canceled_by_indexer(
-            &self,
-            _id: &IndexingAgreementId,
-        ) -> crate::registry::Result<()> {
-            Ok(())
-        }
-
         async fn apply_reconciliation(
             &self,
             _id: &IndexingAgreementId,
@@ -843,13 +835,6 @@ mod tests {
         }
     }
 
-    fn test_job_meta() -> JobMeta {
-        JobMeta {
-            created_at: time::OffsetDateTime::now_utc(),
-            failed_attempts: 0,
-        }
-    }
-
     // =========================================================================
     // Tests
     // =========================================================================
@@ -883,7 +868,7 @@ mod tests {
             deployment_chain_id: 1,
         };
 
-        let result = handle(ctx, &message, test_job_meta()).await;
+        let result = handle(ctx, &message).await;
 
         assert!(result.is_ok());
         // Should not mark rejected or failed
@@ -922,7 +907,7 @@ mod tests {
             deployment_chain_id: 1,
         };
 
-        let result = handle(ctx, &message, test_job_meta()).await;
+        let result = handle(ctx, &message).await;
 
         assert!(result.is_ok());
         // Should mark as rejected with OTHER reason
@@ -970,7 +955,7 @@ mod tests {
             deployment_chain_id: 1,
         };
 
-        let result = handle(ctx, &message, test_job_meta()).await;
+        let result = handle(ctx, &message).await;
 
         assert!(result.is_ok());
         // Should mark as rejected with PRICE_TOO_LOW reason
@@ -1018,7 +1003,7 @@ mod tests {
             deployment_chain_id: 1,
         };
 
-        let result = handle(ctx, &message, test_job_meta()).await;
+        let result = handle(ctx, &message).await;
 
         assert!(result.is_ok());
         // Should mark as rejected with SIGNER_NOT_AUTHORISED reason
@@ -1066,7 +1051,7 @@ mod tests {
             deployment_chain_id: 1,
         };
 
-        let result = handle(ctx, &message, test_job_meta()).await;
+        let result = handle(ctx, &message).await;
 
         assert!(result.is_ok());
         // Should mark as failed (not rejected)
@@ -1110,7 +1095,7 @@ mod tests {
             deployment_chain_id: 1,
         };
 
-        let result = handle(ctx, &message, test_job_meta()).await;
+        let result = handle(ctx, &message).await;
 
         assert!(result.is_ok());
         // Should not mark anything or queue reassessment

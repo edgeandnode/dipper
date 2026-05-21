@@ -300,37 +300,6 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
-    /// Mark an indexing request as `CANCELED`.
-    ///
-    /// If there is no indexing request with the given ID, or if the request is not in the
-    /// `OPEN` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
-    pub async fn mark_indexing_request_as_canceled(
-        &self,
-        request_id: &IndexingRequestId,
-    ) -> Result<(), Error> {
-        let request_id: Option<(IndexingRequestId,)> = sqlx::query_as(
-            r#"
-            UPDATE dipper_reg_indexing_requests
-            SET
-                status = $1,
-                updated_at = timezone('UTC', now())
-            WHERE id = $2 AND status = $3
-            RETURNING id
-            "#,
-        )
-        .bind(IndexingRequestStatus::Canceled)
-        .bind(request_id)
-        .bind(IndexingRequestStatus::Open)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        if request_id.is_none() {
-            return Err(Error::NoRecordsUpdated);
-        }
-
-        Ok(())
-    }
-
     pub async fn register_new_indexing_agreement(
         &self,
         params: NewAgreementParams,
@@ -732,33 +701,6 @@ impl PgRegistry {
         .bind(IndexingAgreementStatus::Created)
         .bind(IndexingAgreementStatus::AcceptedOnChain)
         .bind(IndexingAgreementStatus::Rejected)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        if record.is_none() {
-            return Err(Error::NoRecordsUpdated);
-        }
-
-        Ok(())
-    }
-
-    pub async fn mark_indexing_agreement_as_canceled_by_indexer(
-        &self,
-        agreement_id: &IndexingAgreementId,
-    ) -> Result<(), Error> {
-        let record: Option<(IndexingAgreementId,)> = sqlx::query_as(
-            r#"
-            UPDATE dipper_reg_indexing_agreements
-            SET
-                status = $1,
-                updated_at = timezone('UTC', now())
-            WHERE id = $2 AND status = $3
-            RETURNING id
-            "#,
-        )
-        .bind(IndexingAgreementStatus::CanceledByIndexer)
-        .bind(agreement_id)
-        .bind(IndexingAgreementStatus::AcceptedOnChain)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -1634,14 +1576,13 @@ impl PgRegistry {
         sqlx::query(
             r#"
             INSERT INTO dipper_pending_cancellations
-                (new_agreement_id, old_agreement_id, indexing_request_id)
-            VALUES ($1, $2, $3)
+                (new_agreement_id, old_agreement_id)
+            VALUES ($1, $2)
             ON CONFLICT DO NOTHING
             "#,
         )
         .bind(new_id)
         .bind(old_agreement_id)
-        .bind(request_id)
         .execute(&mut *tx)
         .await?;
 
@@ -1654,10 +1595,10 @@ impl PgRegistry {
     pub async fn get_pending_cancellations_by_new_agreement(
         &self,
         new_agreement_id: IndexingAgreementId,
-    ) -> Result<Vec<(IndexingAgreementId, IndexingRequestId)>, Error> {
-        let rows: Vec<(IndexingAgreementId, IndexingRequestId)> = sqlx::query_as(
+    ) -> Result<Vec<IndexingAgreementId>, Error> {
+        let rows: Vec<(IndexingAgreementId,)> = sqlx::query_as(
             r#"
-            SELECT old_agreement_id, indexing_request_id
+            SELECT old_agreement_id
             FROM dipper_pending_cancellations
             WHERE new_agreement_id = $1
             "#,
@@ -1666,7 +1607,7 @@ impl PgRegistry {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows)
+        Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
     /// Delete all pending cancellation records for a new agreement.

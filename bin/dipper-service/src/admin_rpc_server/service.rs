@@ -45,7 +45,7 @@ where
     R: IndexingRequestRegistry + AgreementRegistry + Clone + Send + Sync + 'static,
     W: WorkerQueue + Clone + Send + Sync + 'static,
     IndexingRequestsCtx<R, W>: FromState<S>,
-    IndexingAgreementsCtx<R, W>: FromState<S>,
+    IndexingAgreementsCtx<R>: FromState<S>,
 {
     let (tx_stop, mut rx_stop) = mpsc::channel(1);
 

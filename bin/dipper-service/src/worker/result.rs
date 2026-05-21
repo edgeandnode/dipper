@@ -1,35 +1,7 @@
 use std::time::Duration;
 
-use time::OffsetDateTime;
-
 /// The result of processing a job.
 pub type JobResult<T, E = JobError> = Result<T, E>;
-
-/// Metadata about the current job being processed.
-///
-/// This is passed to handlers to enable time-based fallback logic.
-#[derive(Debug, Clone, Copy)]
-pub struct JobMeta {
-    /// When the job was first created
-    pub created_at: OffsetDateTime,
-    /// Number of failed attempts so far (available for handler use)
-    #[allow(dead_code)]
-    pub failed_attempts: u32,
-}
-
-impl JobMeta {
-    /// Check if the job has been retrying for longer than the specified duration.
-    pub fn age_exceeds(&self, duration: time::Duration) -> bool {
-        let age = OffsetDateTime::now_utc() - self.created_at;
-        age > duration
-    }
-}
-
-/// Duration after which random fallback is used if IISA remains unavailable.
-///
-/// When IISA selection fails with `IisaServiceUnavailable`, jobs will retry with
-/// exponential backoff. After this threshold, handlers fall back to random selection.
-pub const IISA_FALLBACK_THRESHOLD: time::Duration = time::Duration::hours(6);
 
 /// Calculate retry delay with exponential backoff.
 ///
@@ -64,39 +36,6 @@ pub enum JobError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_job_meta_age_exceeds_true_when_old() {
-        let job_meta = JobMeta {
-            created_at: OffsetDateTime::now_utc() - time::Duration::hours(7),
-            failed_attempts: 0,
-        };
-
-        assert!(job_meta.age_exceeds(time::Duration::hours(6)));
-    }
-
-    #[test]
-    fn test_job_meta_age_exceeds_false_when_fresh() {
-        let job_meta = JobMeta {
-            created_at: OffsetDateTime::now_utc() - time::Duration::hours(1),
-            failed_attempts: 0,
-        };
-
-        assert!(!job_meta.age_exceeds(time::Duration::hours(6)));
-    }
-
-    #[test]
-    fn test_job_meta_age_exceeds_false_just_under_threshold() {
-        // Just under the threshold should return false
-        let job_meta = JobMeta {
-            created_at: OffsetDateTime::now_utc()
-                - time::Duration::hours(5)
-                - time::Duration::minutes(59),
-            failed_attempts: 0,
-        };
-
-        assert!(!job_meta.age_exceeds(time::Duration::hours(6)));
-    }
 
     #[test]
     fn test_backoff_exponential_phase() {

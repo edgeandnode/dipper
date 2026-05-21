@@ -1,7 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use dipper_core::state::FromState;
-use dipper_iisa::FallbackFilter;
 use graph_networks_registry::NetworksRegistry;
 use thegraph_core::alloy::primitives::ChainId;
 use tokio::sync::Notify;
@@ -12,7 +11,7 @@ use super::handlers::{
 };
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
-    network::service::entity_count_cache::EntityCountCache,
+    network::{provider::NetworkProviderService, service::entity_count_cache::EntityCountCache},
     signing::eip712::Eip712Signer,
 };
 
@@ -31,13 +30,13 @@ macro_rules! impl_from_state {
             $( $field:ident $(: $source:ident)? ),* $(,)?
         }
     ) => {
-        impl<R, N, W, C, I, T> FromState<InnerCtx<R, N, W, C, I, T>>
+        impl<R, W, C, I, T> FromState<InnerCtx<R, W, C, I, T>>
             for $target < $($gen),* >
         where
             $( $gen: Clone, )*
         {
             #[inline]
-            fn from_state(state: &InnerCtx<R, N, W, C, I, T>) -> Self {
+            fn from_state(state: &InnerCtx<R, W, C, I, T>) -> Self {
                 Self {
                     $( $field: impl_from_state!(@clone state, $field $(, $source)?), )*
                 }
@@ -60,7 +59,7 @@ macro_rules! impl_from_state {
 ///
 /// This is a input context for the worker service
 #[derive(Clone)]
-pub struct Ctx<Q, R, N, C, I, T> {
+pub struct Ctx<Q, R, C, I, T> {
     /// The message queue worker
     pub queue: Q,
 
@@ -77,7 +76,7 @@ pub struct Ctx<Q, R, N, C, I, T> {
     pub registry: R,
 
     /// The Network provider
-    pub network: N,
+    pub network: NetworkProviderService,
 
     /// The indexer client
     pub client: C,
@@ -87,9 +86,6 @@ pub struct Ctx<Q, R, N, C, I, T> {
 
     /// The chain client for on-chain transactions
     pub chain_client: T,
-
-    /// The fallback filter for direct indexer /dips/info queries
-    pub fallback_filter: Arc<FallbackFilter>,
 
     /// The graph networks registry (maps chain IDs to network names)
     pub networks_registry: Arc<NetworksRegistry>,
@@ -108,7 +104,7 @@ pub struct Ctx<Q, R, N, C, I, T> {
 ///
 /// This is a shared context across all message handlers.
 #[derive(Clone)]
-pub(super) struct InnerCtx<R, N, W, C, I, T> {
+pub(super) struct InnerCtx<R, W, C, I, T> {
     /// The EIP-712 signer
     pub signer: Arc<Eip712Signer>,
 
@@ -122,7 +118,7 @@ pub(super) struct InnerCtx<R, N, W, C, I, T> {
     pub registry: R,
 
     /// The Network provider
-    pub network: N,
+    pub network: NetworkProviderService,
 
     /// The message queue worker
     pub worker: W,
@@ -135,9 +131,6 @@ pub(super) struct InnerCtx<R, N, W, C, I, T> {
 
     /// The chain client for on-chain transactions
     pub chain_client: T,
-
-    /// The fallback filter for direct indexer /dips/info queries
-    pub fallback_filter: Arc<FallbackFilter>,
 
     /// The graph networks registry (maps chain IDs to network names)
     pub networks_registry: Arc<NetworksRegistry>,
@@ -152,7 +145,7 @@ pub(super) struct InnerCtx<R, N, W, C, I, T> {
     pub chain_listener_notify: Arc<Notify>,
 }
 
-impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I, T> {
+impl_from_state!(ReassessIndexingRequestCtx<R, W, I, T> {
     signer,
     agreement_conf,
     chain_price: pricing_table,

@@ -5,7 +5,7 @@
 //! during reassessment.
 
 use async_trait::async_trait;
-use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
+use dipper_core::ids::IndexingAgreementId;
 
 use super::result::Result as RegistryResult;
 
@@ -14,7 +14,6 @@ use super::result::Result as RegistryResult;
 #[derive(Debug, Clone)]
 pub struct PendingCancellation {
     pub old_agreement_id: IndexingAgreementId,
-    pub indexing_request_id: IndexingRequestId,
 }
 
 #[async_trait]

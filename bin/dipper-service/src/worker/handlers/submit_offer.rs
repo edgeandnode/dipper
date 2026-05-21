@@ -31,7 +31,7 @@ use crate::{
     chain_client::{ChainClient, ChainClientError},
     indexer_rpc_client::into_sol_rca,
     registry::{AgreementRegistry, IndexingAgreementStatus},
-    worker::result::{JobError, JobMeta, JobResult},
+    worker::result::{JobError, JobResult},
 };
 
 pub struct Ctx<R, T> {
@@ -58,7 +58,6 @@ pub async fn handle<R, T>(
         deployment_id: _,
         deployment_chain_id: _,
     }: &Message,
-    _job_meta: JobMeta,
 ) -> JobResult<()>
 where
     R: AgreementRegistry,

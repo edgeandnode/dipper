@@ -1,9 +1,15 @@
-use thegraph_core::{DeploymentId, IndexerId};
+use reqwest::Url;
+use thegraph_core::IndexerId;
 
-use super::{
-    api::{Indexer, NetworkProvider},
-    service,
-};
+use super::service;
+
+/// An indexer.
+pub struct Indexer {
+    /// The indexer's ID (Eth address)
+    pub id: IndexerId,
+    /// The indexer's URL
+    pub url: Url,
+}
 
 #[derive(Clone)]
 pub struct NetworkProviderService {
@@ -16,25 +22,9 @@ impl NetworkProviderService {
     pub fn new(topology: service::topology::Handle) -> Self {
         Self { topology }
     }
-}
 
-impl NetworkProvider for NetworkProviderService {
-    fn get_indexers_not_indexing_a_deployment_id(
-        &self,
-        deployment_id: &DeploymentId,
-    ) -> Vec<Indexer> {
-        self.topology
-            .snapshot()
-            .indexers_iter()
-            .filter(|indexer| !indexer.indexings.contains(deployment_id))
-            .map(|indexer| Indexer {
-                id: indexer.id,
-                url: indexer.url.clone(),
-            })
-            .collect()
-    }
-
-    fn get_indexer_by_id(&self, indexer_id: &IndexerId) -> Option<Indexer> {
+    /// Get an indexer by its ID.
+    pub fn get_indexer_by_id(&self, indexer_id: &IndexerId) -> Option<Indexer> {
         self.topology
             .snapshot()
             .get_indexer(indexer_id)
