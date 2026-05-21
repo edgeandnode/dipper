@@ -487,11 +487,17 @@ async fn cancel_and_reassess<R, W, C>(
         .cancel_indexing_agreement_by_payer(agreement.id.as_bytes())
         .await
     {
-        Ok(tx_hash) => {
+        Ok(Some(tx_hash)) => {
             tracing::info!(
                 agreement_id = %agreement.id,
                 tx_hash = %tx_hash,
                 "canceled stale agreement on-chain"
+            );
+        }
+        Ok(None) => {
+            tracing::info!(
+                agreement_id = %agreement.id,
+                "stale agreement already canceled on-chain; proceeding to mark abandoned"
             );
         }
         Err(ChainClientError::ConfigError(_)) => {
@@ -1136,14 +1142,6 @@ mod tests {
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
-        async fn send_indexing_agreement_cancellation(
-            &self,
-            _url: Url,
-            _req_id: IndexingRequestId,
-            _agr_id: IndexingAgreementId,
-        ) -> anyhow::Result<JobId> {
-            unimplemented!()
-        }
         async fn process_indexing_request_cancellation(
             &self,
             _req_id: IndexingRequestId,
@@ -1151,13 +1149,6 @@ mod tests {
             unimplemented!()
         }
         async fn process_indexing_agreement_requester_cancellation(
-            &self,
-            _req_id: IndexingRequestId,
-            _agr_id: IndexingAgreementId,
-        ) -> anyhow::Result<JobId> {
-            unimplemented!()
-        }
-        async fn process_indexing_agreement_indexer_cancellation(
             &self,
             _req_id: IndexingRequestId,
             _agr_id: IndexingAgreementId,
@@ -1225,10 +1216,10 @@ mod tests {
         async fn cancel_indexing_agreement_by_payer(
             &self,
             agreement_id: &[u8; 16],
-        ) -> Result<B256, ChainClientError> {
+        ) -> Result<Option<B256>, ChainClientError> {
             self.calls.chain_cancels.lock().unwrap().push(*agreement_id);
             match &self.result {
-                Ok(hash) => Ok(*hash),
+                Ok(hash) => Ok(Some(*hash)),
                 Err(ChainClientError::ConfigError(s)) => {
                     Err(ChainClientError::ConfigError(s.clone()))
                 }
@@ -1240,9 +1231,10 @@ mod tests {
                 }
                 Err(ChainClientError::OfferHashMismatch { .. })
                 | Err(ChainClientError::TxDropped { .. })
-                | Err(ChainClientError::TxReverted { .. }) => {
-                    // Not applicable to the cancel path; mirror as RpcError
-                    // so the test helper continues to work.
+                | Err(ChainClientError::TxReverted { .. })
+                | Err(ChainClientError::ContractRevert { .. }) => {
+                    // Not applicable to the cancel path here; mirror as
+                    // RpcError so the test helper keeps a single error shape.
                     Err(ChainClientError::RpcError(anyhow::anyhow!(
                         "unexpected chain-client error variant for cancel"
                     )))

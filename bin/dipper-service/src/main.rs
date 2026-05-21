@@ -17,7 +17,6 @@ mod chain_client;
 mod config;
 mod db;
 mod indexer_rpc_client;
-mod indexer_rpc_server;
 mod network;
 mod registry;
 mod signing;
@@ -49,9 +48,10 @@ pub async fn main() -> anyhow::Result<()> {
     // Initialize the different components
     //- The signer component
     //
-    // Eip712Signer now only handles admin-RPC messages and DIPs cancellation
-    // messages; RCA authorization moved to the on-chain offer path, so the
-    // RecurringCollector EIP-712 domain is no longer used here.
+    // Eip712Signer is verify-only now: dipper recovers signers from inbound
+    // admin-RPC messages and never produces outbound signatures (RCA
+    // authorization moved to the on-chain offer path, the dead-letter cancel
+    // gRPC is gone).
     let signer = {
         let private_key_signer =
             PrivateKeySigner::from_signing_key(conf.signer.secret_key.as_ref().into());
@@ -59,7 +59,6 @@ pub async fn main() -> anyhow::Result<()> {
         let domain = dipper_rpc::admin::eip712_domain();
 
         Arc::new(Eip712Signer::new(
-            private_key_signer,
             private_key_signer_address,
             conf.signer.chain_id,
             domain,
@@ -82,8 +81,7 @@ pub async fn main() -> anyhow::Result<()> {
     let registry = RegistryProvider::new(db_conn.clone());
 
     //- The indexer client component
-    let indexer_client =
-        indexer_rpc_client::DipsIndexerClient::with_config(signer.clone(), conf.indexer_client);
+    let indexer_client = indexer_rpc_client::DipsIndexerClient::with_config(conf.indexer_client);
 
     //- The network services
     let (network_topology_handle, network_topology_service) = {
@@ -312,6 +310,7 @@ pub async fn main() -> anyhow::Result<()> {
                 registry: registry.clone(),
                 worker_queue: worker_handle.queue().clone(),
                 event_source,
+                chain_client: chain_client.clone(),
                 config: chain_listener_conf.clone(),
                 signer_address: signer.address(),
                 chain_listener_notify: chain_listener_notify.clone(),
@@ -356,24 +355,6 @@ pub async fn main() -> anyhow::Result<()> {
         admin_rpc_server::service::new(config, ctx)
     };
     tracing::info!("initialized Admin RPC service");
-
-    //- The indexer RPC service
-    let (indexer_rpc_handle, indexer_rpc_service) = {
-        let config = indexer_rpc_server::service::Config {
-            listen_addr: conf.indexer_rpc.listen_addr,
-        };
-
-        let ctx = indexer_rpc_server::Ctx {
-            signer,
-            allowlist: Arc::new(conf.indexer_rpc.allowlist),
-            registry,
-            network: network_provider,
-            worker: worker_handle.queue().clone(),
-        };
-
-        indexer_rpc_server::service::new(config, ctx)
-    };
-    tracing::info!("initialized Indexer RPC service");
 
     // Construct the task tree
     let mut task_tree = JoinSet::new();
@@ -420,9 +401,6 @@ pub async fn main() -> anyhow::Result<()> {
         None
     };
 
-    let indexer_rpc_task_handle = task_tree.spawn(indexer_rpc_service);
-    tracing::debug!(task_id=%indexer_rpc_task_handle.id(), "Indexer RPC service started");
-
     let admin_rpc_task_handle = task_tree.spawn(admin_rpc_service);
     tracing::debug!(task_id=%admin_rpc_task_handle.id(), "Admin RPC service started");
 
@@ -444,10 +422,6 @@ pub async fn main() -> anyhow::Result<()> {
         tracing::trace!("stopping Admin RPC service");
         admin_rpc_handle.stop().await;
         tracing::trace!("stopped Admin RPC service");
-
-        tracing::trace!("stopping Indexer RPC service");
-        indexer_rpc_handle.stop().await;
-        tracing::trace!("stopped Indexer RPC service");
 
         // Stop reassignment service before worker (it depends on worker queue)
         if let Some(handle) = reassignment_stop_handle {

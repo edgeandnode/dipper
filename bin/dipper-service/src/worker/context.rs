@@ -9,13 +9,12 @@ use tokio::sync::Notify;
 use super::handlers::{
     CancelRejectedAgreementOnChainCtx, ProcessIndexingAgreementCancellationCtx,
     ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
-    ReassessIndexingRequestCtx, SendIndexingAgreementCancellationCtx,
-    SendIndexingAgreementProposalCtx, SubmitOfferCtx,
+    ReassessIndexingRequestCtx, SendIndexingAgreementProposalCtx, SubmitOfferCtx,
 };
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
     network::service::entity_count_cache::EntityCountCache,
-    signing::eip712::PrivateKeyEip712Signer,
+    signing::eip712::Eip712Signer,
 };
 
 /// Generates a `FromState<InnerCtx<...>>` impl for a handler context type.
@@ -67,7 +66,7 @@ pub struct Ctx<Q, R, N, C, I, T> {
     pub queue: Q,
 
     /// The EIP-712 signer
-    pub signer: Arc<PrivateKeyEip712Signer>,
+    pub signer: Arc<Eip712Signer>,
 
     /// The _indexing agreement_ configuration
     pub agreement_conf: Arc<IndexingAgreementConfig>,
@@ -112,7 +111,7 @@ pub struct Ctx<Q, R, N, C, I, T> {
 #[derive(Clone)]
 pub(super) struct InnerCtx<R, N, W, C, I, T> {
     /// The EIP-712 signer
-    pub signer: Arc<PrivateKeyEip712Signer>,
+    pub signer: Arc<Eip712Signer>,
 
     /// The _indexing agreement_ configuration
     pub agreement_conf: Arc<IndexingAgreementConfig>,
@@ -166,11 +165,6 @@ impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I> {
     additional_networks,
     entity_count_cache,
     chain_listener_notify,
-});
-
-impl_from_state!(SendIndexingAgreementCancellationCtx<R, C> {
-    registry,
-    indexer_client: client,
 });
 
 impl_from_state!(ProcessIndexingRequestCancellationCtx<R, W> {

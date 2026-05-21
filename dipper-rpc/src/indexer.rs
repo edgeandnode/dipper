@@ -1,8 +1,9 @@
 //! DIPs gRPC API for the DIPs Gateway.
 //!
-//! This module contains the generated code to implement the DIPs Gateway's gRPC API:
-//! - [`gateway_server`]: The tonic gRPC service implementation.
-//! - [`indexer_client`]: The indexer's DIPs gRPC client.
+//! This module re-exports the indexer-side DIPs gRPC types for use by dipper's
+//! [`indexer_client`]. Only the proposal-submission RPC remains; cancellation
+//! and collection are handled on-chain via the RecurringCollector and
+//! SubgraphService contracts.
 
 use thegraph_core::alloy::{
     primitives::Address,
@@ -10,31 +11,11 @@ use thegraph_core::alloy::{
 };
 
 // Re-export the indexer-rs crate types
-pub mod gateway_server {
-    pub mod rpc {
-        #[doc(inline)]
-        pub use indexer_dips::proto::gateway::graphprotocol::gateway::dips::{
-            CancelAgreementRequest, CancelAgreementResponse, CollectPaymentRequest,
-            CollectPaymentResponse, CollectPaymentStatus,
-            gateway_dips_service_server::{GatewayDipsService, GatewayDipsServiceServer},
-        };
-    }
-
-    pub mod sol {
-        #[doc(inline)]
-        pub use indexer_dips::{CancellationRequest, SignedCancellationRequest};
-    }
-
-    #[doc(inline)]
-    pub use indexer_dips::dips_cancellation_eip712_domain;
-}
-
-// Re-export the indexer-rs crate types
 pub mod indexer_client {
     pub mod rpc {
         #[doc(inline)]
         pub use indexer_dips::proto::indexer::graphprotocol::indexer::dips::{
-            CancelAgreementRequest, ProposalResponse, RejectReason, SubmitAgreementProposalRequest,
+            ProposalResponse, RejectReason, SubmitAgreementProposalRequest,
             SubmitAgreementProposalResponse, indexer_dips_service_client::IndexerDipsServiceClient,
         };
     }
@@ -86,14 +67,7 @@ pub mod indexer_client {
                 uint256 tokensPerEntityPerSecond;
             }
         }
-
-        // Cancellation types are unchanged -- keep from indexer_dips
-        #[doc(inline)]
-        pub use indexer_dips::{CancellationRequest, SignedCancellationRequest};
     }
-
-    #[doc(inline)]
-    pub use indexer_dips::dips_cancellation_eip712_domain;
 }
 
 /// Derive the on-chain agreement ID from the RCA fields.

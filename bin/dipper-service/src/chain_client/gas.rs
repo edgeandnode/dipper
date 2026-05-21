@@ -3,11 +3,35 @@
 //! Ported from `rewards-eligibility-oracle/blockchain_client.py`.
 
 use thegraph_core::alloy::{
-    eips::BlockNumberOrTag, providers::Provider, rpc::types::TransactionRequest,
+    eips::BlockNumberOrTag,
+    providers::Provider,
+    rpc::types::TransactionRequest,
+    transports::{RpcError, TransportErrorKind},
 };
 
 use super::rpc_provider::HttpProvider;
 use crate::chain_client::ChainClientError;
+
+/// Convert an alloy transport error from `eth_estimateGas` into the dipper
+/// chain-client error type, preserving structured revert data when present.
+///
+/// `eth_estimateGas` simulates the call inside the EVM. When the call reverts,
+/// the node returns the revert payload in the JSON-RPC error's `data` field.
+/// If we can extract that payload and it carries a 4-byte selector, surface it
+/// as `ContractRevert` so callers can decode the specific error and decide
+/// whether to swallow it (e.g. `IndexingAgreementNotActive` on a cancel retry
+/// is an idempotent success). Otherwise fall back to the generic `RpcError`.
+fn classify_estimate_error(err: RpcError<TransportErrorKind>) -> ChainClientError {
+    if let RpcError::ErrorResp(ref payload) = err
+        && let Some(data) = payload.as_revert_data()
+        && data.len() >= 4
+    {
+        let mut selector = [0u8; 4];
+        selector.copy_from_slice(&data[..4]);
+        return ChainClientError::ContractRevert { selector, data };
+    }
+    ChainClientError::RpcError(anyhow::anyhow!("Gas estimation failed: {err}"))
+}
 
 /// Gas estimator with configurable safety bounds.
 ///
@@ -51,9 +75,10 @@ impl GasEstimator {
         provider: &HttpProvider,
         tx: &TransactionRequest,
     ) -> Result<u64, ChainClientError> {
-        let estimated = provider.estimate_gas(tx.clone()).await.map_err(|e| {
-            ChainClientError::RpcError(anyhow::anyhow!("Gas estimation failed: {e}"))
-        })?;
+        let estimated = provider
+            .estimate_gas(tx.clone())
+            .await
+            .map_err(classify_estimate_error)?;
 
         let gas_limit = self.apply_bounds(estimated);
 

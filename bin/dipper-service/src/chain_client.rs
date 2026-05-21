@@ -24,7 +24,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 pub use client::AlloyChainClient;
 use dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement;
-use thegraph_core::alloy::primitives::B256;
+use thegraph_core::alloy::primitives::{B256, Bytes};
 
 /// Error type for chain client operations
 #[derive(Debug, thiserror::Error)]
@@ -73,6 +73,14 @@ pub enum ChainClientError {
     /// Tx was mined but reverted on-chain (receipt status = 0).
     #[error("tx {tx_hash} reverted on-chain")]
     TxReverted { tx_hash: B256 },
+
+    /// A contract call reverted with structured revert data during gas
+    /// estimation (eth_estimateGas simulated the call and the EVM reverted
+    /// before tx submission). The 4-byte selector and full revert payload
+    /// are preserved so callers can decode the specific error variant and
+    /// decide whether to treat it as fatal or as a known idempotent no-op.
+    #[error("contract reverted with selector 0x{:02x}{:02x}{:02x}{:02x}", selector[0], selector[1], selector[2], selector[3])]
+    ContractRevert { selector: [u8; 4], data: Bytes },
 }
 
 /// Trait for sending on-chain transactions related to indexing agreements
@@ -81,14 +89,19 @@ pub trait ChainClient {
     /// Cancel an indexing agreement as the payer.
     ///
     /// Calls `cancelIndexingAgreementByPayer(agreementId)` on the SubgraphService contract.
-    /// The `agreement_id` is the keccak-derived bytes16 stored on-chain.
-    /// This caps the collectible fees at the cancellation timestamp.
+    /// The `agreement_id` is the keccak-derived bytes16 stored on-chain. The call
+    /// caps the collectible fees at the cancellation timestamp.
     ///
-    /// Returns the transaction hash on success.
+    /// Returns:
+    /// - `Ok(Some(tx_hash))` when a transaction was submitted.
+    /// - `Ok(None)` when the agreement is already canceled on-chain (the
+    ///   contract reverts gas estimation with `IndexingAgreementNotActive`).
+    ///   Callers should treat this as an idempotent success and proceed with
+    ///   any local-state cleanup that would have followed a real submission.
     async fn cancel_indexing_agreement_by_payer(
         &self,
         agreement_id: &[u8; 16],
-    ) -> Result<B256, ChainClientError>;
+    ) -> Result<Option<B256>, ChainClientError>;
 
     /// Submit an RCA offer on-chain via `RecurringCollector.offer(OFFER_TYPE_NEW, ...)`.
     ///
@@ -117,7 +130,7 @@ impl<T: ChainClient + Send + Sync + ?Sized> ChainClient for Arc<T> {
     async fn cancel_indexing_agreement_by_payer(
         &self,
         agreement_id: &[u8; 16],
-    ) -> Result<B256, ChainClientError> {
+    ) -> Result<Option<B256>, ChainClientError> {
         (**self)
             .cancel_indexing_agreement_by_payer(agreement_id)
             .await
@@ -142,7 +155,7 @@ impl ChainClient for StubChainClient {
     async fn cancel_indexing_agreement_by_payer(
         &self,
         agreement_id: &[u8; 16],
-    ) -> Result<B256, ChainClientError> {
+    ) -> Result<Option<B256>, ChainClientError> {
         tracing::error!(
             agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
             "ChainClient not implemented - cannot cancel agreement on-chain"

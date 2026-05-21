@@ -13,7 +13,7 @@
 //!
 //! If the timeout is too short, legitimate proposals may fail during IPFS retries.
 
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{str::FromStr, time::Duration};
 
 use async_trait::async_trait;
 use dipper_core::ids::IndexingAgreementId;
@@ -27,10 +27,7 @@ use thegraph_core::alloy::{
 };
 use url::Url;
 
-use crate::{
-    config::IndexerClientConfig, registry::IndexingAgreementTerms,
-    signing::eip712::PrivateKeyEip712Signer,
-};
+use crate::{config::IndexerClientConfig, registry::IndexingAgreementTerms};
 
 /// The indexer client error type for DIPs endpoint
 #[derive(Debug, thiserror::Error)]
@@ -41,9 +38,6 @@ pub enum DipsError {
 
     #[error("Error sending the request to the indexer: {0}")]
     RequestError(Box<dyn std::error::Error + Send + Sync>),
-
-    #[error("Request signing failed: {0}")]
-    SigningError(Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// Indexer client's DIPs trait
@@ -61,20 +55,10 @@ pub trait IndexerClient {
         terms: IndexingAgreementTerms,
         nonce_uuid: uuid::Uuid,
     ) -> Result<SubmitAgreementProposalResponse, DipsError>;
-
-    /// Send an indexing agreement cancel request to the indexer.
-    ///
-    /// The agreement ID IS the on-chain bytes16, so no separate `on_chain_id` is needed.
-    async fn send_indexing_agreement_cancellation_notification(
-        &self,
-        indexer: &Url,
-        indexing_agreement_id: IndexingAgreementId,
-    ) -> Result<(), DipsError>;
 }
 
 #[derive(Clone)]
 pub struct DipsIndexerClient {
-    signer: Arc<PrivateKeyEip712Signer>,
     connect_timeout: Duration,
     request_timeout: Duration,
     max_retries: u32,
@@ -82,9 +66,8 @@ pub struct DipsIndexerClient {
 
 impl DipsIndexerClient {
     /// Create a new indexer client with custom configuration.
-    pub fn with_config(signer: Arc<PrivateKeyEip712Signer>, config: IndexerClientConfig) -> Self {
+    pub fn with_config(config: IndexerClientConfig) -> Self {
         Self {
-            signer,
             connect_timeout: config.connect_timeout,
             request_timeout: config.request_timeout,
             max_retries: config.max_retries,
@@ -209,7 +192,7 @@ impl IndexerClient for DipsIndexerClient {
         .abi_encode();
 
         // Send the proposal request with retry on transient failures.
-        // Note: signed_voucher is cloned for each retry (~1KB). This is acceptable:
+        // Note: signed_rca is cloned for each retry (~1KB). This is acceptable:
         // - Retries are rare (only on transient failures)
         // - Max 3 retries = 3KB allocations worst case
         // - Negligible vs network I/O cost
@@ -222,7 +205,7 @@ impl IndexerClient for DipsIndexerClient {
             |mut client| {
                 let request = tonic::Request::new(rpc::SubmitAgreementProposalRequest {
                     version: 2,
-                    signed_voucher: sol_signed_rca_bytes.clone(),
+                    signed_rca: sol_signed_rca_bytes.clone(),
                 });
                 async move {
                     client
@@ -230,47 +213,6 @@ impl IndexerClient for DipsIndexerClient {
                         .await
                         .map(|resp| resp.into_inner())
                 }
-            },
-        )
-        .await
-    }
-
-    async fn send_indexing_agreement_cancellation_notification(
-        &self,
-        indexer: &Url,
-        indexing_agreement_id: IndexingAgreementId,
-    ) -> Result<(), DipsError> {
-        // Convert to the solidity cancellation request data structure
-        let sol_cancellation_request =
-            into_sol_cancellation_request(indexing_agreement_id.as_bytes());
-
-        // Sign the solidity cancellation request with the appropriate domain
-        let signed = self
-            .signer
-            .sign_dips_cancellation_msg(sol_cancellation_request)
-            .map_err(|err| DipsError::SigningError(err.into()))?;
-
-        // Serialize the Solidity signed cancellation request to bytes (ABI encoding)
-        let sol_signed_cancellation_request_bytes: Vec<u8> = sol::SignedCancellationRequest {
-            request: signed.message,
-            signature: signed.signature.as_bytes().into(),
-        }
-        .abi_encode();
-
-        // Send the cancellation request with retry on transient failures.
-        // Clone cost is negligible (see comment in send_indexing_agreement_proposal).
-        with_retry(
-            self.max_retries,
-            indexer,
-            indexing_agreement_id,
-            "cancel_agreement",
-            || self.get_client(indexer),
-            |mut client| {
-                let request = tonic::Request::new(rpc::CancelAgreementRequest {
-                    version: 1,
-                    signed_cancellation: sol_signed_cancellation_request_bytes.clone(),
-                });
-                async move { client.cancel_agreement(request).await.map(|_| ()) }
             },
         )
         .await
@@ -336,13 +278,6 @@ pub(crate) fn into_sol_rca(
     };
     let on_chain_id = derive_agreement_id(&rca);
     (rca, on_chain_id)
-}
-
-#[inline]
-fn into_sol_cancellation_request(on_chain_id: &[u8; 16]) -> sol::CancellationRequest {
-    sol::CancellationRequest {
-        agreement_id: on_chain_id.into(),
-    }
 }
 
 #[cfg(test)]

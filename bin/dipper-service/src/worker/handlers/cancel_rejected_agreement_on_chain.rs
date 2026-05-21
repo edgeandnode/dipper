@@ -80,36 +80,21 @@ where
         .cancel_indexing_agreement_by_payer(agreement.id.as_bytes())
         .await
     {
-        Ok(tx_hash) => {
+        Ok(Some(tx_hash)) => {
             tracing::info!(
                 agreement_id = %agreement_id,
                 tx_hash = %tx_hash,
                 "Successfully submitted on-chain cancellation"
             );
-
-            // Update the agreement status to CanceledByRequester
-            // (we're the payer/requester canceling it)
-            if let Err(err) = ctx
-                .registry
-                .mark_indexing_agreement_as_canceled_by_requester(agreement_id)
-                .await
-            {
-                tracing::error!(
-                    agreement_id = %agreement_id,
-                    error = %err,
-                    "Failed to update agreement status after on-chain cancellation"
-                );
-                // Don't fail the job - the on-chain tx succeeded, status update can be retried
-            } else {
-                tracing::info!(
-                    agreement_id = %agreement_id,
-                    old_status = "REJECTED",
-                    new_status = "CANCELED_BY_REQUESTER",
-                    reason = "canceled_on_chain_after_rejection",
-                    "agreement state transition"
-                );
-            }
-
+            mark_cancellation_complete(&ctx.registry, agreement_id).await;
+            Ok(())
+        }
+        Ok(None) => {
+            tracing::info!(
+                agreement_id = %agreement_id,
+                "Rejected agreement already canceled on-chain; reconciling local state"
+            );
+            mark_cancellation_complete(&ctx.registry, agreement_id).await;
             Ok(())
         }
         Err(err) => {
@@ -121,5 +106,34 @@ where
             // Retry with backoff - on-chain transactions can fail due to gas issues, nonce, etc.
             Err(JobError::Retryable(err.into(), Duration::from_secs(30)))
         }
+    }
+}
+
+/// Flip the local row to CanceledByRequester after either a fresh on-chain
+/// cancel or the discovery that the agreement was already canceled on-chain.
+/// Failures here are logged but not fatal — the on-chain side is already in
+/// the right state, so the next reconciliation pass can re-attempt the DB
+/// update without risking a duplicate transaction.
+async fn mark_cancellation_complete<R>(registry: &R, agreement_id: &IndexingAgreementId)
+where
+    R: AgreementRegistry,
+{
+    if let Err(err) = registry
+        .mark_indexing_agreement_as_canceled_by_requester(agreement_id)
+        .await
+    {
+        tracing::error!(
+            agreement_id = %agreement_id,
+            error = %err,
+            "Failed to update agreement status after on-chain cancellation"
+        );
+    } else {
+        tracing::info!(
+            agreement_id = %agreement_id,
+            old_status = "REJECTED",
+            new_status = "CANCELED_BY_REQUESTER",
+            reason = "canceled_on_chain_after_rejection",
+            "agreement state transition"
+        );
     }
 }

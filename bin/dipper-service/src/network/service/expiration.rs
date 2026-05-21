@@ -624,14 +624,6 @@ mod tests {
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
-        async fn send_indexing_agreement_cancellation(
-            &self,
-            _indexer_url: Url,
-            _indexing_request_id: IndexingRequestId,
-            _agreement_id: IndexingAgreementId,
-        ) -> anyhow::Result<JobId> {
-            unimplemented!()
-        }
         async fn process_indexing_request_cancellation(
             &self,
             _indexing_request_id: IndexingRequestId,
@@ -639,13 +631,6 @@ mod tests {
             unimplemented!()
         }
         async fn process_indexing_agreement_requester_cancellation(
-            &self,
-            _indexing_request_id: IndexingRequestId,
-            _agreement_id: IndexingAgreementId,
-        ) -> anyhow::Result<JobId> {
-            unimplemented!()
-        }
-        async fn process_indexing_agreement_indexer_cancellation(
             &self,
             _indexing_request_id: IndexingRequestId,
             _agreement_id: IndexingAgreementId,

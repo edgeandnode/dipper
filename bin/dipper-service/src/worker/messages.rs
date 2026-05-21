@@ -1,7 +1,7 @@
 use super::handlers::{
     CancelRejectedAgreementOnChain, ProcessIndexingAgreementCancellation,
     ProcessIndexingRequestCancellation, ProcessNewIndexingRequest, ReassessIndexingRequest,
-    SendIndexingAgreementCancellation, SendIndexingAgreementProposal, SubmitOffer,
+    SendIndexingAgreementProposal, SubmitOffer,
 };
 
 /// The queue worker message enum
@@ -40,19 +40,6 @@ pub enum Message {
     ///
     /// See [`SendIndexingAgreementProposal`] for more details.
     SendIndexingAgreementProposal(SendIndexingAgreementProposal),
-
-    /// Send an indexing agreement cancellation to the indexer.
-    ///
-    /// See [`SendIndexingAgreementCancellation`] for more details.
-    SendIndexingAgreementCancellation(SendIndexingAgreementCancellation),
-
-    /// Process indexing agreement cancellation triggered by the indexer.
-    ///
-    /// When an indexer cancels an indexing agreement, a new indexer must be selected
-    /// to fulfill the indexing request.
-    ///
-    /// See [`ProcessIndexingAgreementCancellation`] for more details.
-    ProcessIndexingAgreementIndexerCancellation(ProcessIndexingAgreementCancellation),
 
     /// Process an indexing agreement cancellation triggered by the customer.
     ///

@@ -4,13 +4,13 @@ use dipper_core::state::FromState;
 use thegraph_core::alloy::primitives::Address;
 
 use super::handlers::{IndexingAgreementsCtx, IndexingRequestsCtx};
-use crate::signing::eip712::PrivateKeyEip712Signer;
+use crate::signing::eip712::Eip712Signer;
 
 /// Shared context for the gateway operator API.
 #[derive(Clone)]
 pub struct Ctx<R, W> {
     /// EIP-712 signer for response authentication.
-    pub signer: Arc<PrivateKeyEip712Signer>,
+    pub signer: Arc<Eip712Signer>,
 
     /// Authorized gateway operator addresses (e.g., Graph Studio).
     pub gateway_operator_allowlist: Arc<BTreeSet<Address>>,

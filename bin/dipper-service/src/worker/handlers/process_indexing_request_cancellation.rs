@@ -63,21 +63,9 @@ where
             })?;
     }
 
-    // Send the indexing agreement cancellation notification to the indexers
-    for agreement in agreements {
-        if let Err(err) = ctx
-            .queue
-            .send_indexing_agreement_cancellation(
-                agreement.indexer.url,
-                *indexing_request_id,
-                agreement.id,
-            )
-            .await
-        {
-            tracing::error!(error=?err, "Failed to queue task: 'send_indexing_agreement_cancellation'");
-            return Err(JobError::Fatal(err));
-        }
-    }
+    // TODO(PR 2): trigger on-chain cancel_indexing_agreement_by_payer for each
+    // agreement here. PR 1b only removes the dead-letter gRPC notification that
+    // used to fire next, leaving the on-chain state untouched (same as today).
 
     Ok(())
 }
