@@ -1,37 +1,18 @@
 use super::handlers::{
-    CancelRejectedAgreementOnChain, ProcessIndexingAgreementCancellation,
-    ProcessIndexingRequestCancellation, ProcessNewIndexingRequest, ReassessIndexingRequest,
-    SendIndexingAgreementProposal, SubmitOffer,
+    CancelRejectedAgreementOnChain, ReassessIndexingRequest, SendIndexingAgreementProposal,
+    SubmitOffer,
 };
 
 /// The queue worker message enum
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
 pub enum Message {
-    /// Process a new indexing request.
-    ///
-    /// Given an indexing request, run the IISA and get a list of indexers that
-    /// can index the subgraph deployment.
-    ///
-    /// See [`ProcessNewIndexingRequest`] for more details.
-    ProcessNewIndexingRequest(ProcessNewIndexingRequest),
-
-    /// Process indexing request cancellation.
-    ///
-    /// When a customer cancels an indexing request, this message is sent to the
-    /// queue worker to notify it that the indexing request has been cancelled.
-    ///
-    /// This should trigger the queue worker to cancel any associated indexing
-    /// agreements and notify the indexers.
-    ///
-    /// See [`ProcessIndexingRequestCancellation`] for more details.
-    ProcessIndexingRequestCancellation(ProcessIndexingRequestCancellation),
-
     /// Reassess an indexing request against the current IISA target state.
     ///
-    /// Periodically re-evaluates open indexing requests by diffing the IISA target
-    /// group against current active agreements, canceling stale assignments and
-    /// creating new ones as needed.
+    /// The admin RPC queues this on every `set_indexing_target_candidates` call
+    /// that mutates a request row. Reassessment diffs the IISA target group of
+    /// size `num_candidates` against the current active agreements, then
+    /// proposes additions and fires on-chain cancels for removals.
     ///
     /// See [`ReassessIndexingRequest`] for more details.
     ReassessIndexingRequest(ReassessIndexingRequest),
@@ -40,15 +21,6 @@ pub enum Message {
     ///
     /// See [`SendIndexingAgreementProposal`] for more details.
     SendIndexingAgreementProposal(SendIndexingAgreementProposal),
-
-    /// Process an indexing agreement cancellation triggered by the customer.
-    ///
-    /// When a customer cancels an indexing agreement, the queue worker must notify
-    /// the indexer that the agreement has been cancelled. Additionally, a new indexer
-    /// must be selected to fulfill the indexing request.
-    ///
-    /// See [`ProcessIndexingAgreementCancellation`] for more details.
-    ProcessIndexingAgreementRequesterCancellation(ProcessIndexingAgreementCancellation),
 
     /// Cancel a rejected agreement on-chain.
     ///

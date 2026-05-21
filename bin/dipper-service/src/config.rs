@@ -10,7 +10,7 @@ use std::{
 use dipper_core::config::{Hidden, HiddenSecretKeyAsHexStr};
 use serde_with::serde_as;
 use thegraph_core::{
-    DeploymentId, IndexerId,
+    DeploymentId,
     alloy::{
         primitives::{Address, ChainId, U256},
         signers::k256::SecretKey,
@@ -47,8 +47,6 @@ pub struct Config {
     pub dips: DipsAgreementConfig,
     /// The Admin RPC server configuration
     pub admin_rpc: AdminRpcConfig,
-    /// The Indexer RPC server configuration
-    pub indexer_rpc: IndexerRpcConfig,
     /// The database configuration
     pub db: DbConfig,
     /// The network service configuration
@@ -748,21 +746,6 @@ pub struct AdminRpcConfig {
     /// Authorized gateway operator addresses (e.g., Graph Studio).
     #[serde_as(as = "serde_with::SetLastValueWins<_>")]
     pub gateway_operator_allowlist: BTreeSet<Address>,
-}
-
-/// Indexer allowlist for the network provider.
-///
-/// The dipper service no longer exposes an indexer-facing RPC server (cancellation
-/// and collection live on-chain), but the allowlist still filters which indexers
-/// the network provider surfaces to selection. Configs may carry legacy fields
-/// like `listen_addr`; serde ignores them.
-#[serde_as]
-#[derive(Debug, serde::Deserialize)]
-pub struct IndexerRpcConfig {
-    /// The set of indexer addresses the network provider may consider.
-    /// Empty means "no filter" (all indexers visible).
-    #[serde_as(as = "serde_with::SetLastValueWins<_>")]
-    pub allowlist: BTreeSet<IndexerId>,
 }
 
 /// The database configuration

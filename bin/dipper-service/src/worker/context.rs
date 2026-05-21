@@ -7,9 +7,8 @@ use thegraph_core::alloy::primitives::ChainId;
 use tokio::sync::Notify;
 
 use super::handlers::{
-    CancelRejectedAgreementOnChainCtx, ProcessIndexingAgreementCancellationCtx,
-    ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
-    ReassessIndexingRequestCtx, SendIndexingAgreementProposalCtx, SubmitOfferCtx,
+    CancelRejectedAgreementOnChainCtx, ReassessIndexingRequestCtx,
+    SendIndexingAgreementProposalCtx, SubmitOfferCtx,
 };
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
@@ -153,7 +152,7 @@ pub(super) struct InnerCtx<R, N, W, C, I, T> {
     pub chain_listener_notify: Arc<Notify>,
 }
 
-impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I> {
+impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I, T> {
     signer,
     agreement_conf,
     chain_price: pricing_table,
@@ -161,41 +160,17 @@ impl_from_state!(ReassessIndexingRequestCtx<R, N, W, I> {
     network,
     queue: worker,
     iisa,
+    chain_client,
     networks_registry,
     additional_networks,
     entity_count_cache,
     chain_listener_notify,
-});
-
-impl_from_state!(ProcessIndexingRequestCancellationCtx<R, W> {
-    registry,
-    queue: worker,
-});
-
-impl_from_state!(ProcessNewIndexingRequestCtx<R, N, W, I> {
-    signer,
-    agreement_conf,
-    chain_price: pricing_table,
-    registry,
-    network,
-    queue: worker,
-    chain_listener_notify,
-    iisa,
-    fallback_filter,
-    networks_registry,
-    additional_networks,
-    entity_count_cache,
 });
 
 impl_from_state!(SendIndexingAgreementProposalCtx<R, W, C> {
     registry,
     queue: worker,
     indexer_client: client,
-});
-
-impl_from_state!(ProcessIndexingAgreementCancellationCtx<R, W> {
-    queue: worker,
-    registry,
 });
 
 impl_from_state!(CancelRejectedAgreementOnChainCtx<R, T> {

@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use clap::{Command, arg, command, value_parser};
 use dipper_core::ids::IndexingRequestId;
-use dipper_rpc::admin::indexing_requests::{CancelIndexingRequest, NewIndexingRequest};
+use dipper_rpc::admin::indexing_requests::SetIndexingTargetCandidates;
 use thegraph_core::{DeploymentId, SubgraphId, alloy::primitives::ChainId, signed_message};
 use uuid::Uuid;
 
@@ -24,17 +24,11 @@ pub(super) async fn run(matches: &clap::ArgMatches) -> Result<()> {
 
             status(conf, matches).await
         }
-        Some(("register", matches)) => {
+        Some(("set-target-candidates", matches)) => {
             let conf = common::load_conf(matches)?;
             tracing::debug!("Configuration loaded: {:?}", conf);
 
-            register(conf, matches).await
-        }
-        Some(("cancel", matches)) => {
-            let conf = common::load_conf(matches)?;
-            tracing::debug!("Configuration loaded: {:?}", conf);
-
-            cancel(conf, matches).await
+            set_target(conf, matches).await
         }
         _ => Err(anyhow::anyhow!("No indexings command specified").into()),
     }
@@ -113,8 +107,12 @@ pub async fn status(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
     }
 }
 
-/// The `indexings register` command
-pub async fn register(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
+/// The `indexings set-target-candidates` command.
+///
+/// Idempotent upsert keyed on `(requester, deployment, chain)`. Run with
+/// `--num-candidates N` to request N indexers; run with `--num-candidates 0`
+/// to cancel an existing assignment.
+pub async fn set_target(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
     let rpc_client = client::new(&conf.server_url);
     let signer = signer::new_private_key_eip712_signer(&conf.signing_key);
     let signer_eip712_domain = signer::eip712_domain();
@@ -140,7 +138,7 @@ pub async fn register(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
     let req = signed_message::sign(
         &signer,
         &signer_eip712_domain,
-        NewIndexingRequest {
+        SetIndexingTargetCandidates {
             deployment_id: *request_deployment_id,
             chain_id: *request_chain_id,
             num_candidates,
@@ -148,47 +146,23 @@ pub async fn register(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
     )
     .map_err(|err| anyhow::anyhow!("Failed to sign RPC request: {err}"))?;
 
-    let res = rpc_client.register_new_indexing_request(req.into()).await.map_err(
-        |err| anyhow::anyhow!("Failed to register new indexing request for deployment '{request_deployment_id}' : {err}"),
-    )?;
+    let res = rpc_client
+        .set_indexing_target_candidates(req.into())
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "Failed to set indexing target for deployment '{request_deployment_id}': {err}"
+            )
+        })?;
 
-    println!("{}", res);
+    match res {
+        Some(id) => println!("{}", id),
+        None => println!(
+            "no-op: no open indexing request exists for deployment '{request_deployment_id}' on chain {request_chain_id}"
+        ),
+    }
 
     Ok(())
-}
-
-/// The `indexings cancel` command
-pub async fn cancel(conf: Config, matches: &clap::ArgMatches) -> Result<()> {
-    let rpc_client = client::new(&conf.server_url);
-    let signer = signer::new_private_key_eip712_signer(&conf.signing_key);
-    let signer_eip712_domain = signer::eip712_domain();
-
-    match matches.get_one::<IndexingRequestSelector>("INDEXING_ID") {
-        // ID is an UUIDv7
-        Some(IndexingRequestSelector::IndexingRequestId(id)) => {
-            let req = signed_message::sign(
-                &signer,
-                &signer_eip712_domain,
-                CancelIndexingRequest { id: *id },
-            )
-            .map_err(|err| anyhow::anyhow!("Failed to sign RPC request: {err}"))?;
-
-            rpc_client
-                .cancel_indexing_request(req.into())
-                .await
-                .map_err(|err| {
-                    anyhow::anyhow!("Failed to cancel indexing request '{id}' : {err}")
-                })?;
-
-            Ok(())
-        }
-        // ID is a Subgraph ID or Deployment ID
-        Some(_) => {
-            // TODO(post-mvp): Add support for querying by Subgraph ID or Deployment ID
-            Err(anyhow::anyhow!("Invalid indexing request ID").into())
-        }
-        None => unreachable!("No ID provided"),
-    }
 }
 
 /// Create the `indexings` DIPs indexing requests admin command
@@ -213,24 +187,18 @@ pub(super) fn cmd() -> Command {
                     arg!(<INDEXING_ID> "The indexing request's ID (UUID, Subgraph ID or Deployment ID)")
                         .value_parser(value_parser!(IndexingRequestSelector)),
                 ),
-            command!("register")
-                .about("Register a new indexing request")
+            command!("set-target-candidates")
+                .about("Set the target number of indexer candidates for a deployment; use --num-candidates 0 to cancel")
                 .args([
                     arg!(<SUBGRAPH> "The indexing request's Subgraph (or Deployment) ID")
                         .value_parser(value_parser!(SubgraphIdOrDeploymentId)),
                     arg!(<CHAIN_ID> "The ID of the chain indexed by the subgraph")
                         .value_parser(value_parser!(ChainId))
                         .required(true),
-                    arg!(--"num-candidates" <N> "Number of indexers to assign (defaults to server maximum)")
+                    arg!(--"num-candidates" <N> "Target number of indexers to assign (0 cancels). Defaults to server maximum.")
                         .value_parser(value_parser!(usize))
                         .required(false),
                 ]),
-            command!("cancel")
-                .about("Cancel an existing indexing request")
-                .arg(
-                    arg!(<INDEXING_ID> "The indexing request's ID (UUID, Subgraph ID or Deployment ID)")
-                        .value_parser(value_parser!(IndexingRequestSelector)),
-                ),
         ])
 }
 

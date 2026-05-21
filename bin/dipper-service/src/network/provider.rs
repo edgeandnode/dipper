@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use thegraph_core::{DeploymentId, IndexerId};
 
 use super::{
@@ -11,25 +9,12 @@ use super::{
 pub struct NetworkProviderService {
     /// The network provider topology service handler
     topology: service::topology::Handle,
-
-    /// The indexers allowlist.
-    ///
-    /// This list contains all the indexers that are allowed to interact with the
-    /// DIPs Gateway. If the indexer is not contained in this list, it must not be
-    /// considered as candidate. If the list is empty, all indexers are allowed.
-    allowlist: BTreeSet<IndexerId>,
 }
 
 impl NetworkProviderService {
     /// Creates a new network provider service instance.
-    pub fn new(
-        topology: service::topology::Handle,
-        allowlist: impl Into<BTreeSet<IndexerId>>,
-    ) -> Self {
-        Self {
-            topology,
-            allowlist: allowlist.into(),
-        }
+    pub fn new(topology: service::topology::Handle) -> Self {
+        Self { topology }
     }
 }
 
@@ -41,9 +26,6 @@ impl NetworkProvider for NetworkProviderService {
         self.topology
             .snapshot()
             .indexers_iter()
-            // Filter out indexers that are not in the allowlist
-            .filter(|indexer| self.allowlist.is_empty() || self.allowlist.contains(&indexer.id))
-            // Filter out indexers that are already indexing the deployment
             .filter(|indexer| !indexer.indexings.contains(deployment_id))
             .map(|indexer| Indexer {
                 id: indexer.id,

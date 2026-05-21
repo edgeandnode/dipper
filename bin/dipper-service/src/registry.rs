@@ -24,7 +24,9 @@ pub use self::{
         Terms as IndexingAgreementTerms, TermsMetadata as IndexingAgreementTermsMetadata,
     },
     indexer_denylist::IndexerDenylistRegistry,
-    indexing_request::{IndexingRequest, IndexingRequestRegistry, Status as IndexingRequestStatus},
+    indexing_request::{
+        IndexingRequest, IndexingRequestRegistry, SetTargetOutcome, Status as IndexingRequestStatus,
+    },
     pending_cancellation::{PendingCancellation, PendingCancellationRegistry},
     result::{Error, Result},
 };
@@ -79,15 +81,15 @@ impl RegistryProvider {
 
 #[async_trait]
 impl IndexingRequestRegistry for RegistryProvider {
-    async fn register_new_indexing_request(
+    async fn set_indexing_target_candidates(
         &self,
         requested_by: Address,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
         num_candidates: usize,
-    ) -> RegistryResult<IndexingRequestId> {
+    ) -> RegistryResult<crate::registry::indexing_request::SetTargetOutcome> {
         self.inner
-            .register_new_indexing_request(
+            .set_indexing_target_candidates(
                 requested_by,
                 deployment_id,
                 deployment_chain_id,
@@ -95,6 +97,7 @@ impl IndexingRequestRegistry for RegistryProvider {
             )
             .await
             .map_err(Into::into)
+            .map(Into::into)
     }
 
     async fn get_all_indexing_requests(&self) -> RegistryResult<Vec<IndexingRequest>> {
@@ -132,16 +135,6 @@ impl IndexingRequestRegistry for RegistryProvider {
             .map(IndexingRequest::try_from)
             .filter_map(filter_map_with_logging)
             .collect())
-    }
-
-    async fn mark_indexing_request_as_canceled(
-        &self,
-        id: &IndexingRequestId,
-    ) -> RegistryResult<()> {
-        self.inner
-            .mark_indexing_request_as_canceled(id)
-            .await
-            .map_err(Into::into)
     }
 
     async fn get_open_indexing_requests_for_reassessment(
@@ -431,6 +424,20 @@ impl AgreementRegistry for RegistryProvider {
         Ok(self
             .inner
             .get_accepted_on_chain_agreements(batch_size)
+            .await?
+            .into_iter()
+            .map(IndexingAgreement::try_from)
+            .filter_map(filter_map_with_logging)
+            .collect())
+    }
+
+    async fn get_agreements_pending_chain_cancel(
+        &self,
+        batch_size: i64,
+    ) -> RegistryResult<Vec<IndexingAgreement>> {
+        Ok(self
+            .inner
+            .get_agreements_pending_chain_cancel(batch_size)
             .await?
             .into_iter()
             .map(IndexingAgreement::try_from)

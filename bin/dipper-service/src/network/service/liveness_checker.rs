@@ -1007,6 +1007,12 @@ mod tests {
         ) -> RegistryResult<Vec<IndexingAgreement>> {
             unimplemented!()
         }
+        async fn get_agreements_pending_chain_cancel(
+            &self,
+            _batch_size: i64,
+        ) -> RegistryResult<Vec<IndexingAgreement>> {
+            unimplemented!()
+        }
         async fn update_agreement_sync_progress(
             &self,
             id: &IndexingAgreementId,
@@ -1044,13 +1050,13 @@ mod tests {
 
     #[async_trait]
     impl IndexingRequestRegistry for MockRegistry {
-        async fn register_new_indexing_request(
+        async fn set_indexing_target_candidates(
             &self,
             _by: Address,
             _dep: DeploymentId,
             _chain: ChainId,
             _n: usize,
-        ) -> RegistryResult<IndexingRequestId> {
+        ) -> RegistryResult<crate::registry::SetTargetOutcome> {
             unimplemented!()
         }
         async fn get_all_indexing_requests(&self) -> RegistryResult<Vec<IndexingRequest>> {
@@ -1070,12 +1076,6 @@ mod tests {
             &self,
             _dep: &DeploymentId,
         ) -> RegistryResult<Vec<IndexingRequest>> {
-            unimplemented!()
-        }
-        async fn mark_indexing_request_as_canceled(
-            &self,
-            _id: &IndexingRequestId,
-        ) -> RegistryResult<()> {
             unimplemented!()
         }
         async fn get_open_indexing_requests_for_reassessment(
@@ -1123,15 +1123,6 @@ mod tests {
 
     #[async_trait]
     impl WorkerQueue for MockWorkerQueue {
-        async fn process_new_indexing_request(
-            &self,
-            _req_id: IndexingRequestId,
-            _dep: DeploymentId,
-            _chain: ChainId,
-            _n: usize,
-        ) -> anyhow::Result<JobId> {
-            unimplemented!()
-        }
         async fn send_indexing_agreement_proposal(
             &self,
             _url: Url,
@@ -1139,19 +1130,6 @@ mod tests {
             _req_id: IndexingRequestId,
             _dep: DeploymentId,
             _chain: ChainId,
-        ) -> anyhow::Result<JobId> {
-            unimplemented!()
-        }
-        async fn process_indexing_request_cancellation(
-            &self,
-            _req_id: IndexingRequestId,
-        ) -> anyhow::Result<JobId> {
-            unimplemented!()
-        }
-        async fn process_indexing_agreement_requester_cancellation(
-            &self,
-            _req_id: IndexingRequestId,
-            _agr_id: IndexingAgreementId,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }

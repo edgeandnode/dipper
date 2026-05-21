@@ -138,3 +138,27 @@ impl std::str::FromStr for Status {
         Ok(status)
     }
 }
+
+/// What `set_indexing_target_candidates` actually did to the row.
+#[derive(Debug, Clone)]
+pub enum SetTargetOutcome {
+    /// No Open row existed for the key; a new row was inserted.
+    Inserted { id: IndexingRequestId },
+
+    /// An Open row existed; its `num_candidates` was changed to the new
+    /// non-zero value.
+    Updated {
+        id: IndexingRequestId,
+        new_num_candidates: i32,
+    },
+
+    /// An Open row existed with the same `num_candidates` as requested.
+    NoOp { id: IndexingRequestId },
+
+    /// `num_candidates = 0` was requested for an existing Open row;
+    /// the row was flipped to Canceled.
+    Canceled { id: IndexingRequestId },
+
+    /// `num_candidates = 0` was requested for a key with no Open row.
+    NoOpAlreadyEmpty,
+}

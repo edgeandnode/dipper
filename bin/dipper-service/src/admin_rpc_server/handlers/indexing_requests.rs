@@ -5,8 +5,8 @@ use dipper_core::{ids::IndexingRequestId, state::FromState};
 use dipper_rpc::admin::{
     SignedMessage,
     indexing_requests::{
-        CancelIndexingRequest, IndexingRequest, IndexingRequestStatus, IndexingRequestsRpcServer,
-        NewIndexingRequest,
+        IndexingRequest, IndexingRequestStatus, IndexingRequestsRpcServer,
+        SetIndexingTargetCandidates,
     },
 };
 use jsonrpsee::{core::RpcResult, types::ErrorObject};
@@ -15,8 +15,8 @@ use thegraph_core::{DeploymentId, alloy::primitives::Address};
 use super::error_handling::{handle_list_result, handle_optional_result};
 use crate::{
     registry::{
-        Error as RegistryError, IndexingRequest as IndexingRequestRecord, IndexingRequestRegistry,
-        IndexingRequestStatus as IndexingRequestRecordStatus,
+        IndexingRequest as IndexingRequestRecord, IndexingRequestRegistry,
+        IndexingRequestStatus as IndexingRequestRecordStatus, SetTargetOutcome,
     },
     signing::eip712::Eip712Signer,
     worker::service::WorkerQueue,
@@ -83,13 +83,12 @@ where
         )
     }
 
-    async fn register_new_indexing_request(
+    async fn set_indexing_target_candidates(
         &self,
-        req: SignedMessage<NewIndexingRequest>,
-    ) -> RpcResult<IndexingRequestId> {
-        // Check if the signer is authorized to make this request
+        req: SignedMessage<SetIndexingTargetCandidates>,
+    ) -> RpcResult<Option<IndexingRequestId>> {
         let requested_by = match self.signer.recover_signer(&req) {
-            Ok(requested_by) => requested_by,
+            Ok(addr) => addr,
             Err(err) => {
                 tracing::debug!(error=?err, "Failed to recover signer");
                 return Err(ErrorObject::borrowed(401, "Unauthorized", None));
@@ -99,7 +98,7 @@ where
             return Err(ErrorObject::borrowed(403, "Forbidden", None));
         }
 
-        let NewIndexingRequest {
+        let SetIndexingTargetCandidates {
             deployment_id,
             chain_id,
             num_candidates,
@@ -107,112 +106,95 @@ where
 
         let num_candidates = num_candidates.unwrap_or(self.max_candidates);
 
-        // Register the new indexing request
-        let indexing_request_id = match self
+        let outcome = match self
             .registry
-            .register_new_indexing_request(requested_by, deployment_id, chain_id, num_candidates)
+            .set_indexing_target_candidates(requested_by, deployment_id, chain_id, num_candidates)
             .await
         {
-            Ok(indexing_request_id) => indexing_request_id,
+            Ok(outcome) => outcome,
             Err(err) => {
-                tracing::error!(error=?err, "Failed to register new indexing request");
+                tracing::error!(error=?err, "Failed to set indexing target candidates");
                 return Err(ErrorObject::borrowed(503, "Service unavailable", None));
             }
         };
 
-        // Process the new indexing request
-        if let Err(err) = self
-            .worker
-            .process_new_indexing_request(
-                indexing_request_id,
-                deployment_id,
-                chain_id,
-                num_candidates,
-            )
-            .await
-        {
-            tracing::error!(error=?err, "Failed queue task: 'process_new_indexing_request'");
-            return Err(ErrorObject::borrowed(500, "Internal server error", None));
-        };
-
-        Ok(indexing_request_id)
-    }
-
-    async fn cancel_indexing_request(
-        &self,
-        req: SignedMessage<CancelIndexingRequest>,
-    ) -> RpcResult<()> {
-        // Check if the signer is authorized to make this request
-        let requested_by = match self.signer.recover_signer(&req) {
-            Ok(requested_by) => requested_by,
-            Err(err) => {
-                tracing::debug!(error=?err, "Failed to recover signer");
-                return Err(ErrorObject::borrowed(401, "Unauthorized", None));
+        // Translate the outcome into the appropriate follow-up worker job and the
+        // wire-level return value.
+        let (id_opt, reassess_count): (Option<IndexingRequestId>, Option<usize>) = match outcome {
+            SetTargetOutcome::Inserted { id } => {
+                tracing::info!(
+                    indexing_request_id = %id,
+                    %requested_by,
+                    %deployment_id,
+                    %chain_id,
+                    num_candidates,
+                    "Inserted new indexing request"
+                );
+                (Some(id), Some(num_candidates))
             }
-        };
-        if !self.gateway_operator_allowlist.contains(&requested_by) {
-            return Err(ErrorObject::borrowed(403, "Forbidden", None));
-        }
-
-        let CancelIndexingRequest {
-            id: indexing_request_id,
-        } = req.into_message();
-
-        tracing::debug!(%indexing_request_id, %requested_by, "Canceling indexing request");
-
-        // Check if the indexing request exists
-        match self
-            .registry
-            .get_indexing_request_by_id(&indexing_request_id)
-            .await
-        {
-            Ok(None) => {
+            SetTargetOutcome::Updated {
+                id,
+                new_num_candidates,
+            } => {
+                tracing::info!(
+                    indexing_request_id = %id,
+                    %requested_by,
+                    %deployment_id,
+                    %chain_id,
+                    num_candidates = new_num_candidates,
+                    "Updated num_candidates on open indexing request"
+                );
+                (Some(id), Some(new_num_candidates))
+            }
+            SetTargetOutcome::NoOp { id } => {
                 tracing::debug!(
-                    %indexing_request_id,
-                    %requested_by,
-                    "Indexing request not found"
+                    indexing_request_id = %id,
+                    "Set target candidates is a no-op (count unchanged)"
                 );
-                return Err(ErrorObject::borrowed(404, "Not found", None));
+                (Some(id), None)
             }
-            Err(err) => {
-                tracing::error!(
-                    %indexing_request_id,
+            SetTargetOutcome::Canceled { id } => {
+                tracing::info!(
+                    indexing_request_id = %id,
                     %requested_by,
-                    error=?err,
-                    "Failed to get indexing request"
+                    %deployment_id,
+                    %chain_id,
+                    "Canceled indexing request (target candidates set to zero)"
                 );
-                return Err(ErrorObject::borrowed(503, "Service unavailable", None));
+                (Some(id), Some(0))
             }
-            _ => {
-                // The indexing request exists, proceed with cancellation
+            SetTargetOutcome::NoOpAlreadyEmpty => {
+                tracing::warn!(
+                    %requested_by,
+                    %deployment_id,
+                    %chain_id,
+                    "set_indexing_target_candidates with num_candidates=0 against a key with no open request \
+                     - nothing to cancel"
+                );
+                (None, None)
             }
-        }
+        };
 
-        // Mark the indexing request as `CANCELED`
-        if let Err(RegistryError::BackendError(err)) = self
-            .registry
-            .mark_indexing_request_as_canceled(&indexing_request_id)
-            .await
+        // Queue reassessment if the row changed. Reassessment computes the
+        // diff between the IISA target group of size `num_candidates` and the
+        // current active agreements, then grows or shrinks accordingly. With
+        // num_candidates=0 it shrinks to zero, firing the on-chain cancel for
+        // every active agreement on the key.
+        if let (Some(id), Some(count)) = (id_opt, reassess_count)
+            && let Err(err) = self
+                .worker
+                .reassess_indexing_request(id, deployment_id, chain_id, count)
+                .await
         {
             tracing::error!(
-                %indexing_request_id,
-                error=?err,
-                "Failed to mark indexing request as canceled"
+                indexing_request_id = %id,
+                error = ?err,
+                "Failed to queue task: 'reassess_indexing_request'"
             );
-            return Err(ErrorObject::borrowed(503, "Service unavailable", None));
-        };
-
-        // Process the indexing request cancellation
-        if let Err(err) = self
-            .worker
-            .process_indexing_request_cancellation(indexing_request_id)
-            .await
-        {
-            tracing::error!(error=?err, "Failed to queue task: 'process_indexing_request_cancellation'");
             return Err(ErrorObject::borrowed(500, "Internal server error", None));
-        };
+        }
 
-        Ok(())
+        Ok(id_opt)
     }
 }
 

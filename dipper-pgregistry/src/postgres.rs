@@ -29,7 +29,10 @@ use super::{
     IndexingReceiptReportedWork,
     indexing_agreement::{IndexingAgreement, Status as IndexingAgreementStatus},
     indexing_receipt::IndexingReceipt,
-    indexing_request::{IndexingRequest, Status as IndexingRequestStatus},
+    indexing_request::{
+        IndexingRequest, SetTargetOutcome as IndexingRequestSetTargetOutcome,
+        Status as IndexingRequestStatus,
+    },
     result::Error,
 };
 
@@ -93,39 +96,104 @@ impl PgRegistry {
 }
 
 impl PgRegistry {
-    pub async fn register_new_indexing_request(
+    /// Set the target number of indexer candidates for the key
+    /// `(requested_by, deployment_id, deployment_chain_id)`.
+    ///
+    /// Atomic upsert: a fresh key inserts a new Open row; an existing Open row
+    /// has its `num_candidates` adjusted (or transitions to Canceled when the
+    /// new target is zero). See [`IndexingRequestSetTargetOutcome`] for the
+    /// returned discriminator.
+    pub async fn set_indexing_target_candidates(
         &self,
         requested_by: Address,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
         num_candidates: i32,
-    ) -> Result<IndexingRequestId, Error> {
-        sqlx::query_as(
+    ) -> Result<IndexingRequestSetTargetOutcome, Error> {
+        let mut tx = self.pool.begin().await?;
+
+        let existing: Option<(IndexingRequestId, i32)> = sqlx::query_as(
             r#"
-            INSERT INTO dipper_reg_indexing_requests (
-                id,
-                created_at,
-                updated_at,
-                status,
-                requested_by,
-                deployment_id,
-                deployment_chain_id,
-                num_candidates
-            )
-            VALUES ($1, timezone('UTC', now()), timezone('UTC', now()), $2, $3, $4, $5, $6)
-            RETURNING id
+            SELECT id, num_candidates
+            FROM dipper_reg_indexing_requests
+            WHERE requested_by = $1
+              AND deployment_id = $2
+              AND deployment_chain_id = $3
+              AND status = $4
+            FOR UPDATE
             "#,
         )
-        .bind(IndexingRequestId::new())
-        .bind(IndexingRequestStatus::default())
         .bind(PgAddress(requested_by))
         .bind(PgDeploymentId(deployment_id))
         .bind(PgU64(deployment_chain_id))
-        .bind(num_candidates)
-        .fetch_one(&self.pool)
-        .await
-        .map(|(id,)| id)
-        .map_err(Into::into)
+        .bind(IndexingRequestStatus::Open)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let outcome = match existing {
+            None if num_candidates == 0 => IndexingRequestSetTargetOutcome::NoOpAlreadyEmpty,
+            None => {
+                let new_id = IndexingRequestId::new();
+                sqlx::query(
+                    r#"
+                    INSERT INTO dipper_reg_indexing_requests (
+                        id, created_at, updated_at, status,
+                        requested_by, deployment_id, deployment_chain_id, num_candidates
+                    )
+                    VALUES (
+                        $1, timezone('UTC', now()), timezone('UTC', now()), $2,
+                        $3, $4, $5, $6
+                    )
+                    "#,
+                )
+                .bind(new_id)
+                .bind(IndexingRequestStatus::Open)
+                .bind(PgAddress(requested_by))
+                .bind(PgDeploymentId(deployment_id))
+                .bind(PgU64(deployment_chain_id))
+                .bind(num_candidates)
+                .execute(&mut *tx)
+                .await?;
+                IndexingRequestSetTargetOutcome::Inserted { id: new_id }
+            }
+            Some((id, existing_count)) if existing_count == num_candidates => {
+                IndexingRequestSetTargetOutcome::NoOp { id }
+            }
+            Some((id, _)) if num_candidates == 0 => {
+                sqlx::query(
+                    r#"
+                    UPDATE dipper_reg_indexing_requests
+                    SET status = $1, updated_at = timezone('UTC', now())
+                    WHERE id = $2
+                    "#,
+                )
+                .bind(IndexingRequestStatus::Canceled)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+                IndexingRequestSetTargetOutcome::Canceled { id }
+            }
+            Some((id, _)) => {
+                sqlx::query(
+                    r#"
+                    UPDATE dipper_reg_indexing_requests
+                    SET num_candidates = $1, updated_at = timezone('UTC', now())
+                    WHERE id = $2
+                    "#,
+                )
+                .bind(num_candidates)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+                IndexingRequestSetTargetOutcome::Updated {
+                    id,
+                    new_num_candidates: num_candidates,
+                }
+            }
+        };
+
+        tx.commit().await?;
+        Ok(outcome)
     }
 
     pub async fn get_all_indexing_requests(&self) -> Result<Vec<IndexingRequest>, Error> {
@@ -1206,6 +1274,48 @@ impl PgRegistry {
             "#,
         )
         .bind(IndexingAgreementStatus::AcceptedOnChain)
+        .bind(batch_size)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Get agreements still `AcceptedOnChain` whose parent request is `Canceled`.
+    ///
+    /// Used by the chain listener's periodic orphan-cancel sweep to retry
+    /// on-chain `cancelIndexingAgreementByPayer` calls that failed during the
+    /// reassessment that flipped the request row.
+    pub async fn get_agreements_pending_chain_cancel(
+        &self,
+        batch_size: i64,
+    ) -> Result<Vec<IndexingAgreement>, Error> {
+        sqlx::query_as(
+            r#"
+            SELECT
+                a.id,
+                a.nonce_uuid,
+                a.created_at,
+                a.updated_at,
+                a.status,
+                a.indexing_request_id,
+                a.deployment_id,
+                a.indexer_id,
+                a.indexer_url,
+                a.terms,
+                a.last_block_height,
+                a.last_progress_at,
+                a.rejection_reason
+            FROM dipper_reg_indexing_agreements a
+            JOIN dipper_reg_indexing_requests r
+              ON a.indexing_request_id = r.id
+            WHERE a.status = $1
+              AND r.status = $2
+            ORDER BY a.updated_at ASC
+            LIMIT CASE WHEN $3 > 0 THEN $3 ELSE NULL END
+            "#,
+        )
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
+        .bind(IndexingRequestStatus::Canceled)
         .bind(batch_size)
         .fetch_all(&self.pool)
         .await

@@ -3,7 +3,8 @@
 //! This handler runs after `send_indexing_agreement_proposal` receives an
 //! Accept response from the indexer. The worker pipeline is:
 //!
-//! 1. `process_new_indexing_request` registers the agreement in the DB.
+//! 1. `reassess_indexing_request` selects indexers via IISA and registers
+//!    each agreement in the DB.
 //! 2. `send_indexing_agreement_proposal` sends the gRPC proposal to the
 //!    indexer, which validates pricing/metadata/networks and responds
 //!    Accept or Reject.
