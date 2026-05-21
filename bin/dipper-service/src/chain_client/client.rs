@@ -41,8 +41,10 @@ use crate::{
 const SUBGRAPH_QUERY_TIMEOUT_SECS: u64 = 10;
 
 /// OFFER_TYPE_NEW from `RecurringCollector.sol`. Used when submitting a new
-/// agreement offer on-chain.
-const OFFER_TYPE_NEW: u8 = 0;
+/// agreement offer on-chain. The contract defines OFFER_TYPE_NONE=0,
+/// OFFER_TYPE_NEW=1, OFFER_TYPE_UPDATE=2; passing 0 reverts with
+/// RecurringCollectorInvalidOfferType(0).
+const OFFER_TYPE_NEW: u8 = 1;
 
 /// Time to wait for a tx receipt to appear before declaring the tx dropped
 /// from the mempool. On hardhat this is ~15 blocks at 1s each; on Arbitrum
