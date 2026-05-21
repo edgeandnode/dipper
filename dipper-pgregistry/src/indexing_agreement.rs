@@ -236,6 +236,15 @@ pub struct Terms {
     /// Maximum seconds per collection.
     pub max_seconds_per_collection: u32,
 
+    /// Bitmask of payer-declared conditions (e.g. eligibility check).
+    ///
+    /// Must be 0 unless the payer is a contract that implements the
+    /// corresponding callback interfaces. Against an EOA payer, any
+    /// non-zero value will cause the on-chain `offer()` and `accept()`
+    /// calls to revert.
+    #[serde(default)]
+    pub conditions: u16,
+
     /// The agreement metadata.
     pub metadata: TermsMetadata,
 }
@@ -297,6 +306,7 @@ pub mod fake_impl {
                 max_ongoing_tokens_per_second: bigint_safe_u256(config, rng),
                 min_seconds_per_collection: u32::dummy_with_rng(config, rng),
                 max_seconds_per_collection: u32::dummy_with_rng(config, rng),
+                conditions: 0,
                 metadata: TermsMetadata::dummy_with_rng(config, rng),
             }
         }
@@ -336,6 +346,7 @@ mod tests {
             max_ongoing_tokens_per_second: U256::from(512u64),
             min_seconds_per_collection: 60,
             max_seconds_per_collection: 3600,
+            conditions: 0,
             metadata: TermsMetadata {
                 tokens_per_second: U256::from(10u64),
                 tokens_per_entity_per_second: U256::from(2u64),
@@ -381,6 +392,10 @@ mod tests {
         assert_eq!(
             deserialized.max_seconds_per_collection, terms.max_seconds_per_collection,
             "max_seconds_per_collection mismatch"
+        );
+        assert_eq!(
+            deserialized.conditions, terms.conditions,
+            "conditions mismatch"
         );
 
         // Assert metadata fields

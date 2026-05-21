@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 pub use client::AlloyChainClient;
+use dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement;
 use thegraph_core::alloy::primitives::B256;
 
 /// Error type for chain client operations
@@ -39,6 +40,24 @@ pub enum ChainClientError {
     /// RPC error
     #[error("RPC error: {0}")]
     RpcError(#[source] anyhow::Error),
+
+    /// Subgraph reports a stored offer whose hash does not match the locally-computed hash.
+    ///
+    /// Indicates the agreement terms drifted between a prior submission and
+    /// the current invocation (e.g. a stale nonce or deadline). Since the
+    /// RecurringCollector stores offers inside a namespaced storage struct
+    /// with no public getter, dipper treats the indexing-payments-subgraph's
+    /// Offer entity as the source of truth for this check. When a mismatch
+    /// is detected, dipper marks the agreement as delivery-failed and bails;
+    /// the reassignment service finds a replacement.
+    #[error(
+        "offer hash mismatch for agreement {agreement_id}: stored={stored}, expected={expected}"
+    )]
+    OfferHashMismatch {
+        agreement_id: String,
+        stored: B256,
+        expected: B256,
+    },
 }
 
 /// Trait for sending on-chain transactions related to indexing agreements
@@ -55,6 +74,23 @@ pub trait ChainClient {
         &self,
         agreement_id: &[u8; 16],
     ) -> Result<B256, ChainClientError>;
+
+    /// Submit an RCA offer on-chain via `RecurringCollector.offer(OFFER_TYPE_NEW, ...)`.
+    ///
+    /// Crash-recovery idempotency is handled via a query to the
+    /// indexing-payments subgraph (not an RPC call): if a matching
+    /// `Offer` entity already exists the method returns `Ok(None)` without
+    /// sending a transaction. If an offer exists with a different hash,
+    /// returns `OfferHashMismatch`. Otherwise submits an `offer()` transaction
+    /// and returns `Ok(Some(tx_hash))`. When no subgraph URL is configured,
+    /// the idempotency check is skipped and every call unconditionally submits.
+    ///
+    /// `msg.sender` of the transaction must equal `rca.payer` or the contract
+    /// reverts with `RecurringCollectorUnauthorizedCaller`.
+    async fn post_offer(
+        &self,
+        rca: &RecurringCollectionAgreement,
+    ) -> Result<Option<B256>, ChainClientError>;
 }
 
 /// Blanket impl for Arc-wrapped trait objects.
@@ -70,6 +106,13 @@ impl<T: ChainClient + Send + Sync + ?Sized> ChainClient for Arc<T> {
         (**self)
             .cancel_indexing_agreement_by_payer(agreement_id)
             .await
+    }
+
+    async fn post_offer(
+        &self,
+        rca: &RecurringCollectionAgreement,
+    ) -> Result<Option<B256>, ChainClientError> {
+        (**self).post_offer(rca).await
     }
 }
 
@@ -89,6 +132,16 @@ impl ChainClient for StubChainClient {
             agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
             "ChainClient not implemented - cannot cancel agreement on-chain"
         );
+        Err(ChainClientError::ConfigError(
+            "ChainClient not implemented".to_string(),
+        ))
+    }
+
+    async fn post_offer(
+        &self,
+        _rca: &RecurringCollectionAgreement,
+    ) -> Result<Option<B256>, ChainClientError> {
+        tracing::error!("ChainClient not implemented - cannot post offer on-chain");
         Err(ChainClientError::ConfigError(
             "ChainClient not implemented".to_string(),
         ))

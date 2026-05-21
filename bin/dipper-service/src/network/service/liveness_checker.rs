@@ -802,6 +802,7 @@ mod tests {
             max_ongoing_tokens_per_second: U256::ZERO,
             min_seconds_per_collection: 0,
             max_seconds_per_collection: 0,
+            conditions: 0,
             metadata: IndexingAgreementTermsMetadata {
                 tokens_per_second: U256::ZERO,
                 tokens_per_entity_per_second: U256::ZERO,
@@ -1164,6 +1165,16 @@ mod tests {
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
+        async fn submit_offer(
+            &self,
+            _agreement_id: IndexingAgreementId,
+            _indexing_request_id: IndexingRequestId,
+            _indexer_url: Url,
+            _deployment_id: DeploymentId,
+            _deployment_chain_id: ChainId,
+        ) -> anyhow::Result<JobId> {
+            unimplemented!()
+        }
     }
 
     struct MockChainClient {
@@ -1212,7 +1223,23 @@ mod tests {
                 Err(ChainClientError::SubmitFailed(e)) => {
                     Err(ChainClientError::SubmitFailed(anyhow::anyhow!("{e}")))
                 }
+                Err(ChainClientError::OfferHashMismatch { .. }) => {
+                    // Not applicable to the cancel path; mirror as RpcError
+                    // so the test helper continues to work.
+                    Err(ChainClientError::RpcError(anyhow::anyhow!(
+                        "offer hash mismatch (unexpected for cancel)"
+                    )))
+                }
             }
+        }
+
+        async fn post_offer(
+            &self,
+            _rca: &dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement,
+        ) -> Result<Option<B256>, ChainClientError> {
+            // Not exercised by liveness_checker tests; the mock is fixed at
+            // the cancel path. Return None to signal "offer already stored".
+            Ok(None)
         }
     }
 

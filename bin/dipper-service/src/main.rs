@@ -48,6 +48,10 @@ pub async fn main() -> anyhow::Result<()> {
 
     // Initialize the different components
     //- The signer component
+    //
+    // Eip712Signer now only handles admin-RPC messages and DIPs cancellation
+    // messages; RCA authorization moved to the on-chain offer path, so the
+    // RecurringCollector EIP-712 domain is no longer used here.
     let signer = {
         let private_key_signer =
             PrivateKeySigner::from_signing_key(conf.signer.secret_key.as_ref().into());
@@ -59,7 +63,6 @@ pub async fn main() -> anyhow::Result<()> {
             private_key_signer_address,
             conf.signer.chain_id,
             domain,
-            agreement_conf.recurring_collector(),
         ))
     };
     tracing::info!(address=%signer.address(), "Signer wallet imported");

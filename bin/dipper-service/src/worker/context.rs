@@ -10,7 +10,7 @@ use super::handlers::{
     CancelRejectedAgreementOnChainCtx, ProcessIndexingAgreementCancellationCtx,
     ProcessIndexingRequestCancellationCtx, ProcessNewIndexingRequestCtx,
     ReassessIndexingRequestCtx, SendIndexingAgreementCancellationCtx,
-    SendIndexingAgreementProposalCtx,
+    SendIndexingAgreementProposalCtx, SubmitOfferCtx,
 };
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
@@ -205,6 +205,11 @@ impl_from_state!(ProcessIndexingAgreementCancellationCtx<R, W> {
 });
 
 impl_from_state!(CancelRejectedAgreementOnChainCtx<R, T> {
+    registry,
+    chain_client,
+});
+
+impl_from_state!(SubmitOfferCtx<R, T> {
     registry,
     chain_client,
 });

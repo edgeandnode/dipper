@@ -60,6 +60,7 @@ pub mod indexer_client {
                 uint256 maxOngoingTokensPerSecond;
                 uint32 minSecondsPerCollection;
                 uint32 maxSecondsPerCollection;
+                uint16 conditions;
                 uint256 nonce;
                 bytes metadata;
             }
@@ -155,6 +156,7 @@ mod tests {
             maxOngoingTokensPerSecond: U256::from(10),
             minSecondsPerCollection: 60,
             maxSecondsPerCollection: 3600,
+            conditions: 0,
             nonce: U256::from(42),
             metadata: Default::default(),
         };
@@ -195,6 +197,7 @@ mod tests {
             maxOngoingTokensPerSecond: U256::from(1_000_000_000_000_000u64),
             minSecondsPerCollection: 3600,
             maxSecondsPerCollection: 86400,
+            conditions: 0,
             nonce: U256::from(0x019d44a86ac97e938672e2501fe630f2u128),
             metadata: Default::default(),
         };
@@ -226,7 +229,7 @@ mod tests {
         // This matches the hardcoded typehash in RecurringCollector.sol.
         // If this test fails, it means the sol! struct definition has drifted from
         // the on-chain contract's EIP-712 typehash.
-        const EXPECTED_TYPE_STRING: &[u8] = b"RecurringCollectionAgreement(uint64 deadline,uint64 endsAt,address payer,address dataService,address serviceProvider,uint256 maxInitialTokens,uint256 maxOngoingTokensPerSecond,uint32 minSecondsPerCollection,uint32 maxSecondsPerCollection,uint256 nonce,bytes metadata)";
+        const EXPECTED_TYPE_STRING: &[u8] = b"RecurringCollectionAgreement(uint64 deadline,uint64 endsAt,address payer,address dataService,address serviceProvider,uint256 maxInitialTokens,uint256 maxOngoingTokensPerSecond,uint32 minSecondsPerCollection,uint32 maxSecondsPerCollection,uint16 conditions,uint256 nonce,bytes metadata)";
 
         let expected_typehash = keccak256(EXPECTED_TYPE_STRING);
 
@@ -241,6 +244,7 @@ mod tests {
             maxOngoingTokensPerSecond: U256::ZERO,
             minSecondsPerCollection: 0,
             maxSecondsPerCollection: 0,
+            conditions: 0,
             nonce: U256::ZERO,
             metadata: Default::default(),
         };

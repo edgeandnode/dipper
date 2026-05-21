@@ -192,19 +192,19 @@ impl IndexerClient for DipsIndexerClient {
         terms: IndexingAgreementTerms,
         nonce_uuid: uuid::Uuid,
     ) -> Result<SubmitAgreementProposalResponse, DipsError> {
-        // Convert to the RCA solidity data structure
+        // Convert to the RCA solidity data structure.
         let (sol_rca, _on_chain_id) = into_sol_rca(nonce_uuid, terms);
 
-        // Sign the RCA with the RecurringCollector EIP-712 domain
-        let signed = self
-            .signer
-            .sign_rca_msg(sol_rca)
-            .map_err(|err| DipsError::SigningError(err.into()))?;
-
-        // Serialize the signed RCA to bytes (ABI encoding)
+        // Offer-path authorization: send the SignedRCA wrapper with an empty
+        // signature field. The indexer-service verifies the RCA against the
+        // on-chain `rcaOffers[agreementId]` entry (read via the
+        // indexing-payments-subgraph) instead of recovering an EIP-712
+        // signature. The on-chain `offer()` tx that populates this entry must
+        // already have landed before we get here -- see worker handler
+        // `submit_offer`.
         let sol_signed_rca_bytes: Vec<u8> = sol::SignedRecurringCollectionAgreement {
-            agreement: signed.message,
-            signature: signed.signature.as_bytes().into(),
+            agreement: sol_rca,
+            signature: Default::default(),
         }
         .abi_encode();
 
@@ -296,7 +296,7 @@ pub fn compute_on_chain_id(
 ///
 /// Returns the RCA and the derived on-chain agreement ID (bytes16).
 #[inline]
-fn into_sol_rca(
+pub(crate) fn into_sol_rca(
     nonce_uuid: uuid::Uuid,
     terms: IndexingAgreementTerms,
 ) -> (sol::RecurringCollectionAgreement, [u8; 16]) {
@@ -330,6 +330,7 @@ fn into_sol_rca(
         maxOngoingTokensPerSecond: terms.max_ongoing_tokens_per_second,
         minSecondsPerCollection: terms.min_seconds_per_collection,
         maxSecondsPerCollection: terms.max_seconds_per_collection,
+        conditions: terms.conditions,
         nonce,
         metadata: metadata.into(),
     };
@@ -384,6 +385,7 @@ mod tests {
             max_ongoing_tokens_per_second,
             min_seconds_per_collection,
             max_seconds_per_collection,
+            conditions: 0,
             metadata: IndexingAgreementTermsMetadata {
                 tokens_per_second,
                 tokens_per_entity_per_second,

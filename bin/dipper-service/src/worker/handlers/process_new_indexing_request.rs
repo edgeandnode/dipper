@@ -264,6 +264,7 @@ where
             min_seconds_per_collection: ctx.agreement_conf.min_seconds_per_collection(),
             max_seconds_per_collection: ctx.agreement_conf.max_seconds_per_collection(),
             deadline: now.saturating_add(ctx.agreement_conf.deadline_seconds()),
+            conditions: 0,
             metadata: terms_metadata,
         };
 

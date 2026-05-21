@@ -1,7 +1,7 @@
 use super::handlers::{
     CancelRejectedAgreementOnChain, ProcessIndexingAgreementCancellation,
     ProcessIndexingRequestCancellation, ProcessNewIndexingRequest, ReassessIndexingRequest,
-    SendIndexingAgreementCancellation, SendIndexingAgreementProposal,
+    SendIndexingAgreementCancellation, SendIndexingAgreementProposal, SubmitOffer,
 };
 
 /// The queue worker message enum
@@ -70,4 +70,13 @@ pub enum Message {
     ///
     /// See [`CancelRejectedAgreementOnChain`] for more details.
     CancelRejectedAgreementOnChain(CancelRejectedAgreementOnChain),
+
+    /// Submit an RCA offer on-chain before dispatching a proposal.
+    ///
+    /// Step between registering a new agreement and sending the gRPC proposal
+    /// to the indexer: posts the RCA via `RecurringCollector.offer()`, then
+    /// enqueues `send_indexing_agreement_proposal` with the same agreement.
+    ///
+    /// See [`SubmitOffer`] for more details.
+    SubmitOffer(SubmitOffer),
 }

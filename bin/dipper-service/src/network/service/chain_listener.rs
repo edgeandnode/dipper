@@ -731,6 +731,7 @@ mod tests {
             max_ongoing_tokens_per_second: thegraph_core::alloy::primitives::U256::ZERO,
             min_seconds_per_collection: 0,
             max_seconds_per_collection: 0,
+            conditions: 0,
             metadata: TermsMetadata {
                 tokens_per_second: thegraph_core::alloy::primitives::U256::ZERO,
                 tokens_per_entity_per_second: thegraph_core::alloy::primitives::U256::ZERO,
@@ -1157,6 +1158,17 @@ mod tests {
             agreement_id: IndexingAgreementId,
         ) -> anyhow::Result<dipper_pgmq::JobId> {
             self.cancel_jobs.lock().unwrap().push(agreement_id);
+            Ok(dipper_pgmq::JobId::default())
+        }
+
+        async fn submit_offer(
+            &self,
+            _agreement_id: IndexingAgreementId,
+            _indexing_request_id: IndexingRequestId,
+            _indexer_url: Url,
+            _deployment_id: DeploymentId,
+            _deployment_chain_id: ChainId,
+        ) -> anyhow::Result<dipper_pgmq::JobId> {
             Ok(dipper_pgmq::JobId::default())
         }
     }

@@ -2,7 +2,7 @@
 //!
 //! The EIP-712 signer is a wrapper around an ECDSA signer and an EIP-712 domain separator.
 
-use dipper_rpc::indexer::{gateway_server, indexer_client, rca_eip712_domain};
+use dipper_rpc::indexer::{gateway_server, indexer_client};
 use thegraph_core::{
     alloy::{
         primitives::{Address, ChainId},
@@ -31,8 +31,6 @@ pub struct Eip712Signer<S> {
     signer_chain: ChainId,
     /// The EIP-712 domain separator (admin RPC messages)
     domain: Eip712Domain,
-    /// The EIP-712 domain for RecurringCollector (RCA signing)
-    rca_domain: Eip712Domain,
 }
 
 impl<S> Eip712Signer<S>
@@ -45,15 +43,12 @@ where
         signer_address: Address,
         signer_chain: ChainId,
         domain: Eip712Domain,
-        recurring_collector: Address,
     ) -> Self {
-        let rca_domain = rca_eip712_domain(signer_chain, recurring_collector);
         Self {
             signer,
             signer_address,
             signer_chain,
             domain,
-            rca_domain,
         }
     }
 
@@ -81,17 +76,6 @@ where
         MSol: SolStruct,
     {
         recover_signer_address(&self.domain, signed_message)
-    }
-
-    /// Sign a RecurringCollectionAgreement using the RecurringCollector [EIP-712] domain.
-    ///
-    /// [EIP-712]: https://eips.ethereum.org/EIPS/eip-712 "EIP-712"
-    pub fn sign_rca_msg<M, MSol>(&self, msg: M) -> Result<SignedMessage<M>, SigningError>
-    where
-        M: ToSolStruct<MSol>,
-        MSol: SolStruct,
-    {
-        sign(&self.signer, &self.rca_domain, msg)
     }
 
     /// Sign a DIPs Cancellation message using the [EIP-712] standard.
@@ -178,14 +162,7 @@ mod tests {
         };
 
         // Create an Eip712Signer instance
-        let recurring_collector = address!("0000000000000000000000000000000000000000");
-        let eip712_signer = Eip712Signer::new(
-            signer,
-            signer_address,
-            signer_chain,
-            domain,
-            recurring_collector,
-        );
+        let eip712_signer = Eip712Signer::new(signer, signer_address, signer_chain, domain);
 
         // Sign the message
         let signed_message = sign(&eip712_signer.signer, &eip712_signer.domain, message)
@@ -199,55 +176,5 @@ mod tests {
         // The signature should be valid
         let recovered_address = result.expect("message verification failed");
         assert_eq!(recovered_address, signer_address);
-    }
-
-    #[test]
-    fn test_sign_rca_msg() {
-        use dipper_rpc::indexer::{indexer_client::sol, rca_eip712_domain};
-        use thegraph_core::{alloy::primitives::U256, signed_message::recover_signer_address};
-
-        //* Arrange
-        let signer = wallet();
-        let signer_address = signer.address();
-        let signer_chain = 42161;
-        let recurring_collector = address!("1111111111111111111111111111111111111111");
-
-        // Create an Eip712Signer with the RCA domain
-        let rca_domain = rca_eip712_domain(signer_chain, recurring_collector);
-        let eip712_signer = Eip712Signer::new(
-            signer,
-            signer_address,
-            signer_chain,
-            rca_domain.clone(),
-            recurring_collector,
-        );
-
-        // Build a RecurringCollectionAgreement with known values
-        let rca = sol::RecurringCollectionAgreement {
-            deadline: 1234567890u64,
-            endsAt: 9876543210u64,
-            payer: address!("0000000000000000000000000000000000000001"),
-            dataService: address!("0000000000000000000000000000000000000002"),
-            serviceProvider: address!("0000000000000000000000000000000000000003"),
-            maxInitialTokens: U256::from(1000u64),
-            maxOngoingTokensPerSecond: U256::from(100u64),
-            minSecondsPerCollection: 60,
-            maxSecondsPerCollection: 3600,
-            nonce: U256::from(1u64),
-            metadata: Default::default(),
-        };
-
-        //* Act
-        let signed_rca = eip712_signer.sign_rca_msg(rca).expect("RCA signing failed");
-
-        //* Assert
-        // Recover the signer from the signed message using the RCA domain
-        let recovered_address = recover_signer_address(&rca_domain, &signed_rca)
-            .expect("RCA signature recovery failed");
-
-        assert_eq!(
-            recovered_address, signer_address,
-            "Recovered signer address should match original signer"
-        );
     }
 }
