@@ -10,13 +10,12 @@ data:
       "dips": {
         "data_service": "0x0000000000000000000000000000000000000000",
         "recurring_collector": "0x0000000000000000000000000000000000000000",
-        "max_initial_tokens": "0",
-        "max_ongoing_tokens_per_second": "0",
         "max_seconds_per_collection": 86400,
-        "min_seconds_per_collection": 86400,
+        "min_seconds_per_collection": 3600,
         "duration_seconds": null,
-        "deadline_seconds": 300,
+        "deadline_seconds": 600,
         "pricing_table": {},
+        "max_agreement_grt_per_30_days": 20000,
         "max_grt_per_30_days": {
           "arbitrum-one": 4500,
           "mainnet": 450,

@@ -606,16 +606,25 @@ fn default_gas_max_addition() -> u64 {
 
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DipsAgreementConfig {
     /// The data service address (SubgraphService contract).
     pub data_service: Address,
     /// The RecurringCollector contract address. Dipper posts on-chain offers
     /// here via `RecurringCollector.offer()` before dispatching gRPC proposals.
     pub recurring_collector: Address,
-    /// Maximum tokens for the initial subgraph sync.
-    pub max_initial_tokens: U256,
-    /// Maximum tokens per second for ongoing indexing.
-    pub max_ongoing_tokens_per_second: U256,
+    /// Flat per-agreement payment ceiling (GRT per 30 days). Applied to every
+    /// RCA regardless of chain. Drives the RCA's `maxOngoingTokensPerSecond`
+    /// (as a rate). `maxInitialTokens` is hard-coded to zero in v1 of the
+    /// pricing system, so this value alone determines the on-chain monthly
+    /// ceiling.
+    ///
+    /// Per-chain variation is left to `max_grt_per_30_days` (selection filter
+    /// on the indexer's advertised base price). The on-chain cap is flat
+    /// because the entity-driven component of an indexer's actual claim
+    /// dominates the per-chain base rate at large subgraph sizes anyway.
+    #[serde(default = "default_max_agreement_grt_per_30_days")]
+    pub max_agreement_grt_per_30_days: f64,
     /// Maximum seconds per collection.
     pub max_seconds_per_collection: u32,
     /// Minimum seconds per collection.
@@ -673,19 +682,66 @@ fn default_deadline_seconds() -> u64 {
     600
 }
 
-/// Default ceiling: 10x the indexer-rs minimum defaults.
+/// Indexer-rs minimum GRT/30-days, per chain. Used by
+/// `default_max_grt_per_30_days` to derive a per-chain
+/// **selection-filter** ceiling.
+///
+/// The default `max_grt_per_30_days` map multiplies each value by 10:
+/// an indexer is dropped from selection if its advertised base price
+/// exceeds that ceiling on the relevant chain. This is a filter, not
+/// a payment rate — actual payment per indexer is set by IISA's
+/// reported price (or the fallback `pricing_table`), bounded above
+/// by `max_agreement_grt_per_30_days`. Operators do not pay 10x by
+/// default; they simply tolerate indexers asking up to 10x the
+/// indexer-rs published minimum on a given chain.
+///
+/// **Scope**: only the chains in the initial DIPs rollout set are
+/// listed here. Other chains carry no default filter — an indexer
+/// can offer any base price on them and still pass selection.
+/// Operators who want filter coverage on additional chains must
+/// add explicit entries to `max_grt_per_30_days` in their config.
+///
+/// Synced from <https://github.com/graphprotocol/indexer-rs/blob/mb9/dips-signalling-endpoint/crates/config/maximal-config-example.toml#L201-L210>
+/// (the rollout-trimmed `[dips.min_grt_per_30_days]` section).
+///
+/// To refresh: re-read the linked section and copy the value pairs.
+/// Update the `mb9/dips-signalling-endpoint` ref to the merged commit
+/// hash on `main` (or `main-dips`) once the PR lands.
+const INDEXER_RS_MIN_GRT_PER_30_DAYS: &[(&str, f64)] = &[
+    ("arbitrum-one", 450.0),
+    ("matic", 300.0),
+    ("avalanche", 225.0),
+    ("bsc", 200.0),
+    ("base", 80.0),
+    ("mainnet", 45.0),
+    ("optimism", 30.0),
+    ("base-sepolia", 15.0),
+    ("sepolia", 5.0),
+];
+
+/// Multiplier applied to indexer-rs minimums to derive dipper's max ceilings.
+const PAYMENT_CEILING_MULTIPLIER: f64 = 10.0;
+
+/// Default selection ceiling: 10x the indexer-rs minimum per chain.
 fn default_max_grt_per_30_days() -> BTreeMap<String, f64> {
-    BTreeMap::from([
-        ("arbitrum-one".to_string(), 4500.0),
-        ("mainnet".to_string(), 450.0),
-        ("base".to_string(), 2000.0),
-        ("optimism".to_string(), 1500.0),
-        ("matic".to_string(), 3000.0),
-    ])
+    INDEXER_RS_MIN_GRT_PER_30_DAYS
+        .iter()
+        .map(|(name, min)| ((*name).to_string(), min * PAYMENT_CEILING_MULTIPLIER))
+        .collect()
 }
 
 fn default_max_grt_per_billion_entities_per_30_days() -> f64 {
     2000.0
+}
+
+/// Default per-agreement payment ceiling (GRT per 30 days).
+///
+/// 20,000 GRT/30d covers any subgraph up to roughly 30 billion entities at
+/// the ~600 GRT/billion-entities indexer-pricing baseline (~0.72 KB per
+/// entity, ~22 TB at 30B). Operators with subgraphs in the long tail
+/// beyond that should bump this value in their own configmap.
+fn default_max_agreement_grt_per_30_days() -> f64 {
+    20_000.0
 }
 
 fn default_declined_indexer_lookback_days() -> i32 {
@@ -787,10 +843,11 @@ pub struct IndexingAgreementConfig {
     pub data_service: Address,
     /// The RecurringCollector contract address.
     pub recurring_collector: Address,
-    /// Maximum tokens for the initial subgraph sync.
-    pub max_initial_tokens: U256,
-    /// Maximum tokens per second for ongoing indexing.
-    pub max_ongoing_tokens_per_second: U256,
+    /// Flat per-agreement payment ceiling (GRT per 30 days). Drives the RCA's
+    /// `maxOngoingTokensPerSecond` (as a rate); `maxInitialTokens` is
+    /// hard-coded to zero in v1. Applied to every agreement regardless of
+    /// chain.
+    pub max_agreement_grt_per_30_days: f64,
     /// Maximum seconds per collection.
     pub max_seconds_per_collection: u32,
     /// Minimum seconds per collection.
@@ -829,12 +886,8 @@ impl IndexingAgreementConfig {
         self.recurring_collector
     }
 
-    pub fn max_initial_tokens(&self) -> U256 {
-        self.max_initial_tokens
-    }
-
-    pub fn max_ongoing_tokens_per_second(&self) -> U256 {
-        self.max_ongoing_tokens_per_second
+    pub fn max_agreement_grt_per_30_days(&self) -> f64 {
+        self.max_agreement_grt_per_30_days
     }
 
     pub fn max_seconds_per_collection(&self) -> u32 {
@@ -884,8 +937,7 @@ impl From<DipsAgreementConfig>
         let config = IndexingAgreementConfig {
             data_service: value.data_service,
             recurring_collector: value.recurring_collector,
-            max_initial_tokens: value.max_initial_tokens,
-            max_ongoing_tokens_per_second: value.max_ongoing_tokens_per_second,
+            max_agreement_grt_per_30_days: value.max_agreement_grt_per_30_days,
             max_seconds_per_collection: value.max_seconds_per_collection,
             min_seconds_per_collection: value.min_seconds_per_collection,
             duration_seconds: value.duration_seconds.unwrap_or(u64::MAX),
@@ -924,8 +976,7 @@ mod tests {
         let json = r#"{
             "data_service": "0x1111111111111111111111111111111111111111",
             "recurring_collector": "0x2222222222222222222222222222222222222222",
-            "max_initial_tokens": "1000",
-            "max_ongoing_tokens_per_second": "100",
+            "max_agreement_grt_per_30_days": 20000.0,
             "min_seconds_per_collection": 60,
             "max_seconds_per_collection": 3600,
             "duration_seconds": 86400,
@@ -960,14 +1011,8 @@ mod tests {
             "recurring_collector mismatch"
         );
         assert_eq!(
-            config.max_initial_tokens,
-            U256::from(1000u64),
-            "max_initial_tokens mismatch"
-        );
-        assert_eq!(
-            config.max_ongoing_tokens_per_second,
-            U256::from(100u64),
-            "max_ongoing_tokens_per_second mismatch"
+            config.max_agreement_grt_per_30_days, 20000.0,
+            "max_agreement_grt_per_30_days mismatch"
         );
         assert_eq!(
             config.min_seconds_per_collection, 60,
@@ -1025,8 +1070,6 @@ mod tests {
         let json = r#"{
             "data_service": "0x1111111111111111111111111111111111111111",
             "recurring_collector": "0x2222222222222222222222222222222222222222",
-            "max_initial_tokens": "1000",
-            "max_ongoing_tokens_per_second": "100",
             "min_seconds_per_collection": 60,
             "max_seconds_per_collection": 3600,
             "pricing_table": {}
@@ -1045,6 +1088,10 @@ mod tests {
             config.deadline_seconds, 600,
             "deadline_seconds should default to 600"
         );
+        assert_eq!(
+            config.max_agreement_grt_per_30_days, 20000.0,
+            "max_agreement_grt_per_30_days default missing"
+        );
 
         // Test the From conversion - None should map to u64::MAX
         let (agreement_config, _) = <(
@@ -1056,5 +1103,82 @@ mod tests {
             u64::MAX,
             "duration_seconds None should convert to u64::MAX"
         );
+    }
+
+    /// Guards against silent typos and accidental duplicates in the
+    /// indexer-rs mirror. Failure modes the test catches:
+    ///   * a chain name is mistyped on either side of the multiplier
+    ///   * the multiplier itself drifts away from 10x
+    ///   * two rows accidentally share a chain name (BTreeMap would mask the
+    ///     duplicate by silently dropping the earlier value)
+    #[test]
+    fn test_default_max_grt_per_30_days_const() {
+        let map = default_max_grt_per_30_days();
+
+        // Spot-check three values: high-traffic mainnet chains and a small
+        // testnet, picked to cover both ends of the value range.
+        assert_eq!(map.get("arbitrum-one"), Some(&4500.0), "arbitrum-one");
+        assert_eq!(map.get("mainnet"), Some(&450.0), "mainnet");
+        assert_eq!(map.get("sepolia"), Some(&50.0), "sepolia");
+
+        // The const should mirror indexer-rs's published minimum table.
+        // Updates that change the row count are intentional — refresh
+        // this number alongside the const.
+        assert_eq!(
+            INDEXER_RS_MIN_GRT_PER_30_DAYS.len(),
+            9,
+            "row count drifted from the indexer-rs initial DIPs rollout set"
+        );
+
+        // No duplicate keys hidden by BTreeMap's last-write-wins behaviour.
+        let unique_count = INDEXER_RS_MIN_GRT_PER_30_DAYS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        assert_eq!(
+            unique_count,
+            INDEXER_RS_MIN_GRT_PER_30_DAYS.len(),
+            "duplicate chain name in INDEXER_RS_MIN_GRT_PER_30_DAYS"
+        );
+
+        // Every output entry is 10x its source entry — confirms the
+        // multiplier wired through without rounding surprises.
+        for (name, min) in INDEXER_RS_MIN_GRT_PER_30_DAYS {
+            let want = *min * PAYMENT_CEILING_MULTIPLIER;
+            assert_eq!(map.get(*name), Some(&want), "ceiling for {name}");
+        }
+    }
+
+    /// Stale `max_initial_tokens` and `max_ongoing_tokens_per_second` keys
+    /// from the pre-refactor config schema should fail deserialization
+    /// rather than be silently ignored, so operators surface the migration
+    /// instead of running with caps that no longer take effect.
+    #[test]
+    fn test_dips_agreement_config_rejects_stale_keys() {
+        let stale_keys = [
+            "max_initial_tokens",
+            "max_ongoing_tokens_per_second",
+            "completely_made_up_key",
+        ];
+
+        for stale_key in stale_keys {
+            let json = format!(
+                r#"{{
+                    "data_service": "0x1111111111111111111111111111111111111111",
+                    "recurring_collector": "0x2222222222222222222222222222222222222222",
+                    "min_seconds_per_collection": 60,
+                    "max_seconds_per_collection": 3600,
+                    "pricing_table": {{}},
+                    "{stale_key}": "anything"
+                }}"#
+            );
+            let err = serde_json::from_str::<DipsAgreementConfig>(&json)
+                .expect_err(&format!("expected rejection for key {stale_key}"));
+            assert!(
+                err.to_string().contains(stale_key),
+                "error for {stale_key} should name the unknown key, got: {err}"
+            );
+        }
     }
 }

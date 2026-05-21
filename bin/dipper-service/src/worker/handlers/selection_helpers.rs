@@ -15,7 +15,7 @@ const SECONDS_PER_30_DAYS: u128 = 2_592_000;
 const WEI_PER_GRT: u128 = 1_000_000_000_000_000_000;
 
 /// Convert GRT per 30 days to wei per second (ceiling division to protect indexers).
-fn grt_per_30_days_to_wei_per_second(grt: f64) -> U256 {
+pub(crate) fn grt_per_30_days_to_wei_per_second(grt: f64) -> U256 {
     // Convert to integer wei, then divide by seconds using ceiling division.
     // The ceiling protects indexers from rounding losses.
     let total_wei = (grt * WEI_PER_GRT as f64) as u128;
