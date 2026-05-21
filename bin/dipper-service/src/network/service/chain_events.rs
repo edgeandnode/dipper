@@ -212,6 +212,10 @@ pub struct SubgraphEventSourceConfig {
     /// corrupt. Without this, a single poisoned value would ratchet the
     /// persisted timestamp into the future and never recover.
     pub wall_clock_skew_tolerance_secs: u64,
+    /// Bypass the wall-clock skew check. See the doc comment on
+    /// `ChainListenerConfig::bypass_chain_clock_defenses` for the
+    /// threat-model implications; must be false in production.
+    pub bypass_chain_clock_defenses: bool,
 }
 
 /// Subgraph-based implementation of chain event source.
@@ -474,7 +478,8 @@ impl ChainEventSource for SubgraphEventSource {
         if let Some(ts) = response.meta.block.timestamp {
             let now = now_secs();
             let tolerance = self.config.wall_clock_skew_tolerance_secs;
-            if let Err(err) = check_subgraph_skew(ts, now, tolerance) {
+            let bypass = self.config.bypass_chain_clock_defenses;
+            if let Err(err) = maybe_check_subgraph_skew(ts, now, tolerance, bypass) {
                 tracing::warn!(
                     event = "subgraph_skew_drop",
                     subgraph_timestamp = ts,
@@ -483,6 +488,13 @@ impl ChainEventSource for SubgraphEventSource {
                     "Subgraph timestamp past wall-clock + tolerance; dropping response as corrupt"
                 );
                 return Err(err);
+            }
+            if bypass {
+                tracing::trace!(
+                    event = "subgraph_skew_check_bypassed",
+                    subgraph_timestamp = ts,
+                    "Skew check skipped because bypass_chain_clock_defenses=true"
+                );
             }
         }
 
@@ -612,6 +624,22 @@ fn check_subgraph_skew(ts: u64, now: u64, tolerance_secs: u64) -> Result<(), Cha
         )))
     } else {
         Ok(())
+    }
+}
+
+/// Wrap `check_subgraph_skew` with the `bypass_chain_clock_defenses`
+/// short-circuit. Separated so the bypass decision is unit-testable
+/// without an HTTP mock.
+fn maybe_check_subgraph_skew(
+    ts: u64,
+    now: u64,
+    tolerance_secs: u64,
+    bypass: bool,
+) -> Result<(), ChainEventError> {
+    if bypass {
+        Ok(())
+    } else {
+        check_subgraph_skew(ts, now, tolerance_secs)
     }
 }
 
@@ -1027,6 +1055,27 @@ mod tests {
         // amount of subgraph lag (operators have a separate `subgraph_lag_seconds`
         // metric for that).
         assert!(check_subgraph_skew(1_699_000_000, 1_700_000_000, 60).is_ok());
+    }
+
+    #[test]
+    fn test_maybe_check_subgraph_skew_bypass_off_runs_check() {
+        // bypass=false routes through `check_subgraph_skew` unchanged.
+        // A far-future ts that would normally reject must still reject.
+        let err = maybe_check_subgraph_skew(u64::MAX / 2, 1_700_000_000, 60, false)
+            .expect_err("bypass off must keep the check intact");
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn test_maybe_check_subgraph_skew_bypass_on_skips_check() {
+        // bypass=true short-circuits to Ok even for a timestamp that
+        // would otherwise be rejected. Used by local-network testing
+        // where `evm_increaseTime` legitimately advances chain time
+        // by days.
+        assert!(
+            maybe_check_subgraph_skew(u64::MAX / 2, 1_700_000_000, 60, true).is_ok(),
+            "bypass on must skip the check regardless of ts"
+        );
     }
 
     #[test]

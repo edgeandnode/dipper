@@ -16,7 +16,12 @@ use crate::{
     chain_client::ChainClient,
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
     indexer_rpc_client::compute_on_chain_id,
-    network::{provider::NetworkProviderService, service::entity_count_cache::EntityCountCache},
+    network::{
+        provider::NetworkProviderService,
+        service::{
+            chain_listener::ChainListenerStateRegistry, entity_count_cache::EntityCountCache,
+        },
+    },
     registry::{
         AgreementRegistry, IndexerDenylistRegistry, IndexingAgreementTerms,
         IndexingAgreementTermsMetadata, IndexingRequestRegistry, NewAgreementParams,
@@ -42,6 +47,16 @@ pub struct Ctx<R, W, I, T> {
     pub additional_networks: Arc<BTreeMap<ChainId, String>>,
     pub entity_count_cache: EntityCountCache,
     pub chain_listener_notify: Arc<tokio::sync::Notify>,
+    /// When true, compute agreement deadlines from chain time
+    /// (the chain_listener's persisted `last_processed_block_timestamp`)
+    /// instead of wall clock. See `ChainListenerConfig::bypass_chain_clock_defenses`
+    /// for the rationale and threat-model implications.
+    pub bypass_chain_clock_defenses: bool,
+    /// Chain ID used to read `last_processed_block_timestamp` from the
+    /// chain_listener state registry when `bypass_chain_clock_defenses`
+    /// is true. `None` disables the bypass path even if the flag is set
+    /// (handler falls back to wall clock with a warning).
+    pub chain_listener_chain_id: Option<u64>,
 }
 
 /// Reassess an indexing request against the current IISA target state.
@@ -74,7 +89,8 @@ where
     R: IndexingRequestRegistry
         + AgreementRegistry
         + IndexerDenylistRegistry
-        + PendingCancellationRegistry,
+        + PendingCancellationRegistry
+        + ChainListenerStateRegistry,
     W: WorkerQueue,
     I: CandidateSelection,
     T: ChainClient,
@@ -162,7 +178,20 @@ where
     // We add before cancelling to prevent under-allocation. Old agreements
     // stay active until the chain_listener confirms the replacement is
     // accepted on-chain (see pending cancellations below).
-    let now = now_secs();
+    //
+    // `now` denominates `terms.deadline` and `terms.ends_at`. The
+    // expiration service compares both against the chain_listener's
+    // persisted chain timestamp. In production the two clocks track
+    // each other so wall time is fine; in local-network where
+    // `evm_increaseTime` advances chain time independently of wall,
+    // `bypass_chain_clock_defenses` reroutes us to chain time so
+    // freshly created agreements don't appear born-expired.
+    let now = resolve_deadline_clock(
+        ctx.bypass_chain_clock_defenses,
+        ctx.chain_listener_chain_id,
+        &ctx.registry,
+    )
+    .await?;
 
     // Pre-compute old agreements to cancel so we can pair replacements
     // atomically during registration.
@@ -459,4 +488,72 @@ where
     }
 
     Ok(())
+}
+
+/// Pick the clock to denominate `terms.deadline` and `terms.ends_at`.
+///
+/// When `bypass` is false (production), return wall clock — matching
+/// the original behavior and the simple, NTP-tracking case.
+///
+/// When `bypass` is true (local-network testing), fetch the
+/// chain_listener's persisted chain timestamp instead so deadlines
+/// stay denominated in chain time. Falls back to wall clock (with a
+/// warning) when the chain listener hasn't bootstrapped yet or no
+/// chain ID is configured; returns `JobError::Retryable` only if the
+/// registry call itself errors, which the worker framework will
+/// back-off and retry.
+async fn resolve_deadline_clock<R>(
+    bypass: bool,
+    chain_listener_chain_id: Option<u64>,
+    registry: &R,
+) -> JobResult<u64>
+where
+    R: ChainListenerStateRegistry,
+{
+    if !bypass {
+        return Ok(now_secs());
+    }
+    let Some(chain_id) = chain_listener_chain_id else {
+        tracing::warn!(
+            event = "deadline_clock_fallback",
+            reason = "no chain_listener chain_id configured",
+            "bypass_chain_clock_defenses=true but no chain id; falling back to wall clock"
+        );
+        return Ok(now_secs());
+    };
+    match registry.get_chain_listener_state(chain_id).await {
+        Ok(Some(state)) => match state.last_processed_block_timestamp {
+            Some(ts) => Ok(ts),
+            None => {
+                tracing::warn!(
+                    event = "deadline_clock_fallback",
+                    reason = "chain_listener state has no timestamp yet",
+                    chain_id,
+                    "falling back to wall clock for deadline computation"
+                );
+                Ok(now_secs())
+            }
+        },
+        Ok(None) => {
+            tracing::warn!(
+                event = "deadline_clock_fallback",
+                reason = "chain_listener has no persisted state yet",
+                chain_id,
+                "falling back to wall clock for deadline computation"
+            );
+            Ok(now_secs())
+        }
+        Err(err) => {
+            tracing::warn!(
+                event = "deadline_clock_lookup_failed",
+                chain_id,
+                error = %err,
+                "failed to read chain_listener state for deadline; retrying job"
+            );
+            Err(JobError::Retryable(
+                anyhow::anyhow!("chain_listener state lookup failed: {err}"),
+                Duration::from_secs(5),
+            ))
+        }
+    }
 }

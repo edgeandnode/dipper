@@ -38,6 +38,7 @@ where
         + AgreementRegistry
         + IndexerDenylistRegistry
         + PendingCancellationRegistry
+        + crate::network::service::chain_listener::ChainListenerStateRegistry
         + Clone
         + Send
         + Sync,
@@ -60,6 +61,8 @@ where
         additional_networks,
         entity_count_cache,
         chain_listener_notify,
+        bypass_chain_clock_defenses,
+        chain_listener_chain_id,
     } = state.into();
 
     let (tx_stop, rx_stop) = mpsc::channel(1);
@@ -83,6 +86,8 @@ where
             entity_count_cache,
             chain_listener_notify,
             worker: WorkerQueueHandle::new(queue.clone()),
+            bypass_chain_clock_defenses,
+            chain_listener_chain_id,
         };
 
         let mut stop_rx = rx_stop;
@@ -155,7 +160,8 @@ where
     R: IndexingRequestRegistry
         + AgreementRegistry
         + IndexerDenylistRegistry
-        + PendingCancellationRegistry,
+        + PendingCancellationRegistry
+        + crate::network::service::chain_listener::ChainListenerStateRegistry,
     W: WorkerQueue,
     C: IndexerClient,
     I: CandidateSelection,
