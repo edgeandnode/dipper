@@ -695,107 +695,27 @@ fn default_deadline_seconds() -> u64 {
 /// default; they simply tolerate indexers asking up to 10x the
 /// indexer-rs published minimum on a given chain.
 ///
-/// Synced from https://github.com/graphprotocol/indexer-rs/blob/cd456bf8bbc377a531a0dcd72cf5a7c6e498f24a/crates/config/maximal-config-example.toml#L212-L308
+/// **Scope**: only the chains in the initial DIPs rollout set are
+/// listed here. Other chains carry no default filter — an indexer
+/// can offer any base price on them and still pass selection.
+/// Operators who want filter coverage on additional chains must
+/// add explicit entries to `max_grt_per_30_days` in their config.
 ///
-/// To refresh: re-read the linked `[dips.min_grt_per_30_days]` section
-/// and copy the value pairs.
+/// Synced from <https://github.com/graphprotocol/indexer-rs/blob/mb9/dips-signalling-endpoint/crates/config/maximal-config-example.toml#L201-L210>
+/// (the rollout-trimmed `[dips.min_grt_per_30_days]` section).
+///
+/// To refresh: re-read the linked section and copy the value pairs.
+/// Update the `mb9/dips-signalling-endpoint` ref to the merged commit
+/// hash on `main` (or `main-dips`) once the PR lands.
 const INDEXER_RS_MIN_GRT_PER_30_DAYS: &[(&str, f64)] = &[
     ("arbitrum-one", 450.0),
     ("matic", 300.0),
-    ("fantom", 300.0),
     ("avalanche", 225.0),
     ("bsc", 200.0),
     ("base", 80.0),
-    ("gnosis", 45.0),
-    ("near-mainnet", 45.0),
-    ("fuji", 45.0),
     ("mainnet", 45.0),
     ("optimism", 30.0),
-    ("xdai", 30.0),
-    ("polygon-zkevm", 30.0),
-    ("polygon-amoy", 30.0),
-    ("xlayer-mainnet", 30.0),
-    ("soneium", 30.0),
-    ("abstract", 30.0),
-    ("fantom-testnet", 30.0),
-    ("lens", 30.0),
-    ("rootstock-testnet", 30.0),
-    ("kaia", 30.0),
-    ("chiliz", 30.0),
-    ("linea-sepolia", 30.0),
-    ("joc-testnet", 30.0),
-    ("etherlink-mainnet", 30.0),
-    ("apechain", 30.0),
-    ("ink", 30.0),
-    ("unichain-testnet", 30.0),
-    ("blast-testnet", 30.0),
-    ("megaeth", 30.0),
-    ("sei-atlantic", 30.0),
-    ("zksync-era-sepolia", 30.0),
-    ("arbitrum-nova", 30.0),
-    ("hoodi", 30.0),
-    ("celo-sepolia", 30.0),
-    ("vana", 30.0),
-    ("joc", 30.0),
-    ("swellchain", 30.0),
-    ("soneium-testnet", 30.0),
-    ("zetachain", 30.0),
-    ("hemi-sepolia", 30.0),
-    ("megaeth-testnet", 30.0),
-    ("iotex", 30.0),
-    ("stable", 30.0),
-    ("cronos", 30.0),
-    ("ronin", 30.0),
-    ("fraxtal", 30.0),
-    ("kaia-testnet", 30.0),
-    ("abstract-testnet", 30.0),
-    ("neox-testnet", 30.0),
-    ("fuse-testnet", 30.0),
-    ("manta", 30.0),
-    ("viction", 30.0),
-    ("peaq", 30.0),
-    ("boba-testnet", 30.0),
-    ("hashkeychain", 30.0),
-    ("vana-moksha", 30.0),
-    ("botanix-testnet", 30.0),
-    ("corn", 30.0),
-    ("chiliz-testnet", 30.0),
-    ("apechain-curtis", 30.0),
-    ("megaeth-timothy", 30.0),
-    ("status-sepolia", 30.0),
-    ("etherlink-shadownet", 30.0),
-    ("etherlink-testnet", 30.0),
-    ("mint", 30.0),
-    ("ink-sepolia", 30.0),
-    ("iotex-testnet", 30.0),
-    ("neox", 30.0),
-    ("lumia", 30.0),
-    ("mint-sepolia", 30.0),
-    ("lens-testnet", 30.0),
-    ("berachain", 30.0),
-    ("sonic", 25.0),
-    ("katana", 25.0),
-    ("hemi", 20.0),
-    ("zksync-era", 20.0),
-    ("sei-mainnet", 20.0),
-    ("scroll", 15.0),
-    ("optimism-sepolia", 15.0),
-    ("celo", 15.0),
-    ("linea", 15.0),
     ("base-sepolia", 15.0),
-    ("unichain", 15.0),
-    ("monad-testnet", 10.0),
-    ("monad", 10.0),
-    ("fuse", 10.0),
-    ("scroll-sepolia", 10.0),
-    ("rootstock", 10.0),
-    ("near-testnet", 10.0),
-    ("moonriver", 10.0),
-    ("chapel", 10.0),
-    ("moonbeam", 10.0),
-    ("blast-mainnet", 5.0),
-    ("arbitrum-sepolia", 5.0),
-    ("boba", 5.0),
     ("sepolia", 5.0),
 ];
 
@@ -1206,8 +1126,8 @@ mod tests {
         // this number alongside the const.
         assert_eq!(
             INDEXER_RS_MIN_GRT_PER_30_DAYS.len(),
-            97,
-            "row count drifted from indexer-rs mirror"
+            9,
+            "row count drifted from the indexer-rs initial DIPs rollout set"
         );
 
         // No duplicate keys hidden by BTreeMap's last-write-wins behaviour.
