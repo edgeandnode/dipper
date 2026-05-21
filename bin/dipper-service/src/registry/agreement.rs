@@ -41,10 +41,18 @@ pub enum CancelKind {
 }
 
 /// Outcome of an atomic `apply_reconciliation` call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ReconciliationOutcome {
     pub did_accept: bool,
     pub did_cancel: bool,
+}
+
+/// One row's reconciliation request inside a batched apply.
+#[derive(Debug, Clone, Copy)]
+pub struct ReconciliationItem {
+    pub agreement_id: IndexingAgreementId,
+    pub apply_accept: bool,
+    pub cancel: Option<CancelKind>,
 }
 
 #[async_trait]
@@ -54,6 +62,28 @@ pub trait AgreementRegistry {
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<Option<IndexingAgreement>>;
+
+    /// Batch lookup of agreements by id. Missing ids are absent from the
+    /// returned map. The chain listener uses this to fetch all agreements
+    /// referenced by a page of subgraph snapshots in a single round-trip.
+    /// Default impl loops over `get_indexing_agreement_by_id` so test
+    /// mocks don't need to override; the production registry overrides
+    /// with a single `WHERE id = ANY($1)` query.
+    async fn get_indexing_agreements_by_ids(
+        &self,
+        ids: &[IndexingAgreementId],
+    ) -> RegistryResult<std::collections::HashMap<IndexingAgreementId, IndexingAgreement>>
+    where
+        Self: Sync,
+    {
+        let mut out = std::collections::HashMap::with_capacity(ids.len());
+        for id in ids {
+            if let Some(agreement) = self.get_indexing_agreement_by_id(id).await? {
+                out.insert(*id, agreement);
+            }
+        }
+        Ok(out)
+    }
 
     /// Get all agreements by deployment ID.
     async fn get_indexing_agreements_by_deployment_id(
@@ -195,6 +225,28 @@ pub trait AgreementRegistry {
         cancel: Option<CancelKind>,
     ) -> RegistryResult<ReconciliationOutcome>;
 
+    /// Batched `apply_reconciliation`. Returns one outcome per input id;
+    /// rows whose CAS guard didn't match get both flags `false`. The
+    /// default trait impl loops calling `apply_reconciliation` so test
+    /// mocks don't need to override; the production `RegistryProvider`
+    /// overrides with a single-transaction implementation.
+    async fn apply_reconciliation_batch(
+        &self,
+        items: &[ReconciliationItem],
+    ) -> RegistryResult<std::collections::HashMap<IndexingAgreementId, ReconciliationOutcome>>
+    where
+        Self: Sync,
+    {
+        let mut outcomes = std::collections::HashMap::with_capacity(items.len());
+        for item in items {
+            let outcome = self
+                .apply_reconciliation(&item.agreement_id, item.apply_accept, item.cancel)
+                .await?;
+            outcomes.insert(item.agreement_id, outcome);
+        }
+        Ok(outcomes)
+    }
+
     /// Get `Created` agreements whose deadline has passed (by block timestamp).
     async fn get_expired_created_agreements(
         &self,
@@ -256,6 +308,20 @@ pub trait AgreementRegistry {
     async fn count_active_agreements_by_deployment(
         &self,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, usize>>;
+
+    /// Whether any agreement is in `Created` or `AcceptedOnChain` status.
+    ///
+    /// Used by the chain listener's adaptive-interval check on every poll;
+    /// the default impl falls back to `count_active_agreements_by_deployment`
+    /// so test mocks don't need to override.
+    async fn exists_active_agreements(&self) -> RegistryResult<bool>
+    where
+        Self: Sync,
+    {
+        self.count_active_agreements_by_deployment()
+            .await
+            .map(|m| !m.is_empty())
+    }
 
     /// Mark an indexing agreement as `ABANDONED_BY_INDEXER`.
     ///

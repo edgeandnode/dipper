@@ -1,10 +1,6 @@
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use dipper_core::ids::IndexingRequestId;
+use dipper_core::{ids::IndexingRequestId, time::now_secs};
 use dipper_iisa::{CandidateSelection, FallbackFilter, SelectedIndexer, SelectionError};
 use graph_networks_registry::NetworksRegistry;
 use rand::seq::IndexedRandom;
@@ -209,10 +205,7 @@ where
         return Ok(());
     }
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before UNIX epoch")
-        .as_secs();
+    let now = now_secs();
 
     // Resolve indexer IDs to full indexer objects (with URLs) via network topology
     for selected_indexer in &selected {

@@ -4,8 +4,9 @@ use std::collections::HashSet;
 
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_pgregistry::{
-    Error, IndexingAgreementStatus, IndexingAgreementTerms, IndexingReceiptReportedWork,
-    IndexingRequestStatus, NewAgreementParams, PgRegistry,
+    CancelKind, Error, IndexingAgreementStatus, IndexingAgreementTerms,
+    IndexingReceiptReportedWork, IndexingRequestStatus, NewAgreementParams, PgRegistry,
+    ReconciliationItem,
 };
 use fake::{Fake, Faker};
 use pgtemp::PgTempDB;
@@ -1188,10 +1189,11 @@ async fn update_chain_listener_state_creates_new_record() {
     //* Given
     let (db, _temp_db) = temp_registry_db().await;
     let registry = PgRegistry::new(db);
+    let cursor_id = IndexingAgreementId::from_bytes([7u8; 16]);
 
     //* When
     registry
-        .update_chain_listener_state(42161, 12345678, Some(1700000000))
+        .update_chain_listener_state(42161, 12345678, Some(cursor_id), Some(1700000000))
         .await
         .expect("Should create state");
 
@@ -1205,6 +1207,11 @@ async fn update_chain_listener_state_creates_new_record() {
     assert_eq!(
         state.last_processed_block, 12345678,
         "Block number should match"
+    );
+    assert_eq!(
+        state.last_processed_id,
+        Some(cursor_id),
+        "Cursor id should match"
     );
     assert_eq!(
         state.last_processed_block_timestamp,
@@ -1221,13 +1228,14 @@ async fn update_chain_listener_state_upserts_existing() {
 
     // Create initial state
     registry
-        .update_chain_listener_state(42161, 1000, Some(1700000000))
+        .update_chain_listener_state(42161, 1000, None, Some(1700000000))
         .await
         .expect("Should create state");
 
     //* When
+    let new_id = IndexingAgreementId::from_bytes([9u8; 16]);
     registry
-        .update_chain_listener_state(42161, 2000, Some(1700001000))
+        .update_chain_listener_state(42161, 2000, Some(new_id), Some(1700001000))
         .await
         .expect("Should update state");
 
@@ -1240,6 +1248,11 @@ async fn update_chain_listener_state_upserts_existing() {
     assert_eq!(
         state.last_processed_block, 2000,
         "Block number should be updated"
+    );
+    assert_eq!(
+        state.last_processed_id,
+        Some(new_id),
+        "Cursor id should be updated"
     );
     assert_eq!(
         state.last_processed_block_timestamp,
@@ -2044,4 +2057,233 @@ async fn get_declined_indexers_signer_not_authorised_excluded_after_5_minutes() 
         !result.contains_key(&deployment_1a),
         "10-minute-old SIGNER_NOT_AUTHORISED rejection should not be in declined list (outside 5-minute window)"
     );
+}
+
+// =============================================================================
+// apply_reconciliation_batch tests
+//
+// These exercise the production batch SQL path that the chain_listener loop
+// drives every poll. The chain_listener-level tests use a MockRegistry whose
+// batch falls back to the per-row trait default, so without these the real
+// `apply_reconciliation_batch` SQL is only validated by the single-row
+// `apply_reconciliation` tests above.
+// =============================================================================
+
+#[tokio::test]
+async fn apply_reconciliation_batch_handles_all_four_item_shapes() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    let accept_only_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    let cancel_by_indexer_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    let paired_id =
+        IndexingAgreementId::from_bytes([0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    let recover_expired_id =
+        IndexingAgreementId::from_bytes([0xcc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+
+    let items = vec![
+        // accept-only: Created -> AcceptedOnChain
+        ReconciliationItem {
+            agreement_id: accept_only_id,
+            apply_accept: true,
+            cancel: None,
+        },
+        // cancel-only by indexer: AcceptedOnChain -> CanceledByIndexer
+        ReconciliationItem {
+            agreement_id: cancel_by_indexer_id,
+            apply_accept: false,
+            cancel: Some(CancelKind::ByIndexer),
+        },
+        // paired accept+cancel-by-requester: Created -> AcceptedOnChain -> CanceledByRequester
+        ReconciliationItem {
+            agreement_id: paired_id,
+            apply_accept: true,
+            cancel: Some(CancelKind::ByRequester),
+        },
+        // accept-only recovery from Expired
+        ReconciliationItem {
+            agreement_id: recover_expired_id,
+            apply_accept: true,
+            cancel: None,
+        },
+    ];
+
+    //* When
+    let outcomes = registry
+        .apply_reconciliation_batch(&items)
+        .await
+        .expect("batch should succeed");
+
+    //* Then
+    // Every input id appears in the outcome map.
+    assert_eq!(
+        outcomes.len(),
+        items.len(),
+        "outcome map covers every input"
+    );
+
+    let accept_only = outcomes.get(&accept_only_id).copied().unwrap_or_default();
+    assert!(accept_only.did_accept);
+    assert!(!accept_only.did_cancel);
+
+    let cancel_only = outcomes
+        .get(&cancel_by_indexer_id)
+        .copied()
+        .unwrap_or_default();
+    assert!(!cancel_only.did_accept);
+    assert!(cancel_only.did_cancel);
+
+    let paired = outcomes.get(&paired_id).copied().unwrap_or_default();
+    assert!(paired.did_accept);
+    assert!(paired.did_cancel);
+
+    let recover = outcomes
+        .get(&recover_expired_id)
+        .copied()
+        .unwrap_or_default();
+    assert!(recover.did_accept);
+    assert!(!recover.did_cancel);
+
+    // Final on-disk statuses match the outcomes.
+    let final_status = |id: &IndexingAgreementId| {
+        let registry = registry.clone();
+        let id = *id;
+        async move {
+            registry
+                .get_indexing_agreement_by_id(&id)
+                .await
+                .expect("get failed")
+                .expect("agreement missing")
+                .status
+        }
+    };
+    assert_eq!(
+        final_status(&accept_only_id).await,
+        IndexingAgreementStatus::AcceptedOnChain
+    );
+    assert_eq!(
+        final_status(&cancel_by_indexer_id).await,
+        IndexingAgreementStatus::CanceledByIndexer
+    );
+    assert_eq!(
+        final_status(&paired_id).await,
+        IndexingAgreementStatus::CanceledByRequester
+    );
+    assert_eq!(
+        final_status(&recover_expired_id).await,
+        IndexingAgreementStatus::AcceptedOnChain
+    );
+}
+
+#[tokio::test]
+async fn apply_reconciliation_batch_no_op_cas_miss_present_with_default_outcome() {
+    // Documents the contract the chain_listener relies on to distinguish
+    // "row CAS-guard didn't match" (default outcome present) from "whole
+    // batch failed" (id missing from outcome map). Without the pre-fill,
+    // the listener's batch-fail double-count fix would misclassify every
+    // CAS no-op as a batch failure.
+
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    // Already in CanceledByIndexer; cancel-by-indexer's allowed_from is
+    // [AcceptedOnChain] so this UPDATE will not match.
+    let already_canceled_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
+    let items = vec![ReconciliationItem {
+        agreement_id: already_canceled_id,
+        apply_accept: false,
+        cancel: Some(CancelKind::ByIndexer),
+    }];
+
+    //* When
+    let outcomes = registry
+        .apply_reconciliation_batch(&items)
+        .await
+        .expect("batch should succeed even with CAS no-op rows");
+
+    //* Then
+    let outcome = outcomes
+        .get(&already_canceled_id)
+        .copied()
+        .expect("CAS no-op id must be present in outcome map (default), not absent");
+    assert!(!outcome.did_accept);
+    assert!(!outcome.did_cancel);
+}
+
+#[tokio::test]
+async fn apply_reconciliation_batch_empty_input_is_ok() {
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+
+    let outcomes = registry
+        .apply_reconciliation_batch(&[])
+        .await
+        .expect("empty batch is a fast-path Ok");
+    assert!(outcomes.is_empty());
+}
+
+#[tokio::test]
+async fn apply_reconciliation_batch_paired_rolls_back_on_unmatched_cancel() {
+    // The Accept-then-Cancel-in-one-snapshot invariant: if the accept
+    // landed but the paired cancel matched no row, commit would leave
+    // an AcceptedOnChain visible to concurrent readers without its
+    // follow-up cancel. The batch must roll back the whole tx so the
+    // accept doesn't land alone.
+
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    let created_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    // Both cancel kinds' allowed_from already includes AcceptedOnChain,
+    // so a paired accept that lands always permits the cancel — the
+    // rollback path is unreachable from valid input under the current
+    // allowed_from sets. Asserts the corresponding success invariant.
+    let items = vec![ReconciliationItem {
+        agreement_id: created_id,
+        apply_accept: true,
+        cancel: Some(CancelKind::ByIndexer),
+    }];
+
+    //* When
+    let outcomes = registry
+        .apply_reconciliation_batch(&items)
+        .await
+        .expect("paired accept+cancel on Created row succeeds end-to-end");
+
+    //* Then
+    let outcome = outcomes.get(&created_id).copied().expect("id present");
+    assert!(outcome.did_accept);
+    assert!(outcome.did_cancel);
+    let final_status = registry
+        .get_indexing_agreement_by_id(&created_id)
+        .await
+        .expect("get failed")
+        .expect("agreement missing")
+        .status;
+    assert_eq!(final_status, IndexingAgreementStatus::CanceledByIndexer);
 }

@@ -446,6 +446,27 @@ pub struct ChainListenerConfig {
     /// Maximum retry attempts for transient failures (default: 3)
     #[serde(default = "default_chain_listener_max_retries")]
     pub max_retries: u32,
+
+    /// Number of blocks at the tail of the chain that every poll re-reads,
+    /// so a reorg that moves a state change across the cursor boundary is
+    /// still picked up. Set to 0 to disable.
+    #[serde(default = "default_chain_listener_reorg_buffer_blocks")]
+    pub reorg_buffer_blocks: u32,
+
+    /// How far ahead of the host's wall clock the subgraph's reported
+    /// chain timestamp may sit before the response is rejected as
+    /// corrupt. Default 60s covers typical NTP drift; widen if the
+    /// host clock is known to lag.
+    #[serde(default = "default_chain_listener_wall_clock_skew_tolerance_secs")]
+    pub wall_clock_skew_tolerance_secs: u64,
+
+    /// How much faster than wall-clock the persisted chain timestamp
+    /// may advance per poll before the listener caps the advance.
+    /// Chain time legitimately moves at ~1s per wall second; the
+    /// tolerance covers poll-cadence jitter and subgraph-side rounding.
+    /// Widen for environments with choppy poll cadence.
+    #[serde(default = "default_chain_listener_chain_ts_drift_tolerance_secs")]
+    pub chain_ts_drift_tolerance_secs: u64,
 }
 
 fn default_chain_listener_enabled() -> bool {
@@ -466,6 +487,18 @@ fn default_chain_listener_request_timeout() -> Duration {
 
 fn default_chain_listener_max_retries() -> u32 {
     3
+}
+
+fn default_chain_listener_reorg_buffer_blocks() -> u32 {
+    20
+}
+
+fn default_chain_listener_wall_clock_skew_tolerance_secs() -> u64 {
+    60
+}
+
+fn default_chain_listener_chain_ts_drift_tolerance_secs() -> u64 {
+    10
 }
 
 fn default_gas_price_multiplier() -> f64 {

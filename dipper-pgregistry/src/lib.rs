@@ -19,7 +19,8 @@ pub use indexing_agreement::{
 pub use indexing_receipt::{IndexingReceipt, ReportedWork as IndexingReceiptReportedWork};
 pub use indexing_request::{IndexingRequest, Status as IndexingRequestStatus};
 pub use postgres::{
-    CancelKind, ChainListenerStateRow, NewAgreementParams, PgRegistry, ReconciliationOutcome,
+    CancelKind, ChainListenerStateRow, NewAgreementParams, PgRegistry, ReconciliationItem,
+    ReconciliationOutcome,
 };
 pub use result::{Error, Result};
 

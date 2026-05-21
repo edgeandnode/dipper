@@ -303,6 +303,7 @@ pub async fn main() -> anyhow::Result<()> {
                 payer_address: signer.address(),
                 request_timeout: chain_listener_conf.request_timeout,
                 max_retries: chain_listener_conf.max_retries,
+                wall_clock_skew_tolerance_secs: chain_listener_conf.wall_clock_skew_tolerance_secs,
             };
             let event_source =
                 network::service::chain_events::SubgraphEventSource::new(event_source_config);

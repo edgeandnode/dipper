@@ -1,10 +1,10 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
-use dipper_core::ids::IndexingRequestId;
+use dipper_core::{ids::IndexingRequestId, time::now_secs};
 use dipper_iisa::{CandidateSelection, SelectedIndexer, SelectionError};
 use graph_networks_registry::NetworksRegistry;
 use jsonrpsee::core::Serialize;
@@ -157,10 +157,7 @@ where
     // We add before cancelling to prevent under-allocation. Old agreements
     // stay active until the chain_listener confirms the replacement is
     // accepted on-chain (see pending cancellations below).
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before UNIX epoch")
-        .as_secs();
+    let now = now_secs();
 
     // Pre-compute old agreements to cancel so we can pair replacements
     // atomically during registration.
