@@ -34,7 +34,7 @@ jobs:
           rustflags: ''
 
       - name: Cache Rust build files
-        uses: leafwing-studios/cargo-cache@43ec9a5bad6e7f174e7fc65dcf533de75ff65881 # v2
+        uses: leafwing-studios/cargo-cache@ba6ee760ccdefa26b630cff8094e3243ae86a2c9 # v2
         with:
           sweep-cache: true
 
@@ -55,7 +55,7 @@ jobs:
           rustflags: ''
 
       - name: Cache Rust build files
-        uses: leafwing-studios/cargo-cache@43ec9a5bad6e7f174e7fc65dcf533de75ff65881 # v2
+        uses: leafwing-studios/cargo-cache@ba6ee760ccdefa26b630cff8094e3243ae86a2c9 # v2
         with:
           sweep-cache: true
 
