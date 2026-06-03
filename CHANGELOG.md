@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.2](https://github.com/edgeandnode/dipper/compare/v0.1.1...v0.1.2) (2026-06-03)
+
+
+### Changed
+
+* **deps:** update leafwing-studios/cargo-cache digest to ba6ee76 ([#496](https://github.com/edgeandnode/dipper/issues/496)) ([3a78f84](https://github.com/edgeandnode/dipper/commit/3a78f84e4f3b99d62b948150b0bd972a169231f3))
+* **deps:** update rust crate tracing-subscriber to v0.3.22 ([#505](https://github.com/edgeandnode/dipper/issues/505)) ([e5390b5](https://github.com/edgeandnode/dipper/commit/e5390b50f7187a8b25e53220770d6ef4834b6fba))
+* **deps:** update taiki-e/install-action digest to dfcb1ee ([#530](https://github.com/edgeandnode/dipper/issues/530)) ([b9deb23](https://github.com/edgeandnode/dipper/commit/b9deb236e09b4ffee2978eac564c095bb6f9bb1a))
+
 ## [0.1.1](https://github.com/edgeandnode/dipper/compare/v0.1.0...v0.1.1) (2026-06-03)
 
 
