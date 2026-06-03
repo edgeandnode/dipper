@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Env-agnostic base; consumed as a remote resource: dipper.git/k8s?ref=<commit>.
+# configmap-example.yaml is excluded — each environment supplies its own
+# "dipper-config" (a ConfigMap, or a Secret when config.json holds secrets).
+resources:
+  - deployment.yaml
+  - service.yaml
