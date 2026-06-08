@@ -80,8 +80,15 @@ pub async fn main() -> anyhow::Result<()> {
     //- The registry component
     let registry = RegistryProvider::new(db_conn.clone());
 
-    //- The indexer client component
-    let indexer_client = indexer_rpc_client::DipsIndexerClient::with_config(conf.indexer_client);
+    //- The indexer client component (signs each outbound proposal; see DipsIndexerClient).
+    let indexer_dips_signer =
+        PrivateKeySigner::from_signing_key(conf.signer.secret_key.as_ref().into());
+    let indexer_client = indexer_rpc_client::DipsIndexerClient::with_config(
+        conf.indexer_client,
+        indexer_dips_signer,
+        conf.signer.chain_id,
+        agreement_conf.recurring_collector,
+    );
 
     //- The network services
     let (network_topology_handle, network_topology_service) = {
