@@ -11,7 +11,7 @@ indexer-rpc = ["dep:indexer-dips", "indexer-dips/rpc", "dep:thegraph-core"]
 
 [dependencies]
 dipper-core = { version = "0.1.0", path = "../dipper-core", features = ["serde"], optional = true }
-indexer-dips = { git = "https://github.com/graphprotocol/indexer-rs.git", rev = "3f684aad1b58fc435bd4d9b90506812b18046060", default-features = false, optional = true }
+indexer-dips = { git = "https://github.com/graphprotocol/indexer-rs.git", rev = "8a46d3327a3fba0338842dd91d18060cb06e472c", default-features = false, optional = true }
 jsonrpsee = { workspace = true, features = ["client", "macros", "server"], optional = true }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }

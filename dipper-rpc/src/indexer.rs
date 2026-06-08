@@ -15,8 +15,9 @@ pub mod indexer_client {
     pub mod rpc {
         #[doc(inline)]
         pub use indexer_dips::proto::indexer::graphprotocol::indexer::dips::{
-            ProposalResponse, RejectReason, SubmitAgreementProposalRequest,
+            Accepted, RejectReason, Rejected, SubmitAgreementProposalRequest,
             SubmitAgreementProposalResponse, indexer_dips_service_client::IndexerDipsServiceClient,
+            submit_agreement_proposal_response::Outcome,
         };
     }
 
