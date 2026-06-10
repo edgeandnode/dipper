@@ -32,6 +32,7 @@ pub async fn gather_selection_context<R>(
     declined_indexer_lookback_days: i32,
     price_rejection_lookback_days: i32,
     signer_rejection_lookback_minutes: i32,
+    escrow_rejection_lookback_minutes: i32,
     entity_count_cache: &EntityCountCache,
 ) -> JobResult<SelectionContext>
 where
@@ -59,6 +60,7 @@ where
             declined_indexer_lookback_days,
             price_rejection_lookback_days,
             signer_rejection_lookback_minutes,
+            escrow_rejection_lookback_minutes,
         )
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;

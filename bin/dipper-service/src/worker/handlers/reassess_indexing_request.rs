@@ -105,6 +105,7 @@ where
         ctx.agreement_conf.declined_indexer_lookback_days(),
         ctx.agreement_conf.price_rejection_lookback_days(),
         ctx.agreement_conf.signer_rejection_lookback_minutes(),
+        ctx.agreement_conf.escrow_rejection_lookback_minutes(),
         &ctx.entity_count_cache,
     )
     .await?;

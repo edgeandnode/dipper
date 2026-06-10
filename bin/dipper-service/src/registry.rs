@@ -228,6 +228,7 @@ impl AgreementRegistry for RegistryProvider {
         default_lookback_days: i32,
         price_lookback_days: i32,
         signer_lookback_minutes: i32,
+        escrow_lookback_minutes: i32,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>> {
         Ok(self
             .inner
@@ -235,6 +236,7 @@ impl AgreementRegistry for RegistryProvider {
                 default_lookback_days,
                 price_lookback_days,
                 signer_lookback_minutes,
+                escrow_lookback_minutes,
             )
             .await?)
     }

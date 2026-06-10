@@ -525,9 +525,11 @@ impl PgRegistry {
     /// Returns indexers with `CanceledByIndexer`, `Expired`, or `Rejected` status
     /// within lookback windows that depend on the rejection reason:
     /// - `PRICE_TOO_LOW`: `price_lookback_days` (short, retry after IISA price refresh)
-    /// - `SIGNER_NOT_AUTHORISED`, `DEADLINE_EXPIRED`, `SUBGRAPH_MANIFEST_UNAVAILABLE`,
-    ///   `UNEXPECTED_SERVICE_PROVIDER`, `AGREEMENT_EXPIRED`, `UNSUPPORTED_METADATA_VERSION`:
-    ///   `signer_lookback_minutes` (transient or not the indexer's fault)
+    /// - Transient reasons (`SIGNER_NOT_AUTHORISED`, `DEADLINE_EXPIRED`,
+    ///   `SUBGRAPH_MANIFEST_UNAVAILABLE`, `UNEXPECTED_SERVICE_PROVIDER`,
+    ///   `AGREEMENT_EXPIRED`, `UNSUPPORTED_METADATA_VERSION`, `CAPACITY_EXCEEDED`,
+    ///   `INDEXER_UNAVAILABLE`): `signer_lookback_minutes` (short, clears on its own)
+    /// - `INSUFFICIENT_ESCROW`: `escrow_lookback_minutes` (clears once payer tops up)
     /// - All other statuses/reasons: `default_lookback_days` (standard exclusion)
     ///
     /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
@@ -537,9 +539,11 @@ impl PgRegistry {
         default_lookback_days: i32,
         price_lookback_days: i32,
         signer_lookback_minutes: i32,
+        escrow_lookback_minutes: i32,
     ) -> Result<HashMap<DeploymentId, Vec<IndexerId>>, Error> {
         use crate::rejection_reason::{
-            AGREEMENT_EXPIRED, DEADLINE_EXPIRED, PRICE_TOO_LOW, SIGNER_NOT_AUTHORISED,
+            AGREEMENT_EXPIRED, CAPACITY_EXCEEDED, DEADLINE_EXPIRED, INDEXER_UNAVAILABLE,
+            INSUFFICIENT_ESCROW, PRICE_TOO_LOW, SIGNER_NOT_AUTHORISED,
             SUBGRAPH_MANIFEST_UNAVAILABLE, UNEXPECTED_SERVICE_PROVIDER,
             UNSUPPORTED_METADATA_VERSION,
         };
@@ -557,11 +561,15 @@ impl PgRegistry {
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $4))
                 OR
                 -- Transient / not-indexer's-fault: very short lookback
-                (rejection_reason IN ($7, $9, $10, $11, $12, $13)
+                (rejection_reason IN ($7, $9, $10, $11, $12, $13, $14, $15)
                  AND updated_at >= timezone('UTC', now()) - make_interval(mins => $8))
                 OR
+                -- INSUFFICIENT_ESCROW: medium lookback (clears when payer tops up)
+                (rejection_reason = $17
+                 AND updated_at >= timezone('UTC', now()) - make_interval(mins => $16))
+                OR
                 -- All other rejections/expirations/cancellations: standard lookback
-                (COALESCE(rejection_reason, '') NOT IN ($6, $7, $9, $10, $11, $12, $13)
+                (COALESCE(rejection_reason, '') NOT IN ($6, $7, $9, $10, $11, $12, $13, $14, $15, $17)
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $5))
               )
             GROUP BY deployment_id
@@ -580,6 +588,10 @@ impl PgRegistry {
         .bind(UNEXPECTED_SERVICE_PROVIDER) // $11
         .bind(AGREEMENT_EXPIRED) // $12
         .bind(UNSUPPORTED_METADATA_VERSION) // $13
+        .bind(CAPACITY_EXCEEDED) // $14
+        .bind(INDEXER_UNAVAILABLE) // $15
+        .bind(escrow_lookback_minutes) // $16
+        .bind(INSUFFICIENT_ESCROW) // $17
         .fetch_all(&self.pool)
         .await?;
 
