@@ -32,14 +32,14 @@ fn test_auth_token() -> String {
 /// Test helper to build the subgraph url with the given subgraph ID.
 fn test_subgraph_url(subgraph: impl AsRef<str>) -> Url {
     test_gateway_base_url()
-        .join(&format!("api/deployments/id/{}", subgraph.as_ref()))
+        .join(&format!("api/subgraphs/id/{}", subgraph.as_ref()))
         .expect("Invalid URL")
 }
 
-/// The Graph Network Arbitrum subgraph in the network.
-///
-/// https://thegraph.com/explorer/subgraphs/DZz4kDTdmzWLWsV373w2bSmoar3umKKH9y82SUKr5qmp?view=About&chain=arbitrum-one
-const GRAPH_NETWORK_ARBITRUM_DEPLOYMENT_ID: &str = "QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv";
+/// Graph Network Arbitrum subgraph, addressed by subgraph ID so the gateway routes
+/// to the current deployment rather than a pinned hash that can rot to a dead indexer set.
+/// https://thegraph.com/explorer/subgraphs/DZz4kDTdmzWLWsV373w2bSmoar3umKKH9y82SUKr5qmp
+const GRAPH_NETWORK_ARBITRUM_SUBGRAPH_ID: &str = "DZz4kDTdmzWLWsV373w2bSmoar3umKKH9y82SUKr5qmp";
 
 #[test_with::env(IT_TEST_ARBITRUM_GATEWAY_URL, IT_TEST_ARBITRUM_GATEWAY_AUTH)]
 #[tokio::test]
@@ -47,7 +47,7 @@ async fn fetch_subgraph_data() {
     init_test_tracing();
 
     //* Given
-    let subgraph_url = test_subgraph_url(GRAPH_NETWORK_ARBITRUM_DEPLOYMENT_ID);
+    let subgraph_url = test_subgraph_url(GRAPH_NETWORK_ARBITRUM_SUBGRAPH_ID);
     let auth_token = test_auth_token();
 
     let network_subgraph_client =
@@ -73,7 +73,7 @@ async fn fetch_indexer_operators_data() {
     init_test_tracing();
 
     //* Given
-    let subgraph_url = test_subgraph_url(GRAPH_NETWORK_ARBITRUM_DEPLOYMENT_ID);
+    let subgraph_url = test_subgraph_url(GRAPH_NETWORK_ARBITRUM_SUBGRAPH_ID);
     let auth_token = test_auth_token();
 
     let network_subgraph_client =
