@@ -77,5 +77,21 @@ sol! {
             uint8 indexed offerType,
             bytes32 offerHash
         );
+
+        /// EIP-5267 report of the EIP-712 domain the contract verifies
+        /// signatures under. Inherited from OpenZeppelin's EIP712Upgradeable;
+        /// dipper fetches it at startup (see `chain_client::eip5267`).
+        function eip712Domain()
+            external
+            view
+            returns (
+                bytes1 fields,
+                string memory name,
+                string memory version,
+                uint256 chainId,
+                address verifyingContract,
+                bytes32 salt,
+                uint256[] memory extensions
+            );
     }
 }

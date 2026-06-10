@@ -12,7 +12,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use dipper_rpc::indexer::{indexer_client::sol::RecurringCollectionAgreement, rca_eip712_domain};
+use dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement;
 use thegraph_core::alloy::{
     hex,
     network::{EthereumWallet, TransactionBuilder},
@@ -20,7 +20,7 @@ use thegraph_core::alloy::{
     providers::{Provider, ProviderBuilder},
     rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
-    sol_types::{SolCall, SolError, SolStruct, SolValue},
+    sol_types::{Eip712Domain, SolCall, SolError, SolStruct, SolValue},
 };
 use tokio::sync::Mutex;
 use url::Url;
@@ -147,6 +147,10 @@ struct AlloyChainClientInner {
     subgraph_service_address: Address,
     /// RecurringCollector contract address (for RCA offer submission)
     recurring_collector_address: Address,
+    /// EIP-712 domain the RCA offer hash is computed under. Shared with the
+    /// proposal signer so the hash dipper posts on-chain matches the one the
+    /// contract recomputes when the indexer accepts.
+    rca_domain: Eip712Domain,
     /// Chain ID
     chain_id: u64,
     /// Gas price multiplier
@@ -182,6 +186,7 @@ impl AlloyChainClient {
         config: &ChainClientConfig,
         chain_id: u64,
         recurring_collector: Address,
+        rca_domain: Eip712Domain,
         secret_key: &[u8; 32],
     ) -> Result<Self, ChainClientError> {
         let signer = PrivateKeySigner::from_bytes(&FixedBytes::from(*secret_key))
@@ -231,6 +236,7 @@ impl AlloyChainClient {
                 signer,
                 subgraph_service_address: config.subgraph_service_address,
                 recurring_collector_address: recurring_collector,
+                rca_domain,
                 chain_id,
                 gas_price_multiplier: config.gas_price_multiplier,
                 max_gas_price_gwei: config.max_gas_price_gwei,
@@ -681,8 +687,7 @@ impl ChainClient for AlloyChainClient {
         // 2. Compute the local EIP-712 hash of the RCA; this is what the
         //    contract compares against the stored offer hash when the indexer
         //    later calls `accept(rca, "")`.
-        let domain = rca_eip712_domain(self.inner.chain_id, self.inner.recurring_collector_address);
-        let local_hash = rca.eip712_signing_hash(&domain);
+        let local_hash = rca.eip712_signing_hash(&self.inner.rca_domain);
 
         // 3. Idempotency via the indexing-payments-subgraph. If the subgraph
         //    has indexed a prior OfferStored for this agreement id with a

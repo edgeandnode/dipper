@@ -20,12 +20,11 @@ use dipper_core::ids::IndexingAgreementId;
 use dipper_rpc::indexer::{
     derive_agreement_id,
     indexer_client::{rpc, rpc::SubmitAgreementProposalResponse, sol},
-    rca_eip712_domain,
 };
 use thegraph_core::alloy::{
-    primitives::{Address, B256, U256},
+    primitives::{B256, U256},
     signers::{SignerSync, local::PrivateKeySigner},
-    sol_types::SolValue,
+    sol_types::{Eip712Domain, SolValue},
 };
 use url::Url;
 
@@ -65,27 +64,24 @@ pub trait IndexerClient {
 #[derive(Clone)]
 pub struct DipsIndexerClient {
     signer: PrivateKeySigner,
-    chain_id: u64,
-    recurring_collector: Address,
+    rca_domain: Eip712Domain,
     connect_timeout: Duration,
     request_timeout: Duration,
     max_retries: u32,
 }
 
 impl DipsIndexerClient {
-    /// Create a new indexer client. `signer`, `chain_id`, and
-    /// `recurring_collector` build the EIP-712 domain used to sign each
-    /// proposal so the indexer can recover the sender.
+    /// Create a new indexer client. `rca_domain` is the RecurringCollector
+    /// EIP-712 domain each proposal is signed under so the indexer can
+    /// recover the sender.
     pub fn with_config(
         config: IndexerClientConfig,
         signer: PrivateKeySigner,
-        chain_id: u64,
-        recurring_collector: Address,
+        rca_domain: Eip712Domain,
     ) -> Self {
         Self {
             signer,
-            chain_id,
-            recurring_collector,
+            rca_domain,
             connect_timeout: config.connect_timeout,
             request_timeout: config.request_timeout,
             max_retries: config.max_retries,
@@ -96,10 +92,9 @@ impl DipsIndexerClient {
     /// recovers this signer. The typed-data hash carries the 0x1901 prefix, so
     /// no EIP-191 message prefix is applied.
     fn sign_rca(&self, rca: &sol::RecurringCollectionAgreement) -> Result<Vec<u8>, DipsError> {
-        let domain = rca_eip712_domain(self.chain_id, self.recurring_collector);
         let signature = self
             .signer
-            .sign_typed_data_sync(rca, &domain)
+            .sign_typed_data_sync(rca, &self.rca_domain)
             .map_err(|err| DipsError::SigningError(err.into()))?;
         Ok(signature.as_bytes().to_vec())
     }
@@ -320,6 +315,7 @@ pub(crate) fn into_sol_rca(
 mod tests {
     use std::str::FromStr;
 
+    use dipper_rpc::indexer::rca_eip712_domain;
     use thegraph_core::alloy::{primitives::U256, sol_types::SolValue};
 
     use super::*;
@@ -458,8 +454,7 @@ mod tests {
 
         DipsIndexerClient {
             signer,
-            chain_id: 1337,
-            recurring_collector: Address::repeat_byte(0xCC),
+            rca_domain: rca_eip712_domain(1337, Address::repeat_byte(0xCC)),
             connect_timeout: Duration::from_secs(1),
             request_timeout: Duration::from_secs(1),
             max_retries: 0,
@@ -481,7 +476,7 @@ mod tests {
 
         // The signature recovers to the signer over the same domain — exactly
         // what the indexer does to authenticate the proposal's sender.
-        let domain = rca_eip712_domain(client.chain_id, client.recurring_collector);
+        let domain = client.rca_domain.clone();
         let recovered = Signature::try_from(sig_bytes.as_slice())
             .expect("valid signature bytes")
             .recover_address_from_prehash(&rca.eip712_signing_hash(&domain))
@@ -508,7 +503,7 @@ mod tests {
         assert_eq!(request.version, 2);
         let signed_rca = sol::SignedRecurringCollectionAgreement::abi_decode(&request.signed_rca)
             .expect("wire bytes should decode as a SignedRCA");
-        let domain = rca_eip712_domain(client.chain_id, client.recurring_collector);
+        let domain = client.rca_domain.clone();
         let recovered = Signature::try_from(signed_rca.signature.as_ref())
             .expect("valid signature bytes")
             .recover_address_from_prehash(&signed_rca.agreement.eip712_signing_hash(&domain))

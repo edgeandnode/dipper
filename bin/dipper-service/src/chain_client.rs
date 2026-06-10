@@ -16,6 +16,7 @@
 
 mod abi;
 mod client;
+mod eip5267;
 mod gas;
 mod rpc_provider;
 
@@ -24,6 +25,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 pub use client::AlloyChainClient;
 use dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement;
+pub use eip5267::fetch_rca_eip712_domain;
 use thegraph_core::alloy::primitives::{B256, Bytes};
 
 /// Error type for chain client operations

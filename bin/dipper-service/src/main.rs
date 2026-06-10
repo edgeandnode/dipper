@@ -51,6 +51,21 @@ pub async fn main() -> anyhow::Result<()> {
     let chain_id = conf.signer.chain_id;
     let recurring_collector = agreement_conf.recurring_collector;
 
+    // The RCA EIP-712 domain, shared by the proposal signer and offer hashing. Fetched
+    // from the deployed contract (EIP-5267) when an RPC is available; a domain the
+    // contract wouldn't reproduce means every offer reverts at accept, so fail fast.
+    let rca_domain = match &conf.chain_client {
+        Some(cfg) if cfg.enabled => {
+            chain_client::fetch_rca_eip712_domain(cfg, chain_id, recurring_collector)
+                .await
+                .expect("Failed to fetch the RecurringCollector EIP-712 domain")
+        }
+        _ => {
+            tracing::info!("chain client disabled; using built-in RCA EIP-712 domain constants");
+            dipper_rpc::indexer::rca_eip712_domain(chain_id, recurring_collector)
+        }
+    };
+
     // Initialize the different components
 
     //- The wallet signer. The admin Eip712Signer is verify-only — it recovers
@@ -82,8 +97,7 @@ pub async fn main() -> anyhow::Result<()> {
     let indexer_client = indexer_rpc_client::DipsIndexerClient::with_config(
         conf.indexer_client,
         wallet_signer.clone(),
-        chain_id,
-        recurring_collector,
+        rca_domain.clone(),
     );
 
     //- The network services
@@ -195,6 +209,7 @@ pub async fn main() -> anyhow::Result<()> {
                 cfg,
                 chain_id,
                 recurring_collector,
+                rca_domain.clone(),
                 &secret_bytes,
             )
             .expect("Failed to create AlloyChainClient");
