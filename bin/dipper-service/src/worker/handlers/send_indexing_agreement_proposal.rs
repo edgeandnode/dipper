@@ -149,34 +149,36 @@ where
             }
             Some(Outcome::Rejected(rejected)) => {
                 // The rejection reason drives the declined-indexer lookback
-                // window. New audit-branch reasons fall to the catch-all here
-                // until a follow-up buckets them into the right backoff tier.
-                let reject_reason = RejectReason::try_from(rejected.reason).ok();
-                let rejection_reason_str = reject_reason.map(|r| match r {
-                    RejectReason::Unspecified => rejection_reason::UNSPECIFIED,
-                    RejectReason::PriceTooLow => rejection_reason::PRICE_TOO_LOW,
-                    RejectReason::DeadlineExpired => rejection_reason::DEADLINE_EXPIRED,
-                    RejectReason::UnsupportedNetwork => rejection_reason::UNSUPPORTED_NETWORK,
-                    RejectReason::SubgraphManifestUnavailable => {
-                        rejection_reason::SUBGRAPH_MANIFEST_UNAVAILABLE
-                    }
-                    RejectReason::UnexpectedServiceProvider => {
-                        rejection_reason::UNEXPECTED_SERVICE_PROVIDER
-                    }
-                    RejectReason::AgreementExpired => rejection_reason::AGREEMENT_EXPIRED,
-                    RejectReason::UnsupportedMetadataVersion => {
-                        rejection_reason::UNSUPPORTED_METADATA_VERSION
-                    }
-                    _ => rejection_reason::UNSPECIFIED,
-                });
+                // window. New audit-branch reasons and out-of-range values store
+                // the catch-all until a follow-up buckets them into tiers.
+                let rejection_reason_str = RejectReason::try_from(rejected.reason).map_or(
+                    rejection_reason::UNSPECIFIED,
+                    |r| match r {
+                        RejectReason::Unspecified => rejection_reason::UNSPECIFIED,
+                        RejectReason::PriceTooLow => rejection_reason::PRICE_TOO_LOW,
+                        RejectReason::DeadlineExpired => rejection_reason::DEADLINE_EXPIRED,
+                        RejectReason::UnsupportedNetwork => rejection_reason::UNSUPPORTED_NETWORK,
+                        RejectReason::SubgraphManifestUnavailable => {
+                            rejection_reason::SUBGRAPH_MANIFEST_UNAVAILABLE
+                        }
+                        RejectReason::UnexpectedServiceProvider => {
+                            rejection_reason::UNEXPECTED_SERVICE_PROVIDER
+                        }
+                        RejectReason::AgreementExpired => rejection_reason::AGREEMENT_EXPIRED,
+                        RejectReason::UnsupportedMetadataVersion => {
+                            rejection_reason::UNSUPPORTED_METADATA_VERSION
+                        }
+                        _ => rejection_reason::UNSPECIFIED,
+                    },
+                );
 
-                let reason = rejection_reason_str.unwrap_or("unspecified");
                 tracing::info!(
                     agreement_id = %agreement_id,
                     indexing_request_id = %indexing_request_id,
                     old_status = "CREATED",
                     new_status = "REJECTED",
-                    reason = %format_args!("rejected_{reason}"),
+                    reason = %format_args!("rejected_{rejection_reason_str}"),
+                    detail = %rejected.detail,
                     "agreement state transition"
                 );
                 // Mark as Rejected and reassess. The indexer may still accept on-chain,
@@ -187,7 +189,7 @@ where
                     indexing_request_id,
                     deployment_id,
                     deployment_chain_id,
-                    rejection_reason_str,
+                    Some(rejection_reason_str),
                 )
                 .await?;
             }
@@ -707,6 +709,8 @@ mod tests {
         Reject,
         RejectPriceTooLow,
         RejectInvalidSignature,
+        RejectUnknownReason,
+        NoOutcome,
         Fail,
     }
 
@@ -736,6 +740,18 @@ mod tests {
         fn rejecting_invalid_signature() -> Self {
             Self {
                 response: MockResponse::RejectInvalidSignature,
+            }
+        }
+
+        fn rejecting_unknown_reason() -> Self {
+            Self {
+                response: MockResponse::RejectUnknownReason,
+            }
+        }
+
+        fn responding_without_outcome() -> Self {
+            Self {
+                response: MockResponse::NoOutcome,
             }
         }
 
@@ -777,6 +793,14 @@ mod tests {
                         detail: String::new(),
                     })),
                 }),
+                MockResponse::RejectUnknownReason => Ok(SubmitAgreementProposalResponse {
+                    outcome: Some(Outcome::Rejected(Rejected {
+                        // A numeric value no RejectReason variant maps to.
+                        reason: 9999,
+                        detail: String::new(),
+                    })),
+                }),
+                MockResponse::NoOutcome => Ok(SubmitAgreementProposalResponse { outcome: None }),
                 MockResponse::Fail => Err(DipsError::ConnectionError(
                     "connection failed".to_string().into(),
                 )),
@@ -1025,6 +1049,101 @@ mod tests {
             state.marked_rejected[0].1,
             Some(rejection_reason::UNSPECIFIED.to_string())
         );
+        assert!(state.marked_failed.is_empty());
+        drop(state);
+        // Should queue reassessment
+        let qstate = queue_state.lock().unwrap();
+        assert_eq!(qstate.reassess_calls.len(), 1);
+        assert_eq!(qstate.reassess_calls[0].0, request_id);
+    }
+
+    #[tokio::test]
+    async fn test_reject_unknown_numeric_reason_stores_unspecified() {
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
+        let request_id = IndexingRequestId::new();
+
+        let registry_state = Arc::new(Mutex::new(MockRegistryState {
+            agreement: Some(make_test_agreement(
+                agreement_id,
+                IndexingAgreementStatus::Created,
+            )),
+            request: Some(make_test_request(request_id)),
+            ..Default::default()
+        }));
+        let queue_state = Arc::new(Mutex::new(MockQueueState::default()));
+
+        let ctx = Ctx {
+            registry: MockRegistry::new(registry_state.clone()),
+            queue: MockQueue::new(queue_state.clone()),
+            indexer_client: MockIndexerClient::rejecting_unknown_reason(),
+        };
+
+        let message = Message {
+            indexer_url: "https://indexer.example.com".parse().unwrap(),
+            agreement_id,
+            indexing_request_id: request_id,
+            deployment_id: deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv"),
+            deployment_chain_id: 1,
+        };
+
+        let result = handle(ctx, &message).await;
+
+        assert!(result.is_ok());
+        // A numeric reason outside the known enum stores the same catch-all
+        // string as a known-but-unmapped variant, keeping the data uniform.
+        let state = registry_state.lock().unwrap();
+        assert_eq!(state.marked_rejected.len(), 1);
+        assert_eq!(state.marked_rejected[0].0, agreement_id);
+        assert_eq!(
+            state.marked_rejected[0].1,
+            Some(rejection_reason::UNSPECIFIED.to_string())
+        );
+        assert!(state.marked_failed.is_empty());
+        drop(state);
+        // Should queue reassessment
+        let qstate = queue_state.lock().unwrap();
+        assert_eq!(qstate.reassess_calls.len(), 1);
+        assert_eq!(qstate.reassess_calls[0].0, request_id);
+    }
+
+    #[tokio::test]
+    async fn test_no_outcome_marks_rejected_and_reassesses() {
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
+        let request_id = IndexingRequestId::new();
+
+        let registry_state = Arc::new(Mutex::new(MockRegistryState {
+            agreement: Some(make_test_agreement(
+                agreement_id,
+                IndexingAgreementStatus::Created,
+            )),
+            request: Some(make_test_request(request_id)),
+            ..Default::default()
+        }));
+        let queue_state = Arc::new(Mutex::new(MockQueueState::default()));
+
+        let ctx = Ctx {
+            registry: MockRegistry::new(registry_state.clone()),
+            queue: MockQueue::new(queue_state.clone()),
+            indexer_client: MockIndexerClient::responding_without_outcome(),
+        };
+
+        let message = Message {
+            indexer_url: "https://indexer.example.com".parse().unwrap(),
+            agreement_id,
+            indexing_request_id: request_id,
+            deployment_id: deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv"),
+            deployment_chain_id: 1,
+        };
+
+        let result = handle(ctx, &message).await;
+
+        assert!(result.is_ok());
+        // A malformed response with no outcome is treated as a rejection (with
+        // no stored reason) so the request is reassessed rather than stalling.
+        let state = registry_state.lock().unwrap();
+        assert_eq!(state.marked_rejected.len(), 1);
+        assert_eq!(state.marked_rejected[0].0, agreement_id);
+        assert_eq!(state.marked_rejected[0].1, None);
         assert!(state.marked_failed.is_empty());
         drop(state);
         // Should queue reassessment
