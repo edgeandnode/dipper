@@ -104,6 +104,26 @@ impl DipsIndexerClient {
         Ok(signature.as_bytes().to_vec())
     }
 
+    /// Build the wire request for a proposal: the ABI-encoded SignedRCA whose
+    /// signature the indexer verifies to authenticate the sender.
+    fn build_proposal_request(
+        &self,
+        terms: IndexingAgreementTerms,
+        nonce_uuid: uuid::Uuid,
+    ) -> Result<rpc::SubmitAgreementProposalRequest, DipsError> {
+        let (sol_rca, _on_chain_id) = into_sol_rca(nonce_uuid, terms);
+        let signature = self.sign_rca(&sol_rca)?;
+        let signed_rca = sol::SignedRecurringCollectionAgreement {
+            agreement: sol_rca,
+            signature: signature.into(),
+        }
+        .abi_encode();
+        Ok(rpc::SubmitAgreementProposalRequest {
+            version: 2,
+            signed_rca,
+        })
+    }
+
     /// Get a client for the given indexer URL
     ///
     /// If the client is not in the pool, create a new instance.
@@ -205,18 +225,10 @@ impl IndexerClient for DipsIndexerClient {
         terms: IndexingAgreementTerms,
         nonce_uuid: uuid::Uuid,
     ) -> Result<SubmitAgreementProposalResponse, DipsError> {
-        // Convert to the RCA solidity data structure.
-        let (sol_rca, _on_chain_id) = into_sol_rca(nonce_uuid, terms);
-
-        // Sign the RCA so the indexer can recover and trust this sender. The
-        // on-chain offer still backs acceptance; the signature authenticates the
-        // gRPC proposal itself.
-        let signature = self.sign_rca(&sol_rca)?;
-        let sol_signed_rca_bytes: Vec<u8> = sol::SignedRecurringCollectionAgreement {
-            agreement: sol_rca,
-            signature: signature.into(),
-        }
-        .abi_encode();
+        // Build the signed proposal once; the indexer authenticates the sender
+        // from the embedded EIP-712 signature while the on-chain offer still
+        // backs acceptance.
+        let proposal = self.build_proposal_request(terms, nonce_uuid)?;
 
         // Send the proposal request with retry on transient failures.
         // Note: signed_rca is cloned for each retry (~1KB). This is acceptable:
@@ -230,10 +242,7 @@ impl IndexerClient for DipsIndexerClient {
             "submit_proposal",
             || self.get_client(indexer),
             |mut client| {
-                let request = tonic::Request::new(rpc::SubmitAgreementProposalRequest {
-                    version: 2,
-                    signed_rca: sol_signed_rca_bytes.clone(),
-                });
+                let request = tonic::Request::new(proposal.clone());
                 async move {
                     client
                         .submit_agreement_proposal(request)
@@ -415,33 +424,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_sign_rca_recovers_the_signer() {
-        use thegraph_core::{
-            DeploymentId,
-            alloy::{
-                primitives::{Address, Signature, address},
-                sol_types::SolStruct,
-            },
-        };
+    /// Agreement terms fixture shared by the signing tests.
+    fn signing_test_terms() -> IndexingAgreementTerms {
+        use thegraph_core::{DeploymentId, alloy::primitives::address};
 
-        // A client with a known signer over a fixed domain.
-        let signer: PrivateKeySigner =
-            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-                .parse()
-                .unwrap();
-        let chain_id = 1337u64;
-        let recurring_collector = Address::repeat_byte(0xCC);
-        let client = DipsIndexerClient {
-            signer: signer.clone(),
-            chain_id,
-            recurring_collector,
-            connect_timeout: Duration::from_secs(1),
-            request_timeout: Duration::from_secs(1),
-            max_retries: 0,
-        };
-
-        let terms = IndexingAgreementTerms {
+        IndexingAgreementTerms {
             payer: address!("0000000000000000000000000000000000000001"),
             service_provider: address!("0000000000000000000000000000000000000002"),
             data_service: address!("0000000000000000000000000000000000000003"),
@@ -462,17 +449,69 @@ mod tests {
                 protocol_network: 42161,
                 chain_id: 1,
             },
-        };
-        let (rca, _) = into_sol_rca(uuid::Uuid::now_v7(), terms);
+        }
+    }
+
+    /// A client with a known signer over a fixed domain.
+    fn signing_test_client(signer: PrivateKeySigner) -> DipsIndexerClient {
+        use thegraph_core::alloy::primitives::Address;
+
+        DipsIndexerClient {
+            signer,
+            chain_id: 1337,
+            recurring_collector: Address::repeat_byte(0xCC),
+            connect_timeout: Duration::from_secs(1),
+            request_timeout: Duration::from_secs(1),
+            max_retries: 0,
+        }
+    }
+
+    #[test]
+    fn test_sign_rca_recovers_the_signer() {
+        use thegraph_core::alloy::{primitives::Signature, sol_types::SolStruct};
+
+        let signer: PrivateKeySigner =
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+                .parse()
+                .unwrap();
+        let client = signing_test_client(signer.clone());
+        let (rca, _) = into_sol_rca(uuid::Uuid::now_v7(), signing_test_terms());
 
         let sig_bytes = client.sign_rca(&rca).expect("signing should succeed");
 
         // The signature recovers to the signer over the same domain — exactly
         // what the indexer does to authenticate the proposal's sender.
-        let domain = rca_eip712_domain(chain_id, recurring_collector);
+        let domain = rca_eip712_domain(client.chain_id, client.recurring_collector);
         let recovered = Signature::try_from(sig_bytes.as_slice())
             .expect("valid signature bytes")
             .recover_address_from_prehash(&rca.eip712_signing_hash(&domain))
+            .expect("recovery should succeed");
+        assert_eq!(recovered, signer.address());
+    }
+
+    #[test]
+    fn test_proposal_request_embeds_recoverable_signature() {
+        use thegraph_core::alloy::{primitives::Signature, sol_types::SolStruct};
+
+        let signer: PrivateKeySigner =
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+                .parse()
+                .unwrap();
+        let client = signing_test_client(signer.clone());
+
+        let request = client
+            .build_proposal_request(signing_test_terms(), uuid::Uuid::now_v7())
+            .expect("building the request should succeed");
+
+        // Decode the wire bytes exactly as the indexer does, then recover the
+        // signer from the signature embedded in them.
+        assert_eq!(request.version, 2);
+        let signed_rca = sol::SignedRecurringCollectionAgreement::abi_decode(&request.signed_rca)
+            .expect("wire bytes should decode as a SignedRCA");
+        let domain = rca_eip712_domain(client.chain_id, client.recurring_collector);
+        let recovered = Signature::try_from(signed_rca.signature.as_ref())
+            .expect("valid signature bytes")
+            .recover_address_from_prehash(&signed_rca.agreement.eip712_signing_hash(&domain))
             .expect("recovery should succeed");
         assert_eq!(recovered, signer.address());
     }
