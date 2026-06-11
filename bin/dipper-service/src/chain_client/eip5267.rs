@@ -300,4 +300,27 @@ mod tests {
 
         assert!(err.to_string().contains("undecodable"), "{err}");
     }
+
+    #[tokio::test]
+    async fn test_fetch_chain_id_mismatch_fails_validation() {
+        // A well-formed report for the wrong chain: the decode succeeds and
+        // the failure comes from validation, covering the full fetch path.
+        let collector = Address::repeat_byte(0xCC);
+        let report = valid_report(42161, collector);
+        let encoded = IRecurringCollector::eip712DomainCall::abi_encode_returns(&report);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(EthCallResponder {
+                result_hex: format!("0x{}", hex::encode(encoded)),
+            })
+            .mount(&server)
+            .await;
+        let config = test_chain_client_config(server.uri().parse().unwrap());
+
+        let err = fetch_rca_eip712_domain(&config, 1337, collector)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("chain id 42161"), "{err}");
+    }
 }
