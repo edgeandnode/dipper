@@ -265,7 +265,7 @@ pub trait AgreementRegistry {
     ///
     /// The `rejection_reason` controls the lookback window for declined indexer exclusion:
     /// - `Some("PRICE_TOO_LOW")`: 1-day exclusion (until next IISA price refresh)
-    /// - `Some("OTHER")` or `None`: 30-day exclusion (standard)
+    /// - `Some("UNSPECIFIED")` or `None`: 30-day exclusion (standard)
     async fn mark_indexing_agreement_as_rejected(
         &self,
         id: &IndexingAgreementId,

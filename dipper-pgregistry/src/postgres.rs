@@ -525,10 +525,10 @@ impl PgRegistry {
     /// Returns indexers with `CanceledByIndexer`, `Expired`, or `Rejected` status
     /// within lookback windows that depend on the rejection reason:
     /// - `PRICE_TOO_LOW`: `price_lookback_days` (short, retry after IISA price refresh)
-    /// - Transient reasons (`SIGNER_NOT_AUTHORISED`, `DEADLINE_EXPIRED`,
-    ///   `SUBGRAPH_MANIFEST_UNAVAILABLE`, `UNEXPECTED_SERVICE_PROVIDER`,
-    ///   `AGREEMENT_EXPIRED`, `UNSUPPORTED_METADATA_VERSION`, `CAPACITY_EXCEEDED`,
-    ///   `INDEXER_UNAVAILABLE`, `INVALID_SIGNATURE`, `REPLAY_DETECTED`):
+    /// - Transient reasons (`DEADLINE_EXPIRED`, `SUBGRAPH_MANIFEST_UNAVAILABLE`,
+    ///   `UNEXPECTED_SERVICE_PROVIDER`, `AGREEMENT_EXPIRED`,
+    ///   `UNSUPPORTED_METADATA_VERSION`, `CAPACITY_EXCEEDED`, `INDEXER_UNAVAILABLE`,
+    ///   `INVALID_SIGNATURE`, `REPLAY_DETECTED`):
     ///   `transient_lookback_minutes` (short — clears on its own or once dipper is fixed)
     /// - `INSUFFICIENT_ESCROW`: `escrow_lookback_minutes` (clears once payer tops up)
     /// - All other statuses/reasons: `default_lookback_days` (standard exclusion)
@@ -545,7 +545,7 @@ impl PgRegistry {
         use crate::rejection_reason::{
             AGREEMENT_EXPIRED, CAPACITY_EXCEEDED, DEADLINE_EXPIRED, INDEXER_UNAVAILABLE,
             INSUFFICIENT_ESCROW, INVALID_SIGNATURE, PRICE_TOO_LOW, REPLAY_DETECTED,
-            SIGNER_NOT_AUTHORISED, SUBGRAPH_MANIFEST_UNAVAILABLE, UNEXPECTED_SERVICE_PROVIDER,
+            SUBGRAPH_MANIFEST_UNAVAILABLE, UNEXPECTED_SERVICE_PROVIDER,
             UNSUPPORTED_METADATA_VERSION,
         };
 
@@ -563,15 +563,15 @@ impl PgRegistry {
                 OR
                 -- Transient, not-indexer's-fault, or dipper-side faults that
                 -- clear once dipper is fixed: very short lookback
-                (rejection_reason IN ($7, $9, $10, $11, $12, $13, $14, $15, $18, $19)
-                 AND updated_at >= timezone('UTC', now()) - make_interval(mins => $8))
+                (rejection_reason IN ($8, $9, $10, $11, $12, $13, $14, $17, $18)
+                 AND updated_at >= timezone('UTC', now()) - make_interval(mins => $7))
                 OR
                 -- INSUFFICIENT_ESCROW: medium lookback (clears when payer tops up)
-                (rejection_reason = $17
-                 AND updated_at >= timezone('UTC', now()) - make_interval(mins => $16))
+                (rejection_reason = $16
+                 AND updated_at >= timezone('UTC', now()) - make_interval(mins => $15))
                 OR
                 -- All other rejections/expirations/cancellations: standard lookback
-                (COALESCE(rejection_reason, '') NOT IN ($6, $7, $9, $10, $11, $12, $13, $14, $15, $17, $18, $19)
+                (COALESCE(rejection_reason, '') NOT IN ($6, $8, $9, $10, $11, $12, $13, $14, $16, $17, $18)
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $5))
               )
             GROUP BY deployment_id
@@ -583,19 +583,18 @@ impl PgRegistry {
         .bind(price_lookback_days) // $4
         .bind(default_lookback_days) // $5
         .bind(PRICE_TOO_LOW) // $6
-        .bind(SIGNER_NOT_AUTHORISED) // $7
-        .bind(transient_lookback_minutes) // $8
-        .bind(DEADLINE_EXPIRED) // $9
-        .bind(SUBGRAPH_MANIFEST_UNAVAILABLE) // $10
-        .bind(UNEXPECTED_SERVICE_PROVIDER) // $11
-        .bind(AGREEMENT_EXPIRED) // $12
-        .bind(UNSUPPORTED_METADATA_VERSION) // $13
-        .bind(CAPACITY_EXCEEDED) // $14
-        .bind(INDEXER_UNAVAILABLE) // $15
-        .bind(escrow_lookback_minutes) // $16
-        .bind(INSUFFICIENT_ESCROW) // $17
-        .bind(INVALID_SIGNATURE) // $18
-        .bind(REPLAY_DETECTED) // $19
+        .bind(transient_lookback_minutes) // $7
+        .bind(DEADLINE_EXPIRED) // $8
+        .bind(SUBGRAPH_MANIFEST_UNAVAILABLE) // $9
+        .bind(UNEXPECTED_SERVICE_PROVIDER) // $10
+        .bind(AGREEMENT_EXPIRED) // $11
+        .bind(UNSUPPORTED_METADATA_VERSION) // $12
+        .bind(CAPACITY_EXCEEDED) // $13
+        .bind(INDEXER_UNAVAILABLE) // $14
+        .bind(escrow_lookback_minutes) // $15
+        .bind(INSUFFICIENT_ESCROW) // $16
+        .bind(INVALID_SIGNATURE) // $17
+        .bind(REPLAY_DETECTED) // $18
         .fetch_all(&self.pool)
         .await?;
 

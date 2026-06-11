@@ -22,10 +22,6 @@ pub mod rejection_reason {
     /// Lookback: 1 day (retry after IISA price refresh).
     pub const PRICE_TOO_LOW: &str = "PRICE_TOO_LOW";
 
-    /// The proposal signer is not authorised on the escrow contract.
-    /// Lookback: 5 minutes (transient on-chain auth issue).
-    pub const SIGNER_NOT_AUTHORISED: &str = "SIGNER_NOT_AUTHORISED";
-
     /// The proposal deadline had already passed when it reached the indexer.
     /// Lookback: 5 minutes (transient, retry with fresh deadline).
     pub const DEADLINE_EXPIRED: &str = "DEADLINE_EXPIRED";
@@ -80,11 +76,8 @@ pub mod rejection_reason {
     /// Lookback: 5 minutes (transient, not the indexer's lasting state).
     pub const INDEXER_UNAVAILABLE: &str = "INDEXER_UNAVAILABLE";
 
-    /// Any other rejection reason not covered above.
-    /// Lookback: 30 days (standard).
-    pub const OTHER: &str = "OTHER";
-
-    /// The rejection reason was not specified. Treated the same as OTHER for lookback purposes.
+    /// The rejection reason was not specified, was not recognised, or had no
+    /// more specific constant. Lookback: 30 days (standard).
     pub const UNSPECIFIED: &str = "UNSPECIFIED";
 }
 use thegraph_core::{
