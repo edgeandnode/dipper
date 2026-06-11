@@ -26,6 +26,7 @@ const WEI_PER_GRT: f64 = 1e18;
 /// - Which indexers are on the denylist and should be excluded entirely
 /// - Optimistic DIPs fees from accepted agreement vouchers, enriched with
 ///   entity counts from the shared cache when available
+#[allow(clippy::too_many_arguments)]
 pub async fn gather_selection_context<R>(
     registry: &R,
     deployment_id: &DeploymentId,
@@ -33,6 +34,7 @@ pub async fn gather_selection_context<R>(
     price_rejection_lookback_days: i32,
     transient_rejection_lookback_minutes: i32,
     escrow_rejection_lookback_minutes: i32,
+    uncertain_rejection_lookback_days: i32,
     entity_count_cache: &EntityCountCache,
 ) -> JobResult<SelectionContext>
 where
@@ -61,6 +63,7 @@ where
             price_rejection_lookback_days,
             transient_rejection_lookback_minutes,
             escrow_rejection_lookback_minutes,
+            uncertain_rejection_lookback_days,
         )
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;

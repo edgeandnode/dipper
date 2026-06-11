@@ -205,7 +205,8 @@ where
             }
             None => {
                 // A response with no outcome is malformed; treat it as a
-                // rejection so the request is reassessed rather than stalling.
+                // rejection (stored as UNSPECIFIED so it gets the uncertain 1-day
+                // window) so the request is reassessed rather than stalling.
                 tracing::warn!(
                     agreement_id = %agreement_id,
                     indexing_request_id = %indexing_request_id,
@@ -217,7 +218,7 @@ where
                     indexing_request_id,
                     deployment_id,
                     deployment_chain_id,
-                    None,
+                    Some(rejection_reason::UNSPECIFIED),
                 )
                 .await?;
             }
@@ -443,6 +444,7 @@ mod tests {
             _price_lookback_days: i32,
             _transient_lookback_minutes: i32,
             _escrow_lookback_minutes: i32,
+            _uncertain_lookback_days: i32,
         ) -> crate::registry::Result<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>
         {
             Ok(std::collections::HashMap::new())
@@ -1211,12 +1213,15 @@ mod tests {
         let result = handle(ctx, &message).await;
 
         assert!(result.is_ok());
-        // A malformed response with no outcome is treated as a rejection (with
-        // no stored reason) so the request is reassessed rather than stalling.
+        // A malformed response with no outcome is stored as UNSPECIFIED so it
+        // lands in the uncertain 1-day window and the request is reassessed.
         let state = registry_state.lock().unwrap();
         assert_eq!(state.marked_rejected.len(), 1);
         assert_eq!(state.marked_rejected[0].0, agreement_id);
-        assert_eq!(state.marked_rejected[0].1, None);
+        assert_eq!(
+            state.marked_rejected[0].1,
+            Some(rejection_reason::UNSPECIFIED.to_string())
+        );
         assert!(state.marked_failed.is_empty());
         drop(state);
         // Should queue reassessment
