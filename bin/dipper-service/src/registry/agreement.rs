@@ -116,7 +116,7 @@ pub trait AgreementRegistry {
     /// Returns indexers with `CanceledByIndexer`, `Expired`, or `Rejected` status
     /// within lookback windows that depend on the rejection reason:
     /// - `PRICE_TOO_LOW` rejections: `price_lookback_days` (shorter window)
-    /// - Transient rejections: `signer_lookback_minutes` (very short window)
+    /// - Transient rejections: `transient_lookback_minutes` (very short window)
     /// - `INSUFFICIENT_ESCROW`: `escrow_lookback_minutes` (medium window)
     /// - All other statuses/reasons: `default_lookback_days` (standard exclusion)
     ///
@@ -126,7 +126,7 @@ pub trait AgreementRegistry {
         &self,
         default_lookback_days: i32,
         price_lookback_days: i32,
-        signer_lookback_minutes: i32,
+        transient_lookback_minutes: i32,
         escrow_lookback_minutes: i32,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>;
 

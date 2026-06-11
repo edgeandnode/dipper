@@ -227,7 +227,7 @@ impl AgreementRegistry for RegistryProvider {
         &self,
         default_lookback_days: i32,
         price_lookback_days: i32,
-        signer_lookback_minutes: i32,
+        transient_lookback_minutes: i32,
         escrow_lookback_minutes: i32,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>> {
         Ok(self
@@ -235,7 +235,7 @@ impl AgreementRegistry for RegistryProvider {
             .get_declined_indexers_by_deployment(
                 default_lookback_days,
                 price_lookback_days,
-                signer_lookback_minutes,
+                transient_lookback_minutes,
                 escrow_lookback_minutes,
             )
             .await?)

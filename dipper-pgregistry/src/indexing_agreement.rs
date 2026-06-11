@@ -51,7 +51,8 @@ pub mod rejection_reason {
     pub const UNSUPPORTED_METADATA_VERSION: &str = "UNSUPPORTED_METADATA_VERSION";
 
     /// The proposal's EIP-712 signature failed to verify.
-    /// Lookback: 30 days (persistent -- dipper signing config is wrong).
+    /// Lookback: 5 minutes (a dipper-side signing fault, not the indexer's;
+    /// a long freeze would empty the candidate pool after dipper is fixed).
     pub const INVALID_SIGNATURE: &str = "INVALID_SIGNATURE";
 
     /// The signer is not an authorised agreement manager for this indexer.
@@ -67,7 +68,8 @@ pub mod rejection_reason {
     pub const MANIFEST_TOO_LARGE: &str = "MANIFEST_TOO_LARGE";
 
     /// A different proposal already used this agreement id (replay).
-    /// Lookback: 30 days (persistent -- dipper reused a nonce).
+    /// Lookback: 5 minutes (a dipper-side nonce fault, not the indexer's;
+    /// clears once dipper stops reusing agreement ids).
     pub const REPLAY_DETECTED: &str = "REPLAY_DETECTED";
 
     /// The payer has insufficient escrow to back the agreement.

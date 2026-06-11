@@ -441,7 +441,7 @@ mod tests {
             &self,
             _default_lookback_days: i32,
             _price_lookback_days: i32,
-            _signer_lookback_minutes: i32,
+            _transient_lookback_minutes: i32,
             _escrow_lookback_minutes: i32,
         ) -> crate::registry::Result<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>
         {
@@ -1065,7 +1065,8 @@ mod tests {
         let result = handle(ctx, &message).await;
 
         assert!(result.is_ok());
-        // InvalidSignature is a permanent reason mapped to its own 30-day constant.
+        // InvalidSignature maps to its own constant, bucketed in the transient
+        // window since the fault is dipper's signing, not the indexer.
         let state = registry_state.lock().unwrap();
         assert_eq!(state.marked_rejected.len(), 1);
         assert_eq!(state.marked_rejected[0].0, agreement_id);

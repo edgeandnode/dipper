@@ -528,7 +528,8 @@ impl PgRegistry {
     /// - Transient reasons (`SIGNER_NOT_AUTHORISED`, `DEADLINE_EXPIRED`,
     ///   `SUBGRAPH_MANIFEST_UNAVAILABLE`, `UNEXPECTED_SERVICE_PROVIDER`,
     ///   `AGREEMENT_EXPIRED`, `UNSUPPORTED_METADATA_VERSION`, `CAPACITY_EXCEEDED`,
-    ///   `INDEXER_UNAVAILABLE`): `signer_lookback_minutes` (short, clears on its own)
+    ///   `INDEXER_UNAVAILABLE`, `INVALID_SIGNATURE`, `REPLAY_DETECTED`):
+    ///   `transient_lookback_minutes` (short — clears on its own or once dipper is fixed)
     /// - `INSUFFICIENT_ESCROW`: `escrow_lookback_minutes` (clears once payer tops up)
     /// - All other statuses/reasons: `default_lookback_days` (standard exclusion)
     ///
@@ -538,13 +539,13 @@ impl PgRegistry {
         &self,
         default_lookback_days: i32,
         price_lookback_days: i32,
-        signer_lookback_minutes: i32,
+        transient_lookback_minutes: i32,
         escrow_lookback_minutes: i32,
     ) -> Result<HashMap<DeploymentId, Vec<IndexerId>>, Error> {
         use crate::rejection_reason::{
             AGREEMENT_EXPIRED, CAPACITY_EXCEEDED, DEADLINE_EXPIRED, INDEXER_UNAVAILABLE,
-            INSUFFICIENT_ESCROW, PRICE_TOO_LOW, SIGNER_NOT_AUTHORISED,
-            SUBGRAPH_MANIFEST_UNAVAILABLE, UNEXPECTED_SERVICE_PROVIDER,
+            INSUFFICIENT_ESCROW, INVALID_SIGNATURE, PRICE_TOO_LOW, REPLAY_DETECTED,
+            SIGNER_NOT_AUTHORISED, SUBGRAPH_MANIFEST_UNAVAILABLE, UNEXPECTED_SERVICE_PROVIDER,
             UNSUPPORTED_METADATA_VERSION,
         };
 
@@ -560,8 +561,9 @@ impl PgRegistry {
                 (rejection_reason = $6
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $4))
                 OR
-                -- Transient / not-indexer's-fault: very short lookback
-                (rejection_reason IN ($7, $9, $10, $11, $12, $13, $14, $15)
+                -- Transient, not-indexer's-fault, or dipper-side faults that
+                -- clear once dipper is fixed: very short lookback
+                (rejection_reason IN ($7, $9, $10, $11, $12, $13, $14, $15, $18, $19)
                  AND updated_at >= timezone('UTC', now()) - make_interval(mins => $8))
                 OR
                 -- INSUFFICIENT_ESCROW: medium lookback (clears when payer tops up)
@@ -569,7 +571,7 @@ impl PgRegistry {
                  AND updated_at >= timezone('UTC', now()) - make_interval(mins => $16))
                 OR
                 -- All other rejections/expirations/cancellations: standard lookback
-                (COALESCE(rejection_reason, '') NOT IN ($6, $7, $9, $10, $11, $12, $13, $14, $15, $17)
+                (COALESCE(rejection_reason, '') NOT IN ($6, $7, $9, $10, $11, $12, $13, $14, $15, $17, $18, $19)
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $5))
               )
             GROUP BY deployment_id
@@ -582,7 +584,7 @@ impl PgRegistry {
         .bind(default_lookback_days) // $5
         .bind(PRICE_TOO_LOW) // $6
         .bind(SIGNER_NOT_AUTHORISED) // $7
-        .bind(signer_lookback_minutes) // $8
+        .bind(transient_lookback_minutes) // $8
         .bind(DEADLINE_EXPIRED) // $9
         .bind(SUBGRAPH_MANIFEST_UNAVAILABLE) // $10
         .bind(UNEXPECTED_SERVICE_PROVIDER) // $11
@@ -592,6 +594,8 @@ impl PgRegistry {
         .bind(INDEXER_UNAVAILABLE) // $15
         .bind(escrow_lookback_minutes) // $16
         .bind(INSUFFICIENT_ESCROW) // $17
+        .bind(INVALID_SIGNATURE) // $18
+        .bind(REPLAY_DETECTED) // $19
         .fetch_all(&self.pool)
         .await?;
 

@@ -2333,7 +2333,7 @@ async fn get_declined_indexers_insufficient_escrow_excluded_after_30_minutes() {
 }
 
 #[tokio::test]
-async fn get_declined_indexers_invalid_signature_uses_30_day_window() {
+async fn get_declined_indexers_invalid_signature_included_within_5_minutes() {
     //* Given
     let (db, _temp_db) = temp_registry_db().await;
     run_fixture(
@@ -2343,14 +2343,13 @@ async fn get_declined_indexers_invalid_signature_uses_30_day_window() {
     .await
     .expect("Failed to run fixture");
 
-    // Mark an agreement as rejected with INVALID_SIGNATURE, set updated_at to 15 days ago.
-    // A permanent reason: a 15-day-old rejection is still inside the 30-day catch-all.
+    // Mark an agreement as rejected with INVALID_SIGNATURE (just now, within 5-min window)
     let agreement_id =
         IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     sqlx::query(
         r#"
         UPDATE dipper_reg_indexing_agreements
-        SET status = 7, rejection_reason = 'INVALID_SIGNATURE', updated_at = timezone('UTC', now()) - interval '15 days'
+        SET status = 7, rejection_reason = 'INVALID_SIGNATURE', updated_at = timezone('UTC', now())
         WHERE id = $1
         "#,
     )
@@ -2374,7 +2373,148 @@ async fn get_declined_indexers_invalid_signature_uses_30_day_window() {
     let indexer_a = indexer_id!("1111111111111111111111111111111111111111");
     assert!(
         result.contains_key(&deployment_1a),
-        "15-day-old INVALID_SIGNATURE rejection should be in declined list (within 30-day window)"
+        "Fresh INVALID_SIGNATURE rejection should be in declined list"
+    );
+    let declined = result.get(&deployment_1a).expect("Deployment not found");
+    assert!(
+        declined.contains(&indexer_a),
+        "Indexer A should be in declined list for deployment 1a"
+    );
+}
+
+#[tokio::test]
+async fn get_declined_indexers_invalid_signature_excluded_after_5_minutes() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // Mark an agreement as rejected with INVALID_SIGNATURE, set updated_at to 10 minutes ago.
+    // A dipper-side signing fault clears once dipper is fixed, so the freeze is short.
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = 7, rejection_reason = 'INVALID_SIGNATURE', updated_at = timezone('UTC', now()) - interval '10 minutes'
+        WHERE id = $1
+        "#,
+    )
+    .bind(agreement_id)
+    .execute(&db)
+    .await
+    .expect("Failed to update agreement");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_declined_indexers_by_deployment(30, 1, 5, 30)
+        .await
+        .expect("Failed to get declined indexers");
+
+    //* Then
+    let deployment_1a: DeploymentId = "QmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1a"
+        .parse()
+        .unwrap();
+    assert!(
+        !result.contains_key(&deployment_1a),
+        "10-minute-old INVALID_SIGNATURE rejection should not be in declined list (outside 5-minute window)"
+    );
+}
+
+#[tokio::test]
+async fn get_declined_indexers_replay_detected_excluded_after_5_minutes() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // Mark an agreement as rejected with REPLAY_DETECTED, set updated_at to 10 minutes ago.
+    // Like INVALID_SIGNATURE this is a dipper-side fault, so the freeze is short.
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = 7, rejection_reason = 'REPLAY_DETECTED', updated_at = timezone('UTC', now()) - interval '10 minutes'
+        WHERE id = $1
+        "#,
+    )
+    .bind(agreement_id)
+    .execute(&db)
+    .await
+    .expect("Failed to update agreement");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_declined_indexers_by_deployment(30, 1, 5, 30)
+        .await
+        .expect("Failed to get declined indexers");
+
+    //* Then
+    let deployment_1a: DeploymentId = "QmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1a"
+        .parse()
+        .unwrap();
+    assert!(
+        !result.contains_key(&deployment_1a),
+        "10-minute-old REPLAY_DETECTED rejection should not be in declined list (outside 5-minute window)"
+    );
+}
+
+#[tokio::test]
+async fn get_declined_indexers_sender_not_trusted_uses_30_day_window() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // Mark an agreement as rejected with SENDER_NOT_TRUSTED, set updated_at to 15 days ago.
+    // A persistent indexer-side trust decision: still inside the 30-day catch-all.
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = 7, rejection_reason = 'SENDER_NOT_TRUSTED', updated_at = timezone('UTC', now()) - interval '15 days'
+        WHERE id = $1
+        "#,
+    )
+    .bind(agreement_id)
+    .execute(&db)
+    .await
+    .expect("Failed to update agreement");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_declined_indexers_by_deployment(30, 1, 5, 30)
+        .await
+        .expect("Failed to get declined indexers");
+
+    //* Then
+    let deployment_1a: DeploymentId = "QmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1a"
+        .parse()
+        .unwrap();
+    let indexer_a = indexer_id!("1111111111111111111111111111111111111111");
+    assert!(
+        result.contains_key(&deployment_1a),
+        "15-day-old SENDER_NOT_TRUSTED rejection should be in declined list (within 30-day window)"
     );
     let declined = result.get(&deployment_1a).expect("Deployment not found");
     assert!(
