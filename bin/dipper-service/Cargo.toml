@@ -40,3 +40,4 @@ url.workspace = true
 fake = { workspace = true, features = ["url"] }
 test-with = { version = "0.14.4", default-features = false }
 thegraph-core = { workspace = true, features = ["fake"] }
+wiremock.workspace = true

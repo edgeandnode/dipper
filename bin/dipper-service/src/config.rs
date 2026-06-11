@@ -493,9 +493,9 @@ fn default_max_gas_price_gwei() -> u64 {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChainClientConfig {
-    /// Whether the chain client is enabled (default: false)
-    ///
-    /// Disabled by default since it requires RPC provider and contract configuration.
+    /// Whether the chain client is enabled (default: false). Required in practice: dipper
+    /// fetches the RecurringCollector's EIP-712 domain on-chain at startup and refuses to start
+    /// unless this is `true` with at least one RPC provider — there is no chain-less mode.
     #[serde(default = "default_chain_client_enabled")]
     pub enabled: bool,
 

@@ -25,6 +25,11 @@ mod worker;
 #[global_allocator]
 static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
 
+/// Extra attempts to fetch the RecurringCollector EIP-712 domain at startup after the first,
+/// to ride out a transient RPC blip before dipper refuses to run. Each attempt already fails
+/// over across every configured provider with its own backoff.
+const RCA_DOMAIN_FETCH_MAX_RETRIES: u32 = 5;
+
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {
     // Set up logging
@@ -50,6 +55,42 @@ pub async fn main() -> anyhow::Result<()> {
     // EIP-712 domains and on-chain calls can't drift to different values.
     let chain_id = conf.signer.chain_id;
     let recurring_collector = agreement_conf.recurring_collector;
+
+    // The chain client is mandatory: dipper signs RCAs under the RecurringCollector's EIP-712
+    // domain and settles offers on-chain, so a deployed contract and reachable RPC are required.
+    // Fetch the domain (EIP-5267) with retries, then refuse to start rather than sign unverified.
+    let rca_domain = {
+        let cfg = match &conf.chain_client {
+            Some(cfg) if cfg.enabled => cfg,
+            _ => anyhow::bail!(
+                "chain_client must be enabled with at least one RPC provider and a deployed \
+                 recurring_collector: dipper fetches the RecurringCollector EIP-712 domain \
+                 on-chain and cannot sign agreements without it"
+            ),
+        };
+        let mut attempt: u32 = 0;
+        loop {
+            match chain_client::fetch_rca_eip712_domain(cfg, chain_id, recurring_collector).await {
+                Ok(domain) => break domain,
+                Err(err) if attempt < RCA_DOMAIN_FETCH_MAX_RETRIES => {
+                    attempt += 1;
+                    let delay = std::time::Duration::from_secs(2u64.pow(attempt.min(5)));
+                    tracing::warn!(
+                        attempt,
+                        delay_secs = delay.as_secs(),
+                        error = %err,
+                        "RCA EIP-712 domain fetch failed, retrying"
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+                Err(err) => anyhow::bail!(
+                    "failed to fetch the RecurringCollector EIP-712 domain after {} attempts \
+                     across all configured RPC providers: {err}",
+                    RCA_DOMAIN_FETCH_MAX_RETRIES + 1
+                ),
+            }
+        }
+    };
 
     // Initialize the different components
 
@@ -82,8 +123,7 @@ pub async fn main() -> anyhow::Result<()> {
     let indexer_client = indexer_rpc_client::DipsIndexerClient::with_config(
         conf.indexer_client,
         wallet_signer.clone(),
-        chain_id,
-        recurring_collector,
+        rca_domain.clone(),
     );
 
     //- The network services
@@ -186,29 +226,28 @@ pub async fn main() -> anyhow::Result<()> {
 
     // Application services
 
-    //- The chain client (for on-chain transactions)
-    let chain_client: Arc<dyn chain_client::ChainClient + Send + Sync> = match &conf.chain_client {
-        Some(cfg) if cfg.enabled => {
-            // Extract the secret key bytes from the signer config
-            let secret_bytes: [u8; 32] = conf.signer.secret_key.as_ref().to_bytes().into();
-            let client = chain_client::AlloyChainClient::new(
-                cfg,
-                chain_id,
-                recurring_collector,
-                &secret_bytes,
-            )
-            .expect("Failed to create AlloyChainClient");
-            tracing::info!(
-                subgraph_service = %cfg.subgraph_service_address,
-                chain_id,
-                "initialized AlloyChainClient for on-chain transactions"
-            );
-            Arc::new(client)
-        }
-        _ => {
-            tracing::info!("chain client disabled, using stub implementation");
-            Arc::new(chain_client::StubChainClient)
-        }
+    //- The chain client (for on-chain transactions). Required: presence validated above.
+    let chain_client: Arc<dyn chain_client::ChainClient + Send + Sync> = {
+        let cfg = conf
+            .chain_client
+            .as_ref()
+            .expect("chain_client presence validated at startup");
+        // Extract the secret key bytes from the signer config
+        let secret_bytes: [u8; 32] = conf.signer.secret_key.as_ref().to_bytes().into();
+        let client = chain_client::AlloyChainClient::new(
+            cfg,
+            chain_id,
+            recurring_collector,
+            rca_domain.clone(),
+            &secret_bytes,
+        )
+        .expect("Failed to create AlloyChainClient");
+        tracing::info!(
+            subgraph_service = %cfg.subgraph_service_address,
+            chain_id,
+            "initialized AlloyChainClient for on-chain transactions"
+        );
+        Arc::new(client)
     };
 
     //- The entity count cache (shared with worker jobs for optimistic fee estimation)
@@ -416,10 +455,8 @@ pub async fn main() -> anyhow::Result<()> {
             }
         }
 
-        // Stop all services.
-        //
-        // Services are stopped in the reverse order of their dependencies. This is to ensure that
-        // the services that depend on other services are stopped first
+        // Stop all services in reverse dependency order, so a service is stopped before the
+        // services it depends on.
         tracing::trace!("stopping Admin RPC service");
         admin_rpc_handle.stop().await;
         tracing::trace!("stopped Admin RPC service");
