@@ -1,6 +1,6 @@
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_pgregistry::rejection_reason;
-use dipper_rpc::indexer::indexer_client::rpc::{ProposalResponse, RejectReason};
+use dipper_rpc::indexer::indexer_client::rpc::{Outcome, RejectReason};
 use serde_with::serde_as;
 use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 use url::Url;
@@ -114,60 +114,48 @@ where
         .await;
 
     match response {
-        Ok(resp) => {
-            let proposal_response =
-                ProposalResponse::try_from(resp.response).unwrap_or(ProposalResponse::Reject);
+        Ok(resp) => match resp.outcome {
+            Some(Outcome::Accepted(_)) => {
+                tracing::info!(
+                    agreement_id = %agreement_id,
+                    indexing_request_id = %indexing_request_id,
+                    old_status = "CREATED",
+                    new_status = "CREATED",
+                    reason = "accepted_by_indexer",
+                    "agreement state transition (submitting offer on-chain)"
+                );
 
-            match proposal_response {
-                ProposalResponse::Accept => {
-                    tracing::info!(
+                // Indexer accepted the terms. Submit the on-chain offer so
+                // the contract has the RCA hash when the indexer-agent calls
+                // acceptIndexingAgreement later.
+                if let Err(err) = ctx
+                    .queue
+                    .submit_offer(
+                        *agreement_id,
+                        *indexing_request_id,
+                        indexer_url.clone(),
+                        *deployment_id,
+                        *deployment_chain_id,
+                    )
+                    .await
+                {
+                    tracing::error!(
                         agreement_id = %agreement_id,
-                        indexing_request_id = %indexing_request_id,
-                        old_status = "CREATED",
-                        new_status = "CREATED",
-                        reason = "accepted_by_indexer",
-                        "agreement state transition (submitting offer on-chain)"
+                        error = %err,
+                        "Failed to queue task: 'submit_offer' after Accept"
                     );
-
-                    // Indexer accepted the terms. Submit the on-chain offer so
-                    // the contract has the RCA hash when the indexer-agent calls
-                    // acceptIndexingAgreement later.
-                    if let Err(err) = ctx
-                        .queue
-                        .submit_offer(
-                            *agreement_id,
-                            *indexing_request_id,
-                            indexer_url.clone(),
-                            *deployment_id,
-                            *deployment_chain_id,
-                        )
-                        .await
-                    {
-                        tracing::error!(
-                            agreement_id = %agreement_id,
-                            error = %err,
-                            "Failed to queue task: 'submit_offer' after Accept"
-                        );
-                        return Err(JobError::Fatal(err));
-                    }
+                    return Err(JobError::Fatal(err));
                 }
-                ProposalResponse::Reject => {
-                    // Extract rejection reason from the response.
-                    //
-                    // The rejection reason controls the declined indexer lookback window:
-                    // - PRICE_TOO_LOW: 1-day exclusion (retry after IISA price refresh)
-                    // - SIGNER_NOT_AUTHORISED, DEADLINE_EXPIRED, SUBGRAPH_MANIFEST_UNAVAILABLE,
-                    //   UNEXPECTED_SERVICE_PROVIDER, AGREEMENT_EXPIRED,
-                    //   UNSUPPORTED_METADATA_VERSION: 5-minute exclusion (transient or
-                    //   not the indexer's fault)
-                    // - UNSUPPORTED_NETWORK, OTHER, UNSPECIFIED: 30-day exclusion
-                    let reject_reason = RejectReason::try_from(resp.reject_reason).ok();
-                    let rejection_reason_str = reject_reason.map(|r| match r {
+            }
+            Some(Outcome::Rejected(rejected)) => {
+                // The rejection reason drives the declined-indexer lookback
+                // window. New audit-branch reasons and out-of-range values store
+                // the catch-all until a follow-up buckets them into tiers.
+                let rejection_reason_str = RejectReason::try_from(rejected.reason).map_or(
+                    rejection_reason::UNSPECIFIED,
+                    |r| match r {
                         RejectReason::Unspecified => rejection_reason::UNSPECIFIED,
                         RejectReason::PriceTooLow => rejection_reason::PRICE_TOO_LOW,
-                        RejectReason::SignerNotAuthorised => {
-                            rejection_reason::SIGNER_NOT_AUTHORISED
-                        }
                         RejectReason::DeadlineExpired => rejection_reason::DEADLINE_EXPIRED,
                         RejectReason::UnsupportedNetwork => rejection_reason::UNSUPPORTED_NETWORK,
                         RejectReason::SubgraphManifestUnavailable => {
@@ -180,32 +168,50 @@ where
                         RejectReason::UnsupportedMetadataVersion => {
                             rejection_reason::UNSUPPORTED_METADATA_VERSION
                         }
-                        RejectReason::Other => rejection_reason::OTHER,
-                    });
+                        _ => rejection_reason::UNSPECIFIED,
+                    },
+                );
 
-                    let reason = rejection_reason_str.unwrap_or("unspecified");
-                    tracing::info!(
-                        agreement_id = %agreement_id,
-                        indexing_request_id = %indexing_request_id,
-                        old_status = "CREATED",
-                        new_status = "REJECTED",
-                        reason = %format_args!("rejected_{reason}"),
-                        "agreement state transition"
-                    );
-                    // Mark as Rejected and reassess. The indexer may still accept on-chain,
-                    // in which case the chain listener will trigger cancellation.
-                    mark_rejected_and_reassess(
-                        &ctx,
-                        agreement_id,
-                        indexing_request_id,
-                        deployment_id,
-                        deployment_chain_id,
-                        rejection_reason_str,
-                    )
-                    .await?;
-                }
+                tracing::info!(
+                    agreement_id = %agreement_id,
+                    indexing_request_id = %indexing_request_id,
+                    old_status = "CREATED",
+                    new_status = "REJECTED",
+                    reason = %format_args!("rejected_{rejection_reason_str}"),
+                    detail = %rejected.detail,
+                    "agreement state transition"
+                );
+                // Mark as Rejected and reassess. The indexer may still accept on-chain,
+                // in which case the chain listener will trigger cancellation.
+                mark_rejected_and_reassess(
+                    &ctx,
+                    agreement_id,
+                    indexing_request_id,
+                    deployment_id,
+                    deployment_chain_id,
+                    Some(rejection_reason_str),
+                )
+                .await?;
             }
-        }
+            None => {
+                // A response with no outcome is malformed; treat it as a
+                // rejection so the request is reassessed rather than stalling.
+                tracing::warn!(
+                    agreement_id = %agreement_id,
+                    indexing_request_id = %indexing_request_id,
+                    "Proposal response had no outcome; treating as rejected"
+                );
+                mark_rejected_and_reassess(
+                    &ctx,
+                    agreement_id,
+                    indexing_request_id,
+                    deployment_id,
+                    deployment_chain_id,
+                    None,
+                )
+                .await?;
+            }
+        },
         Err(err) => {
             tracing::info!(
                 agreement_id = %agreement_id,
@@ -352,7 +358,9 @@ mod tests {
 
     use async_trait::async_trait;
     use dipper_core::ids::IndexingRequestId;
-    use dipper_rpc::indexer::indexer_client::rpc::SubmitAgreementProposalResponse;
+    use dipper_rpc::indexer::indexer_client::rpc::{
+        Accepted, Rejected, SubmitAgreementProposalResponse,
+    };
     use thegraph_core::{DeploymentId, IndexerId, deployment_id, indexer_id};
 
     use super::*;
@@ -700,7 +708,9 @@ mod tests {
         Accept,
         Reject,
         RejectPriceTooLow,
-        RejectSignerNotAuthorised,
+        RejectInvalidSignature,
+        RejectUnknownReason,
+        NoOutcome,
         Fail,
     }
 
@@ -727,9 +737,21 @@ mod tests {
             }
         }
 
-        fn rejecting_signer_not_authorised() -> Self {
+        fn rejecting_invalid_signature() -> Self {
             Self {
-                response: MockResponse::RejectSignerNotAuthorised,
+                response: MockResponse::RejectInvalidSignature,
+            }
+        }
+
+        fn rejecting_unknown_reason() -> Self {
+            Self {
+                response: MockResponse::RejectUnknownReason,
+            }
+        }
+
+        fn responding_without_outcome() -> Self {
+            Self {
+                response: MockResponse::NoOutcome,
             }
         }
 
@@ -751,21 +773,34 @@ mod tests {
         ) -> Result<SubmitAgreementProposalResponse, DipsError> {
             match self.response {
                 MockResponse::Accept => Ok(SubmitAgreementProposalResponse {
-                    response: ProposalResponse::Accept as i32,
-                    reject_reason: RejectReason::Unspecified as i32,
+                    outcome: Some(Outcome::Accepted(Accepted {})),
                 }),
                 MockResponse::Reject => Ok(SubmitAgreementProposalResponse {
-                    response: ProposalResponse::Reject as i32,
-                    reject_reason: RejectReason::Other as i32,
+                    outcome: Some(Outcome::Rejected(Rejected {
+                        reason: RejectReason::Unspecified as i32,
+                        detail: String::new(),
+                    })),
                 }),
                 MockResponse::RejectPriceTooLow => Ok(SubmitAgreementProposalResponse {
-                    response: ProposalResponse::Reject as i32,
-                    reject_reason: RejectReason::PriceTooLow as i32,
+                    outcome: Some(Outcome::Rejected(Rejected {
+                        reason: RejectReason::PriceTooLow as i32,
+                        detail: String::new(),
+                    })),
                 }),
-                MockResponse::RejectSignerNotAuthorised => Ok(SubmitAgreementProposalResponse {
-                    response: ProposalResponse::Reject as i32,
-                    reject_reason: RejectReason::SignerNotAuthorised as i32,
+                MockResponse::RejectInvalidSignature => Ok(SubmitAgreementProposalResponse {
+                    outcome: Some(Outcome::Rejected(Rejected {
+                        reason: RejectReason::InvalidSignature as i32,
+                        detail: String::new(),
+                    })),
                 }),
+                MockResponse::RejectUnknownReason => Ok(SubmitAgreementProposalResponse {
+                    outcome: Some(Outcome::Rejected(Rejected {
+                        // A numeric value no RejectReason variant maps to.
+                        reason: 9999,
+                        detail: String::new(),
+                    })),
+                }),
+                MockResponse::NoOutcome => Ok(SubmitAgreementProposalResponse { outcome: None }),
                 MockResponse::Fail => Err(DipsError::ConnectionError(
                     "connection failed".to_string().into(),
                 )),
@@ -879,7 +914,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reject_response_marks_rejected_with_other_reason() {
+    async fn test_reject_response_marks_rejected_with_unspecified_reason() {
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
 
@@ -910,13 +945,13 @@ mod tests {
         let result = handle(ctx, &message).await;
 
         assert!(result.is_ok());
-        // Should mark as rejected with OTHER reason
+        // Should mark as rejected with UNSPECIFIED reason
         let state = registry_state.lock().unwrap();
         assert_eq!(state.marked_rejected.len(), 1);
         assert_eq!(state.marked_rejected[0].0, agreement_id);
         assert_eq!(
             state.marked_rejected[0].1,
-            Some(rejection_reason::OTHER.to_string())
+            Some(rejection_reason::UNSPECIFIED.to_string())
         );
         assert!(state.marked_failed.is_empty());
         drop(state);
@@ -975,7 +1010,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reject_signer_not_authorised_marks_with_correct_reason() {
+    async fn test_reject_invalid_signature_falls_to_catch_all() {
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
 
@@ -992,7 +1027,7 @@ mod tests {
         let ctx = Ctx {
             registry: MockRegistry::new(registry_state.clone()),
             queue: MockQueue::new(queue_state.clone()),
-            indexer_client: MockIndexerClient::rejecting_signer_not_authorised(),
+            indexer_client: MockIndexerClient::rejecting_invalid_signature(),
         };
 
         let message = Message {
@@ -1006,14 +1041,109 @@ mod tests {
         let result = handle(ctx, &message).await;
 
         assert!(result.is_ok());
-        // Should mark as rejected with SIGNER_NOT_AUTHORISED reason
+        // New audit-branch reason buckets to the catch-all until a follow-up refines it.
         let state = registry_state.lock().unwrap();
         assert_eq!(state.marked_rejected.len(), 1);
         assert_eq!(state.marked_rejected[0].0, agreement_id);
         assert_eq!(
             state.marked_rejected[0].1,
-            Some(rejection_reason::SIGNER_NOT_AUTHORISED.to_string())
+            Some(rejection_reason::UNSPECIFIED.to_string())
         );
+        assert!(state.marked_failed.is_empty());
+        drop(state);
+        // Should queue reassessment
+        let qstate = queue_state.lock().unwrap();
+        assert_eq!(qstate.reassess_calls.len(), 1);
+        assert_eq!(qstate.reassess_calls[0].0, request_id);
+    }
+
+    #[tokio::test]
+    async fn test_reject_unknown_numeric_reason_stores_unspecified() {
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
+        let request_id = IndexingRequestId::new();
+
+        let registry_state = Arc::new(Mutex::new(MockRegistryState {
+            agreement: Some(make_test_agreement(
+                agreement_id,
+                IndexingAgreementStatus::Created,
+            )),
+            request: Some(make_test_request(request_id)),
+            ..Default::default()
+        }));
+        let queue_state = Arc::new(Mutex::new(MockQueueState::default()));
+
+        let ctx = Ctx {
+            registry: MockRegistry::new(registry_state.clone()),
+            queue: MockQueue::new(queue_state.clone()),
+            indexer_client: MockIndexerClient::rejecting_unknown_reason(),
+        };
+
+        let message = Message {
+            indexer_url: "https://indexer.example.com".parse().unwrap(),
+            agreement_id,
+            indexing_request_id: request_id,
+            deployment_id: deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv"),
+            deployment_chain_id: 1,
+        };
+
+        let result = handle(ctx, &message).await;
+
+        assert!(result.is_ok());
+        // A numeric reason outside the known enum stores the same catch-all
+        // string as a known-but-unmapped variant, keeping the data uniform.
+        let state = registry_state.lock().unwrap();
+        assert_eq!(state.marked_rejected.len(), 1);
+        assert_eq!(state.marked_rejected[0].0, agreement_id);
+        assert_eq!(
+            state.marked_rejected[0].1,
+            Some(rejection_reason::UNSPECIFIED.to_string())
+        );
+        assert!(state.marked_failed.is_empty());
+        drop(state);
+        // Should queue reassessment
+        let qstate = queue_state.lock().unwrap();
+        assert_eq!(qstate.reassess_calls.len(), 1);
+        assert_eq!(qstate.reassess_calls[0].0, request_id);
+    }
+
+    #[tokio::test]
+    async fn test_no_outcome_marks_rejected_and_reassesses() {
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
+        let request_id = IndexingRequestId::new();
+
+        let registry_state = Arc::new(Mutex::new(MockRegistryState {
+            agreement: Some(make_test_agreement(
+                agreement_id,
+                IndexingAgreementStatus::Created,
+            )),
+            request: Some(make_test_request(request_id)),
+            ..Default::default()
+        }));
+        let queue_state = Arc::new(Mutex::new(MockQueueState::default()));
+
+        let ctx = Ctx {
+            registry: MockRegistry::new(registry_state.clone()),
+            queue: MockQueue::new(queue_state.clone()),
+            indexer_client: MockIndexerClient::responding_without_outcome(),
+        };
+
+        let message = Message {
+            indexer_url: "https://indexer.example.com".parse().unwrap(),
+            agreement_id,
+            indexing_request_id: request_id,
+            deployment_id: deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv"),
+            deployment_chain_id: 1,
+        };
+
+        let result = handle(ctx, &message).await;
+
+        assert!(result.is_ok());
+        // A malformed response with no outcome is treated as a rejection (with
+        // no stored reason) so the request is reassessed rather than stalling.
+        let state = registry_state.lock().unwrap();
+        assert_eq!(state.marked_rejected.len(), 1);
+        assert_eq!(state.marked_rejected[0].0, agreement_id);
+        assert_eq!(state.marked_rejected[0].1, None);
         assert!(state.marked_failed.is_empty());
         drop(state);
         // Should queue reassessment
