@@ -62,6 +62,31 @@ pub async fn fetch_rca_eip712_domain(
     Ok(domain)
 }
 
+/// Re-fetch the domain and swap it into `shared` when it changed, so a running
+/// dipper follows an in-place contract upgrade without a restart. Returns
+/// whether the domain changed; on error the current domain stays in place.
+pub async fn refresh_rca_eip712_domain(
+    config: &ChainClientConfig,
+    chain_id: u64,
+    recurring_collector: Address,
+    shared: &std::sync::RwLock<Eip712Domain>,
+) -> Result<bool, ChainClientError> {
+    let fetched = fetch_rca_eip712_domain(config, chain_id, recurring_collector).await?;
+    let mut current = shared.write().expect("RCA domain lock poisoned");
+    if *current == fetched {
+        return Ok(false);
+    }
+    tracing::warn!(
+        old_name = %current.name.as_deref().unwrap_or_default(),
+        old_version = %current.version.as_deref().unwrap_or_default(),
+        new_name = %fetched.name.as_deref().unwrap_or_default(),
+        new_version = %fetched.version.as_deref().unwrap_or_default(),
+        "RecurringCollector EIP-712 domain changed; switching to the new domain"
+    );
+    *current = fetched;
+    Ok(true)
+}
+
 /// Validate an EIP-5267 report against the configured chain id and contract
 /// address, and build the domain dipper signs and hashes RCAs under.
 fn domain_from_report(
@@ -251,6 +276,7 @@ mod tests {
             providers: vec![rpc_url],
             request_timeout: Duration::from_secs(5),
             max_retries: 0,
+            domain_refresh_interval: Duration::from_secs(3600),
             subgraph_service_address: Address::repeat_byte(0xAA),
             indexing_payments_subgraph_url: None,
             gas_price_multiplier: 1.2,
@@ -299,6 +325,83 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("undecodable"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_refresh_swaps_in_a_changed_domain() {
+        let collector = Address::repeat_byte(0xCC);
+        // The contract now reports version "2"; the shared slot holds the
+        // version "1" builtin, so the refresh should swap it.
+        let mut report = valid_report(1337, collector);
+        report.version = "2".to_string();
+        let encoded = IRecurringCollector::eip712DomainCall::abi_encode_returns(&report);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(EthCallResponder {
+                result_hex: format!("0x{}", hex::encode(encoded)),
+            })
+            .mount(&server)
+            .await;
+        let config = test_chain_client_config(server.uri().parse().unwrap());
+        let shared = std::sync::RwLock::new(rca_eip712_domain(1337, collector));
+
+        let changed = refresh_rca_eip712_domain(&config, 1337, collector, &shared)
+            .await
+            .expect("refresh should succeed");
+
+        assert!(changed);
+        let domain = shared.read().unwrap().clone();
+        assert_eq!(domain.version.as_deref(), Some("2"));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_is_a_no_op_when_unchanged() {
+        let collector = Address::repeat_byte(0xCC);
+        let report = valid_report(1337, collector);
+        let encoded = IRecurringCollector::eip712DomainCall::abi_encode_returns(&report);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(EthCallResponder {
+                result_hex: format!("0x{}", hex::encode(encoded)),
+            })
+            .mount(&server)
+            .await;
+        let config = test_chain_client_config(server.uri().parse().unwrap());
+        let shared = std::sync::RwLock::new(rca_eip712_domain(1337, collector));
+
+        let changed = refresh_rca_eip712_domain(&config, 1337, collector, &shared)
+            .await
+            .expect("refresh should succeed");
+
+        assert!(!changed);
+        assert_eq!(
+            shared.read().unwrap().clone(),
+            rca_eip712_domain(1337, collector)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_refresh_failure_keeps_the_current_domain() {
+        let collector = Address::repeat_byte(0xCC);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(EthCallResponder {
+                result_hex: "0xdeadbeef".to_string(),
+            })
+            .mount(&server)
+            .await;
+        let config = test_chain_client_config(server.uri().parse().unwrap());
+        let shared = std::sync::RwLock::new(rca_eip712_domain(1337, collector));
+
+        let err = refresh_rca_eip712_domain(&config, 1337, collector, &shared)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("undecodable"), "{err}");
+        assert_eq!(
+            shared.read().unwrap().clone(),
+            rca_eip712_domain(1337, collector)
+        );
     }
 
     #[tokio::test]

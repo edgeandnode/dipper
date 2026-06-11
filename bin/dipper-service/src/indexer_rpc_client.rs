@@ -13,7 +13,11 @@
 //!
 //! If the timeout is too short, legitimate proposals may fail during IPFS retries.
 
-use std::{str::FromStr, time::Duration};
+use std::{
+    str::FromStr,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use dipper_core::ids::IndexingAgreementId;
@@ -64,20 +68,20 @@ pub trait IndexerClient {
 #[derive(Clone)]
 pub struct DipsIndexerClient {
     signer: PrivateKeySigner,
-    rca_domain: Eip712Domain,
+    rca_domain: Arc<RwLock<Eip712Domain>>,
     connect_timeout: Duration,
     request_timeout: Duration,
     max_retries: u32,
 }
 
 impl DipsIndexerClient {
-    /// Create a new indexer client. `rca_domain` is the RecurringCollector
-    /// EIP-712 domain each proposal is signed under so the indexer can
-    /// recover the sender.
+    /// Create a new indexer client. `rca_domain` is the shared RecurringCollector
+    /// EIP-712 domain each proposal is signed under so the indexer can recover
+    /// the sender; a background task may swap it after a contract upgrade.
     pub fn with_config(
         config: IndexerClientConfig,
         signer: PrivateKeySigner,
-        rca_domain: Eip712Domain,
+        rca_domain: Arc<RwLock<Eip712Domain>>,
     ) -> Self {
         Self {
             signer,
@@ -92,9 +96,14 @@ impl DipsIndexerClient {
     /// recovers this signer. The typed-data hash carries the 0x1901 prefix, so
     /// no EIP-191 message prefix is applied.
     fn sign_rca(&self, rca: &sol::RecurringCollectionAgreement) -> Result<Vec<u8>, DipsError> {
+        let domain = self
+            .rca_domain
+            .read()
+            .expect("RCA domain lock poisoned")
+            .clone();
         let signature = self
             .signer
-            .sign_typed_data_sync(rca, &self.rca_domain)
+            .sign_typed_data_sync(rca, &domain)
             .map_err(|err| DipsError::SigningError(err.into()))?;
         Ok(signature.as_bytes().to_vec())
     }
@@ -454,7 +463,10 @@ mod tests {
 
         DipsIndexerClient {
             signer,
-            rca_domain: rca_eip712_domain(1337, Address::repeat_byte(0xCC)),
+            rca_domain: Arc::new(RwLock::new(rca_eip712_domain(
+                1337,
+                Address::repeat_byte(0xCC),
+            ))),
             connect_timeout: Duration::from_secs(1),
             request_timeout: Duration::from_secs(1),
             max_retries: 0,
@@ -476,10 +488,11 @@ mod tests {
 
         // The signature recovers to the signer over the same domain — exactly
         // what the indexer does to authenticate the proposal's sender.
-        let domain = client.rca_domain.clone();
         let recovered = Signature::try_from(sig_bytes.as_slice())
             .expect("valid signature bytes")
-            .recover_address_from_prehash(&rca.eip712_signing_hash(&domain))
+            .recover_address_from_prehash(
+                &rca.eip712_signing_hash(&client.rca_domain.read().unwrap()),
+            )
             .expect("recovery should succeed");
         assert_eq!(recovered, signer.address());
     }
@@ -503,12 +516,50 @@ mod tests {
         assert_eq!(request.version, 2);
         let signed_rca = sol::SignedRecurringCollectionAgreement::abi_decode(&request.signed_rca)
             .expect("wire bytes should decode as a SignedRCA");
-        let domain = client.rca_domain.clone();
         let recovered = Signature::try_from(signed_rca.signature.as_ref())
             .expect("valid signature bytes")
-            .recover_address_from_prehash(&signed_rca.agreement.eip712_signing_hash(&domain))
+            .recover_address_from_prehash(
+                &signed_rca
+                    .agreement
+                    .eip712_signing_hash(&client.rca_domain.read().unwrap()),
+            )
             .expect("recovery should succeed");
         assert_eq!(recovered, signer.address());
+    }
+
+    #[test]
+    fn test_sign_rca_follows_a_swapped_domain() {
+        use thegraph_core::alloy::{
+            primitives::{Address, Signature},
+            sol_types::SolStruct,
+        };
+
+        let signer: PrivateKeySigner =
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+                .parse()
+                .unwrap();
+        let client = signing_test_client(signer.clone());
+        let (rca, _) = into_sol_rca(uuid::Uuid::now_v7(), signing_test_terms());
+
+        // Swap the shared domain, as the background refresh does after an
+        // in-place contract upgrade.
+        let new_domain = rca_eip712_domain(1337, Address::repeat_byte(0xDD));
+        *client.rca_domain.write().unwrap() = new_domain.clone();
+
+        let sig_bytes = client.sign_rca(&rca).expect("signing should succeed");
+
+        // The signature verifies under the swapped (0xDD) domain, not the 0xCC one.
+        let recovered = Signature::try_from(sig_bytes.as_slice())
+            .expect("valid signature bytes")
+            .recover_address_from_prehash(&rca.eip712_signing_hash(&new_domain))
+            .expect("recovery should succeed");
+        assert_eq!(recovered, signer.address());
+        let old_domain = rca_eip712_domain(1337, Address::repeat_byte(0xCC));
+        let recovered_old = Signature::try_from(sig_bytes.as_slice())
+            .unwrap()
+            .recover_address_from_prehash(&rca.eip712_signing_hash(&old_domain))
+            .unwrap();
+        assert_ne!(recovered_old, signer.address());
     }
 
     #[test]
