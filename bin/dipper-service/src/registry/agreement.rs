@@ -111,23 +111,16 @@ pub trait AgreementRegistry {
         indexer_ids: &[IndexerId],
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>;
 
-    /// Get declined indexers grouped by deployment with differentiated lookback windows.
-    ///
-    /// Returns indexers with `CanceledByIndexer`, `Expired`, or `Rejected` status
-    /// within lookback windows that depend on the rejection reason:
-    /// - `PRICE_TOO_LOW` rejections: `price_lookback_days` (shorter window)
-    /// - Transient rejections: `transient_lookback_minutes` (very short window)
-    /// - `INSUFFICIENT_ESCROW`: `escrow_lookback_minutes` (medium window)
-    /// - All other statuses/reasons: `default_lookback_days` (standard exclusion)
-    ///
-    /// Returns a map where keys are deployment IDs and values are lists of indexer IDs
-    /// that declined agreements for that deployment.
+    /// Get declined `CanceledByIndexer`/`Expired`/`Rejected` indexers grouped by
+    /// deployment. Each rejection reason gets its own exclusion window (price,
+    /// transient, escrow, uncertain, or default); see the `rejection_reason` constants.
     async fn get_declined_indexers_by_deployment(
         &self,
         default_lookback_days: i32,
         price_lookback_days: i32,
         transient_lookback_minutes: i32,
         escrow_lookback_minutes: i32,
+        uncertain_lookback_days: i32,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>;
 
     /// Get all agreements by associated indexing request ID.
@@ -263,9 +256,9 @@ pub trait AgreementRegistry {
     /// If there is no indexing agreement with the given ID, or if the agreement is not in the
     /// `CREATED` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
     ///
-    /// The `rejection_reason` controls the lookback window for declined indexer exclusion:
-    /// - `Some("PRICE_TOO_LOW")`: 1-day exclusion (until next IISA price refresh)
-    /// - `Some("UNSPECIFIED")` or `None`: 30-day exclusion (standard)
+    /// The `rejection_reason` sets the exclusion window: `PRICE_TOO_LOW`,
+    /// `SENDER_NOT_TRUSTED`, and `UNSPECIFIED` retry within a day; `None` (also
+    /// expired/canceled agreements) waits the 30-day default.
     async fn mark_indexing_agreement_as_rejected(
         &self,
         id: &IndexingAgreementId,

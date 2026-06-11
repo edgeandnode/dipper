@@ -52,7 +52,7 @@ pub mod rejection_reason {
     pub const INVALID_SIGNATURE: &str = "INVALID_SIGNATURE";
 
     /// The signer is not an authorised agreement manager for this indexer.
-    /// Lookback: 30 days (persistent -- payer not trusted by the indexer).
+    /// Lookback: 1 day (the indexer may add the payer to its trusted set).
     pub const SENDER_NOT_TRUSTED: &str = "SENDER_NOT_TRUSTED";
 
     /// The indexer is at its DIPs capacity and may have room later.
@@ -76,8 +76,9 @@ pub mod rejection_reason {
     /// Lookback: 5 minutes (transient, not the indexer's lasting state).
     pub const INDEXER_UNAVAILABLE: &str = "INDEXER_UNAVAILABLE";
 
-    /// The rejection reason was not specified, was not recognised, or had no
-    /// more specific constant. Lookback: 30 days (standard).
+    /// The rejection reason was not specified, recognised, or mapped to a more
+    /// specific constant; also a malformed no-outcome response. Lookback: 1 day
+    /// (most often a transient protocol skew between dipper and the indexer).
     pub const UNSPECIFIED: &str = "UNSPECIFIED";
 }
 use thegraph_core::{

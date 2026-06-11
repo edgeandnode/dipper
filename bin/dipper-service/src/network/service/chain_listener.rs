@@ -1429,6 +1429,7 @@ mod tests {
             _price_lookback_days: i32,
             _transient_lookback_minutes: i32,
             _escrow_lookback_minutes: i32,
+            _uncertain_lookback_days: i32,
         ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>> {
             Ok(std::collections::HashMap::new())
         }

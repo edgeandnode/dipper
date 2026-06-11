@@ -642,10 +642,8 @@ pub struct DipsAgreementConfig {
     pub max_grt_per_billion_entities_per_30_days: f64,
 
     /// Number of days to look back for declined indexers (standard exclusion).
-    ///
-    /// Indexers that declined an agreement (CanceledByIndexer, Expired, or Rejected
-    /// with reason UNSPECIFIED) within this period will be excluded from
-    /// selection for that deployment. Default: 30 days.
+    /// Covers CanceledByIndexer/Expired agreements and structurally persistent
+    /// rejections (UNSUPPORTED_NETWORK, MANIFEST_TOO_LARGE). Default: 30 days.
     #[serde(default = "default_declined_indexer_lookback_days")]
     pub declined_indexer_lookback_days: i32,
 
@@ -671,6 +669,12 @@ pub struct DipsAgreementConfig {
     /// takes longer than a transient blip but is not permanent. Default: 30 minutes.
     #[serde(default = "default_escrow_rejection_lookback_minutes")]
     pub escrow_rejection_lookback_minutes: i32,
+
+    /// Days to look back for uncertain rejections that may clear within a day but
+    /// aren't a quick transient blip: the indexer not yet trusting the payer
+    /// (SENDER_NOT_TRUSTED), or an unspecified/unknown/missing reason. Default: 1 day.
+    #[serde(default = "default_uncertain_rejection_lookback_days")]
+    pub uncertain_rejection_lookback_days: i32,
 }
 
 fn default_deadline_seconds() -> u64 {
@@ -753,6 +757,10 @@ fn default_transient_rejection_lookback_minutes() -> i32 {
 
 fn default_escrow_rejection_lookback_minutes() -> i32 {
     30
+}
+
+fn default_uncertain_rejection_lookback_days() -> i32 {
+    1
 }
 
 /// Per-chain pricing for indexing agreements.
@@ -867,6 +875,8 @@ pub struct IndexingAgreementConfig {
     pub transient_rejection_lookback_minutes: i32,
     /// Number of minutes to look back for INSUFFICIENT_ESCROW rejections.
     pub escrow_rejection_lookback_minutes: i32,
+    /// Number of days to look back for uncertain rejections (sender-not-trusted, unspecified).
+    pub uncertain_rejection_lookback_days: i32,
 }
 
 /// Per-chain pricing for indexing agreements (runtime).
@@ -930,6 +940,10 @@ impl IndexingAgreementConfig {
     pub fn escrow_rejection_lookback_minutes(&self) -> i32 {
         self.escrow_rejection_lookback_minutes
     }
+
+    pub fn uncertain_rejection_lookback_days(&self) -> i32 {
+        self.uncertain_rejection_lookback_days
+    }
 }
 
 impl From<DipsAgreementConfig>
@@ -954,6 +968,7 @@ impl From<DipsAgreementConfig>
             price_rejection_lookback_days: value.price_rejection_lookback_days,
             transient_rejection_lookback_minutes: value.transient_rejection_lookback_minutes,
             escrow_rejection_lookback_minutes: value.escrow_rejection_lookback_minutes,
+            uncertain_rejection_lookback_days: value.uncertain_rejection_lookback_days,
         };
         let prices = value
             .pricing_table
