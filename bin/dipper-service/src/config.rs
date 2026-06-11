@@ -491,6 +491,7 @@ fn default_max_gas_price_gwei() -> u64 {
 /// It supports multiple RPC providers with automatic failover and retry.
 #[serde_as]
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChainClientConfig {
     /// Whether the chain client is enabled (default: false)
     ///
@@ -1183,6 +1184,52 @@ mod tests {
             assert!(
                 err.to_string().contains(stale_key),
                 "error for {stale_key} should name the unknown key, got: {err}"
+            );
+        }
+    }
+
+    /// A minimal chain_client block with only current keys still parses.
+    #[test]
+    fn test_chain_client_config_accepts_current_keys() {
+        let json = r#"{
+            "enabled": true,
+            "providers": ["http://chain:8545"],
+            "subgraph_service_address": "0x1111111111111111111111111111111111111111"
+        }"#;
+
+        let config: ChainClientConfig = serde_json::from_str(json).expect("deserialization failed");
+
+        assert!(config.enabled);
+        assert_eq!(config.providers.len(), 1);
+    }
+
+    /// Stale `chain_id` and `recurring_collector_address` keys (now read from
+    /// the signer and dips sections instead) should fail deserialization
+    /// rather than be silently ignored, so operators surface the migration
+    /// instead of editing keys that no longer take effect.
+    #[test]
+    fn test_chain_client_config_rejects_stale_keys() {
+        let stale_keys = [
+            r#""chain_id": 1337"#,
+            r#""recurring_collector_address": "0x2222222222222222222222222222222222222222""#,
+            r#""completely_made_up_key": "anything""#,
+        ];
+
+        for stale_key in stale_keys {
+            let json = format!(
+                r#"{{
+                    "enabled": true,
+                    "providers": ["http://chain:8545"],
+                    "subgraph_service_address": "0x1111111111111111111111111111111111111111",
+                    {stale_key}
+                }}"#
+            );
+            let key_name = stale_key.split('"').nth(1).unwrap();
+            let err = serde_json::from_str::<ChainClientConfig>(&json)
+                .expect_err(&format!("expected rejection for key {key_name}"));
+            assert!(
+                err.to_string().contains(key_name),
+                "error for {key_name} should name the unknown key, got: {err}"
             );
         }
     }
