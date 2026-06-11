@@ -644,7 +644,7 @@ pub struct DipsAgreementConfig {
     /// Number of days to look back for declined indexers (standard exclusion).
     ///
     /// Indexers that declined an agreement (CanceledByIndexer, Expired, or Rejected
-    /// with reason OTHER/UNSPECIFIED) within this period will be excluded from
+    /// with reason UNSPECIFIED) within this period will be excluded from
     /// selection for that deployment. Default: 30 days.
     #[serde(default = "default_declined_indexer_lookback_days")]
     pub declined_indexer_lookback_days: i32,
