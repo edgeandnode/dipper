@@ -91,6 +91,35 @@ pub async fn main() -> anyhow::Result<()> {
             }
         }
     };
+    let rca_domain = Arc::new(std::sync::RwLock::new(rca_domain));
+
+    // Background refresh so a running dipper follows an in-place contract upgrade
+    // without a restart. Refresh failures keep the current domain and only warn.
+    if let Some(cfg) = conf.chain_client.as_ref().filter(|cfg| cfg.enabled) {
+        let cfg = cfg.clone();
+        let rca_domain = Arc::clone(&rca_domain);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(cfg.domain_refresh_interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await; // the first tick fires immediately; skip it
+            loop {
+                ticker.tick().await;
+                if let Err(err) = chain_client::refresh_rca_eip712_domain(
+                    &cfg,
+                    chain_id,
+                    recurring_collector,
+                    &rca_domain,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        error = %err,
+                        "RCA EIP-712 domain refresh failed; keeping the current domain"
+                    );
+                }
+            }
+        });
+    }
 
     // Initialize the different components
 

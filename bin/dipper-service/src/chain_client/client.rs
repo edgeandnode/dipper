@@ -5,7 +5,7 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, RwLock,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -150,7 +150,7 @@ struct AlloyChainClientInner {
     /// EIP-712 domain the RCA offer hash is computed under. Shared with the
     /// proposal signer so the hash dipper posts on-chain matches the one the
     /// contract recomputes when the indexer accepts.
-    rca_domain: Eip712Domain,
+    rca_domain: Arc<RwLock<Eip712Domain>>,
     /// Chain ID
     chain_id: u64,
     /// Gas price multiplier
@@ -186,7 +186,7 @@ impl AlloyChainClient {
         config: &ChainClientConfig,
         chain_id: u64,
         recurring_collector: Address,
-        rca_domain: Eip712Domain,
+        rca_domain: Arc<RwLock<Eip712Domain>>,
         secret_key: &[u8; 32],
     ) -> Result<Self, ChainClientError> {
         let signer = PrivateKeySigner::from_bytes(&FixedBytes::from(*secret_key))
@@ -687,7 +687,13 @@ impl ChainClient for AlloyChainClient {
         // 2. Compute the local EIP-712 hash of the RCA; this is what the
         //    contract compares against the stored offer hash when the indexer
         //    later calls `accept(rca, "")`.
-        let local_hash = rca.eip712_signing_hash(&self.inner.rca_domain);
+        let domain = self
+            .inner
+            .rca_domain
+            .read()
+            .expect("RCA domain lock poisoned")
+            .clone();
+        let local_hash = rca.eip712_signing_hash(&domain);
 
         // 3. Idempotency via the indexing-payments-subgraph. If the subgraph
         //    has indexed a prior OfferStored for this agreement id with a

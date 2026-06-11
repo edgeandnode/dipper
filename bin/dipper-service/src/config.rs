@@ -516,6 +516,12 @@ pub struct ChainClientConfig {
     #[serde(default = "default_chain_client_max_retries")]
     pub max_retries: u32,
 
+    /// Seconds between background re-fetches of the RecurringCollector's
+    /// EIP-712 signing domain (default: 3600). See `chain_client::eip5267`.
+    #[serde(default = "default_domain_refresh_interval")]
+    #[serde_as(as = "serde_with::DurationSeconds")]
+    pub domain_refresh_interval: Duration,
+
     /// SubgraphService contract address.
     ///
     /// This is the contract that manages indexing agreements and exposes
@@ -573,6 +579,10 @@ fn default_chain_client_enabled() -> bool {
 
 fn default_chain_client_request_timeout() -> Duration {
     Duration::from_secs(30)
+}
+
+fn default_domain_refresh_interval() -> Duration {
+    Duration::from_secs(3600)
 }
 
 fn default_chain_client_max_retries() -> u32 {
