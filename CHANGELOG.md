@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.1.3](https://github.com/edgeandnode/dipper/compare/v0.1.2...v0.1.3) (2026-06-11)
+
+
+### Added
+
+* **config:** reject unknown keys in the chain client section ([#630](https://github.com/edgeandnode/dipper/issues/630)) ([0e947dc](https://github.com/edgeandnode/dipper/commit/0e947dc24bbabc34cc3f7f539fb1447f6a85f1da))
+* **dips:** refresh the RCA signing domain while dipper runs ([#632](https://github.com/edgeandnode/dipper/issues/632)) ([bbd6b2c](https://github.com/edgeandnode/dipper/commit/bbd6b2cbf69392eae4f1f49203e3485cd5dfdf7b))
+* fetch the signing domain from the deployed contract ([#629](https://github.com/edgeandnode/dipper/issues/629)) ([5537d95](https://github.com/edgeandnode/dipper/commit/5537d9534b8d319795a45d836dfb3876f164856e))
+* sign indexing agreement proposals sent to indexers ([#626](https://github.com/edgeandnode/dipper/issues/626)) ([e10b57c](https://github.com/edgeandnode/dipper/commit/e10b57c8dd197790421b4e0a09137a0dc076bd95))
+
+
+### Fixed
+
+* **dips:** retry untrusted and unknown rejections within a day ([#633](https://github.com/edgeandnode/dipper/issues/633)) ([76fabda](https://github.com/edgeandnode/dipper/commit/76fabdacc83fb7693bc40608b9539a1ee40f0ac9))
+* give each indexer rejection its own retry backoff window ([#627](https://github.com/edgeandnode/dipper/issues/627)) ([51e0fc0](https://github.com/edgeandnode/dipper/commit/51e0fc01b3c1aa374935d38a7288402313f9e989))
+
+
+### Changed
+
+* read the indexer's new accept-or-reject response ([#625](https://github.com/edgeandnode/dipper/issues/625)) ([42bec75](https://github.com/edgeandnode/dipper/commit/42bec75c88c972d0661b86843d342fe07e53c725))
+* **registry:** drop rejection reasons that can no longer occur ([#631](https://github.com/edgeandnode/dipper/issues/631)) ([81cb563](https://github.com/edgeandnode/dipper/commit/81cb563146d2b8ba36d5c2c341c85c000dc3e489))
+
+
+### Documentation
+
+* **readme:** correct IISA startup requirement for dipper ([#623](https://github.com/edgeandnode/dipper/issues/623)) ([0bbbc78](https://github.com/edgeandnode/dipper/commit/0bbbc7864e274fc9062aaeedad3673317d495853))
+
+
+### Tests
+
+* **network:** address Arbitrum subgraph by ID, not pinned deployment ([#628](https://github.com/edgeandnode/dipper/issues/628)) ([202585a](https://github.com/edgeandnode/dipper/commit/202585a5bf975cd5377c1464d3d5532e3614cde0))
+
 ## [0.1.2](https://github.com/edgeandnode/dipper/compare/v0.1.1...v0.1.2) (2026-06-03)
 
 
