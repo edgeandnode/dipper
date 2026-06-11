@@ -149,8 +149,8 @@ where
             }
             Some(Outcome::Rejected(rejected)) => {
                 // The rejection reason drives the declined-indexer lookback
-                // window. New audit-branch reasons and out-of-range values store
-                // the catch-all until a follow-up buckets them into tiers.
+                // window. Each variant maps to its backoff tier; an unknown
+                // future reason still defaults to the 30-day catch-all.
                 let rejection_reason_str = RejectReason::try_from(rejected.reason).map_or(
                     rejection_reason::UNSPECIFIED,
                     |r| match r {
@@ -168,6 +168,16 @@ where
                         RejectReason::UnsupportedMetadataVersion => {
                             rejection_reason::UNSUPPORTED_METADATA_VERSION
                         }
+                        RejectReason::InvalidSignature => rejection_reason::INVALID_SIGNATURE,
+                        RejectReason::SenderNotTrusted => rejection_reason::SENDER_NOT_TRUSTED,
+                        RejectReason::CapacityExceeded => rejection_reason::CAPACITY_EXCEEDED,
+                        RejectReason::ManifestTooLarge => rejection_reason::MANIFEST_TOO_LARGE,
+                        RejectReason::ReplayDetected => rejection_reason::REPLAY_DETECTED,
+                        RejectReason::InsufficientEscrow => rejection_reason::INSUFFICIENT_ESCROW,
+                        RejectReason::IndexerUnavailable => rejection_reason::INDEXER_UNAVAILABLE,
+                        // Kept deliberately: a reason variant added to the proto later
+                        // defaults to the 30-day catch-all instead of failing to compile.
+                        #[allow(unreachable_patterns)]
                         _ => rejection_reason::UNSPECIFIED,
                     },
                 );
@@ -431,7 +441,8 @@ mod tests {
             &self,
             _default_lookback_days: i32,
             _price_lookback_days: i32,
-            _signer_lookback_minutes: i32,
+            _transient_lookback_minutes: i32,
+            _escrow_lookback_minutes: i32,
         ) -> crate::registry::Result<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>
         {
             Ok(std::collections::HashMap::new())
@@ -711,6 +722,7 @@ mod tests {
         RejectInvalidSignature,
         RejectUnknownReason,
         NoOutcome,
+        RejectCapacityExceeded,
         Fail,
     }
 
@@ -752,6 +764,12 @@ mod tests {
         fn responding_without_outcome() -> Self {
             Self {
                 response: MockResponse::NoOutcome,
+            }
+        }
+
+        fn rejecting_capacity_exceeded() -> Self {
+            Self {
+                response: MockResponse::RejectCapacityExceeded,
             }
         }
 
@@ -801,6 +819,12 @@ mod tests {
                     })),
                 }),
                 MockResponse::NoOutcome => Ok(SubmitAgreementProposalResponse { outcome: None }),
+                MockResponse::RejectCapacityExceeded => Ok(SubmitAgreementProposalResponse {
+                    outcome: Some(Outcome::Rejected(Rejected {
+                        reason: RejectReason::CapacityExceeded as i32,
+                        detail: String::new(),
+                    })),
+                }),
                 MockResponse::Fail => Err(DipsError::ConnectionError(
                     "connection failed".to_string().into(),
                 )),
@@ -1010,7 +1034,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reject_invalid_signature_falls_to_catch_all() {
+    async fn test_reject_invalid_signature_marks_with_correct_reason() {
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
 
@@ -1041,13 +1065,62 @@ mod tests {
         let result = handle(ctx, &message).await;
 
         assert!(result.is_ok());
-        // New audit-branch reason buckets to the catch-all until a follow-up refines it.
+        // InvalidSignature maps to its own constant, bucketed in the transient
+        // window since the fault is dipper's signing, not the indexer.
         let state = registry_state.lock().unwrap();
         assert_eq!(state.marked_rejected.len(), 1);
         assert_eq!(state.marked_rejected[0].0, agreement_id);
         assert_eq!(
             state.marked_rejected[0].1,
-            Some(rejection_reason::UNSPECIFIED.to_string())
+            Some(rejection_reason::INVALID_SIGNATURE.to_string())
+        );
+        assert!(state.marked_failed.is_empty());
+        drop(state);
+        // Should queue reassessment
+        let qstate = queue_state.lock().unwrap();
+        assert_eq!(qstate.reassess_calls.len(), 1);
+        assert_eq!(qstate.reassess_calls[0].0, request_id);
+    }
+
+    #[tokio::test]
+    async fn test_reject_capacity_exceeded_marks_with_correct_reason() {
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
+        let request_id = IndexingRequestId::new();
+
+        let registry_state = Arc::new(Mutex::new(MockRegistryState {
+            agreement: Some(make_test_agreement(
+                agreement_id,
+                IndexingAgreementStatus::Created,
+            )),
+            request: Some(make_test_request(request_id)),
+            ..Default::default()
+        }));
+        let queue_state = Arc::new(Mutex::new(MockQueueState::default()));
+
+        let ctx = Ctx {
+            registry: MockRegistry::new(registry_state.clone()),
+            queue: MockQueue::new(queue_state.clone()),
+            indexer_client: MockIndexerClient::rejecting_capacity_exceeded(),
+        };
+
+        let message = Message {
+            indexer_url: "https://indexer.example.com".parse().unwrap(),
+            agreement_id,
+            indexing_request_id: request_id,
+            deployment_id: deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv"),
+            deployment_chain_id: 1,
+        };
+
+        let result = handle(ctx, &message).await;
+
+        assert!(result.is_ok());
+        // CapacityExceeded is transient and maps to its own 5-minute constant.
+        let state = registry_state.lock().unwrap();
+        assert_eq!(state.marked_rejected.len(), 1);
+        assert_eq!(state.marked_rejected[0].0, agreement_id);
+        assert_eq!(
+            state.marked_rejected[0].1,
+            Some(rejection_reason::CAPACITY_EXCEEDED.to_string())
         );
         assert!(state.marked_failed.is_empty());
         drop(state);

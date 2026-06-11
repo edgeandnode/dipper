@@ -50,6 +50,36 @@ pub mod rejection_reason {
     /// Lookback: 5 minutes (transient version mismatch).
     pub const UNSUPPORTED_METADATA_VERSION: &str = "UNSUPPORTED_METADATA_VERSION";
 
+    /// The proposal's EIP-712 signature failed to verify.
+    /// Lookback: 5 minutes (a dipper-side signing fault, not the indexer's;
+    /// a long freeze would empty the candidate pool after dipper is fixed).
+    pub const INVALID_SIGNATURE: &str = "INVALID_SIGNATURE";
+
+    /// The signer is not an authorised agreement manager for this indexer.
+    /// Lookback: 30 days (persistent -- payer not trusted by the indexer).
+    pub const SENDER_NOT_TRUSTED: &str = "SENDER_NOT_TRUSTED";
+
+    /// The indexer is at its DIPs capacity and may have room later.
+    /// Lookback: 5 minutes (transient, retry once load drops).
+    pub const CAPACITY_EXCEEDED: &str = "CAPACITY_EXCEEDED";
+
+    /// The subgraph manifest exceeds the indexer's size cap.
+    /// Lookback: 30 days (persistent -- the deployment is too large).
+    pub const MANIFEST_TOO_LARGE: &str = "MANIFEST_TOO_LARGE";
+
+    /// A different proposal already used this agreement id (replay).
+    /// Lookback: 5 minutes (a dipper-side nonce fault, not the indexer's;
+    /// clears once dipper stops reusing agreement ids).
+    pub const REPLAY_DETECTED: &str = "REPLAY_DETECTED";
+
+    /// The payer has insufficient escrow to back the agreement.
+    /// Lookback: 30 minutes (clears once the payer tops up escrow).
+    pub const INSUFFICIENT_ESCROW: &str = "INSUFFICIENT_ESCROW";
+
+    /// A transient internal error on the indexer; the proposal may be resent.
+    /// Lookback: 5 minutes (transient, not the indexer's lasting state).
+    pub const INDEXER_UNAVAILABLE: &str = "INDEXER_UNAVAILABLE";
+
     /// Any other rejection reason not covered above.
     /// Lookback: 30 days (standard).
     pub const OTHER: &str = "OTHER";

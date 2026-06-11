@@ -31,7 +31,8 @@ pub async fn gather_selection_context<R>(
     deployment_id: &DeploymentId,
     declined_indexer_lookback_days: i32,
     price_rejection_lookback_days: i32,
-    signer_rejection_lookback_minutes: i32,
+    transient_rejection_lookback_minutes: i32,
+    escrow_rejection_lookback_minutes: i32,
     entity_count_cache: &EntityCountCache,
 ) -> JobResult<SelectionContext>
 where
@@ -58,7 +59,8 @@ where
         .get_declined_indexers_by_deployment(
             declined_indexer_lookback_days,
             price_rejection_lookback_days,
-            signer_rejection_lookback_minutes,
+            transient_rejection_lookback_minutes,
+            escrow_rejection_lookback_minutes,
         )
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
