@@ -145,35 +145,3 @@ impl<T: ChainClient + Send + Sync + ?Sized> ChainClient for Arc<T> {
         (**self).post_offer(rca).await
     }
 }
-
-/// Stub implementation that returns an error.
-///
-/// Used when the chain client is disabled via configuration.
-#[derive(Clone)]
-pub struct StubChainClient;
-
-#[async_trait]
-impl ChainClient for StubChainClient {
-    async fn cancel_indexing_agreement_by_payer(
-        &self,
-        agreement_id: &[u8; 16],
-    ) -> Result<Option<B256>, ChainClientError> {
-        tracing::error!(
-            agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
-            "ChainClient not implemented - cannot cancel agreement on-chain"
-        );
-        Err(ChainClientError::ConfigError(
-            "ChainClient not implemented".to_string(),
-        ))
-    }
-
-    async fn post_offer(
-        &self,
-        _rca: &RecurringCollectionAgreement,
-    ) -> Result<Option<B256>, ChainClientError> {
-        tracing::error!("ChainClient not implemented - cannot post offer on-chain");
-        Err(ChainClientError::ConfigError(
-            "ChainClient not implemented".to_string(),
-        ))
-    }
-}
