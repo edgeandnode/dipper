@@ -180,6 +180,8 @@ impl AlloyChainClient {
     /// - The signer cannot be constructed
     pub fn new(
         config: &ChainClientConfig,
+        chain_id: u64,
+        recurring_collector: Address,
         secret_key: &[u8; 32],
     ) -> Result<Self, ChainClientError> {
         let signer = PrivateKeySigner::from_bytes(&FixedBytes::from(*secret_key))
@@ -216,8 +218,8 @@ impl AlloyChainClient {
         tracing::info!(
             signer_address = %signer.address(),
             subgraph_service = %config.subgraph_service_address,
-            recurring_collector = %config.recurring_collector_address,
-            chain_id = config.chain_id,
+            recurring_collector = %recurring_collector,
+            chain_id,
             indexing_payments_subgraph = ?config.indexing_payments_subgraph_url,
             "AlloyChainClient initialized"
         );
@@ -228,8 +230,8 @@ impl AlloyChainClient {
                 gas_estimator,
                 signer,
                 subgraph_service_address: config.subgraph_service_address,
-                recurring_collector_address: config.recurring_collector_address,
-                chain_id: config.chain_id,
+                recurring_collector_address: recurring_collector,
+                chain_id,
                 gas_price_multiplier: config.gas_price_multiplier,
                 max_gas_price_gwei: config.max_gas_price_gwei,
                 indexing_payments_subgraph_url: config.indexing_payments_subgraph_url.clone(),

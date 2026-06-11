@@ -515,25 +515,11 @@ pub struct ChainClientConfig {
     #[serde(default = "default_chain_client_max_retries")]
     pub max_retries: u32,
 
-    /// Chain ID (default: 42161 for Arbitrum One)
-    #[serde(default = "default_chain_id")]
-    pub chain_id: u64,
-
     /// SubgraphService contract address.
     ///
     /// This is the contract that manages indexing agreements and exposes
     /// `cancelIndexingAgreementByPayer(bytes32)`.
     pub subgraph_service_address: Address,
-
-    /// RecurringCollector contract address.
-    ///
-    /// This is the contract that stores on-chain RCA offers. Dipper calls
-    /// `offer(OFFER_TYPE_NEW, abi.encode(rca), 0)` before dispatching a
-    /// proposal. The stored offer mapping lives inside an ERC-7201 namespaced
-    /// storage struct and has no auto-generated getter, so crash-recovery
-    /// idempotency is handled via the indexing-payments subgraph
-    /// (`indexing_payments_subgraph_url` below) rather than an eth_call.
-    pub recurring_collector_address: Address,
 
     /// Indexing-payments-subgraph query URL.
     ///

@@ -45,26 +45,24 @@ pub async fn main() -> anyhow::Result<()> {
     // TODO: Decouple the config file format from the internal representation
     let (agreement_conf, pricing_table) = conf.dips.into();
 
-    // Initialize the different components
-    //- The signer component
-    //
-    // Eip712Signer is verify-only now: dipper recovers signers from inbound
-    // admin-RPC messages and never produces outbound signatures (RCA
-    // authorization moved to the on-chain offer path, the dead-letter cancel
-    // gRPC is gone).
-    let signer = {
-        let private_key_signer =
-            PrivateKeySigner::from_signing_key(conf.signer.secret_key.as_ref().into());
-        let private_key_signer_address = private_key_signer.address();
-        let domain = dipper_rpc::admin::eip712_domain();
+    // Canonical chain id and RecurringCollector address, read once and shared by the
+    // admin signer, the gRPC proposal signer, and the on-chain chain client so their
+    // EIP-712 domains and on-chain calls can't drift to different values.
+    let chain_id = conf.signer.chain_id;
+    let recurring_collector = agreement_conf.recurring_collector;
 
-        Arc::new(Eip712Signer::new(
-            private_key_signer_address,
-            conf.signer.chain_id,
-            domain,
-        ))
+    // Initialize the different components
+
+    //- The wallet signer. The admin Eip712Signer is verify-only — it recovers
+    //  signers from inbound admin-RPC messages. The DIPs indexer client below signs
+    //  each outbound proposal, so dipper does still produce outbound signatures.
+    let wallet_signer = PrivateKeySigner::from_signing_key(conf.signer.secret_key.as_ref().into());
+    tracing::info!(address=%wallet_signer.address(), "Signer wallet imported");
+
+    let signer = {
+        let domain = dipper_rpc::admin::eip712_domain();
+        Arc::new(Eip712Signer::new(wallet_signer.address(), chain_id, domain))
     };
-    tracing::info!(address=%signer.address(), "Signer wallet imported");
 
     //- DB connect and run migrations
     let db_conn = db::connect(&conf.db).await?;
@@ -80,8 +78,13 @@ pub async fn main() -> anyhow::Result<()> {
     //- The registry component
     let registry = RegistryProvider::new(db_conn.clone());
 
-    //- The indexer client component
-    let indexer_client = indexer_rpc_client::DipsIndexerClient::with_config(conf.indexer_client);
+    //- The indexer client component (signs each outbound proposal; see DipsIndexerClient).
+    let indexer_client = indexer_rpc_client::DipsIndexerClient::with_config(
+        conf.indexer_client,
+        wallet_signer.clone(),
+        chain_id,
+        recurring_collector,
+    );
 
     //- The network services
     let (network_topology_handle, network_topology_service) = {
@@ -188,11 +191,16 @@ pub async fn main() -> anyhow::Result<()> {
         Some(cfg) if cfg.enabled => {
             // Extract the secret key bytes from the signer config
             let secret_bytes: [u8; 32] = conf.signer.secret_key.as_ref().to_bytes().into();
-            let client = chain_client::AlloyChainClient::new(cfg, &secret_bytes)
-                .expect("Failed to create AlloyChainClient");
+            let client = chain_client::AlloyChainClient::new(
+                cfg,
+                chain_id,
+                recurring_collector,
+                &secret_bytes,
+            )
+            .expect("Failed to create AlloyChainClient");
             tracing::info!(
                 subgraph_service = %cfg.subgraph_service_address,
-                chain_id = cfg.chain_id,
+                chain_id,
                 "initialized AlloyChainClient for on-chain transactions"
             );
             Arc::new(client)
