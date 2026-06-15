@@ -31,15 +31,23 @@ spec:
             - name: indexer-rpc
               containerPort: 50051
               protocol: TCP
+            - name: health
+              containerPort: 8546
+              protocol: TCP
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
+          # Probe the worker health endpoint, not just a TCP socket: it returns
+          # 503 once the worker watermark goes stale, so a wedged worker (alive
+          # but making no progress) is restarted. A plain admin-rpc TCP check
+          # stays up in that state and would never catch it.
           livenessProbe:
-            tcpSocket:
-              port: admin-rpc
+            httpGet:
+              path: /health
+              port: health
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5

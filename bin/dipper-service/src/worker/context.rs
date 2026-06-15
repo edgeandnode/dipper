@@ -109,6 +109,10 @@ pub struct Ctx<Q, R, C, I, T> {
     /// `last_processed_block_timestamp` when bypass is on. `None`
     /// when the chain_listener is not configured.
     pub chain_listener_chain_id: Option<u64>,
+
+    /// Liveness watermark the worker ticks each loop iteration so the health
+    /// endpoint can detect a wedged worker.
+    pub liveness: crate::health::Liveness,
 }
 
 /// The inner worker context.

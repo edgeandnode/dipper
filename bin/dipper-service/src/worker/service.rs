@@ -148,6 +148,7 @@ where
         chain_listener_notify,
         bypass_chain_clock_defenses,
         chain_listener_chain_id,
+        liveness,
     } = state.into();
 
     let (tx_stop, rx_stop) = mpsc::channel(1);
@@ -184,6 +185,11 @@ where
                 Tick::Stop => return Ok(()),
                 Tick::Poll => {}
             }
+
+            // Tick the liveness watermark on every iteration (including idle
+            // polls) so the health endpoint sees a live worker. A job that runs
+            // up to PROCESS_JOB_TIMEOUT is the longest gap between ticks.
+            liveness.record_progress();
 
             // If the listener degraded on a previous tick, try to re-establish
             // it. This is bounded to at most once per poll period and is

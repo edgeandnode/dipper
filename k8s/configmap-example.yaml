@@ -106,5 +106,9 @@ data:
         "gas_buffer_multiplier": 2.0,
         "gas_floor": 100000,
         "gas_max_addition": 200000
+      },
+      "health": {
+        "listen_addr": "0.0.0.0:8546",
+        "threshold": 600
       }
     }

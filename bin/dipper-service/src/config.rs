@@ -80,6 +80,30 @@ pub struct Config {
     /// The chain client configuration (for sending on-chain transactions)
     #[serde(default)]
     pub chain_client: Option<ChainClientConfig>,
+    /// The health endpoint configuration. When unset, no health server is
+    /// started.
+    #[serde(default)]
+    pub health: Option<HealthConfig>,
+}
+
+/// Configuration for the HTTP health endpoint used by orchestrator liveness
+/// probes.
+#[serde_as]
+#[derive(Debug, serde::Deserialize)]
+pub struct HealthConfig {
+    /// The health server listen address (e.g. `0.0.0.0:8080`).
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub listen_addr: std::net::SocketAddr,
+
+    /// Staleness threshold in seconds after which the worker is reported
+    /// unhealthy. Defaults to [`crate::health::DEFAULT_HEALTH_THRESHOLD`].
+    #[serde(default = "default_health_threshold")]
+    #[serde_as(as = "serde_with::DurationSeconds")]
+    pub threshold: Duration,
+}
+
+fn default_health_threshold() -> Duration {
+    crate::health::DEFAULT_HEALTH_THRESHOLD
 }
 
 /// The IISA (Indexing Indexer Selection Algorithm) service configuration

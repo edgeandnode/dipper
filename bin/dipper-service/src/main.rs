@@ -16,6 +16,7 @@ mod admin_rpc_server;
 mod chain_client;
 mod config;
 mod db;
+mod health;
 mod indexer_rpc_client;
 mod network;
 mod registry;
@@ -303,6 +304,9 @@ pub async fn main() -> anyhow::Result<()> {
     // dispatched so it switches from 300s idle polling to 5s immediately.
     let chain_listener_notify = Arc::new(tokio::sync::Notify::new());
 
+    //- Worker liveness watermark, shared with the health endpoint below.
+    let worker_liveness = health::Liveness::new();
+
     //- The worker service
     let (worker_handle, worker_service) = {
         let ctx = worker::Ctx {
@@ -325,6 +329,7 @@ pub async fn main() -> anyhow::Result<()> {
                 .map(|c| c.bypass_chain_clock_defenses)
                 .unwrap_or(false),
             chain_listener_chain_id: conf.chain_listener.as_ref().map(|c| c.chain_id),
+            liveness: worker_liveness.clone(),
         };
         worker::service::new(ctx)
     };
@@ -426,6 +431,34 @@ pub async fn main() -> anyhow::Result<()> {
     };
     tracing::info!("initialized Admin RPC service");
 
+    //- The health endpoint (optional). Reports 503 once the worker watermark
+    //  goes stale so an orchestrator can restart a wedged process.
+    let health_handle = if let Some(health_conf) = conf.health.as_ref() {
+        // The worker only ticks the watermark once per loop iteration, so the
+        // worst-case gap between ticks is one job's backstop timeout. A
+        // threshold at or below that would trip the probe during a legitimately
+        // slow job and cause restart loops; warn rather than fail so a
+        // deliberate aggressive setting is still possible.
+        if health_conf.threshold <= worker::service::PROCESS_JOB_TIMEOUT {
+            tracing::warn!(
+                threshold_secs = health_conf.threshold.as_secs(),
+                process_job_timeout_secs = worker::service::PROCESS_JOB_TIMEOUT.as_secs(),
+                "health threshold is at or below the worker's per-job backstop timeout; a slow \
+                 job may trip the liveness probe and cause spurious restarts"
+            );
+        }
+        let (handle, addr, service) = health::new(
+            health_conf.listen_addr,
+            worker_liveness.clone(),
+            health_conf.threshold,
+        )
+        .await?;
+        tracing::info!(%addr, "initialized health endpoint");
+        Some((handle, service))
+    } else {
+        None
+    };
+
     // Construct the task tree
     let mut task_tree = JoinSet::new();
 
@@ -475,6 +508,15 @@ pub async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // Spawn the health endpoint if enabled
+    let health_stop_handle = if let Some((handle, service)) = health_handle {
+        let task_handle = task_tree.spawn(service);
+        tracing::debug!(task_id=%task_handle.id(), "Health endpoint started");
+        Some(handle)
+    } else {
+        None
+    };
+
     let admin_rpc_task_handle = task_tree.spawn(admin_rpc_service);
     tracing::debug!(task_id=%admin_rpc_task_handle.id(), "Admin RPC service started");
 
@@ -502,6 +544,14 @@ pub async fn main() -> anyhow::Result<()> {
 
         // Stop all services in reverse dependency order, so a service is stopped before the
         // services it depends on.
+
+        // Stop the health endpoint first; nothing depends on it.
+        if let Some(handle) = health_stop_handle {
+            tracing::trace!("stopping Health endpoint");
+            handle.stop().await;
+            tracing::trace!("stopped Health endpoint");
+        }
+
         tracing::trace!("stopping Admin RPC service");
         admin_rpc_handle.stop().await;
         tracing::trace!("stopped Admin RPC service");
