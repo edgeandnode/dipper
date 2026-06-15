@@ -97,31 +97,32 @@ pub async fn main() -> anyhow::Result<()> {
 
     // Background refresh so a running dipper follows an in-place contract upgrade
     // without a restart. Refresh failures keep the current domain and only warn.
-    if let Some(cfg) = conf.chain_client.as_ref().filter(|cfg| cfg.enabled) {
-        let cfg = cfg.clone();
-        let rca_domain = Arc::clone(&rca_domain);
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(cfg.domain_refresh_interval);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            ticker.tick().await; // the first tick fires immediately; skip it
-            loop {
-                ticker.tick().await;
-                if let Err(err) = chain_client::refresh_rca_eip712_domain(
-                    &cfg,
-                    chain_id,
-                    recurring_collector,
-                    &rca_domain,
-                )
-                .await
-                {
-                    tracing::warn!(
-                        error = %err,
-                        "RCA EIP-712 domain refresh failed; keeping the current domain"
-                    );
+    // Built here but spawned into the supervised task tree below, with a stop
+    // handle, rather than detached — so it shares the same shutdown and
+    // supervision as every other long-running task.
+    let domain_refresh_handle =
+        if let Some(cfg) = conf.chain_client.as_ref().filter(|cfg| cfg.enabled) {
+            let cfg = cfg.clone();
+            let rca_domain = Arc::clone(&rca_domain);
+            let interval = cfg.domain_refresh_interval;
+            let (tx_stop, rx_stop) = tokio::sync::mpsc::channel(1);
+            let service = chain_client::run_domain_refresh(interval, rx_stop, move || {
+                let cfg = cfg.clone();
+                let rca_domain = Arc::clone(&rca_domain);
+                async move {
+                    chain_client::refresh_rca_eip712_domain(
+                        &cfg,
+                        chain_id,
+                        recurring_collector,
+                        &rca_domain,
+                    )
+                    .await
                 }
-            }
-        });
-    }
+            });
+            Some((tx_stop, service))
+        } else {
+            None
+        };
 
     // Initialize the different components
 
@@ -472,6 +473,15 @@ pub async fn main() -> anyhow::Result<()> {
     let worker_task_handle = task_tree.spawn(worker_service);
     tracing::debug!(task_id=%worker_task_handle.id(), "Worker service started");
 
+    // Spawn the RCA domain refresh if the chain client is enabled
+    let domain_refresh_stop_handle = if let Some((tx_stop, service)) = domain_refresh_handle {
+        let task_handle = task_tree.spawn(service);
+        tracing::debug!(task_id=%task_handle.id(), "RCA domain refresh started");
+        Some(tx_stop)
+    } else {
+        None
+    };
+
     // Spawn the reassignment service if enabled
     let reassignment_stop_handle = if let Some((handle, service)) = reassignment_handle {
         let task_handle = task_tree.spawn(service);
@@ -589,6 +599,13 @@ pub async fn main() -> anyhow::Result<()> {
             tracing::trace!("stopping Entity count cache service");
             handle.stop().await;
             tracing::trace!("stopped Entity count cache service");
+        }
+
+        // Stop the RCA domain refresh (a background helper to the chain client)
+        if let Some(tx_stop) = domain_refresh_stop_handle {
+            tracing::trace!("stopping RCA domain refresh");
+            let _ = tx_stop.send(()).await;
+            tracing::trace!("stopped RCA domain refresh");
         }
 
         tracing::trace!("stopping Worker service");
