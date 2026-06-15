@@ -13,7 +13,7 @@ use super::{
         SendIndexingAgreementProposalCtx, SubmitOfferCtx,
     },
     messages::Message,
-    queue::Queue,
+    queue::{JobNotifications, Queue},
     result::{JobError, JobResult, calculate_backoff_delay},
 };
 use crate::{
@@ -27,6 +27,56 @@ use crate::{
 
 /// Default period to poll the queue for new jobs
 const DEFAULT_QUEUE_POLL_PERIOD: Duration = Duration::from_secs(1);
+
+/// What the worker should do after waiting for the next trigger.
+#[derive(Debug, PartialEq, Eq)]
+enum Tick {
+    /// A stop signal was received; the worker loop should exit.
+    Stop,
+    /// Attempt to pop and process the next job.
+    Poll,
+}
+
+/// Waits for the next trigger to attempt a queue poll: a stop signal, a
+/// `LISTEN`/`NOTIFY` notification, or the poll-interval fallback.
+///
+/// On a listener error the listener is dropped (`*listener = None`) and the
+/// worker degrades to poll-only operation. This is correct, not a degraded
+/// state to be feared: `queue.pop()` is independent of `LISTEN`/`NOTIFY` — the
+/// notification only wakes the loop earlier than the poll interval, a latency
+/// optimisation — so a listener fault never stops job processing and never
+/// leaves the worker in an uncertain state. The caller re-subscribes on a
+/// later poll.
+async fn await_next_tick<N: JobNotifications>(
+    stop_rx: &mut mpsc::Receiver<()>,
+    listener: &mut Option<N>,
+    poll_period: Duration,
+) -> Tick {
+    match listener {
+        Some(l) => {
+            tokio::select! { biased;
+                _ = stop_rx.recv() => Tick::Stop,
+                res = l.wait_for_notification() => {
+                    if let Err(err) = res {
+                        tracing::warn!(
+                            error=?err,
+                            "job-available listener failed; degrading to poll-only until it can be re-established"
+                        );
+                        *listener = None;
+                    }
+                    Tick::Poll
+                }
+                _ = tokio::time::sleep(poll_period) => Tick::Poll,
+            }
+        }
+        None => {
+            tokio::select! { biased;
+                _ = stop_rx.recv() => Tick::Stop,
+                _ = tokio::time::sleep(poll_period) => Tick::Poll,
+            }
+        }
+    }
+}
 
 /// Create a new worker and a future that processes jobs from the queue.
 ///
@@ -91,19 +141,31 @@ where
         };
 
         let mut stop_rx = rx_stop;
-        let mut listener = queue.subscribe().await?;
+        // `Some` while LISTEN/NOTIFY is healthy; `None` once it has degraded to
+        // poll-only operation (see `await_next_tick`).
+        let mut listener = Some(queue.subscribe().await?);
         loop {
-            tokio::select! { biased;
-                _ = stop_rx.recv() => {
-                    return Ok(());
-                }
-                res = listener.wait_for_notification() => {
-                    if let Err(err) = res {
-                        tracing::error!(error=?err, "Failed to wait for job available notification");
-                        panic!("An unexpected error occurred while waiting for job available notification");
+            match await_next_tick(&mut stop_rx, &mut listener, DEFAULT_QUEUE_POLL_PERIOD).await {
+                Tick::Stop => return Ok(()),
+                Tick::Poll => {}
+            }
+
+            // If the listener degraded on a previous tick, try to re-establish
+            // it. This is bounded to at most once per poll period and is
+            // non-fatal: a failure keeps us in correct poll-only mode.
+            if listener.is_none() {
+                match queue.subscribe().await {
+                    Ok(l) => {
+                        tracing::info!("re-subscribed to job-available notifications");
+                        listener = Some(l);
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            error=?err,
+                            "job-available listener re-subscription failed; staying in poll-only mode"
+                        );
                     }
                 }
-                _ = tokio::time::sleep(DEFAULT_QUEUE_POLL_PERIOD) => {}
             }
 
             // Process the job
@@ -216,5 +278,83 @@ impl<Q> Handle<Q> {
 
         // Wait for the channel to close
         self.tx_stop.closed().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future;
+
+    use async_trait::async_trait;
+    use tokio::sync::mpsc;
+
+    use super::{Tick, await_next_tick};
+    use crate::worker::queue::JobNotifications;
+
+    /// A listener stub whose `wait_for_notification` always errors. Models a
+    /// dropped/broken `LISTEN`/`NOTIFY` connection.
+    struct FailingNotifier;
+
+    #[async_trait]
+    impl JobNotifications for FailingNotifier {
+        async fn wait_for_notification(&mut self) -> anyhow::Result<()> {
+            anyhow::bail!("simulated listener failure")
+        }
+    }
+
+    /// A listener stub that never notifies (its future stays pending).
+    struct SilentNotifier;
+
+    #[async_trait]
+    impl JobNotifications for SilentNotifier {
+        async fn wait_for_notification(&mut self) -> anyhow::Result<()> {
+            future::pending().await
+        }
+    }
+
+    /// A listener error must degrade to poll-only (drop the listener) and return
+    /// `Poll`, never panic or stop. This is the regression test for the worker
+    /// `panic!` that turned a recoverable listener fault into a silent total
+    /// stall.
+    #[tokio::test]
+    async fn listener_error_degrades_to_poll_without_panicking() {
+        // Hold the sender so the stop branch stays pending.
+        let (_tx, mut rx) = mpsc::channel::<()>(1);
+        let mut listener = Some(FailingNotifier);
+
+        let tick =
+            await_next_tick(&mut rx, &mut listener, std::time::Duration::from_secs(60)).await;
+
+        assert_eq!(tick, Tick::Poll, "a listener error should still poll");
+        assert!(
+            listener.is_none(),
+            "a listener error should degrade to poll-only (listener dropped)"
+        );
+    }
+
+    /// A pending stop signal wins over a silent listener (biased select).
+    #[tokio::test]
+    async fn stop_signal_wins() {
+        let (tx, mut rx) = mpsc::channel::<()>(1);
+        tx.send(()).await.unwrap();
+        let mut listener = Some(SilentNotifier);
+
+        let tick =
+            await_next_tick(&mut rx, &mut listener, std::time::Duration::from_secs(60)).await;
+
+        assert_eq!(tick, Tick::Stop);
+    }
+
+    /// With no listener (already degraded), the poll-interval fallback drives
+    /// the loop so job processing continues.
+    #[tokio::test]
+    async fn poll_only_mode_ticks_on_interval() {
+        let (_tx, mut rx) = mpsc::channel::<()>(1);
+        let mut listener: Option<SilentNotifier> = None;
+
+        let tick =
+            await_next_tick(&mut rx, &mut listener, std::time::Duration::from_millis(10)).await;
+
+        assert_eq!(tick, Tick::Poll);
     }
 }

@@ -54,9 +54,19 @@ where
 /// A listener for the queue job available notification
 pub struct QueueImplListener(PgQueueListener);
 
-impl QueueImplListener {
-    /// Waits for a new job available notification
-    pub async fn wait_for_notification(&mut self) -> anyhow::Result<()> {
+/// A source of "a job may be available" notifications.
+///
+/// Abstracted behind a trait so the worker loop's degrade-to-polling behaviour
+/// can be unit tested without a live Postgres `LISTEN`/`NOTIFY` connection.
+#[async_trait]
+pub trait JobNotifications: Send {
+    /// Waits for the next job-available notification.
+    async fn wait_for_notification(&mut self) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+impl JobNotifications for QueueImplListener {
+    async fn wait_for_notification(&mut self) -> anyhow::Result<()> {
         self.0.wait_for_notification().await
     }
 }
