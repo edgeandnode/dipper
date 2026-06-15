@@ -20,6 +20,7 @@ mod indexer_rpc_client;
 mod network;
 mod registry;
 mod signing;
+mod supervisor;
 mod worker;
 
 #[global_allocator]
@@ -428,6 +429,10 @@ pub async fn main() -> anyhow::Result<()> {
     // Construct the task tree
     let mut task_tree = JoinSet::new();
 
+    // Shared shutdown coordination. A signal or an unexpected task exit both
+    // drive the same graceful stop sequence below.
+    let shutdown = supervisor::Shutdown::new();
+
     let network_topology_task_handle = task_tree.spawn(network_topology_service);
     tracing::debug!(task_id=%network_topology_task_handle.id(), "Graph network topology service started");
 
@@ -473,16 +478,27 @@ pub async fn main() -> anyhow::Result<()> {
     let admin_rpc_task_handle = task_tree.spawn(admin_rpc_service);
     tracing::debug!(task_id=%admin_rpc_task_handle.id(), "Admin RPC service started");
 
+    let shutdown_coordinator = shutdown.clone();
     let signal_handler_task_handle = task_tree.spawn(async move {
-        let signal = signal_task().await;
-        match signal {
-            Ok(AppSignal::Shutdown) => {
-                tracing::info!("shutting down");
-            }
-            Err(err) => {
-                tracing::error!(error=?err, "signal handler registration failed. shutting down");
+        // Wake on either an OS signal or an unexpected critical-task exit
+        // (the supervisor requests shutdown in the latter case).
+        tokio::select! {
+            signal = signal_task() => match signal {
+                Ok(AppSignal::Shutdown) => {
+                    tracing::info!("shutting down");
+                }
+                Err(err) => {
+                    tracing::error!(error=?err, "signal handler registration failed. shutting down");
+                }
+            },
+            _ = shutdown_coordinator.requested_signal() => {
+                tracing::warn!("shutting down due to an unexpected critical task exit");
             }
         }
+
+        // Ensure the flag is set on the signal path too, so the supervisor
+        // treats the resulting service completions as a deliberate shutdown.
+        shutdown_coordinator.request();
 
         // Stop all services in reverse dependency order, so a service is stopped before the
         // services it depends on.
@@ -541,22 +557,11 @@ pub async fn main() -> anyhow::Result<()> {
     });
     tracing::debug!(task_id=%signal_handler_task_handle.id(), "signal handler registered");
 
-    // Block on the task tree. Wait for all tasks to complete
+    // Supervise the task tree. An unexpected task exit (one that happens before
+    // shutdown was requested) tears the rest of the tree down and returns an
+    // error so the process exits non-zero for the orchestrator to restart.
     tracing::info!("starting service");
-    while let Some(res) = task_tree.join_next_with_id().await {
-        match res {
-            Ok((id, Ok(()))) => {
-                tracing::debug!(task_id=%id, "task completed");
-            }
-            Ok((id, Err(err))) => {
-                tracing::error!(task_id=%id, error=?err, "task failed");
-            }
-            Err(err) => {
-                tracing::error!(task_id=%err.id(), error=?err, "task join error");
-            }
-        }
-    }
-    Ok(())
+    supervisor::supervise(task_tree, &shutdown).await
 }
 
 /// Signals that the application can receive
