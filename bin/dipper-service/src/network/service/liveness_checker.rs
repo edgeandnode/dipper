@@ -506,6 +506,17 @@ async fn cancel_and_reassess<R, W, C>(
                 "stale agreement already canceled on-chain; proceeding to mark abandoned"
             );
         }
+        Err(err @ ChainClientError::MissingTermsVersionHash { .. }) => {
+            // Permanent per-agreement condition: the on-chain agreement is
+            // still live, so do NOT mark abandoned (that would hide a
+            // money-draining agreement). Surface for operator action.
+            tracing::error!(
+                agreement_id = %agreement.id,
+                error = %err,
+                "cannot cancel stale agreement: missing terms_version_hash; leaving active for operator action"
+            );
+            return;
+        }
         Err(ChainClientError::ConfigError(_)) => {
             // Chain client disabled: still proceed to mark and reassess so the
             // DB reflects the detected abandonment even without an on-chain tx.
@@ -1213,7 +1224,8 @@ mod tests {
                 Err(ChainClientError::OfferHashMismatch { .. })
                 | Err(ChainClientError::TxDropped { .. })
                 | Err(ChainClientError::TxReverted { .. })
-                | Err(ChainClientError::ContractRevert { .. }) => {
+                | Err(ChainClientError::ContractRevert { .. })
+                | Err(ChainClientError::MissingTermsVersionHash { .. }) => {
                     // Not applicable to the cancel path here; mirror as
                     // RpcError so the test helper keeps a single error shape.
                     Err(ChainClientError::RpcError(anyhow::anyhow!(

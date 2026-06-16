@@ -39,6 +39,12 @@ pub enum ChainClientError {
     #[error("configuration error: {0}")]
     ConfigError(String),
 
+    /// The agreement has no 32-byte `terms_version_hash`, so it cannot be
+    /// canceled via the RecurringAgreementManager. Permanent and per-agreement
+    /// — distinct from a globally-disabled chain client; never retry or abandon.
+    #[error("agreement {agreement_id} has no 32-byte terms_version_hash for manager cancel")]
+    MissingTermsVersionHash { agreement_id: String },
+
     /// RPC error
     #[error("RPC error: {0}")]
     RpcError(#[source] anyhow::Error),

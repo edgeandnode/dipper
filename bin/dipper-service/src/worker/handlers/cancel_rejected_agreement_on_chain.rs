@@ -10,7 +10,7 @@ use dipper_core::ids::IndexingAgreementId;
 
 use crate::{
     cancel_dispatch::cancel_agreement_on_chain,
-    chain_client::ChainClient,
+    chain_client::{ChainClient, ChainClientError},
     config::IndexingAgreementConfig,
     registry::{AgreementRegistry, IndexingAgreementStatus},
     worker::result::{JobError, JobResult},
@@ -91,6 +91,16 @@ where
             );
             mark_cancellation_complete(&ctx.registry, agreement_id).await;
             Ok(())
+        }
+        Err(err @ ChainClientError::MissingTermsVersionHash { .. }) => {
+            // Permanent: the hash never appears, so retrying can't help. Fail
+            // terminally and leave the live agreement for operator action.
+            tracing::error!(
+                agreement_id = %agreement_id,
+                error = %err,
+                "Cannot cancel rejected agreement: missing terms_version_hash"
+            );
+            Err(JobError::Fatal(err.into()))
         }
         Err(err) => {
             tracing::warn!(
