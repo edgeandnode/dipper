@@ -164,7 +164,6 @@ pub async fn main() -> anyhow::Result<()> {
         conf.indexer_client,
         wallet_signer.clone(),
         rca_domain.clone(),
-        agreement_conf.payer_mode(),
     );
 
     //- The network services
