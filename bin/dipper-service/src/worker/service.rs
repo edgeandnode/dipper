@@ -35,13 +35,15 @@ const DEFAULT_QUEUE_POLL_PERIOD: Duration = Duration::from_secs(1);
 /// worst case is their sum — on the order of a couple of minutes. This timeout
 /// sits comfortably above that and only fires if a dependency accepts the
 /// connection but never responds, defeating the per-call timeouts. Critically,
-/// the worker holds the pgmq transaction (and the row's `Running` lock and a
-/// pooled DB connection) open for the whole `process_job` call, so an
-/// unbounded hang would pin those resources and wedge the single worker
-/// forever. On elapse the in-flight `process_job` future is cancelled (dropped)
-/// and the job is rescheduled via its `JobGuard`, releasing the pinned
-/// resources. Recovery is idempotent (chain-as-source-of-truth), so re-running
-/// a job whose handler was cancelled mid-flight is safe.
+/// the worker processes jobs one at a time, and for the whole `process_job`
+/// call the job's `JobGuard` holds the row's `Running` lock (and the pgmq
+/// transaction behind it). An unbounded hang would therefore both wedge the
+/// single worker and pin that row indefinitely. On elapse the in-flight
+/// `process_job` future is cancelled (dropped), which unblocks the worker, and
+/// the timeout is surfaced as a retryable error so the `JobGuard` reschedules
+/// the row and releases its lock. Recovery is idempotent
+/// (chain-as-source-of-truth), so re-running a job whose handler was cancelled
+/// mid-flight is safe.
 pub(crate) const PROCESS_JOB_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Base backoff for a job rescheduled after hitting [`PROCESS_JOB_TIMEOUT`].
@@ -115,7 +117,8 @@ async fn await_next_tick<N: JobNotifications>(
 
 /// Create a new worker and a future that processes jobs from the queue.
 ///
-/// The worker pulls jobs from the queue and processes them concurrently every 1 second.
+/// The worker pulls jobs from the queue and processes them one at a time, woken
+/// by a `LISTEN`/`NOTIFY` notification or, failing that, polled every 1 second.
 pub fn new<S, Q, R, C, I, T>(state: S) -> (Handle<Q>, impl Future<Output = anyhow::Result<()>>)
 where
     Q: Queue<Message> + Clone + Send + Sync,
