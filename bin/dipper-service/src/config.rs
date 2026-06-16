@@ -1148,6 +1148,48 @@ mod tests {
     }
 
     #[test]
+    fn validate_requires_manager_address_in_agreement_manager_mode() {
+        // tc-3: validate() is the only guard for the agreement-manager-without-
+        // address footgun that two downstream `.expect()`s rely on. Pin all
+        // three outcomes so a later change cannot weaken the invariant unseen.
+        fn conf(payer_mode: &str, manager: Option<&str>) -> DipsAgreementConfig {
+            let manager_line = manager
+                .map(|m| format!(r#""recurring_agreement_manager": "{m}","#))
+                .unwrap_or_default();
+            let json = format!(
+                r#"{{
+                    "data_service": "0x1111111111111111111111111111111111111111",
+                    "recurring_collector": "0x2222222222222222222222222222222222222222",
+                    "min_seconds_per_collection": 60,
+                    "max_seconds_per_collection": 3600,
+                    "payer_mode": "{payer_mode}",
+                    {manager_line}
+                    "pricing_table": {{}}
+                }}"#
+            );
+            serde_json::from_str(&json).expect("deserialization")
+        }
+
+        assert!(
+            conf("agreement_manager", None).validate().is_err(),
+            "agreement_manager without a manager address must be rejected"
+        );
+        assert!(
+            conf(
+                "agreement_manager",
+                Some("0x3333333333333333333333333333333333333333")
+            )
+            .validate()
+            .is_ok(),
+            "agreement_manager with a manager address is valid"
+        );
+        assert!(
+            conf("external_payer", None).validate().is_ok(),
+            "external_payer never needs a manager address"
+        );
+    }
+
+    #[test]
     fn test_dips_agreement_config_defaults() {
         //* Arrange - Minimal JSON with defaults
         let json = r#"{

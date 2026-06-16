@@ -542,6 +542,29 @@ mod tests {
     }
 
     #[test]
+    fn test_proposal_request_is_unsigned_in_agreement_manager_mode() {
+        // In AgreementManager mode the RecurringAgreementManager backs acceptance,
+        // so dipper signs nothing: the proposal must carry an empty signature.
+        let signer: PrivateKeySigner =
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+                .parse()
+                .unwrap();
+        let mut client = signing_test_client(signer);
+        client.payer_mode = PayerMode::AgreementManager;
+
+        let request = client
+            .build_proposal_request(signing_test_terms(), uuid::Uuid::now_v7())
+            .expect("building the request should succeed");
+
+        let signed_rca = sol::SignedRecurringCollectionAgreement::abi_decode(&request.signed_rca)
+            .expect("wire bytes should decode as a SignedRCA");
+        assert!(
+            signed_rca.signature.is_empty(),
+            "manager-mode proposals must be unsigned"
+        );
+    }
+
+    #[test]
     fn test_sign_rca_follows_a_swapped_domain() {
         use thegraph_core::alloy::{
             primitives::{Address, Signature},

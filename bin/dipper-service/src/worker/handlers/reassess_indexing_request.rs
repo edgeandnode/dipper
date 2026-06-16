@@ -576,8 +576,9 @@ fn compute_terms_version_hash(
 ) -> Vec<u8> {
     use thegraph_core::alloy::sol_types::SolStruct;
 
-    // TODO(ram): validate versionHash matches RecurringCollector stored offer
-    // hash against deployed contract.
+    // versionHash is the domain-separated EIP-712 signing hash, matching
+    // RecurringCollector._hashRCA (the value it stores and checks on cancel);
+    // frozen by terms_version_hash_matches_frozen_golden_value.
     let (rca, _) = crate::indexer_rpc_client::into_sol_rca(nonce_uuid, terms.clone());
     let domain = rca_domain.read().expect("RCA domain lock poisoned").clone();
     rca.eip712_signing_hash(&domain).to_vec()
@@ -648,5 +649,94 @@ where
                 Duration::from_secs(5),
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod terms_hash_tests {
+    use std::sync::RwLock;
+
+    use thegraph_core::alloy::{
+        primitives::{Address, B256, U256, b256},
+        sol_types::Eip712Domain,
+    };
+
+    use super::compute_terms_version_hash;
+    use crate::registry::{IndexingAgreementTerms, IndexingAgreementTermsMetadata};
+
+    fn fixed_nonce() -> uuid::Uuid {
+        uuid::Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef)
+    }
+
+    fn fixed_domain() -> Eip712Domain {
+        Eip712Domain::new(
+            Some("RecurringCollector".into()),
+            Some("1".into()),
+            Some(U256::from(1u64)),
+            Some(Address::repeat_byte(0x42)),
+            None,
+        )
+    }
+
+    fn fixed_terms() -> IndexingAgreementTerms {
+        IndexingAgreementTerms {
+            payer: Address::repeat_byte(0x01),
+            service_provider: Address::repeat_byte(0x02),
+            data_service: Address::repeat_byte(0x03),
+            deadline: 1_700_000_000,
+            ends_at: 1_700_086_400,
+            max_initial_tokens: U256::from(1_000u64),
+            max_ongoing_tokens_per_second: U256::from(5u64),
+            min_seconds_per_collection: 60,
+            max_seconds_per_collection: 3_600,
+            conditions: 2,
+            metadata: IndexingAgreementTermsMetadata {
+                tokens_per_second: U256::from(7u64),
+                tokens_per_entity_per_second: U256::from(3u64),
+                subgraph_deployment_id: "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+                    .parse()
+                    .unwrap(),
+                protocol_network: 1u64,
+                chain_id: 1u64,
+            },
+        }
+    }
+
+    #[test]
+    fn terms_version_hash_matches_frozen_golden_value() {
+        // tc-2: freeze the exact EIP-712 terms hash. Every protocol-managed
+        // cancel hands this 32-byte value to the collector as the versionHash it
+        // checks against its own _hashRCA, so a silent encoding drift must fail.
+        let hash =
+            compute_terms_version_hash(fixed_nonce(), &fixed_terms(), &RwLock::new(fixed_domain()));
+        assert_eq!(hash.len(), 32);
+        assert_eq!(
+            B256::from_slice(&hash),
+            b256!("45b21c6b2757363fa9aa2219cb378a623fbf9d50204b6deab2368fb09512f31e"),
+        );
+    }
+
+    #[test]
+    fn terms_version_hash_is_input_sensitive() {
+        let base =
+            compute_terms_version_hash(fixed_nonce(), &fixed_terms(), &RwLock::new(fixed_domain()));
+
+        let other_nonce = compute_terms_version_hash(
+            uuid::Uuid::from_u128(0xdead_beef),
+            &fixed_terms(),
+            &RwLock::new(fixed_domain()),
+        );
+        assert_ne!(base, other_nonce, "nonce must change the hash");
+
+        let other_domain = Eip712Domain::new(
+            Some("RecurringCollector".into()),
+            Some("2".into()),
+            Some(U256::from(1u64)),
+            Some(Address::repeat_byte(0x42)),
+            None,
+        );
+        let other =
+            compute_terms_version_hash(fixed_nonce(), &fixed_terms(), &RwLock::new(other_domain));
+        assert_ne!(base, other, "domain must change the hash");
     }
 }
