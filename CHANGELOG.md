@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/edgeandnode/dipper/compare/v0.1.3...v0.1.4) (2026-06-16)
+
+
+### Changed
+
+* **expiration:** drop dead test recording scaffold ([#636](https://github.com/edgeandnode/dipper/issues/636)) ([b297258](https://github.com/edgeandnode/dipper/commit/b29725878cc88da2476ad0fa7559f7774626c0d7))
+
 ## [0.1.3](https://github.com/edgeandnode/dipper/compare/v0.1.2...v0.1.3) (2026-06-11)
 
 
