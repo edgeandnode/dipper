@@ -1877,11 +1877,10 @@ mod tests {
             // Record manager-routed cancels through the same recorder so the
             // existing assertions hold regardless of payer mode.
             self.cancels.lock().unwrap().push(*agreement_id);
-            if self.already_canceled.lock().unwrap().contains(agreement_id) {
-                Ok(None)
-            } else {
-                Ok(Some(thegraph_core::alloy::primitives::B256::ZERO))
-            }
+            // A manager-routed cancel has no "already canceled" result: the
+            // contract silently no-ops a stale cancel and the tx still succeeds,
+            // so the real cancel_via_manager never returns Ok(None).
+            Ok(Some(thegraph_core::alloy::primitives::B256::ZERO))
         }
     }
 
