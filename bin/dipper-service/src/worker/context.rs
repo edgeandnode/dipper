@@ -69,6 +69,9 @@ pub struct Ctx<Q, R, C, I, T> {
     /// The _indexing agreement_ configuration
     pub agreement_conf: Arc<IndexingAgreementConfig>,
 
+    /// The RCA EIP-712 domain (for computing the persisted terms hash).
+    pub rca_domain: Arc<std::sync::RwLock<thegraph_core::alloy::sol_types::Eip712Domain>>,
+
     /// The _indexing agreement_ per-chain pricing table
     pub pricing_table: Arc<BTreeMap<ChainId, IndexingAgreementChainPrices>>,
 
@@ -122,6 +125,9 @@ pub(super) struct InnerCtx<R, W, C, I, T> {
     /// The _indexing agreement_ configuration
     pub agreement_conf: Arc<IndexingAgreementConfig>,
 
+    /// The RCA EIP-712 domain (for computing the persisted terms hash).
+    pub rca_domain: Arc<std::sync::RwLock<thegraph_core::alloy::sol_types::Eip712Domain>>,
+
     /// The _indexing agreement_ per-chain pricing table
     pub pricing_table: Arc<BTreeMap<ChainId, IndexingAgreementChainPrices>>,
 
@@ -165,6 +171,7 @@ pub(super) struct InnerCtx<R, W, C, I, T> {
 impl_from_state!(ReassessIndexingRequestCtx<R, W, I, T> {
     signer,
     agreement_conf,
+    rca_domain,
     chain_price: pricing_table,
     registry,
     network,
@@ -188,9 +195,11 @@ impl_from_state!(SendIndexingAgreementProposalCtx<R, W, C> {
 impl_from_state!(CancelRejectedAgreementOnChainCtx<R, T> {
     registry,
     chain_client,
+    agreement_conf,
 });
 
 impl_from_state!(SubmitOfferCtx<R, T> {
     registry,
     chain_client,
+    agreement_conf,
 });

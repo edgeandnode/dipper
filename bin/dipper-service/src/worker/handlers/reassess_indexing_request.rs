@@ -37,9 +37,17 @@ use crate::{
     },
 };
 
+/// RCA `conditions` bit set in `AgreementManager` mode so the manager contract
+/// is recognised as the agreement owner. Matches the on-chain `uint16` width;
+/// must be 0 against an EOA payer (the default external-payer mode).
+const CONDITION_AGREEMENT_OWNER: u16 = 1u16 << 1;
+
 pub struct Ctx<R, W, I, T> {
     pub signer: Arc<Eip712Signer>,
     pub agreement_conf: Arc<IndexingAgreementConfig>,
+    /// EIP-712 domain the RCA terms hash is computed under. Only consulted in
+    /// `AgreementManager` payer mode to persist `terms_version_hash`.
+    pub rca_domain: Arc<std::sync::RwLock<thegraph_core::alloy::sol_types::Eip712Domain>>,
     pub chain_price: Arc<BTreeMap<ChainId, IndexingAgreementChainPrices>>,
     pub registry: R,
     pub network: NetworkProviderService,
@@ -286,8 +294,21 @@ where
         // gather data on how indexers actually exercise the cap.
         let agreement_cap_grt = ctx.agreement_conf.max_agreement_grt_per_30_days();
 
+        // In AgreementManager mode the RecurringAgreementManager contract is the
+        // payer and is flagged as the agreement owner; the default external-payer
+        // mode keeps dipper's signer as payer with no conditions bit.
+        let (payer, conditions) = match ctx.agreement_conf.payer_mode() {
+            crate::config::PayerMode::AgreementManager => (
+                ctx.agreement_conf
+                    .recurring_agreement_manager()
+                    .expect("AgreementManager mode validated to have a manager address at startup"),
+                CONDITION_AGREEMENT_OWNER,
+            ),
+            crate::config::PayerMode::ExternalPayer => (ctx.signer.address(), 0u16),
+        };
+
         let terms = IndexingAgreementTerms {
-            payer: ctx.signer.address(),
+            payer,
             service_provider: candidate.id.into_inner(),
             data_service: ctx.agreement_conf.data_service(),
             ends_at: now.saturating_add(ctx.agreement_conf.duration_seconds()),
@@ -297,7 +318,7 @@ where
             min_seconds_per_collection: ctx.agreement_conf.min_seconds_per_collection(),
             max_seconds_per_collection: ctx.agreement_conf.max_seconds_per_collection(),
             deadline: now.saturating_add(ctx.agreement_conf.deadline_seconds()),
-            conditions: 0,
+            conditions,
             metadata: terms_metadata,
         };
 
@@ -305,6 +326,18 @@ where
         // which becomes the agreement's primary key.
         let nonce_uuid = uuid::Uuid::now_v7();
         let agreement_id_candidate = compute_on_chain_id(nonce_uuid, &terms);
+
+        // In AgreementManager mode, persist the EIP-712 terms hash now so the
+        // cancel path can pass it to the manager's cancelAgreement(). The default
+        // external-payer mode does not use this and leaves it None.
+        let terms_version_hash = match ctx.agreement_conf.payer_mode() {
+            crate::config::PayerMode::AgreementManager => Some(compute_terms_version_hash(
+                nonce_uuid,
+                &terms,
+                &ctx.rca_domain,
+            )),
+            crate::config::PayerMode::ExternalPayer => None,
+        };
 
         // If this add replaces an old agreement, register both atomically
         // so a crash cannot leave an agreement without its pending cancellation.
@@ -320,6 +353,7 @@ where
                         indexer_id: candidate.id,
                         indexer_url: candidate.url.clone(),
                         terms,
+                        terms_version_hash,
                     },
                     old_agreement.id,
                 )
@@ -359,6 +393,7 @@ where
                     indexer_id: candidate.id,
                     indexer_url: candidate.url.clone(),
                     terms,
+                    terms_version_hash,
                 })
                 .await
             {
@@ -428,10 +463,12 @@ where
         );
 
         if needs_on_chain_cancel {
-            match ctx
-                .chain_client
-                .cancel_indexing_agreement_by_payer(old_agreement.id.as_bytes())
-                .await
+            match crate::cancel_dispatch::cancel_agreement_on_chain(
+                &ctx.chain_client,
+                old_agreement,
+                &ctx.agreement_conf,
+            )
+            .await
             {
                 Ok(Some(tx_hash)) => {
                     tracing::info!(
@@ -527,6 +564,23 @@ where
     }
 
     Ok(())
+}
+
+/// Compute the EIP-712 terms hash persisted for the protocol-managed cancel
+/// path, reusing the proposal signer's RCA-to-sol conversion and signing-hash so
+/// the value matches the hash dipper signs over.
+fn compute_terms_version_hash(
+    nonce_uuid: uuid::Uuid,
+    terms: &IndexingAgreementTerms,
+    rca_domain: &std::sync::RwLock<thegraph_core::alloy::sol_types::Eip712Domain>,
+) -> Vec<u8> {
+    use thegraph_core::alloy::sol_types::SolStruct;
+
+    // TODO(ram): validate versionHash matches RecurringCollector stored offer
+    // hash against deployed contract.
+    let (rca, _) = crate::indexer_rpc_client::into_sol_rca(nonce_uuid, terms.clone());
+    let domain = rca_domain.read().expect("RCA domain lock poisoned").clone();
+    rca.eip712_signing_hash(&domain).to_vec()
 }
 
 /// Pick the clock to denominate `terms.deadline` and `terms.ends_at`.

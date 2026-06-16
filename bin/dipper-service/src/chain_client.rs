@@ -121,6 +121,25 @@ pub trait ChainClient {
         &self,
         rca: &RecurringCollectionAgreement,
     ) -> Result<Option<B256>, ChainClientError>;
+
+    /// Offer an RCA through the RecurringAgreementManager (`AgreementManager`
+    /// mode). Calls `offerAgreement(collector, OFFER_TYPE_NEW, abi.encode(rca))`
+    /// with the manager as payer; same return/error contract as [`post_offer`].
+    async fn offer_via_manager(
+        &self,
+        rca: &RecurringCollectionAgreement,
+    ) -> Result<Option<B256>, ChainClientError>;
+
+    /// Cancel an RCA through the RecurringAgreementManager (`AgreementManager`
+    /// mode) via `cancelAgreement(collector, agreementId, versionHash, options)`;
+    /// same contract as [`cancel_indexing_agreement_by_payer`].
+    async fn cancel_via_manager(
+        &self,
+        collector: thegraph_core::alloy::primitives::Address,
+        agreement_id: &[u8; 16],
+        version_hash: B256,
+        options: u16,
+    ) -> Result<Option<B256>, ChainClientError>;
 }
 
 /// Blanket impl for Arc-wrapped trait objects.
@@ -143,5 +162,24 @@ impl<T: ChainClient + Send + Sync + ?Sized> ChainClient for Arc<T> {
         rca: &RecurringCollectionAgreement,
     ) -> Result<Option<B256>, ChainClientError> {
         (**self).post_offer(rca).await
+    }
+
+    async fn offer_via_manager(
+        &self,
+        rca: &RecurringCollectionAgreement,
+    ) -> Result<Option<B256>, ChainClientError> {
+        (**self).offer_via_manager(rca).await
+    }
+
+    async fn cancel_via_manager(
+        &self,
+        collector: thegraph_core::alloy::primitives::Address,
+        agreement_id: &[u8; 16],
+        version_hash: B256,
+        options: u16,
+    ) -> Result<Option<B256>, ChainClientError> {
+        (**self)
+            .cancel_via_manager(collector, agreement_id, version_hash, options)
+            .await
     }
 }

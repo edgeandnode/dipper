@@ -32,7 +32,10 @@ use thegraph_core::alloy::{
 };
 use url::Url;
 
-use crate::{config::IndexerClientConfig, registry::IndexingAgreementTerms};
+use crate::{
+    config::{IndexerClientConfig, PayerMode},
+    registry::IndexingAgreementTerms,
+};
 
 /// The indexer client error type for DIPs endpoint
 #[derive(Debug, thiserror::Error)]
@@ -72,6 +75,9 @@ pub struct DipsIndexerClient {
     connect_timeout: Duration,
     request_timeout: Duration,
     max_retries: u32,
+    /// Payer mode. In `AgreementManager` mode proposals carry an empty
+    /// signature; the manager contract backs acceptance instead of an ECDSA sig.
+    payer_mode: PayerMode,
 }
 
 impl DipsIndexerClient {
@@ -82,6 +88,7 @@ impl DipsIndexerClient {
         config: IndexerClientConfig,
         signer: PrivateKeySigner,
         rca_domain: Arc<RwLock<Eip712Domain>>,
+        payer_mode: PayerMode,
     ) -> Self {
         Self {
             signer,
@@ -89,6 +96,7 @@ impl DipsIndexerClient {
             connect_timeout: config.connect_timeout,
             request_timeout: config.request_timeout,
             max_retries: config.max_retries,
+            payer_mode,
         }
     }
 
@@ -116,7 +124,12 @@ impl DipsIndexerClient {
         nonce_uuid: uuid::Uuid,
     ) -> Result<rpc::SubmitAgreementProposalRequest, DipsError> {
         let (sol_rca, _on_chain_id) = into_sol_rca(nonce_uuid, terms);
-        let signature = self.sign_rca(&sol_rca)?;
+        // In AgreementManager mode the manager contract backs acceptance, so the
+        // proposal carries no ECDSA signature; external-payer mode signs as before.
+        let signature = match self.payer_mode {
+            PayerMode::AgreementManager => Vec::new(),
+            PayerMode::ExternalPayer => self.sign_rca(&sol_rca)?,
+        };
         let signed_rca = sol::SignedRecurringCollectionAgreement {
             agreement: sol_rca,
             signature: signature.into(),
@@ -470,6 +483,7 @@ mod tests {
             connect_timeout: Duration::from_secs(1),
             request_timeout: Duration::from_secs(1),
             max_retries: 0,
+            payer_mode: PayerMode::ExternalPayer,
         }
     }
 

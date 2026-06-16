@@ -136,6 +136,10 @@ pub struct IndexingAgreement {
     ///
     /// Values from the `rejection_reason` module constants, or None.
     pub rejection_reason: Option<String>,
+
+    /// EIP-712 terms hash stored for the offer (RecurringAgreementManager
+    /// cancel path). `None` for external-payer agreements and pre-migration rows.
+    pub terms_version_hash: Option<Vec<u8>>,
 }
 
 /// The status of the [`IndexingAgreement`].

@@ -26,7 +26,7 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use super::{
-    abi::{IRecurringCollector, ISubgraphService},
+    abi::{IRecurringAgreementManager, IRecurringCollector, ISubgraphService},
     gas::{GasEstimator, calculate_max_fee, exceeds_max_gas_price, get_gas_prices},
     rpc_provider::RpcProviderPool,
 };
@@ -147,6 +147,9 @@ struct AlloyChainClientInner {
     subgraph_service_address: Address,
     /// RecurringCollector contract address (for RCA offer submission)
     recurring_collector_address: Address,
+    /// RecurringAgreementManager address. Some only in `AgreementManager` mode;
+    /// the manager-routed offer/cancel paths require it.
+    recurring_agreement_manager_address: Option<Address>,
     /// EIP-712 domain the RCA offer hash is computed under. Shared with the
     /// proposal signer so the hash dipper posts on-chain matches the one the
     /// contract recomputes when the indexer accepts.
@@ -186,6 +189,7 @@ impl AlloyChainClient {
         config: &ChainClientConfig,
         chain_id: u64,
         recurring_collector: Address,
+        recurring_agreement_manager: Option<Address>,
         rca_domain: Arc<RwLock<Eip712Domain>>,
         secret_key: &[u8; 32],
     ) -> Result<Self, ChainClientError> {
@@ -236,6 +240,7 @@ impl AlloyChainClient {
                 signer,
                 subgraph_service_address: config.subgraph_service_address,
                 recurring_collector_address: recurring_collector,
+                recurring_agreement_manager_address: recurring_agreement_manager,
                 rca_domain,
                 chain_id,
                 gas_price_multiplier: config.gas_price_multiplier,
@@ -782,6 +787,102 @@ impl ChainClient for AlloyChainClient {
                 Err(ChainClientError::TxDropped { tx_hash })
             }
         }
+    }
+
+    async fn offer_via_manager(
+        &self,
+        rca: &RecurringCollectionAgreement,
+    ) -> Result<Option<B256>, ChainClientError> {
+        let manager = self
+            .inner
+            .recurring_agreement_manager_address
+            .ok_or_else(|| {
+                ChainClientError::ConfigError(
+                    "offer_via_manager called without a recurring_agreement_manager address"
+                        .to_string(),
+                )
+            })?;
+
+        let agreement_id = dipper_rpc::indexer::derive_agreement_id(rca);
+
+        // The manager is the payer in this mode; dipper is just the operator
+        // submitting the tx, so encode offerAgreement(collector, NEW, abi(rca)).
+        let calldata = IRecurringAgreementManager::offerAgreementCall {
+            collector: self.inner.recurring_collector_address,
+            offerType: OFFER_TYPE_NEW,
+            offerData: rca.abi_encode().into(),
+        }
+        .abi_encode();
+
+        tracing::info!(
+            agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            manager = %manager,
+            collector = %self.inner.recurring_collector_address,
+            "Submitting RCA offer via RecurringAgreementManager"
+        );
+
+        let submitted = self
+            .build_and_send_call(manager, calldata, &agreement_id)
+            .await?;
+
+        let SubmittedTx {
+            hash: tx_hash,
+            nonce: dropped_nonce,
+        } = submitted;
+        match self.wait_for_receipt(tx_hash, RECEIPT_POLL_TIMEOUT).await? {
+            Some(true) => Ok(Some(tx_hash)),
+            Some(false) => Err(ChainClientError::TxReverted { tx_hash }),
+            None => {
+                tracing::warn!(
+                    agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                    tx_hash = %tx_hash,
+                    nonce = dropped_nonce,
+                    "Manager offer tx did not mine within receipt-poll window; treating as dropped"
+                );
+                if let Err(err) = self.fill_nonce_gap(dropped_nonce).await {
+                    tracing::warn!(nonce = dropped_nonce, error = %err, "Failed to fill mempool nonce gap");
+                }
+                Err(ChainClientError::TxDropped { tx_hash })
+            }
+        }
+    }
+
+    async fn cancel_via_manager(
+        &self,
+        collector: Address,
+        agreement_id: &[u8; 16],
+        version_hash: B256,
+        options: u16,
+    ) -> Result<Option<B256>, ChainClientError> {
+        let manager = self
+            .inner
+            .recurring_agreement_manager_address
+            .ok_or_else(|| {
+                ChainClientError::ConfigError(
+                    "cancel_via_manager called without a recurring_agreement_manager address"
+                        .to_string(),
+                )
+            })?;
+
+        let calldata = IRecurringAgreementManager::cancelAgreementCall {
+            collector,
+            agreementId: FixedBytes::<16>::from_slice(agreement_id),
+            versionHash: version_hash,
+            options,
+        }
+        .abi_encode();
+
+        tracing::info!(
+            agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            manager = %manager,
+            options,
+            "Canceling agreement via RecurringAgreementManager"
+        );
+
+        let tx = self
+            .build_and_send_call(manager, calldata, agreement_id)
+            .await?;
+        Ok(Some(tx.hash))
     }
 }
 

@@ -361,6 +361,7 @@ async fn register_new_indexing_agreement_no_indexing_request() {
             indexer_id,
             indexer_url,
             terms: agreement_terms,
+            terms_version_hash: None,
         })
         .await;
 
@@ -406,6 +407,7 @@ async fn register_new_indexing_agreement() {
             indexer_id,
             indexer_url,
             terms: agreement_terms,
+            terms_version_hash: None,
         })
         .await;
 
@@ -453,6 +455,7 @@ async fn register_new_and_get_indexing_agreement_by_id() {
             indexer_id,
             indexer_url,
             terms: agreement_terms,
+            terms_version_hash: None,
         })
         .await
         .expect("Failed to register new indexing agreement");
@@ -582,6 +585,7 @@ async fn register_new_indexing_receipt() {
             indexer_id,
             indexer_url,
             terms: agreement_terms,
+            terms_version_hash: None,
         })
         .await
         .expect("Failed to register new indexing agreement");

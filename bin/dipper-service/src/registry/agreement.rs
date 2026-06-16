@@ -30,6 +30,9 @@ pub struct NewAgreementParams {
     pub indexer_id: IndexerId,
     pub indexer_url: Url,
     pub terms: Terms,
+    /// EIP-712 terms hash for the protocol-managed cancel path. `None` in the
+    /// default external-payer mode.
+    pub terms_version_hash: Option<Vec<u8>>,
 }
 
 /// Which party cancelled an agreement. Passed to `apply_reconciliation`
@@ -398,6 +401,10 @@ pub struct IndexingAgreement {
 
     /// Reason the agreement was rejected (only set when status is Rejected).
     pub rejection_reason: Option<String>,
+
+    /// EIP-712 terms hash stored at offer time, used by the protocol-managed
+    /// cancel path. `None` in the default external-payer mode.
+    pub terms_version_hash: Option<Vec<u8>>,
 }
 
 /// The _indexing agreement_ indexer information.
@@ -570,6 +577,7 @@ impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
             last_block_height: value.last_block_height,
             last_progress_at: value.last_progress_at,
             rejection_reason: value.rejection_reason,
+            terms_version_hash: value.terms_version_hash,
         })
     }
 }
