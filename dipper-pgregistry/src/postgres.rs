@@ -531,20 +531,19 @@ impl PgRegistry {
 
     /// Get declined `CanceledByIndexer`/`Expired`/`Rejected` indexers grouped by
     /// deployment (deployment id -> indexer ids). Each rejection reason gets its own
-    /// exclusion window (price, transient, escrow, uncertain, default); see the constants.
+    /// exclusion window (price, transient, uncertain, default); see the constants.
     pub async fn get_declined_indexers_by_deployment(
         &self,
         default_lookback_days: i32,
         price_lookback_days: i32,
         transient_lookback_minutes: i32,
-        escrow_lookback_minutes: i32,
         uncertain_lookback_days: i32,
     ) -> Result<HashMap<DeploymentId, Vec<IndexerId>>, Error> {
         use crate::rejection_reason::{
             AGREEMENT_EXPIRED, CAPACITY_EXCEEDED, DEADLINE_EXPIRED, INDEXER_UNAVAILABLE,
-            INSUFFICIENT_ESCROW, INVALID_SIGNATURE, PRICE_TOO_LOW, REPLAY_DETECTED,
-            SENDER_NOT_TRUSTED, SUBGRAPH_MANIFEST_UNAVAILABLE, UNEXPECTED_SERVICE_PROVIDER,
-            UNSPECIFIED, UNSUPPORTED_METADATA_VERSION,
+            INVALID_SIGNATURE, PRICE_TOO_LOW, REPLAY_DETECTED, SENDER_NOT_TRUSTED,
+            SUBGRAPH_MANIFEST_UNAVAILABLE, UNEXPECTED_SERVICE_PROVIDER, UNSPECIFIED,
+            UNSUPPORTED_METADATA_VERSION,
         };
 
         let rows: Vec<(PgDeploymentId, Vec<PgIndexerId>)> = sqlx::query_as(
@@ -561,20 +560,16 @@ impl PgRegistry {
                 OR
                 -- Transient, not-indexer's-fault, or dipper-side faults that
                 -- clear once dipper is fixed: very short lookback
-                (rejection_reason IN ($8, $9, $10, $11, $12, $13, $14, $17, $18)
+                (rejection_reason IN ($8, $9, $10, $11, $12, $13, $14, $15, $16)
                  AND updated_at >= timezone('UTC', now()) - make_interval(mins => $7))
-                OR
-                -- INSUFFICIENT_ESCROW: medium lookback (clears when payer tops up)
-                (rejection_reason = $16
-                 AND updated_at >= timezone('UTC', now()) - make_interval(mins => $15))
                 OR
                 -- Uncertain reasons (sender not trusted, unspecified/unknown):
                 -- may clear within about a day, so a 1-day lookback
-                (rejection_reason IN ($20, $21)
-                 AND updated_at >= timezone('UTC', now()) - make_interval(days => $19))
+                (rejection_reason IN ($18, $19)
+                 AND updated_at >= timezone('UTC', now()) - make_interval(days => $17))
                 OR
                 -- All other rejections/expirations/cancellations: standard lookback
-                (COALESCE(rejection_reason, '') NOT IN ($6, $8, $9, $10, $11, $12, $13, $14, $16, $17, $18, $20, $21)
+                (COALESCE(rejection_reason, '') NOT IN ($6, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18, $19)
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $5))
               )
             GROUP BY deployment_id
@@ -594,13 +589,11 @@ impl PgRegistry {
         .bind(UNSUPPORTED_METADATA_VERSION) // $12
         .bind(CAPACITY_EXCEEDED) // $13
         .bind(INDEXER_UNAVAILABLE) // $14
-        .bind(escrow_lookback_minutes) // $15
-        .bind(INSUFFICIENT_ESCROW) // $16
-        .bind(INVALID_SIGNATURE) // $17
-        .bind(REPLAY_DETECTED) // $18
-        .bind(uncertain_lookback_days) // $19
-        .bind(SENDER_NOT_TRUSTED) // $20
-        .bind(UNSPECIFIED) // $21
+        .bind(INVALID_SIGNATURE) // $15
+        .bind(REPLAY_DETECTED) // $16
+        .bind(uncertain_lookback_days) // $17
+        .bind(SENDER_NOT_TRUSTED) // $18
+        .bind(UNSPECIFIED) // $19
         .fetch_all(&self.pool)
         .await?;
 

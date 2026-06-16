@@ -443,7 +443,6 @@ mod tests {
             _default_lookback_days: i32,
             _price_lookback_days: i32,
             _transient_lookback_minutes: i32,
-            _escrow_lookback_minutes: i32,
             _uncertain_lookback_days: i32,
         ) -> crate::registry::Result<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>
         {

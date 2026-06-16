@@ -48,7 +48,8 @@ pub async fn main() -> anyhow::Result<()> {
     let conf = config::load_from_file(&conf_path).expect("Failed to load config");
     tracing::debug!(conf=?conf, "configuration loaded");
 
-    // Reject a payer-mode config that can't run before building anything from it.
+    // Reject a config the protocol-managed path can't run with before building
+    // anything from it.
     if let Err(err) = conf.dips.validate() {
         anyhow::bail!("invalid dips agreement config: {err}");
     }
@@ -57,7 +58,7 @@ pub async fn main() -> anyhow::Result<()> {
     let (agreement_conf, pricing_table) = conf.dips.into();
 
     // Clones for services that outlive the worker's move of `agreement_conf`;
-    // they need the payer mode and addresses for mode-aware cancel dispatch.
+    // they need the manager address for cancel dispatch.
     let chain_listener_agreement_conf = agreement_conf.clone();
     let liveness_agreement_conf = agreement_conf.clone();
 
@@ -279,7 +280,6 @@ pub async fn main() -> anyhow::Result<()> {
             chain_id,
             recurring_collector,
             agreement_conf.recurring_agreement_manager(),
-            rca_domain.clone(),
             &secret_bytes,
         )
         .expect("Failed to create AlloyChainClient");
@@ -375,14 +375,10 @@ pub async fn main() -> anyhow::Result<()> {
     // Monitors on-chain events for agreement acceptance/cancellation via subgraph
     let chain_listener_handle = match conf.chain_listener {
         Some(ref chain_listener_conf) if chain_listener_conf.enabled => {
-            // The subgraph filters agreements by on-chain payer. In
-            // AgreementManager mode the manager is the payer; otherwise the signer.
-            let listener_payer_address = match chain_listener_agreement_conf.payer_mode() {
-                config::PayerMode::AgreementManager => chain_listener_agreement_conf
-                    .recurring_agreement_manager()
-                    .expect("AgreementManager mode validated to have a manager address at startup"),
-                config::PayerMode::ExternalPayer => signer.address(),
-            };
+            // The subgraph filters agreements by on-chain payer, which is the
+            // RecurringAgreementManager contract.
+            let listener_payer_address =
+                chain_listener_agreement_conf.recurring_agreement_manager();
 
             // Create the subgraph event source
             let event_source_config = network::service::chain_events::SubgraphEventSourceConfig {

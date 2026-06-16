@@ -37,16 +37,15 @@ use crate::{
     },
 };
 
-/// RCA `conditions` bit set in `AgreementManager` mode so the manager contract
-/// is recognised as the agreement owner. Matches the on-chain `uint16` width;
-/// must be 0 against an EOA payer (the default external-payer mode).
+/// RCA `conditions` bit that flags the RecurringAgreementManager contract as the
+/// agreement owner. Matches the on-chain `uint16` width.
 const CONDITION_AGREEMENT_OWNER: u16 = 1u16 << 1;
 
 pub struct Ctx<R, W, I, T> {
     pub signer: Arc<Eip712Signer>,
     pub agreement_conf: Arc<IndexingAgreementConfig>,
-    /// EIP-712 domain the RCA terms hash is computed under. Only consulted in
-    /// `AgreementManager` payer mode to persist `terms_version_hash`.
+    /// EIP-712 domain the RCA terms hash is computed under, to persist
+    /// `terms_version_hash` for the cancel path.
     pub rca_domain: Arc<std::sync::RwLock<thegraph_core::alloy::sol_types::Eip712Domain>>,
     pub chain_price: Arc<BTreeMap<ChainId, IndexingAgreementChainPrices>>,
     pub registry: R,
@@ -113,7 +112,6 @@ where
         ctx.agreement_conf.declined_indexer_lookback_days(),
         ctx.agreement_conf.price_rejection_lookback_days(),
         ctx.agreement_conf.transient_rejection_lookback_minutes(),
-        ctx.agreement_conf.escrow_rejection_lookback_minutes(),
         ctx.agreement_conf.uncertain_rejection_lookback_days(),
         &ctx.entity_count_cache,
     )
@@ -294,18 +292,9 @@ where
         // gather data on how indexers actually exercise the cap.
         let agreement_cap_grt = ctx.agreement_conf.max_agreement_grt_per_30_days();
 
-        // In AgreementManager mode the RecurringAgreementManager contract is the
-        // payer and is flagged as the agreement owner; the default external-payer
-        // mode keeps dipper's signer as payer with no conditions bit.
-        let (payer, conditions) = match ctx.agreement_conf.payer_mode() {
-            crate::config::PayerMode::AgreementManager => (
-                ctx.agreement_conf
-                    .recurring_agreement_manager()
-                    .expect("AgreementManager mode validated to have a manager address at startup"),
-                CONDITION_AGREEMENT_OWNER,
-            ),
-            crate::config::PayerMode::ExternalPayer => (ctx.signer.address(), 0u16),
-        };
+        // The RecurringAgreementManager contract is the payer and is flagged as
+        // the agreement owner via the conditions bit.
+        let payer = ctx.agreement_conf.recurring_agreement_manager();
 
         let terms = IndexingAgreementTerms {
             payer,
@@ -318,7 +307,7 @@ where
             min_seconds_per_collection: ctx.agreement_conf.min_seconds_per_collection(),
             max_seconds_per_collection: ctx.agreement_conf.max_seconds_per_collection(),
             deadline: now.saturating_add(ctx.agreement_conf.deadline_seconds()),
-            conditions,
+            conditions: CONDITION_AGREEMENT_OWNER,
             metadata: terms_metadata,
         };
 
@@ -327,17 +316,13 @@ where
         let nonce_uuid = uuid::Uuid::now_v7();
         let agreement_id_candidate = compute_on_chain_id(nonce_uuid, &terms);
 
-        // In AgreementManager mode, persist the EIP-712 terms hash now so the
-        // cancel path can pass it to the manager's cancelAgreement(). The default
-        // external-payer mode does not use this and leaves it None.
-        let terms_version_hash = match ctx.agreement_conf.payer_mode() {
-            crate::config::PayerMode::AgreementManager => Some(compute_terms_version_hash(
-                nonce_uuid,
-                &terms,
-                &ctx.rca_domain,
-            )),
-            crate::config::PayerMode::ExternalPayer => None,
-        };
+        // Persist the EIP-712 terms hash now so the cancel path can pass it to
+        // the manager's cancelAgreement().
+        let terms_version_hash = Some(compute_terms_version_hash(
+            nonce_uuid,
+            &terms,
+            &ctx.rca_domain,
+        ));
 
         // If this add replaces an old agreement, register both atomically
         // so a crash cannot leave an agreement without its pending cancellation.

@@ -1,12 +1,11 @@
-//! Payer-mode-aware cancel dispatch. Every on-chain cancel goes through
-//! [`cancel_agreement_on_chain`] so the external-payer and protocol-managed
-//! paths are chosen in exactly one place.
+//! On-chain cancel dispatch. Every cancel goes through
+//! [`cancel_agreement_on_chain`] so the manager-routed path lives in one place.
 
 use thegraph_core::alloy::primitives::B256;
 
 use crate::{
     chain_client::{ChainClient, ChainClientError},
-    config::{IndexingAgreementConfig, PayerMode},
+    config::IndexingAgreementConfig,
     registry::IndexingAgreement,
 };
 
@@ -17,39 +16,30 @@ const SCOPE_ACTIVE: u16 = 1;
 const SCOPE_PENDING: u16 = 2;
 const SCOPE_BOTH: u16 = SCOPE_ACTIVE | SCOPE_PENDING;
 
-/// Cancel an agreement on-chain using the configured payer mode. Mirrors
-/// [`ChainClient::cancel_indexing_agreement_by_payer`]'s contract. In
-/// protocol-managed mode a missing stored hash is a `MissingTermsVersionHash`.
+/// Cancel an agreement on-chain through the RecurringAgreementManager. Passes
+/// both scope bits so the collector cancels whichever scope the agreement is in,
+/// and treats a missing or short stored hash as `MissingTermsVersionHash`.
 pub async fn cancel_agreement_on_chain<T: ChainClient>(
     chain_client: &T,
     agreement: &IndexingAgreement,
     config: &IndexingAgreementConfig,
 ) -> Result<Option<B256>, ChainClientError> {
-    match config.payer_mode() {
-        PayerMode::ExternalPayer => {
-            chain_client
-                .cancel_indexing_agreement_by_payer(agreement.id.as_bytes())
-                .await
-        }
-        PayerMode::AgreementManager => {
-            let version_hash = agreement
-                .terms_version_hash
-                .as_deref()
-                .filter(|h| h.len() == 32)
-                .map(B256::from_slice)
-                .ok_or_else(|| ChainClientError::MissingTermsVersionHash {
-                    agreement_id: agreement.id.to_string(),
-                })?;
-            chain_client
-                .cancel_via_manager(
-                    config.recurring_collector(),
-                    agreement.id.as_bytes(),
-                    version_hash,
-                    SCOPE_BOTH,
-                )
-                .await
-        }
-    }
+    let version_hash = agreement
+        .terms_version_hash
+        .as_deref()
+        .filter(|h| h.len() == 32)
+        .map(B256::from_slice)
+        .ok_or_else(|| ChainClientError::MissingTermsVersionHash {
+            agreement_id: agreement.id.to_string(),
+        })?;
+    chain_client
+        .cancel_via_manager(
+            config.recurring_collector(),
+            agreement.id.as_bytes(),
+            version_hash,
+            SCOPE_BOTH,
+        )
+        .await
 }
 
 #[cfg(test)]
@@ -69,7 +59,7 @@ mod tests {
     use super::{SCOPE_BOTH, cancel_agreement_on_chain};
     use crate::{
         chain_client::{ChainClient, ChainClientError},
-        config::{IndexingAgreementConfig, PayerMode},
+        config::IndexingAgreementConfig,
         registry::{
             IndexingAgreement, IndexingAgreementStatus, IndexingAgreementTerms,
             IndexingAgreementTermsMetadata,
@@ -79,28 +69,14 @@ mod tests {
     /// (collector, agreement_id, version_hash, options) per manager cancel.
     type ManagerCancelArgs = (Address, [u8; 16], B256, u16);
 
-    /// Records which on-chain cancel ran and with what arguments.
+    /// Records each manager cancel and its arguments.
     #[derive(Default)]
     struct RecordingChainClient {
         manager_cancels: Mutex<Vec<ManagerCancelArgs>>,
-        payer_cancels: Mutex<Vec<[u8; 16]>>,
     }
 
     #[async_trait]
     impl ChainClient for RecordingChainClient {
-        async fn cancel_indexing_agreement_by_payer(
-            &self,
-            agreement_id: &[u8; 16],
-        ) -> Result<Option<B256>, ChainClientError> {
-            self.payer_cancels.lock().unwrap().push(*agreement_id);
-            Ok(Some(B256::ZERO))
-        }
-        async fn post_offer(
-            &self,
-            _rca: &RecurringCollectionAgreement,
-        ) -> Result<Option<B256>, ChainClientError> {
-            Ok(None)
-        }
         async fn offer_via_manager(
             &self,
             _rca: &RecurringCollectionAgreement,
@@ -124,12 +100,11 @@ mod tests {
         }
     }
 
-    fn base_conf() -> IndexingAgreementConfig {
+    fn manager_conf(collector: Address) -> IndexingAgreementConfig {
         IndexingAgreementConfig {
             data_service: Address::ZERO,
-            recurring_collector: Address::ZERO,
-            payer_mode: PayerMode::ExternalPayer,
-            recurring_agreement_manager: None,
+            recurring_collector: collector,
+            recurring_agreement_manager: Address::repeat_byte(0x33),
             max_agreement_grt_per_30_days: 0.0,
             max_seconds_per_collection: 0,
             min_seconds_per_collection: 0,
@@ -140,17 +115,7 @@ mod tests {
             declined_indexer_lookback_days: 0,
             price_rejection_lookback_days: 0,
             transient_rejection_lookback_minutes: 0,
-            escrow_rejection_lookback_minutes: 0,
             uncertain_rejection_lookback_days: 0,
-        }
-    }
-
-    fn manager_conf(collector: Address) -> IndexingAgreementConfig {
-        IndexingAgreementConfig {
-            payer_mode: PayerMode::AgreementManager,
-            recurring_agreement_manager: Some(Address::repeat_byte(0x33)),
-            recurring_collector: collector,
-            ..base_conf()
         }
     }
 
@@ -219,7 +184,6 @@ mod tests {
         assert_eq!(got_hash, B256::from_slice(&[7u8; 32]));
         assert_eq!(got_options, SCOPE_BOTH);
         assert_eq!(got_options, 3, "both scope bits set");
-        assert!(client.payer_cancels.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -256,7 +220,6 @@ mod tests {
             ChainClientError::MissingTermsVersionHash { .. }
         ));
         assert!(client.manager_cancels.lock().unwrap().is_empty());
-        assert!(client.payer_cancels.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -276,19 +239,6 @@ mod tests {
             err,
             ChainClientError::MissingTermsVersionHash { .. }
         ));
-        assert!(client.manager_cancels.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn external_mode_uses_payer_cancel() {
-        let client = RecordingChainClient::default();
-        let ag = agreement(IndexingAgreementStatus::AcceptedOnChain, None);
-
-        cancel_agreement_on_chain(&client, &ag, &base_conf())
-            .await
-            .expect("cancel dispatch");
-
-        assert_eq!(client.payer_cancels.lock().unwrap().len(), 1);
         assert!(client.manager_cancels.lock().unwrap().is_empty());
     }
 }

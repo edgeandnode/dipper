@@ -68,8 +68,8 @@ pub mod rejection_reason {
     /// clears once dipper stops reusing agreement ids).
     pub const REPLAY_DETECTED: &str = "REPLAY_DETECTED";
 
-    /// The payer has insufficient escrow to back the agreement.
-    /// Lookback: 30 minutes (clears once the payer tops up escrow).
+    /// The payer has insufficient escrow to back the agreement. Uses the default
+    /// lookback: the protocol contract funds escrow, so this should not recur.
     pub const INSUFFICIENT_ESCROW: &str = "INSUFFICIENT_ESCROW";
 
     /// A transient internal error on the indexer; the proposal may be resent.
@@ -138,7 +138,7 @@ pub struct IndexingAgreement {
     pub rejection_reason: Option<String>,
 
     /// EIP-712 terms hash stored for the offer (RecurringAgreementManager
-    /// cancel path). `None` for external-payer agreements and pre-migration rows.
+    /// cancel path). `None` only for pre-migration rows.
     pub terms_version_hash: Option<Vec<u8>>,
 }
 

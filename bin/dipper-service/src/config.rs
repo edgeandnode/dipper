@@ -524,22 +524,8 @@ pub struct ChainClientConfig {
 
     /// SubgraphService contract address.
     ///
-    /// This is the contract that manages indexing agreements and exposes
-    /// `cancelIndexingAgreementByPayer(bytes32)`.
+    /// This is the contract that manages indexing agreements.
     pub subgraph_service_address: Address,
-
-    /// Indexing-payments-subgraph query URL.
-    ///
-    /// When set, dipper queries the subgraph for an existing `Offer` entity
-    /// before submitting a new `offer()` transaction. This provides
-    /// crash-recovery idempotency: after a restart, if dipper's prior
-    /// submission already landed on-chain and the subgraph has indexed it,
-    /// dipper will skip re-submission rather than wasting gas. When unset,
-    /// dipper will log a warning on startup and always submit, trusting
-    /// the contract's overwrite semantics to make double-submission harmless.
-    #[serde(default)]
-    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
-    pub indexing_payments_subgraph_url: Option<Url>,
 
     /// Gas price multiplier (default: 1.2)
     ///
@@ -601,19 +587,6 @@ fn default_gas_max_addition() -> u64 {
     200_000
 }
 
-/// Who funds and owns the on-chain agreement (default `ExternalPayer`: dipper
-/// is the ECDSA payer). `AgreementManager` routes offers and cancels through the
-/// `RecurringAgreementManager` (RAM) contract as an unsigned operator (gated).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PayerMode {
-    /// Dipper is the ECDSA payer (default, original behaviour).
-    #[default]
-    ExternalPayer,
-    /// The RecurringAgreementManager contract is the payer.
-    AgreementManager,
-}
-
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -623,13 +596,9 @@ pub struct DipsAgreementConfig {
     /// The RecurringCollector contract address. Dipper posts on-chain offers
     /// here via `RecurringCollector.offer()` before dispatching gRPC proposals.
     pub recurring_collector: Address,
-    /// Who funds and owns the on-chain agreement (default `ExternalPayer`).
-    #[serde(default)]
-    pub payer_mode: PayerMode,
-    /// The RecurringAgreementManager contract address. Required when
-    /// `payer_mode` is `AgreementManager`; ignored otherwise.
-    #[serde(default)]
-    pub recurring_agreement_manager: Option<Address>,
+    /// The RecurringAgreementManager contract address. The manager is the
+    /// on-chain payer; dipper routes every offer and cancel through it.
+    pub recurring_agreement_manager: Address,
     /// Flat per-agreement payment ceiling (GRT per 30 days). Applied to every
     /// RCA regardless of chain. Drives the RCA's `maxOngoingTokensPerSecond`
     /// (as a rate). `maxInitialTokens` is hard-coded to zero in v1 of the
@@ -693,13 +662,6 @@ pub struct DipsAgreementConfig {
     )]
     pub transient_rejection_lookback_minutes: i32,
 
-    /// Number of minutes to look back for INSUFFICIENT_ESCROW rejections.
-    ///
-    /// Medium window: escrow shortfalls clear once the payer tops up, which
-    /// takes longer than a transient blip but is not permanent. Default: 30 minutes.
-    #[serde(default = "default_escrow_rejection_lookback_minutes")]
-    pub escrow_rejection_lookback_minutes: i32,
-
     /// Days to look back for uncertain rejections that may clear within a day but
     /// aren't a quick transient blip: the indexer not yet trusting the payer
     /// (SENDER_NOT_TRUSTED), or an unspecified/unknown/missing reason. Default: 1 day.
@@ -708,17 +670,13 @@ pub struct DipsAgreementConfig {
 }
 
 impl DipsAgreementConfig {
-    /// Fail-loud check that the payer mode and its dependencies agree.
-    ///
-    /// `AgreementManager` mode drives the RecurringAgreementManager contract, so
-    /// its address must be configured; without it dipper has nothing to call.
+    /// Reject a configuration the protocol-managed path cannot run with. Dipper
+    /// routes every offer and cancel through the RecurringAgreementManager, so a
+    /// zero manager address means dipper has nothing to call.
     pub fn validate(&self) -> Result<(), String> {
-        if self.payer_mode == PayerMode::AgreementManager
-            && self.recurring_agreement_manager.is_none()
-        {
+        if self.recurring_agreement_manager == Address::ZERO {
             return Err(
-                "payer_mode = agreement_manager requires recurring_agreement_manager to be set"
-                    .to_string(),
+                "recurring_agreement_manager must be set to a non-zero address".to_string(),
             );
         }
         Ok(())
@@ -801,10 +759,6 @@ fn default_price_rejection_lookback_days() -> i32 {
 
 fn default_transient_rejection_lookback_minutes() -> i32 {
     5
-}
-
-fn default_escrow_rejection_lookback_minutes() -> i32 {
-    30
 }
 
 fn default_uncertain_rejection_lookback_days() -> i32 {
@@ -898,10 +852,8 @@ pub struct IndexingAgreementConfig {
     pub data_service: Address,
     /// The RecurringCollector contract address.
     pub recurring_collector: Address,
-    /// Who funds and owns the on-chain agreement.
-    pub payer_mode: PayerMode,
-    /// The RecurringAgreementManager address (Some iff `AgreementManager`).
-    pub recurring_agreement_manager: Option<Address>,
+    /// The RecurringAgreementManager address (the on-chain payer).
+    pub recurring_agreement_manager: Address,
     /// Flat per-agreement payment ceiling (GRT per 30 days). Drives the RCA's
     /// `maxOngoingTokensPerSecond` (as a rate); `maxInitialTokens` is
     /// hard-coded to zero in v1. Applied to every agreement regardless of
@@ -925,8 +877,6 @@ pub struct IndexingAgreementConfig {
     pub price_rejection_lookback_days: i32,
     /// Number of minutes to look back for transient rejections.
     pub transient_rejection_lookback_minutes: i32,
-    /// Number of minutes to look back for INSUFFICIENT_ESCROW rejections.
-    pub escrow_rejection_lookback_minutes: i32,
     /// Number of days to look back for uncertain rejections (sender-not-trusted, unspecified).
     pub uncertain_rejection_lookback_days: i32,
 }
@@ -949,11 +899,7 @@ impl IndexingAgreementConfig {
         self.recurring_collector
     }
 
-    pub fn payer_mode(&self) -> PayerMode {
-        self.payer_mode
-    }
-
-    pub fn recurring_agreement_manager(&self) -> Option<Address> {
+    pub fn recurring_agreement_manager(&self) -> Address {
         self.recurring_agreement_manager
     }
 
@@ -997,10 +943,6 @@ impl IndexingAgreementConfig {
         self.transient_rejection_lookback_minutes
     }
 
-    pub fn escrow_rejection_lookback_minutes(&self) -> i32 {
-        self.escrow_rejection_lookback_minutes
-    }
-
     pub fn uncertain_rejection_lookback_days(&self) -> i32 {
         self.uncertain_rejection_lookback_days
     }
@@ -1016,7 +958,6 @@ impl From<DipsAgreementConfig>
         let config = IndexingAgreementConfig {
             data_service: value.data_service,
             recurring_collector: value.recurring_collector,
-            payer_mode: value.payer_mode,
             recurring_agreement_manager: value.recurring_agreement_manager,
             max_agreement_grt_per_30_days: value.max_agreement_grt_per_30_days,
             max_seconds_per_collection: value.max_seconds_per_collection,
@@ -1029,7 +970,6 @@ impl From<DipsAgreementConfig>
             declined_indexer_lookback_days: value.declined_indexer_lookback_days,
             price_rejection_lookback_days: value.price_rejection_lookback_days,
             transient_rejection_lookback_minutes: value.transient_rejection_lookback_minutes,
-            escrow_rejection_lookback_minutes: value.escrow_rejection_lookback_minutes,
             uncertain_rejection_lookback_days: value.uncertain_rejection_lookback_days,
         };
         let prices = value
@@ -1059,6 +999,7 @@ mod tests {
         let json = r#"{
             "data_service": "0x1111111111111111111111111111111111111111",
             "recurring_collector": "0x2222222222222222222222222222222222222222",
+            "recurring_agreement_manager": "0x3333333333333333333333333333333333333333",
             "max_agreement_grt_per_30_days": 20000.0,
             "min_seconds_per_collection": 60,
             "max_seconds_per_collection": 3600,
@@ -1092,6 +1033,11 @@ mod tests {
             config.recurring_collector,
             address!("2222222222222222222222222222222222222222"),
             "recurring_collector mismatch"
+        );
+        assert_eq!(
+            config.recurring_agreement_manager,
+            address!("3333333333333333333333333333333333333333"),
+            "recurring_agreement_manager mismatch"
         );
         assert_eq!(
             config.max_agreement_grt_per_30_days, 20000.0,
@@ -1148,22 +1094,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_requires_manager_address_in_agreement_manager_mode() {
-        // tc-3: validate() is the only guard for the agreement-manager-without-
-        // address footgun that two downstream `.expect()`s rely on. Pin all
-        // three outcomes so a later change cannot weaken the invariant unseen.
-        fn conf(payer_mode: &str, manager: Option<&str>) -> DipsAgreementConfig {
-            let manager_line = manager
-                .map(|m| format!(r#""recurring_agreement_manager": "{m}","#))
-                .unwrap_or_default();
+    fn validate_rejects_a_zero_manager_address() {
+        // tc-3: validate() is the only guard for the zero-manager-address
+        // footgun that downstream `.expect()`s rely on. Pin both outcomes so a
+        // later change cannot weaken the invariant unseen.
+        fn conf(manager: &str) -> DipsAgreementConfig {
             let json = format!(
                 r#"{{
                     "data_service": "0x1111111111111111111111111111111111111111",
                     "recurring_collector": "0x2222222222222222222222222222222222222222",
+                    "recurring_agreement_manager": "{manager}",
                     "min_seconds_per_collection": 60,
                     "max_seconds_per_collection": 3600,
-                    "payer_mode": "{payer_mode}",
-                    {manager_line}
                     "pricing_table": {{}}
                 }}"#
             );
@@ -1171,21 +1113,16 @@ mod tests {
         }
 
         assert!(
-            conf("agreement_manager", None).validate().is_err(),
-            "agreement_manager without a manager address must be rejected"
+            conf("0x0000000000000000000000000000000000000000")
+                .validate()
+                .is_err(),
+            "a zero manager address must be rejected"
         );
         assert!(
-            conf(
-                "agreement_manager",
-                Some("0x3333333333333333333333333333333333333333")
-            )
-            .validate()
-            .is_ok(),
-            "agreement_manager with a manager address is valid"
-        );
-        assert!(
-            conf("external_payer", None).validate().is_ok(),
-            "external_payer never needs a manager address"
+            conf("0x3333333333333333333333333333333333333333")
+                .validate()
+                .is_ok(),
+            "a non-zero manager address is valid"
         );
     }
 
@@ -1195,6 +1132,7 @@ mod tests {
         let json = r#"{
             "data_service": "0x1111111111111111111111111111111111111111",
             "recurring_collector": "0x2222222222222222222222222222222222222222",
+            "recurring_agreement_manager": "0x3333333333333333333333333333333333333333",
             "min_seconds_per_collection": 60,
             "max_seconds_per_collection": 3600,
             "pricing_table": {}
