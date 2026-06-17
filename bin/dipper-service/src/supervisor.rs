@@ -39,7 +39,12 @@ impl Shutdown {
     /// [`Shutdown::requested_signal`]. Idempotent.
     pub fn request(&self) {
         self.requested.store(true, Ordering::SeqCst);
-        self.trigger.notify_one();
+        // `notify_waiters`, not `notify_one`: multiple tasks may be parked in
+        // `requested_signal`, and shutdown must wake all of them. It stores no
+        // permit for future waiters, but none is needed — a waiter that arrives
+        // after this sees the flag via the register-then-check in
+        // `requested_signal` and returns without parking.
+        self.trigger.notify_waiters();
     }
 
     /// Whether shutdown has been requested (by a signal or by an unexpected
@@ -181,6 +186,43 @@ mod tests {
         assert!(
             result.is_ok(),
             "a deliberate shutdown must not be reported as fatal: {result:?}"
+        );
+    }
+
+    /// A single `request()` must wake *every* parked waiter, not just one.
+    ///
+    /// Both waiters are polled to their suspended (registered) state while the
+    /// flag is still false, then `request()` is called once. Regression test
+    /// for `notify_one`, which wakes only the first waiter and leaves the rest
+    /// hanging forever.
+    #[test]
+    fn request_wakes_all_concurrent_waiters() {
+        use std::{
+            future::Future,
+            pin::pin,
+            task::{Context, Poll},
+        };
+
+        let shutdown = Shutdown::new();
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        let mut w1 = pin!(shutdown.requested_signal());
+        let mut w2 = pin!(shutdown.requested_signal());
+
+        // With the flag still false, both register on the notify and suspend.
+        assert!(matches!(w1.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(w2.as_mut().poll(&mut cx), Poll::Pending));
+
+        shutdown.request();
+
+        assert!(
+            matches!(w1.as_mut().poll(&mut cx), Poll::Ready(())),
+            "the first parked waiter must be woken by request()"
+        );
+        assert!(
+            matches!(w2.as_mut().poll(&mut cx), Poll::Ready(())),
+            "every parked waiter must be woken by request(), not just the first"
         );
     }
 }
