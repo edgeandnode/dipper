@@ -10,9 +10,9 @@ use crate::{
     registry::IndexingAgreement,
 };
 
-/// Cancel-scope bits for the collector's `cancel(id, hash, options)`. We pass
-/// both: local DB status can lag the chain, so cancelling both scopes lets the
-/// collector no-op the absent one rather than a stale status picking the wrong one.
+/// Pass both ACTIVE and PENDING; local status lags the chain, so let the
+/// collector no-op the absent scope. Never SCOPE_SIGNED (=4): acceptance is
+/// offer-based and dipper never retracts a pending offer, so it isn't needed.
 const SCOPE_ACTIVE: u16 = 1;
 const SCOPE_PENDING: u16 = 2;
 const SCOPE_BOTH: u16 = SCOPE_ACTIVE | SCOPE_PENDING;
