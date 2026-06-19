@@ -1882,6 +1882,15 @@ mod tests {
             // so the real cancel_via_manager never returns Ok(None).
             Ok(Some(thegraph_core::alloy::primitives::B256::ZERO))
         }
+
+        async fn agreement_still_active(
+            &self,
+            _agreement_id: &[u8; 16],
+        ) -> Result<bool, crate::chain_client::ChainClientError> {
+            // These tests run in external-payer mode, so the verification read
+            // never fires; report cancelled to keep any future caller happy.
+            Ok(false)
+        }
     }
 
     #[async_trait::async_trait]

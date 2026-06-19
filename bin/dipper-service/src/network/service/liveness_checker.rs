@@ -1225,6 +1225,7 @@ mod tests {
                 | Err(ChainClientError::TxDropped { .. })
                 | Err(ChainClientError::TxReverted { .. })
                 | Err(ChainClientError::ContractRevert { .. })
+                | Err(ChainClientError::CancelNotConfirmed { .. })
                 | Err(ChainClientError::MissingTermsVersionHash { .. }) => {
                     // Not applicable to the cancel path here; mirror as
                     // RpcError so the test helper keeps a single error shape.
@@ -1271,6 +1272,15 @@ mod tests {
                 }
                 Err(e) => Err(ChainClientError::RpcError(anyhow::anyhow!("{e}"))),
             }
+        }
+
+        async fn agreement_still_active(
+            &self,
+            _agreement_id: &[u8; 16],
+        ) -> Result<bool, ChainClientError> {
+            // The cancel-path tests run in external-payer mode, where dispatch
+            // never reads back, so report cancelled to satisfy the trait.
+            Ok(false)
         }
     }
 

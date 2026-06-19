@@ -70,6 +70,14 @@ sol! {
             external
             returns (AgreementDetails memory details);
 
+        /// Read-only details for the agreement at a version index. Index 0 is
+        /// VERSION_CURRENT (the active or pre-acceptance terms); the returned
+        /// `state` bitmask says whether the agreement is still live on-chain.
+        function getAgreementDetails(bytes16 agreementId, uint256 index)
+            external
+            view
+            returns (AgreementDetails memory);
+
         /// Emitted when `offer()` stores a new or updated RCA offer.
         event OfferStored(
             bytes16 indexed agreementId,

@@ -45,6 +45,12 @@ pub enum ChainClientError {
     #[error("agreement {agreement_id} has no 32-byte terms_version_hash for manager cancel")]
     MissingTermsVersionHash { agreement_id: String },
 
+    /// A manager-routed cancel tx mined, but a follow-up read shows the
+    /// agreement is still active on-chain (stale/wrong hash, unknown id, or
+    /// already-terminal made the cancel a silent no-op). Callers retry.
+    #[error("manager cancel for agreement {agreement_id} mined but the agreement is still active")]
+    CancelNotConfirmed { agreement_id: String },
+
     /// RPC error
     #[error("RPC error: {0}")]
     RpcError(#[source] anyhow::Error),
@@ -146,6 +152,14 @@ pub trait ChainClient {
         version_hash: B256,
         options: u16,
     ) -> Result<Option<B256>, ChainClientError>;
+
+    /// Read whether the agreement is still live on-chain (terms accepted and no
+    /// cancellation notice given) via the RecurringCollector's
+    /// `getAgreementDetails(id, VERSION_CURRENT)`.
+    async fn agreement_still_active(
+        &self,
+        agreement_id: &[u8; 16],
+    ) -> Result<bool, ChainClientError>;
 }
 
 /// Blanket impl for Arc-wrapped trait objects.
@@ -187,5 +201,12 @@ impl<T: ChainClient + Send + Sync + ?Sized> ChainClient for Arc<T> {
         (**self)
             .cancel_via_manager(collector, agreement_id, version_hash, options)
             .await
+    }
+
+    async fn agreement_still_active(
+        &self,
+        agreement_id: &[u8; 16],
+    ) -> Result<bool, ChainClientError> {
+        (**self).agreement_still_active(agreement_id).await
     }
 }
