@@ -884,6 +884,42 @@ impl ChainClient for AlloyChainClient {
             .await?;
         Ok(Some(tx.hash))
     }
+
+    async fn reconcile_provider(
+        &self,
+        collector: Address,
+        provider: Address,
+    ) -> Result<Option<B256>, ChainClientError> {
+        let manager = self
+            .inner
+            .recurring_agreement_manager_address
+            .ok_or_else(|| {
+                ChainClientError::ConfigError(
+                    "reconcile_provider called without a recurring_agreement_manager address"
+                        .to_string(),
+                )
+            })?;
+
+        let calldata = IRecurringAgreementManager::reconcileProviderCall {
+            collector,
+            provider,
+        }
+        .abi_encode();
+
+        tracing::info!(
+            manager = %manager,
+            collector = %collector,
+            provider = %provider,
+            "Reconciling provider escrow via RecurringAgreementManager"
+        );
+
+        // No agreement context here; pass a zero id for the shared call's
+        // logging field only. The call target is the manager.
+        let tx = self
+            .build_and_send_call(manager, calldata, &[0u8; 16])
+            .await?;
+        Ok(Some(tx.hash))
+    }
 }
 
 #[cfg(test)]

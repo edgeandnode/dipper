@@ -70,6 +70,9 @@ pub struct Config {
     /// The liveness checker service configuration (detects silent agreement abandonment)
     #[serde(default)]
     pub liveness_checker: Option<LivenessCheckerConfig>,
+    /// The escrow reconciler service configuration (AgreementManager mode only)
+    #[serde(default)]
+    pub escrow_reconciler: Option<EscrowReconcilerConfig>,
     /// Additional chain ID to network name mappings for dev/test chains.
     ///
     /// Production chains are resolved via the graph-networks-registry crate.
@@ -285,6 +288,48 @@ impl Default for ExpirationConfig {
             enabled: default_expiration_enabled(),
             interval: default_expiration_interval(),
             batch_size: default_expiration_batch_size(),
+        }
+    }
+}
+
+/// Escrow reconciler service config. Runs only in `AgreementManager` mode;
+/// each tick calls the manager's permissionless `reconcileProvider` for
+/// distinct providers with agreements needing escrow cleanup.
+#[serde_as]
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct EscrowReconcilerConfig {
+    /// Whether the escrow reconciler is enabled (default: true).
+    #[serde(default = "default_escrow_reconciler_enabled")]
+    pub enabled: bool,
+
+    /// Interval between reconciliation sweeps in seconds (default: 600s).
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    #[serde(default = "default_escrow_reconciler_interval")]
+    pub interval: Duration,
+
+    /// Maximum distinct providers to reconcile per sweep (default: 500).
+    #[serde(default = "default_escrow_reconciler_batch_size")]
+    pub batch_size: i64,
+}
+
+fn default_escrow_reconciler_enabled() -> bool {
+    true
+}
+
+fn default_escrow_reconciler_interval() -> Duration {
+    Duration::from_secs(600)
+}
+
+fn default_escrow_reconciler_batch_size() -> i64 {
+    500
+}
+
+impl Default for EscrowReconcilerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_escrow_reconciler_enabled(),
+            interval: default_escrow_reconciler_interval(),
+            batch_size: default_escrow_reconciler_batch_size(),
         }
     }
 }

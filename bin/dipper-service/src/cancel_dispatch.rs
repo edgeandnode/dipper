@@ -122,6 +122,13 @@ mod tests {
             ));
             Ok(Some(B256::ZERO))
         }
+        async fn reconcile_provider(
+            &self,
+            _collector: Address,
+            _provider: Address,
+        ) -> Result<Option<B256>, ChainClientError> {
+            Ok(None)
+        }
     }
 
     fn base_conf() -> IndexingAgreementConfig {

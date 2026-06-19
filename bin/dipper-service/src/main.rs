@@ -60,6 +60,7 @@ pub async fn main() -> anyhow::Result<()> {
     // they need the payer mode and addresses for mode-aware cancel dispatch.
     let chain_listener_agreement_conf = agreement_conf.clone();
     let liveness_agreement_conf = agreement_conf.clone();
+    let escrow_reconciler_agreement_conf = agreement_conf.clone();
 
     // Canonical chain id and RecurringCollector address, read once and shared by the
     // admin signer, the gRPC proposal signer, and the on-chain chain client so their
@@ -431,6 +432,25 @@ pub async fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
+    //- The escrow reconciler service (AgreementManager mode only)
+    // Reclaims orphaned manager-owned escrow the indexer has no reason to touch.
+    let escrow_reconciler_handle = if network::service::escrow_reconciler::should_run(
+        conf.escrow_reconciler.as_ref(),
+        &escrow_reconciler_agreement_conf,
+    ) {
+        let er_conf = conf.escrow_reconciler.clone().unwrap_or_default();
+        let ctx = network::service::escrow_reconciler::Ctx {
+            registry: registry.clone(),
+            chain_client: chain_client.clone(),
+            config: er_conf,
+            collector: escrow_reconciler_agreement_conf.recurring_collector(),
+        };
+        let (handle, service) = network::service::escrow_reconciler::new(ctx);
+        Some((handle, service))
+    } else {
+        None
+    };
+
     //- The admin RPC service
     let (admin_rpc_handle, admin_rpc_service) = {
         let config = admin_rpc_server::service::Config {
@@ -494,6 +514,15 @@ pub async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // Spawn the escrow reconciler service if enabled
+    let escrow_reconciler_stop_handle = if let Some((handle, service)) = escrow_reconciler_handle {
+        let task_handle = task_tree.spawn(service);
+        tracing::debug!(task_id=%task_handle.id(), "Escrow reconciler service started");
+        Some(handle)
+    } else {
+        None
+    };
+
     let admin_rpc_task_handle = task_tree.spawn(admin_rpc_service);
     tracing::debug!(task_id=%admin_rpc_task_handle.id(), "Admin RPC service started");
 
@@ -540,6 +569,13 @@ pub async fn main() -> anyhow::Result<()> {
             tracing::trace!("stopping Chain listener service");
             handle.stop().await;
             tracing::trace!("stopped Chain listener service");
+        }
+
+        // Stop escrow reconciler service before the DB pool closes
+        if let Some(handle) = escrow_reconciler_stop_handle {
+            tracing::trace!("stopping Escrow reconciler service");
+            handle.stop().await;
+            tracing::trace!("stopped Escrow reconciler service");
         }
 
         // Stop entity count cache service
