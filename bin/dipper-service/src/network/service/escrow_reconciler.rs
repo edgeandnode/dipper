@@ -9,20 +9,17 @@ use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::{
     chain_client::ChainClient,
-    config::{EscrowReconcilerConfig, IndexingAgreementConfig, PayerMode},
+    config::{EscrowReconcilerConfig, IndexingAgreementConfig},
     registry::AgreementRegistry,
 };
 
-/// Whether the reconciler should run: enabled and protocol-managed
-/// (`AgreementManager` mode with a manager address). In `ExternalPayer` mode
-/// dipper owns escrow directly, so there is nothing to reconcile.
+/// Whether the reconciler should run. The manager self-reconciles only on
+/// collection, so this driver sweeps the providers it skips when enabled.
 pub fn should_run(
     config: Option<&EscrowReconcilerConfig>,
-    agreement_conf: &IndexingAgreementConfig,
+    _agreement_conf: &IndexingAgreementConfig,
 ) -> bool {
     config.is_some_and(|c| c.enabled)
-        && agreement_conf.payer_mode() == PayerMode::AgreementManager
-        && agreement_conf.recurring_agreement_manager().is_some()
 }
 
 /// Handle for controlling the escrow reconciler service lifecycle
@@ -217,18 +214,6 @@ mod tests {
 
     #[async_trait]
     impl ChainClient for RecordingChainClient {
-        async fn cancel_indexing_agreement_by_payer(
-            &self,
-            _agreement_id: &[u8; 16],
-        ) -> Result<Option<B256>, ChainClientError> {
-            unimplemented!()
-        }
-        async fn post_offer(
-            &self,
-            _rca: &dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement,
-        ) -> Result<Option<B256>, ChainClientError> {
-            unimplemented!()
-        }
         async fn offer_via_manager(
             &self,
             _rca: &dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement,
@@ -309,7 +294,6 @@ mod tests {
             _default_lookback_days: i32,
             _price_lookback_days: i32,
             _transient_lookback_minutes: i32,
-            _escrow_lookback_minutes: i32,
             _uncertain_lookback_days: i32,
         ) -> crate::registry::Result<
             std::collections::HashMap<thegraph_core::DeploymentId, Vec<thegraph_core::IndexerId>>,
@@ -453,11 +437,10 @@ mod tests {
         }
     }
 
-    fn agreement_conf(payer_mode: PayerMode, manager: Option<Address>) -> IndexingAgreementConfig {
+    fn agreement_conf(manager: Address) -> IndexingAgreementConfig {
         IndexingAgreementConfig {
             data_service: Address::ZERO,
             recurring_collector: Address::ZERO,
-            payer_mode,
             recurring_agreement_manager: manager,
             max_agreement_grt_per_30_days: 0.0,
             max_seconds_per_collection: 0,
@@ -469,46 +452,23 @@ mod tests {
             declined_indexer_lookback_days: 0,
             price_rejection_lookback_days: 0,
             transient_rejection_lookback_minutes: 0,
-            escrow_rejection_lookback_minutes: 0,
             uncertain_rejection_lookback_days: 0,
         }
     }
 
     #[test]
-    fn gate_runs_only_in_protocol_managed_mode() {
-        let manager = Some(Address::repeat_byte(0x77));
+    fn gate_runs_only_when_enabled() {
+        let manager = Address::repeat_byte(0x77);
 
-        // Protocol-managed with a manager address and enabled config: runs.
-        assert!(should_run(
-            Some(&config(10)),
-            &agreement_conf(PayerMode::AgreementManager, manager),
-        ));
+        // Enabled config runs; disabled or absent config never does.
+        assert!(should_run(Some(&config(10)), &agreement_conf(manager)));
 
-        // ExternalPayer: dipper owns escrow directly, so it never runs.
-        assert!(!should_run(
-            Some(&config(10)),
-            &agreement_conf(PayerMode::ExternalPayer, None),
-        ));
-
-        // AgreementManager but no manager address: cannot call the manager.
-        assert!(!should_run(
-            Some(&config(10)),
-            &agreement_conf(PayerMode::AgreementManager, None),
-        ));
-
-        // Disabled config or no config: never runs.
         let disabled = EscrowReconcilerConfig {
             enabled: false,
             ..config(10)
         };
-        assert!(!should_run(
-            Some(&disabled),
-            &agreement_conf(PayerMode::AgreementManager, manager),
-        ));
-        assert!(!should_run(
-            None,
-            &agreement_conf(PayerMode::AgreementManager, manager),
-        ));
+        assert!(!should_run(Some(&disabled), &agreement_conf(manager)));
+        assert!(!should_run(None, &agreement_conf(manager)));
     }
 
     #[tokio::test]

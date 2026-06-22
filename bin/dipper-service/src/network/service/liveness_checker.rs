@@ -79,7 +79,7 @@ pub struct Ctx<R, W, C> {
     pub chain_client: C,
     /// Network provider for looking up fresh indexer URLs.
     pub network: NetworkProviderService,
-    /// Indexing agreement config (payer mode + addresses for cancel dispatch).
+    /// Indexing agreement config (manager address for cancel dispatch).
     pub agreement_conf: Arc<crate::config::IndexingAgreementConfig>,
     /// Service configuration.
     pub config: LivenessCheckerConfig,
@@ -849,7 +849,8 @@ mod tests {
             last_block_height,
             last_progress_at,
             rejection_reason: None,
-            terms_version_hash: None,
+            // The manager cancel path requires a 32-byte stored terms hash.
+            terms_version_hash: Some(vec![0u8; 32]),
         }
     }
 
@@ -938,7 +939,6 @@ mod tests {
             _default_lookback_days: i32,
             _price_lookback_days: i32,
             _transient_lookback_minutes: i32,
-            _escrow_lookback_minutes: i32,
             _uncertain_lookback_days: i32,
         ) -> RegistryResult<HashMap<DeploymentId, Vec<IndexerId>>> {
             unimplemented!()
@@ -1205,46 +1205,6 @@ mod tests {
 
     #[async_trait]
     impl ChainClient for MockChainClient {
-        async fn cancel_indexing_agreement_by_payer(
-            &self,
-            agreement_id: &[u8; 16],
-        ) -> Result<Option<B256>, ChainClientError> {
-            self.calls.chain_cancels.lock().unwrap().push(*agreement_id);
-            match &self.result {
-                Ok(hash) => Ok(Some(*hash)),
-                Err(ChainClientError::ConfigError(s)) => {
-                    Err(ChainClientError::ConfigError(s.clone()))
-                }
-                Err(ChainClientError::RpcError(e)) => {
-                    Err(ChainClientError::RpcError(anyhow::anyhow!("{e}")))
-                }
-                Err(ChainClientError::SubmitFailed(e)) => {
-                    Err(ChainClientError::SubmitFailed(anyhow::anyhow!("{e}")))
-                }
-                Err(ChainClientError::OfferHashMismatch { .. })
-                | Err(ChainClientError::TxDropped { .. })
-                | Err(ChainClientError::TxReverted { .. })
-                | Err(ChainClientError::ContractRevert { .. })
-                | Err(ChainClientError::CancelNotConfirmed { .. })
-                | Err(ChainClientError::MissingTermsVersionHash { .. }) => {
-                    // Not applicable to the cancel path here; mirror as
-                    // RpcError so the test helper keeps a single error shape.
-                    Err(ChainClientError::RpcError(anyhow::anyhow!(
-                        "unexpected chain-client error variant for cancel"
-                    )))
-                }
-            }
-        }
-
-        async fn post_offer(
-            &self,
-            _rca: &dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement,
-        ) -> Result<Option<B256>, ChainClientError> {
-            // Not exercised by liveness_checker tests; the mock is fixed at
-            // the cancel path. Return None to signal "offer already stored".
-            Ok(None)
-        }
-
         async fn offer_via_manager(
             &self,
             _rca: &dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement,
@@ -1260,7 +1220,7 @@ mod tests {
             _options: u16,
         ) -> Result<Option<B256>, ChainClientError> {
             // Route manager cancels through the same recorder and result so the
-            // existing cancel-path assertions hold regardless of payer mode.
+            // existing cancel-path assertions hold.
             self.calls.chain_cancels.lock().unwrap().push(*agreement_id);
             match &self.result {
                 Ok(hash) => Ok(Some(*hash)),
@@ -1296,13 +1256,12 @@ mod tests {
     const DB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
     const QUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-    /// Default external-payer agreement config for the cancel-path tests.
+    /// Default agreement config for the cancel-path tests.
     fn test_agreement_conf() -> crate::config::IndexingAgreementConfig {
         crate::config::IndexingAgreementConfig {
             data_service: thegraph_core::alloy::primitives::Address::ZERO,
             recurring_collector: thegraph_core::alloy::primitives::Address::ZERO,
-            payer_mode: crate::config::PayerMode::ExternalPayer,
-            recurring_agreement_manager: None,
+            recurring_agreement_manager: thegraph_core::alloy::primitives::Address::ZERO,
             max_agreement_grt_per_30_days: 0.0,
             max_seconds_per_collection: 0,
             min_seconds_per_collection: 0,
@@ -1313,7 +1272,6 @@ mod tests {
             declined_indexer_lookback_days: 0,
             price_rejection_lookback_days: 0,
             transient_rejection_lookback_minutes: 0,
-            escrow_rejection_lookback_minutes: 0,
             uncertain_rejection_lookback_days: 0,
         }
     }

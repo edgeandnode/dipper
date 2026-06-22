@@ -33,7 +33,6 @@ pub async fn gather_selection_context<R>(
     declined_indexer_lookback_days: i32,
     price_rejection_lookback_days: i32,
     transient_rejection_lookback_minutes: i32,
-    escrow_rejection_lookback_minutes: i32,
     uncertain_rejection_lookback_days: i32,
     entity_count_cache: &EntityCountCache,
 ) -> JobResult<SelectionContext>
@@ -62,7 +61,6 @@ where
             declined_indexer_lookback_days,
             price_rejection_lookback_days,
             transient_rejection_lookback_minutes,
-            escrow_rejection_lookback_minutes,
             uncertain_rejection_lookback_days,
         )
         .await

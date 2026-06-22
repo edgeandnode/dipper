@@ -21,7 +21,7 @@
 //! subgraph's indexing lag and re-submits will end up as a no-op at the
 //! entity level even if it costs a second on-chain transaction.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
@@ -29,7 +29,6 @@ use url::Url;
 
 use crate::{
     chain_client::{ChainClient, ChainClientError},
-    config::{IndexingAgreementConfig, PayerMode},
     indexer_rpc_client::into_sol_rca,
     registry::{AgreementRegistry, IndexingAgreementStatus},
     worker::result::{JobError, JobResult},
@@ -38,7 +37,6 @@ use crate::{
 pub struct Ctx<R, T> {
     pub registry: R,
     pub chain_client: T,
-    pub agreement_conf: Arc<IndexingAgreementConfig>,
 }
 
 /// Submit an RCA offer on-chain.
@@ -118,14 +116,9 @@ where
         "Submitting RCA offer on-chain"
     );
 
-    // External-payer mode posts the offer directly; protocol-managed mode routes
-    // it through the RecurringAgreementManager. Both share the result handling.
-    let offer_result = match ctx.agreement_conf.payer_mode() {
-        PayerMode::AgreementManager => ctx.chain_client.offer_via_manager(&rca).await,
-        PayerMode::ExternalPayer => ctx.chain_client.post_offer(&rca).await,
-    };
-
-    match offer_result {
+    // The RecurringAgreementManager is the on-chain payer, so route the offer
+    // through it rather than posting directly.
+    match ctx.chain_client.offer_via_manager(&rca).await {
         Ok(None) => {
             tracing::info!(
                 agreement_id = %agreement_id,
@@ -153,29 +146,9 @@ where
                 );
             }
         }
-        Err(ChainClientError::OfferHashMismatch {
-            stored, expected, ..
-        }) => {
-            // Stored hash does not match our locally-computed hash. This
-            // means someone else submitted an offer for this agreement ID
-            // with different terms -- either a dev-state race or a genuine
-            // conflict. Mark the agreement delivery-failed and bail; the
-            // reassignment service will find a replacement.
-            tracing::error!(
-                agreement_id = %agreement_id,
-                stored = %stored,
-                expected = %expected,
-                "Offer hash mismatch on-chain, marking agreement as delivery-failed"
-            );
-            ctx.registry
-                .mark_indexing_agreement_as_delivery_failed(agreement_id)
-                .await
-                .map_err(|err| JobError::Fatal(err.into()))?;
-            return Ok(());
-        }
         Err(err @ ChainClientError::TxDropped { .. }) => {
             // Accepted by the RPC but never mined — typically evicted by a
-            // colliding-nonce tx. `post_offer` already re-synced the nonce
+            // colliding-nonce tx. The offer call already re-synced the nonce
             // counter; re-running the handler will resubmit with a fresh
             // nonce, and the subgraph idempotency check short-circuits if
             // the dropped tx eventually lands before the replay.

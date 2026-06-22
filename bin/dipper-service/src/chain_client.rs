@@ -57,32 +57,14 @@ pub enum ChainClientError {
     #[error("RPC error: {0}")]
     RpcError(#[source] anyhow::Error),
 
-    /// Subgraph reports a stored offer whose hash does not match the locally-computed hash.
-    ///
-    /// Indicates the agreement terms drifted between a prior submission and
-    /// the current invocation (e.g. a stale nonce or deadline). Since the
-    /// RecurringCollector stores offers inside a namespaced storage struct
-    /// with no public getter, dipper treats the indexing-payments-subgraph's
-    /// Offer entity as the source of truth for this check. When a mismatch
-    /// is detected, dipper marks the agreement as delivery-failed and bails;
-    /// the reassignment service finds a replacement.
-    #[error(
-        "offer hash mismatch for agreement {agreement_id}: stored={stored}, expected={expected}"
-    )]
-    OfferHashMismatch {
-        agreement_id: String,
-        stored: B256,
-        expected: B256,
-    },
-
     /// Tx was accepted by the RPC (returned a hash) but no receipt appeared
     /// within the poll window.
     ///
     /// In practice this means the tx was evicted from the mempool before
     /// being mined — typically because another tx from the same sender
     /// claimed the same nonce with a higher fee. Callers should re-sync
-    /// their nonce and resubmit; `post_offer`'s subgraph idempotency check
-    /// will short-circuit if the original tx eventually did land.
+    /// their nonce and resubmit; the offer path's subgraph idempotency check
+    /// short-circuits if the dropped tx eventually lands.
     #[error("tx {tx_hash} did not mine within the receipt-poll window")]
     TxDropped { tx_hash: B256 },
 
@@ -102,51 +84,17 @@ pub enum ChainClientError {
 /// Trait for sending on-chain transactions related to indexing agreements
 #[async_trait]
 pub trait ChainClient {
-    /// Cancel an indexing agreement as the payer.
-    ///
-    /// Calls `cancelIndexingAgreementByPayer(agreementId)` on the SubgraphService contract.
-    /// The `agreement_id` is the keccak-derived bytes16 stored on-chain. The call
-    /// caps the collectible fees at the cancellation timestamp.
-    ///
-    /// Returns:
-    /// - `Ok(Some(tx_hash))` when a transaction was submitted.
-    /// - `Ok(None)` when the agreement is already canceled on-chain (the
-    ///   contract reverts gas estimation with `IndexingAgreementNotActive`).
-    ///   Callers should treat this as an idempotent success and proceed with
-    ///   any local-state cleanup that would have followed a real submission.
-    async fn cancel_indexing_agreement_by_payer(
-        &self,
-        agreement_id: &[u8; 16],
-    ) -> Result<Option<B256>, ChainClientError>;
-
-    /// Submit an RCA offer on-chain via `RecurringCollector.offer(OFFER_TYPE_NEW, ...)`.
-    ///
-    /// Crash-recovery idempotency is handled via a query to the
-    /// indexing-payments subgraph (not an RPC call): if a matching
-    /// `Offer` entity already exists the method returns `Ok(None)` without
-    /// sending a transaction. If an offer exists with a different hash,
-    /// returns `OfferHashMismatch`. Otherwise submits an `offer()` transaction
-    /// and returns `Ok(Some(tx_hash))`. When no subgraph URL is configured,
-    /// the idempotency check is skipped and every call unconditionally submits.
-    ///
-    /// `msg.sender` of the transaction must equal `rca.payer` or the contract
-    /// reverts with `RecurringCollectorUnauthorizedCaller`.
-    async fn post_offer(
-        &self,
-        rca: &RecurringCollectionAgreement,
-    ) -> Result<Option<B256>, ChainClientError>;
-
-    /// Offer an RCA through the RecurringAgreementManager (`AgreementManager`
-    /// mode). Calls `offerAgreement(collector, OFFER_TYPE_NEW, abi.encode(rca))`
-    /// with the manager as payer; same return/error contract as [`post_offer`].
+    /// Offer an RCA via `RecurringAgreementManager.offerAgreement` (manager as
+    /// payer); returns the tx hash once mined. No crash-recovery idempotency,
+    /// so a re-run re-sends — pending validation of the contract's re-offer path.
     async fn offer_via_manager(
         &self,
         rca: &RecurringCollectionAgreement,
     ) -> Result<Option<B256>, ChainClientError>;
 
-    /// Cancel an RCA through the RecurringAgreementManager (`AgreementManager`
-    /// mode) via `cancelAgreement(collector, agreementId, versionHash, options)`;
-    /// same contract as [`cancel_indexing_agreement_by_payer`].
+    /// Cancel an RCA via `RecurringAgreementManager.cancelAgreement`. Returns
+    /// the tx hash when a transaction was submitted, or `Ok(None)` when the
+    /// agreement is already canceled on-chain.
     async fn cancel_via_manager(
         &self,
         collector: thegraph_core::alloy::primitives::Address,
@@ -179,22 +127,6 @@ pub trait ChainClient {
 /// chain client, enabling runtime selection between implementations.
 #[async_trait]
 impl<T: ChainClient + Send + Sync + ?Sized> ChainClient for Arc<T> {
-    async fn cancel_indexing_agreement_by_payer(
-        &self,
-        agreement_id: &[u8; 16],
-    ) -> Result<Option<B256>, ChainClientError> {
-        (**self)
-            .cancel_indexing_agreement_by_payer(agreement_id)
-            .await
-    }
-
-    async fn post_offer(
-        &self,
-        rca: &RecurringCollectionAgreement,
-    ) -> Result<Option<B256>, ChainClientError> {
-        (**self).post_offer(rca).await
-    }
-
     async fn offer_via_manager(
         &self,
         rca: &RecurringCollectionAgreement,

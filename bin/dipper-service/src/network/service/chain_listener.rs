@@ -103,7 +103,7 @@ pub struct Ctx<R, W, E, T> {
     /// Chain client used to fire on-chain `cancelIndexingAgreementByPayer` when
     /// a replacement agreement is confirmed accepted on-chain.
     pub chain_client: T,
-    /// Indexing agreement config (payer mode + addresses for cancel dispatch).
+    /// Indexing agreement config (manager address for cancel dispatch).
     pub agreement_conf: Arc<crate::config::IndexingAgreementConfig>,
     /// Service configuration
     pub config: ChainListenerConfig,
@@ -1255,8 +1255,7 @@ mod tests {
         std::sync::Arc::new(crate::config::IndexingAgreementConfig {
             data_service: thegraph_core::alloy::primitives::Address::ZERO,
             recurring_collector: thegraph_core::alloy::primitives::Address::ZERO,
-            payer_mode: crate::config::PayerMode::ExternalPayer,
-            recurring_agreement_manager: None,
+            recurring_agreement_manager: thegraph_core::alloy::primitives::Address::ZERO,
             max_agreement_grt_per_30_days: 0.0,
             max_seconds_per_collection: 0,
             min_seconds_per_collection: 0,
@@ -1267,7 +1266,6 @@ mod tests {
             declined_indexer_lookback_days: 0,
             price_rejection_lookback_days: 0,
             transient_rejection_lookback_minutes: 0,
-            escrow_rejection_lookback_minutes: 0,
             uncertain_rejection_lookback_days: 0,
         })
     }
@@ -1343,7 +1341,8 @@ mod tests {
                 last_block_height: None,
                 last_progress_at: None,
                 rejection_reason: None,
-                terms_version_hash: None,
+                // The manager cancel path requires a 32-byte stored terms hash.
+                terms_version_hash: Some(vec![0u8; 32]),
             };
             self.state.lock().unwrap().agreements.insert(id, agreement);
         }
@@ -1469,7 +1468,6 @@ mod tests {
             _default_lookback_days: i32,
             _price_lookback_days: i32,
             _transient_lookback_minutes: i32,
-            _escrow_lookback_minutes: i32,
             _uncertain_lookback_days: i32,
         ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>> {
             Ok(std::collections::HashMap::new())
@@ -1806,8 +1804,7 @@ mod tests {
     /// Minimal `ChainClient` mock for chain_listener tests. Records every
     /// on-chain cancel attempt. Tests can mark specific agreements as
     /// already-canceled-on-chain (cancel returns `Ok(None)`); unmarked
-    /// agreements get a successful `Ok(Some(zero))`. `post_offer` is not
-    /// exercised in this module.
+    /// agreements get a successful `Ok(Some(zero))`.
     #[derive(Clone, Default)]
     struct MockChainClient {
         cancels: Arc<Mutex<Vec<[u8; 16]>>>,
@@ -1826,34 +1823,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::chain_client::ChainClient for MockChainClient {
-        async fn cancel_indexing_agreement_by_payer(
-            &self,
-            agreement_id: &[u8; 16],
-        ) -> Result<
-            Option<thegraph_core::alloy::primitives::B256>,
-            crate::chain_client::ChainClientError,
-        > {
-            self.cancels.lock().unwrap().push(*agreement_id);
-            // Test mock surfaces the call to the recorder; the dummy hash
-            // distinguishes "submitted" from "already-canceled" (Ok(None)),
-            // letting tests assert either path explicitly per-agreement.
-            if self.already_canceled.lock().unwrap().contains(agreement_id) {
-                Ok(None)
-            } else {
-                Ok(Some(thegraph_core::alloy::primitives::B256::ZERO))
-            }
-        }
-
-        async fn post_offer(
-            &self,
-            _rca: &dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement,
-        ) -> Result<
-            Option<thegraph_core::alloy::primitives::B256>,
-            crate::chain_client::ChainClientError,
-        > {
-            Ok(None)
-        }
-
         async fn offer_via_manager(
             &self,
             _rca: &dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement,
@@ -1875,7 +1844,7 @@ mod tests {
             crate::chain_client::ChainClientError,
         > {
             // Record manager-routed cancels through the same recorder so the
-            // existing assertions hold regardless of payer mode.
+            // existing assertions hold.
             self.cancels.lock().unwrap().push(*agreement_id);
             // A manager-routed cancel has no "already canceled" result: the
             // contract silently no-ops a stale cancel and the tx still succeeds,
@@ -3153,7 +3122,7 @@ mod tests {
 
         assert!(
             chain_client.was_on_chain_cancel_attempted(&agreement_id),
-            "sweep should have called cancel_indexing_agreement_by_payer"
+            "sweep should have canceled the agreement on-chain"
         );
         assert!(
             registry.was_marked_canceled_by_requester(&agreement_id),

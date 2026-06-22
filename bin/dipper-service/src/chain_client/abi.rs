@@ -3,45 +3,8 @@
 use thegraph_core::alloy::sol;
 
 sol! {
-    /// SubgraphService contract interface (minimal subset for agreement cancellation).
-    ///
-    /// The full contract is at
-    /// `packages/subgraph-service/contracts/SubgraphService.sol` in
-    /// `graphprotocol/contracts`. This interface only includes the methods
-    /// needed for dipper's on-chain operations.
-    #[allow(missing_docs)]
-    interface ISubgraphService {
-        /// Cancel an indexing agreement as the payer.
-        ///
-        /// This caps the collectible fees at the cancellation timestamp and
-        /// emits an `IndexingAgreementCanceled` event.
-        ///
-        /// Can only be called by the original payer of the agreement.
-        function cancelIndexingAgreementByPayer(bytes16 agreementId) external;
-
-        /// Reverted by SubgraphService when the agreement is not in an active
-        /// state at the moment of the call. The cancel path treats this as an
-        /// idempotent no-op: the agreement is already canceled (or settled or
-        /// expired) on-chain, so resubmission is unnecessary. Dipper matches
-        /// the 4-byte selector to drop into the success branch.
-        error IndexingAgreementNotActive(bytes16 agreementId);
-    }
-
-    /// RecurringCollector contract interface (minimal subset for offer-based RCA authorization).
-    ///
-    /// The full contract is at
-    /// `packages/horizon/contracts/payments/collectors/RecurringCollector.sol`
-    /// in `graphprotocol/contracts`.
-    ///
-    /// The `offer` function stores an RCA offer on-chain keyed by agreement ID.
-    /// Indexers later call `accept(rca, "")` with an empty signature, and the
-    /// contract verifies the stored offer hash matches `hashRCA(rca)`.
-    /// `msg.sender` of `offer()` must equal `rca.payer`.
-    ///
-    /// The stored offer mapping lives inside an ERC-7201 namespaced storage
-    /// struct and has no public getter, so there is no RPC-level idempotency
-    /// check available. Dipper queries the indexing-payments subgraph's
-    /// Offer entity instead.
+    /// RecurringCollector contract interface (the EIP-712 domain read dipper
+    /// needs). Full contract: `RecurringCollector.sol` in `graphprotocol/contracts`.
     #[allow(missing_docs)]
     interface IRecurringCollector {
         /// Agreement details returned from `offer()`.

@@ -30,8 +30,8 @@ pub struct NewAgreementParams {
     pub indexer_id: IndexerId,
     pub indexer_url: Url,
     pub terms: Terms,
-    /// EIP-712 terms hash for the protocol-managed cancel path. `None` in the
-    /// default external-payer mode.
+    /// EIP-712 terms hash for the protocol-managed cancel path. `None` only for
+    /// pre-migration rows.
     pub terms_version_hash: Option<Vec<u8>>,
 }
 
@@ -116,13 +116,12 @@ pub trait AgreementRegistry {
 
     /// Get declined `CanceledByIndexer`/`Expired`/`Rejected` indexers grouped by
     /// deployment. Each rejection reason gets its own exclusion window (price,
-    /// transient, escrow, uncertain, or default); see the `rejection_reason` constants.
+    /// transient, uncertain, or default); see the `rejection_reason` constants.
     async fn get_declined_indexers_by_deployment(
         &self,
         default_lookback_days: i32,
         price_lookback_days: i32,
         transient_lookback_minutes: i32,
-        escrow_lookback_minutes: i32,
         uncertain_lookback_days: i32,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>;
 
@@ -415,7 +414,7 @@ pub struct IndexingAgreement {
     pub rejection_reason: Option<String>,
 
     /// EIP-712 terms hash stored at offer time, used by the protocol-managed
-    /// cancel path. `None` in the default external-payer mode.
+    /// cancel path. `None` only for pre-migration rows.
     pub terms_version_hash: Option<Vec<u8>>,
 }
 
