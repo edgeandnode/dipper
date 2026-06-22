@@ -2,7 +2,7 @@
 //!
 //! When an indexer rejects an agreement off-chain but later accepts it on-chain,
 //! the chain listener detects this and queues this job to cancel the agreement
-//! via `cancelIndexingAgreementByPayer` on the SubgraphService contract.
+//! via the RecurringAgreementManager.
 
 use std::{sync::Arc, time::Duration};
 

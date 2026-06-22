@@ -55,9 +55,9 @@ const RECEIPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// pre-acceptance) terms. `getAgreementDetails(id, 0)` reports their state.
 const VERSION_CURRENT: u64 = 0;
 
-/// `AgreementDetails.state` flags from `IAgreementCollector.sol`. ACCEPTED
-/// marks live terms; NOTICE_GIVEN marks a cancellation, set alongside ACCEPTED
-/// when a live agreement is canceled, so a cancel must clear it, not just lack it.
+/// `AgreementDetails.state` flags from `IAgreementCollector.sol` (ACCEPTED=2,
+/// NOTICE_GIVEN=4). `getAgreementDetails` keeps ACCEPTED set on a canceled
+/// agreement and ORs in NOTICE_GIVEN, so a cancel must clear it, not just lack it.
 const STATE_ACCEPTED: u16 = 2;
 const STATE_NOTICE_GIVEN: u16 = 4;
 

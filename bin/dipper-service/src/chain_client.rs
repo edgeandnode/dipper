@@ -60,11 +60,9 @@ pub enum ChainClientError {
     /// Tx was accepted by the RPC (returned a hash) but no receipt appeared
     /// within the poll window.
     ///
-    /// In practice this means the tx was evicted from the mempool before
-    /// being mined — typically because another tx from the same sender
-    /// claimed the same nonce with a higher fee. Callers should re-sync
-    /// their nonce and resubmit; the offer path's subgraph idempotency check
-    /// short-circuits if the dropped tx eventually lands.
+    /// In practice the tx was evicted from the mempool — typically a same-sender
+    /// tx claimed the nonce with a higher fee. Callers re-sync the nonce and
+    /// resubmit; there is no idempotency guard, so a replay re-sends the offer.
     #[error("tx {tx_hash} did not mine within the receipt-poll window")]
     TxDropped { tx_hash: B256 },
 

@@ -148,10 +148,8 @@ where
         }
         Err(err @ ChainClientError::TxDropped { .. }) => {
             // Accepted by the RPC but never mined — typically evicted by a
-            // colliding-nonce tx. The offer call already re-synced the nonce
-            // counter; re-running the handler will resubmit with a fresh
-            // nonce, and the subgraph idempotency check short-circuits if
-            // the dropped tx eventually lands before the replay.
+            // colliding-nonce tx. The nonce was re-synced; re-running resubmits
+            // with a fresh nonce. No idempotency guard, so a replay re-sends.
             tracing::warn!(
                 agreement_id = %agreement_id,
                 error = %err,

@@ -1247,8 +1247,8 @@ mod tests {
             &self,
             _agreement_id: &[u8; 16],
         ) -> Result<bool, ChainClientError> {
-            // The cancel-path tests run in external-payer mode, where dispatch
-            // never reads back, so report cancelled to satisfy the trait.
+            // Cancel dispatch reads back after a mined cancel; reporting
+            // not-active means "cancel confirmed", which these tests expect.
             Ok(false)
         }
     }

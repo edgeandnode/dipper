@@ -100,8 +100,8 @@ pub struct Ctx<R, W, E, T> {
     pub worker_queue: W,
     /// Chain event source (subgraph)
     pub event_source: E,
-    /// Chain client used to fire on-chain `cancelIndexingAgreementByPayer` when
-    /// a replacement agreement is confirmed accepted on-chain.
+    /// Chain client used to cancel on-chain via the RecurringAgreementManager
+    /// when a replacement agreement is confirmed accepted on-chain.
     pub chain_client: T,
     /// Indexing agreement config (manager address for cancel dispatch).
     pub agreement_conf: Arc<crate::config::IndexingAgreementConfig>,
@@ -1867,8 +1867,8 @@ mod tests {
             &self,
             _agreement_id: &[u8; 16],
         ) -> Result<bool, crate::chain_client::ChainClientError> {
-            // These tests run in external-payer mode, so the verification read
-            // never fires; report cancelled to keep any future caller happy.
+            // Cancel dispatch always reads back after a mined cancel; reporting
+            // not-active here means "cancel confirmed", which these tests expect.
             Ok(false)
         }
     }
