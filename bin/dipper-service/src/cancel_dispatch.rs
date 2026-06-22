@@ -9,9 +9,9 @@ use crate::{
     registry::IndexingAgreement,
 };
 
-/// Cancel-scope bits for the collector's `cancel(id, hash, options)`. We pass
-/// both: local DB status can lag the chain, so cancelling both scopes lets the
-/// collector no-op the absent one rather than a stale status picking the wrong one.
+/// Pass both ACTIVE and PENDING; local status lags the chain, so let the
+/// collector no-op the absent scope. Never SCOPE_SIGNED (=4): acceptance is
+/// offer-based and dipper never retracts a pending offer, so it isn't needed.
 const SCOPE_ACTIVE: u16 = 1;
 const SCOPE_PENDING: u16 = 2;
 const SCOPE_BOTH: u16 = SCOPE_ACTIVE | SCOPE_PENDING;
@@ -32,6 +32,9 @@ pub async fn cancel_agreement_on_chain<T: ChainClient>(
         .ok_or_else(|| ChainClientError::MissingTermsVersionHash {
             agreement_id: agreement.id.to_string(),
         })?;
+    // Hazard: the manager's cancel mines successfully even when it does nothing
+    // (stale/wrong hash, unknown id, already-terminal). A returned Ok is not proof
+    // the agreement left the active set; confirming that is a follow-up.
     chain_client
         .cancel_via_manager(
             config.recurring_collector(),
