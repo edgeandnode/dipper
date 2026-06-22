@@ -17,9 +17,9 @@ const SCOPE_ACTIVE: u16 = 1;
 const SCOPE_PENDING: u16 = 2;
 const SCOPE_BOTH: u16 = SCOPE_ACTIVE | SCOPE_PENDING;
 
-/// Cancel an agreement on-chain using the configured payer mode. The modes
-/// differ in how a bad cancel surfaces: external-payer reverts (Err), but the
-/// manager path can return Ok without cancelling — see the AgreementManager arm.
+/// Cancel an agreement on-chain using the configured payer mode. Mirrors
+/// [`ChainClient::cancel_indexing_agreement_by_payer`]'s contract. In
+/// protocol-managed mode a missing stored hash is a `MissingTermsVersionHash`.
 pub async fn cancel_agreement_on_chain<T: ChainClient>(
     chain_client: &T,
     agreement: &IndexingAgreement,
@@ -32,9 +32,6 @@ pub async fn cancel_agreement_on_chain<T: ChainClient>(
                 .await
         }
         PayerMode::AgreementManager => {
-            // Hazard: the manager's cancel mines successfully even when it does nothing
-            // (stale/wrong hash, unknown id, already-terminal). A returned Ok is not proof
-            // the agreement left the active set; confirming that is a follow-up.
             let version_hash = agreement
                 .terms_version_hash
                 .as_deref()
@@ -124,6 +121,13 @@ mod tests {
                 options,
             ));
             Ok(Some(B256::ZERO))
+        }
+        async fn reconcile_provider(
+            &self,
+            _collector: Address,
+            _provider: Address,
+        ) -> Result<Option<B256>, ChainClientError> {
+            Ok(None)
         }
     }
 

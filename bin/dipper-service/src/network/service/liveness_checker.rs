@@ -1272,6 +1272,15 @@ mod tests {
                 Err(e) => Err(ChainClientError::RpcError(anyhow::anyhow!("{e}"))),
             }
         }
+
+        async fn reconcile_provider(
+            &self,
+            _collector: thegraph_core::alloy::primitives::Address,
+            _provider: thegraph_core::alloy::primitives::Address,
+        ) -> Result<Option<B256>, ChainClientError> {
+            // Not exercised by liveness_checker tests.
+            Ok(None)
+        }
     }
 
     const DB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);

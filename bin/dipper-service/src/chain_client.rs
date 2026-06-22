@@ -146,6 +146,15 @@ pub trait ChainClient {
         version_hash: B256,
         options: u16,
     ) -> Result<Option<B256>, ChainClientError>;
+
+    /// Reconcile a provider's escrow via the RecurringAgreementManager
+    /// (`AgreementManager` mode) by calling `reconcileProvider(collector,
+    /// provider)`. Permissionless and idempotent; `Ok(Some(tx_hash))` on submit.
+    async fn reconcile_provider(
+        &self,
+        collector: thegraph_core::alloy::primitives::Address,
+        provider: thegraph_core::alloy::primitives::Address,
+    ) -> Result<Option<B256>, ChainClientError>;
 }
 
 /// Blanket impl for Arc-wrapped trait objects.
@@ -187,5 +196,13 @@ impl<T: ChainClient + Send + Sync + ?Sized> ChainClient for Arc<T> {
         (**self)
             .cancel_via_manager(collector, agreement_id, version_hash, options)
             .await
+    }
+
+    async fn reconcile_provider(
+        &self,
+        collector: thegraph_core::alloy::primitives::Address,
+        provider: thegraph_core::alloy::primitives::Address,
+    ) -> Result<Option<B256>, ChainClientError> {
+        (**self).reconcile_provider(collector, provider).await
     }
 }

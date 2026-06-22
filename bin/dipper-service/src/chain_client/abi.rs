@@ -113,6 +113,20 @@ sol! {
         function cancelAgreement(address collector, bytes16 agreementId, bytes32 versionHash, uint16 options)
             external;
 
+        /// Rebalance a provider's escrow across all its agreements, draining and
+        /// cleaning up ended or canceled ones. Permissionless and idempotent;
+        /// returns whether the provider is still tracked afterwards.
+        function reconcileProvider(address collector, address provider)
+            external
+            returns (bool tracked);
+
+        /// Reconcile a single agreement's escrow through the manager.
+        /// Permissionless and idempotent; returns whether the agreement is
+        /// still tracked afterwards.
+        function reconcileAgreement(address collector, bytes16 agreementId)
+            external
+            returns (bool tracked);
+
         /// Emitted when the manager stores a new agreement.
         event AgreementAdded(
             bytes16 indexed agreementId,

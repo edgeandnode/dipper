@@ -1882,6 +1882,17 @@ mod tests {
             // so the real cancel_via_manager never returns Ok(None).
             Ok(Some(thegraph_core::alloy::primitives::B256::ZERO))
         }
+
+        async fn reconcile_provider(
+            &self,
+            _collector: thegraph_core::alloy::primitives::Address,
+            _provider: thegraph_core::alloy::primitives::Address,
+        ) -> Result<
+            Option<thegraph_core::alloy::primitives::B256>,
+            crate::chain_client::ChainClientError,
+        > {
+            Ok(None)
+        }
     }
 
     #[async_trait::async_trait]
