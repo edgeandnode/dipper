@@ -21,7 +21,7 @@
 //! subgraph's indexing lag and re-submits will end up as a no-op at the
 //! entity level even if it costs a second on-chain transaction.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
@@ -29,6 +29,7 @@ use url::Url;
 
 use crate::{
     chain_client::{ChainClient, ChainClientError},
+    config::{IndexingAgreementConfig, PayerMode},
     indexer_rpc_client::into_sol_rca,
     registry::{AgreementRegistry, IndexingAgreementStatus},
     worker::result::{JobError, JobResult},
@@ -37,6 +38,7 @@ use crate::{
 pub struct Ctx<R, T> {
     pub registry: R,
     pub chain_client: T,
+    pub agreement_conf: Arc<IndexingAgreementConfig>,
 }
 
 /// Submit an RCA offer on-chain.
@@ -116,7 +118,14 @@ where
         "Submitting RCA offer on-chain"
     );
 
-    match ctx.chain_client.post_offer(&rca).await {
+    // External-payer mode posts the offer directly; protocol-managed mode routes
+    // it through the RecurringAgreementManager. Both share the result handling.
+    let offer_result = match ctx.agreement_conf.payer_mode() {
+        PayerMode::AgreementManager => ctx.chain_client.offer_via_manager(&rca).await,
+        PayerMode::ExternalPayer => ctx.chain_client.post_offer(&rca).await,
+    };
+
+    match offer_result {
         Ok(None) => {
             tracing::info!(
                 agreement_id = %agreement_id,

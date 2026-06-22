@@ -116,6 +116,9 @@ impl DipsIndexerClient {
         nonce_uuid: uuid::Uuid,
     ) -> Result<rpc::SubmitAgreementProposalRequest, DipsError> {
         let (sol_rca, _on_chain_id) = into_sol_rca(nonce_uuid, terms);
+        // Always sign the gRPC proposal: the indexer authenticates the sender by
+        // recovering this EIP-712 signature, independent of who funds the
+        // agreement on-chain.
         let signature = self.sign_rca(&sol_rca)?;
         let signed_rca = sol::SignedRecurringCollectionAgreement {
             agreement: sol_rca,

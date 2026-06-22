@@ -877,6 +877,7 @@ mod tests {
             last_block_height: None,
             last_progress_at: None,
             rejection_reason: None,
+            terms_version_hash: None,
         }
     }
 

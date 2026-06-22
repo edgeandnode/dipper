@@ -4,12 +4,14 @@
 //! the chain listener detects this and queues this job to cancel the agreement
 //! via `cancelIndexingAgreementByPayer` on the SubgraphService contract.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use dipper_core::ids::IndexingAgreementId;
 
 use crate::{
-    chain_client::ChainClient,
+    cancel_dispatch::cancel_agreement_on_chain,
+    chain_client::{ChainClient, ChainClientError},
+    config::IndexingAgreementConfig,
     registry::{AgreementRegistry, IndexingAgreementStatus},
     worker::result::{JobError, JobResult},
 };
@@ -17,6 +19,7 @@ use crate::{
 pub struct Ctx<R, T> {
     pub registry: R,
     pub chain_client: T,
+    pub agreement_conf: Arc<IndexingAgreementConfig>,
 }
 
 /// Cancel a rejected agreement on-chain.
@@ -70,12 +73,8 @@ where
         "Canceling rejected agreement on-chain"
     );
 
-    // Send the cancellation transaction
-    match ctx
-        .chain_client
-        .cancel_indexing_agreement_by_payer(agreement.id.as_bytes())
-        .await
-    {
+    // Send the cancellation transaction (mode-aware dispatch).
+    match cancel_agreement_on_chain(&ctx.chain_client, &agreement, &ctx.agreement_conf).await {
         Ok(Some(tx_hash)) => {
             tracing::info!(
                 agreement_id = %agreement_id,
@@ -92,6 +91,16 @@ where
             );
             mark_cancellation_complete(&ctx.registry, agreement_id).await;
             Ok(())
+        }
+        Err(err @ ChainClientError::MissingTermsVersionHash { .. }) => {
+            // Permanent: the hash never appears, so retrying can't help. Fail
+            // terminally and leave the live agreement for operator action.
+            tracing::error!(
+                agreement_id = %agreement_id,
+                error = %err,
+                "Cannot cancel rejected agreement: missing terms_version_hash"
+            );
+            Err(JobError::Fatal(err.into()))
         }
         Err(err) => {
             tracing::warn!(

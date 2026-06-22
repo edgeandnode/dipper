@@ -41,6 +41,7 @@ impl From<NewAgreementParams> for dipper_pgregistry::NewAgreementParams {
             indexer_id: params.indexer_id,
             indexer_url: params.indexer_url,
             terms: params.terms.into(),
+            terms_version_hash: params.terms_version_hash,
         }
     }
 }

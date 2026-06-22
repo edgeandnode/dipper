@@ -19,6 +19,7 @@ pub struct NewAgreementParams {
     pub indexer_id: IndexerId,
     pub indexer_url: Url,
     pub terms: crate::IndexingAgreementTerms,
+    pub terms_version_hash: Option<Vec<u8>>,
 }
 
 use self::common::{
@@ -287,7 +288,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1 AND status IN ($2, $3)
             "#,
@@ -312,6 +314,7 @@ impl PgRegistry {
             indexer_id,
             indexer_url,
             terms,
+            terms_version_hash,
         } = params;
         sqlx::query_as(
             r#"
@@ -325,11 +328,12 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                terms
+                terms,
+                terms_version_hash
             )
             VALUES (
                 $1, $2, timezone('UTC', now()), timezone('UTC', now()), $3, $4, $5, $6,
-                $7, $8
+                $7, $8, $9
             )
             RETURNING id
             "#,
@@ -342,6 +346,7 @@ impl PgRegistry {
         .bind(PgIndexerId(indexer_id))
         .bind(PgUrl(indexer_url))
         .bind(Json(terms))
+        .bind(terms_version_hash)
         .fetch_one(&self.pool)
         .await
         .map(|(id,)| id)
@@ -367,7 +372,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE id = $1
             "#,
@@ -404,7 +410,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE id = ANY($1)
             "#,
@@ -435,7 +442,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE deployment_id = $1
             "#,
@@ -465,7 +473,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE indexer_id = $1
             "#,
@@ -622,7 +631,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1
             "#,
@@ -1109,7 +1119,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
               AND CAST(terms->>'deadline' AS bigint) < $3
@@ -1220,7 +1231,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
             ORDER BY last_progress_at ASC NULLS FIRST
@@ -1258,7 +1270,8 @@ impl PgRegistry {
                 a.terms,
                 a.last_block_height,
                 a.last_progress_at,
-                a.rejection_reason
+                a.rejection_reason,
+                a.terms_version_hash
             FROM dipper_reg_indexing_agreements a
             JOIN dipper_reg_indexing_requests r
               ON a.indexing_request_id = r.id
@@ -1385,7 +1398,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             "#,
         )
         .bind(IndexingAgreementStatus::AbandonedByIndexer)
@@ -1550,6 +1564,7 @@ impl PgRegistry {
             indexer_id,
             indexer_url,
             terms,
+            terms_version_hash,
         } = params;
         let mut tx = self.pool.begin().await?;
 
@@ -1565,11 +1580,12 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                terms
+                terms,
+                terms_version_hash
             )
             VALUES (
                 $1, $2, timezone('UTC', now()), timezone('UTC', now()), $3, $4, $5, $6,
-                $7, $8
+                $7, $8, $9
             )
             RETURNING id
             "#,
@@ -1582,6 +1598,7 @@ impl PgRegistry {
         .bind(PgIndexerId(indexer_id))
         .bind(PgUrl(indexer_url))
         .bind(Json(terms))
+        .bind(terms_version_hash)
         .fetch_one(&mut *tx)
         .await?;
 

@@ -51,6 +51,7 @@ where
         queue,
         signer,
         agreement_conf,
+        rca_domain,
         pricing_table,
         registry,
         network,
@@ -75,6 +76,7 @@ where
         let state = InnerCtx {
             signer,
             agreement_conf,
+            rca_domain,
             pricing_table,
             registry,
             network,

@@ -13,6 +13,7 @@ use self::{
 };
 
 mod admin_rpc_server;
+mod cancel_dispatch;
 mod chain_client;
 mod config;
 mod db;
@@ -47,8 +48,18 @@ pub async fn main() -> anyhow::Result<()> {
     let conf = config::load_from_file(&conf_path).expect("Failed to load config");
     tracing::debug!(conf=?conf, "configuration loaded");
 
+    // Reject a payer-mode config that can't run before building anything from it.
+    if let Err(err) = conf.dips.validate() {
+        anyhow::bail!("invalid dips agreement config: {err}");
+    }
+
     // TODO: Decouple the config file format from the internal representation
     let (agreement_conf, pricing_table) = conf.dips.into();
+
+    // Clones for services that outlive the worker's move of `agreement_conf`;
+    // they need the payer mode and addresses for mode-aware cancel dispatch.
+    let chain_listener_agreement_conf = agreement_conf.clone();
+    let liveness_agreement_conf = agreement_conf.clone();
 
     // Canonical chain id and RecurringCollector address, read once and shared by the
     // admin signer, the gRPC proposal signer, and the on-chain chain client so their
@@ -267,6 +278,7 @@ pub async fn main() -> anyhow::Result<()> {
             cfg,
             chain_id,
             recurring_collector,
+            agreement_conf.recurring_agreement_manager(),
             rca_domain.clone(),
             &secret_bytes,
         )
@@ -308,6 +320,7 @@ pub async fn main() -> anyhow::Result<()> {
             queue,
             signer: signer.clone(),
             agreement_conf,
+            rca_domain: rca_domain.clone(),
             pricing_table,
             registry: registry.clone(),
             network: network_provider.clone(),
@@ -362,11 +375,20 @@ pub async fn main() -> anyhow::Result<()> {
     // Monitors on-chain events for agreement acceptance/cancellation via subgraph
     let chain_listener_handle = match conf.chain_listener {
         Some(ref chain_listener_conf) if chain_listener_conf.enabled => {
+            // The subgraph filters agreements by on-chain payer. In
+            // AgreementManager mode the manager is the payer; otherwise the signer.
+            let listener_payer_address = match chain_listener_agreement_conf.payer_mode() {
+                config::PayerMode::AgreementManager => chain_listener_agreement_conf
+                    .recurring_agreement_manager()
+                    .expect("AgreementManager mode validated to have a manager address at startup"),
+                config::PayerMode::ExternalPayer => signer.address(),
+            };
+
             // Create the subgraph event source
             let event_source_config = network::service::chain_events::SubgraphEventSourceConfig {
                 endpoint: chain_listener_conf.subgraph_endpoint.clone(),
                 api_key: chain_listener_conf.subgraph_api_key.clone(),
-                payer_address: signer.address(),
+                payer_address: listener_payer_address,
                 request_timeout: chain_listener_conf.request_timeout,
                 max_retries: chain_listener_conf.max_retries,
                 wall_clock_skew_tolerance_secs: chain_listener_conf.wall_clock_skew_tolerance_secs,
@@ -380,6 +402,7 @@ pub async fn main() -> anyhow::Result<()> {
                 worker_queue: worker_handle.queue().clone(),
                 event_source,
                 chain_client: chain_client.clone(),
+                agreement_conf: chain_listener_agreement_conf.clone(),
                 config: chain_listener_conf.clone(),
                 signer_address: signer.address(),
                 chain_listener_notify: chain_listener_notify.clone(),
@@ -399,6 +422,7 @@ pub async fn main() -> anyhow::Result<()> {
                 worker_queue: worker_handle.queue().clone(),
                 chain_client: chain_client.clone(),
                 network: network_provider.clone(),
+                agreement_conf: liveness_agreement_conf.clone(),
                 config: lc_conf.clone(),
             };
             let (handle, service) = network::service::liveness_checker::new(ctx);

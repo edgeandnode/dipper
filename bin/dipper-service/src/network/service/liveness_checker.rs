@@ -35,7 +35,7 @@
 //! Indexer URLs are looked up fresh from the network topology on each cycle,
 //! not read from the stored agreement. This ensures URL changes are detected.
 
-use std::{collections::HashMap, future::Future, time::Duration};
+use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
 
 use thegraph_core::{DeploymentId, IndexerId};
 use time::OffsetDateTime;
@@ -79,6 +79,8 @@ pub struct Ctx<R, W, C> {
     pub chain_client: C,
     /// Network provider for looking up fresh indexer URLs.
     pub network: NetworkProviderService,
+    /// Indexing agreement config (payer mode + addresses for cancel dispatch).
+    pub agreement_conf: Arc<crate::config::IndexingAgreementConfig>,
     /// Service configuration.
     pub config: LivenessCheckerConfig,
 }
@@ -101,6 +103,7 @@ where
         worker_queue,
         chain_client,
         network,
+        agreement_conf,
         config,
     } = ctx;
 
@@ -205,6 +208,7 @@ where
                             &registry,
                             &worker_queue,
                             &chain_client,
+                            &agreement_conf,
                             DB_UPDATE_TIMEOUT,
                             QUEUE_PUSH_TIMEOUT,
                         )
@@ -296,6 +300,7 @@ where
                                 &registry,
                                 &worker_queue,
                                 &chain_client,
+                                &agreement_conf,
                                 DB_UPDATE_TIMEOUT,
                                 QUEUE_PUSH_TIMEOUT,
                             )
@@ -353,6 +358,7 @@ async fn process_agreements_with_no_data<R, W, C>(
     registry: &R,
     worker_queue: &W,
     chain_client: &C,
+    agreement_conf: &crate::config::IndexingAgreementConfig,
     db_timeout: Duration,
     queue_timeout: Duration,
 ) where
@@ -417,6 +423,7 @@ async fn process_agreements_with_no_data<R, W, C>(
                     registry,
                     worker_queue,
                     chain_client,
+                    agreement_conf,
                     db_timeout,
                     queue_timeout,
                 )
@@ -474,6 +481,7 @@ async fn cancel_and_reassess<R, W, C>(
     registry: &R,
     worker_queue: &W,
     chain_client: &C,
+    agreement_conf: &crate::config::IndexingAgreementConfig,
     db_timeout: Duration,
     queue_timeout: Duration,
 ) where
@@ -481,9 +489,8 @@ async fn cancel_and_reassess<R, W, C>(
     W: WorkerQueue + Send + Sync,
     C: ChainClient + Send + Sync,
 {
-    // 1. Cancel on-chain
-    match chain_client
-        .cancel_indexing_agreement_by_payer(agreement.id.as_bytes())
+    // 1. Cancel on-chain (mode-aware dispatch)
+    match crate::cancel_dispatch::cancel_agreement_on_chain(chain_client, agreement, agreement_conf)
         .await
     {
         Ok(Some(tx_hash)) => {
@@ -498,6 +505,17 @@ async fn cancel_and_reassess<R, W, C>(
                 agreement_id = %agreement.id,
                 "stale agreement already canceled on-chain; proceeding to mark abandoned"
             );
+        }
+        Err(err @ ChainClientError::MissingTermsVersionHash { .. }) => {
+            // Permanent per-agreement condition: the on-chain agreement is
+            // still live, so do NOT mark abandoned (that would hide a
+            // money-draining agreement). Surface for operator action.
+            tracing::error!(
+                agreement_id = %agreement.id,
+                error = %err,
+                "cannot cancel stale agreement: missing terms_version_hash; leaving active for operator action"
+            );
+            return;
         }
         Err(ChainClientError::ConfigError(_)) => {
             // Chain client disabled: still proceed to mark and reassess so the
@@ -831,6 +849,7 @@ mod tests {
             last_block_height,
             last_progress_at,
             rejection_reason: None,
+            terms_version_hash: None,
         }
     }
 
@@ -1205,7 +1224,8 @@ mod tests {
                 Err(ChainClientError::OfferHashMismatch { .. })
                 | Err(ChainClientError::TxDropped { .. })
                 | Err(ChainClientError::TxReverted { .. })
-                | Err(ChainClientError::ContractRevert { .. }) => {
+                | Err(ChainClientError::ContractRevert { .. })
+                | Err(ChainClientError::MissingTermsVersionHash { .. }) => {
                     // Not applicable to the cancel path here; mirror as
                     // RpcError so the test helper keeps a single error shape.
                     Err(ChainClientError::RpcError(anyhow::anyhow!(
@@ -1223,10 +1243,61 @@ mod tests {
             // the cancel path. Return None to signal "offer already stored".
             Ok(None)
         }
+
+        async fn offer_via_manager(
+            &self,
+            _rca: &dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement,
+        ) -> Result<Option<B256>, ChainClientError> {
+            Ok(None)
+        }
+
+        async fn cancel_via_manager(
+            &self,
+            _collector: thegraph_core::alloy::primitives::Address,
+            agreement_id: &[u8; 16],
+            _version_hash: B256,
+            _options: u16,
+        ) -> Result<Option<B256>, ChainClientError> {
+            // Route manager cancels through the same recorder and result so the
+            // existing cancel-path assertions hold regardless of payer mode.
+            self.calls.chain_cancels.lock().unwrap().push(*agreement_id);
+            match &self.result {
+                Ok(hash) => Ok(Some(*hash)),
+                Err(ChainClientError::ConfigError(s)) => {
+                    Err(ChainClientError::ConfigError(s.clone()))
+                }
+                Err(ChainClientError::RpcError(e)) => {
+                    Err(ChainClientError::RpcError(anyhow::anyhow!("{e}")))
+                }
+                Err(e) => Err(ChainClientError::RpcError(anyhow::anyhow!("{e}"))),
+            }
+        }
     }
 
     const DB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
     const QUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Default external-payer agreement config for the cancel-path tests.
+    fn test_agreement_conf() -> crate::config::IndexingAgreementConfig {
+        crate::config::IndexingAgreementConfig {
+            data_service: thegraph_core::alloy::primitives::Address::ZERO,
+            recurring_collector: thegraph_core::alloy::primitives::Address::ZERO,
+            payer_mode: crate::config::PayerMode::ExternalPayer,
+            recurring_agreement_manager: None,
+            max_agreement_grt_per_30_days: 0.0,
+            max_seconds_per_collection: 0,
+            min_seconds_per_collection: 0,
+            duration_seconds: 0,
+            deadline_seconds: 0,
+            max_grt_per_30_days: std::collections::BTreeMap::new(),
+            max_grt_per_billion_entities_per_30_days: 0.0,
+            declined_indexer_lookback_days: 0,
+            price_rejection_lookback_days: 0,
+            transient_rejection_lookback_minutes: 0,
+            escrow_rejection_lookback_minutes: 0,
+            uncertain_rejection_lookback_days: 0,
+        }
+    }
 
     // ---- Pure function tests ----
 
@@ -1492,6 +1563,7 @@ mod tests {
             &registry,
             &queue,
             &chain,
+            &test_agreement_conf(),
             DB_TIMEOUT,
             QUEUE_TIMEOUT,
         )
@@ -1537,6 +1609,7 @@ mod tests {
             &registry,
             &queue,
             &chain,
+            &test_agreement_conf(),
             DB_TIMEOUT,
             QUEUE_TIMEOUT,
         )
@@ -1581,6 +1654,7 @@ mod tests {
             &registry,
             &queue,
             &chain,
+            &test_agreement_conf(),
             DB_TIMEOUT,
             QUEUE_TIMEOUT,
         )

@@ -601,6 +601,19 @@ fn default_gas_max_addition() -> u64 {
     200_000
 }
 
+/// Who funds and owns the on-chain agreement (default `ExternalPayer`: dipper
+/// is the ECDSA payer). `AgreementManager` routes offers and cancels through the
+/// `RecurringAgreementManager` (RAM) contract as an unsigned operator (gated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PayerMode {
+    /// Dipper is the ECDSA payer (default, original behaviour).
+    #[default]
+    ExternalPayer,
+    /// The RecurringAgreementManager contract is the payer.
+    AgreementManager,
+}
+
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -610,6 +623,13 @@ pub struct DipsAgreementConfig {
     /// The RecurringCollector contract address. Dipper posts on-chain offers
     /// here via `RecurringCollector.offer()` before dispatching gRPC proposals.
     pub recurring_collector: Address,
+    /// Who funds and owns the on-chain agreement (default `ExternalPayer`).
+    #[serde(default)]
+    pub payer_mode: PayerMode,
+    /// The RecurringAgreementManager contract address. Required when
+    /// `payer_mode` is `AgreementManager`; ignored otherwise.
+    #[serde(default)]
+    pub recurring_agreement_manager: Option<Address>,
     /// Flat per-agreement payment ceiling (GRT per 30 days). Applied to every
     /// RCA regardless of chain. Drives the RCA's `maxOngoingTokensPerSecond`
     /// (as a rate). `maxInitialTokens` is hard-coded to zero in v1 of the
@@ -685,6 +705,24 @@ pub struct DipsAgreementConfig {
     /// (SENDER_NOT_TRUSTED), or an unspecified/unknown/missing reason. Default: 1 day.
     #[serde(default = "default_uncertain_rejection_lookback_days")]
     pub uncertain_rejection_lookback_days: i32,
+}
+
+impl DipsAgreementConfig {
+    /// Fail-loud check that the payer mode and its dependencies agree.
+    ///
+    /// `AgreementManager` mode drives the RecurringAgreementManager contract, so
+    /// its address must be configured; without it dipper has nothing to call.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.payer_mode == PayerMode::AgreementManager
+            && self.recurring_agreement_manager.is_none()
+        {
+            return Err(
+                "payer_mode = agreement_manager requires recurring_agreement_manager to be set"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
 }
 
 fn default_deadline_seconds() -> u64 {
@@ -860,6 +898,10 @@ pub struct IndexingAgreementConfig {
     pub data_service: Address,
     /// The RecurringCollector contract address.
     pub recurring_collector: Address,
+    /// Who funds and owns the on-chain agreement.
+    pub payer_mode: PayerMode,
+    /// The RecurringAgreementManager address (Some iff `AgreementManager`).
+    pub recurring_agreement_manager: Option<Address>,
     /// Flat per-agreement payment ceiling (GRT per 30 days). Drives the RCA's
     /// `maxOngoingTokensPerSecond` (as a rate); `maxInitialTokens` is
     /// hard-coded to zero in v1. Applied to every agreement regardless of
@@ -905,6 +947,14 @@ impl IndexingAgreementConfig {
 
     pub fn recurring_collector(&self) -> Address {
         self.recurring_collector
+    }
+
+    pub fn payer_mode(&self) -> PayerMode {
+        self.payer_mode
+    }
+
+    pub fn recurring_agreement_manager(&self) -> Option<Address> {
+        self.recurring_agreement_manager
     }
 
     pub fn max_agreement_grt_per_30_days(&self) -> f64 {
@@ -966,6 +1016,8 @@ impl From<DipsAgreementConfig>
         let config = IndexingAgreementConfig {
             data_service: value.data_service,
             recurring_collector: value.recurring_collector,
+            payer_mode: value.payer_mode,
+            recurring_agreement_manager: value.recurring_agreement_manager,
             max_agreement_grt_per_30_days: value.max_agreement_grt_per_30_days,
             max_seconds_per_collection: value.max_seconds_per_collection,
             min_seconds_per_collection: value.min_seconds_per_collection,
@@ -1092,6 +1144,48 @@ mod tests {
             chain_42161_prices.tokens_per_entity_per_second,
             U256::from(1u64),
             "chain 42161 tokens_per_entity_per_second mismatch"
+        );
+    }
+
+    #[test]
+    fn validate_requires_manager_address_in_agreement_manager_mode() {
+        // tc-3: validate() is the only guard for the agreement-manager-without-
+        // address footgun that two downstream `.expect()`s rely on. Pin all
+        // three outcomes so a later change cannot weaken the invariant unseen.
+        fn conf(payer_mode: &str, manager: Option<&str>) -> DipsAgreementConfig {
+            let manager_line = manager
+                .map(|m| format!(r#""recurring_agreement_manager": "{m}","#))
+                .unwrap_or_default();
+            let json = format!(
+                r#"{{
+                    "data_service": "0x1111111111111111111111111111111111111111",
+                    "recurring_collector": "0x2222222222222222222222222222222222222222",
+                    "min_seconds_per_collection": 60,
+                    "max_seconds_per_collection": 3600,
+                    "payer_mode": "{payer_mode}",
+                    {manager_line}
+                    "pricing_table": {{}}
+                }}"#
+            );
+            serde_json::from_str(&json).expect("deserialization")
+        }
+
+        assert!(
+            conf("agreement_manager", None).validate().is_err(),
+            "agreement_manager without a manager address must be rejected"
+        );
+        assert!(
+            conf(
+                "agreement_manager",
+                Some("0x3333333333333333333333333333333333333333")
+            )
+            .validate()
+            .is_ok(),
+            "agreement_manager with a manager address is valid"
+        );
+        assert!(
+            conf("external_payer", None).validate().is_ok(),
+            "external_payer never needs a manager address"
         );
     }
 
