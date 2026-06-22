@@ -277,7 +277,6 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             max_retries: 0,
             domain_refresh_interval: Duration::from_secs(3600),
-            subgraph_service_address: Address::repeat_byte(0xAA),
             gas_price_multiplier: 1.2,
             max_gas_price_gwei: 100,
             gas_buffer_multiplier: 2.0,

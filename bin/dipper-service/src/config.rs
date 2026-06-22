@@ -522,11 +522,6 @@ pub struct ChainClientConfig {
     #[serde_as(as = "serde_with::DurationSeconds")]
     pub domain_refresh_interval: Duration,
 
-    /// SubgraphService contract address.
-    ///
-    /// This is the contract that manages indexing agreements.
-    pub subgraph_service_address: Address,
-
     /// Gas price multiplier (default: 1.2)
     ///
     /// Applied to the estimated gas price to ensure timely inclusion.
@@ -1250,8 +1245,7 @@ mod tests {
     fn test_chain_client_config_accepts_current_keys() {
         let json = r#"{
             "enabled": true,
-            "providers": ["http://chain:8545"],
-            "subgraph_service_address": "0x1111111111111111111111111111111111111111"
+            "providers": ["http://chain:8545"]
         }"#;
 
         let config: ChainClientConfig = serde_json::from_str(json).expect("deserialization failed");
@@ -1277,7 +1271,6 @@ mod tests {
                 r#"{{
                     "enabled": true,
                     "providers": ["http://chain:8545"],
-                    "subgraph_service_address": "0x1111111111111111111111111111111111111111",
                     {stale_key}
                 }}"#
             );

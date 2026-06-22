@@ -284,7 +284,6 @@ pub async fn main() -> anyhow::Result<()> {
         )
         .expect("Failed to create AlloyChainClient");
         tracing::info!(
-            subgraph_service = %cfg.subgraph_service_address,
             chain_id,
             "initialized AlloyChainClient for on-chain transactions"
         );
