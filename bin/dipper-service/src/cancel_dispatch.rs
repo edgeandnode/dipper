@@ -32,6 +32,9 @@ pub async fn cancel_agreement_on_chain<T: ChainClient>(
                 .await
         }
         PayerMode::AgreementManager => {
+            // Hazard: the manager's cancel mines successfully even when it does nothing
+            // (stale/wrong hash, unknown id, already-terminal). So after a submitted
+            // cancel we re-read on-chain and surface CancelNotConfirmed if still active.
             let version_hash = agreement
                 .terms_version_hash
                 .as_deref()
@@ -40,14 +43,27 @@ pub async fn cancel_agreement_on_chain<T: ChainClient>(
                 .ok_or_else(|| ChainClientError::MissingTermsVersionHash {
                     agreement_id: agreement.id.to_string(),
                 })?;
-            chain_client
+            let outcome = chain_client
                 .cancel_via_manager(
                     config.recurring_collector(),
                     agreement.id.as_bytes(),
                     version_hash,
                     SCOPE_BOTH,
                 )
-                .await
+                .await?;
+
+            // cancel_via_manager only returns Ok(Some) (its tx always submits);
+            // Ok(None) is reserved. Verify only when a cancel actually mined.
+            if outcome.is_some()
+                && chain_client
+                    .agreement_still_active(agreement.id.as_bytes())
+                    .await?
+            {
+                return Err(ChainClientError::CancelNotConfirmed {
+                    agreement_id: agreement.id.to_string(),
+                });
+            }
+            Ok(outcome)
         }
     }
 }
@@ -80,10 +96,14 @@ mod tests {
     type ManagerCancelArgs = (Address, [u8; 16], B256, u16);
 
     /// Records which on-chain cancel ran and with what arguments.
+    /// `still_active_after_cancel` is the post-cancel verification read result;
+    /// `active_reads` counts how many times that read fired.
     #[derive(Default)]
     struct RecordingChainClient {
         manager_cancels: Mutex<Vec<ManagerCancelArgs>>,
         payer_cancels: Mutex<Vec<[u8; 16]>>,
+        still_active_after_cancel: bool,
+        active_reads: Mutex<u32>,
     }
 
     #[async_trait]
@@ -122,12 +142,21 @@ mod tests {
             ));
             Ok(Some(B256::ZERO))
         }
+
         async fn reconcile_provider(
             &self,
             _collector: Address,
             _provider: Address,
         ) -> Result<Option<B256>, ChainClientError> {
             Ok(None)
+        }
+
+        async fn agreement_still_active(
+            &self,
+            _agreement_id: &[u8; 16],
+        ) -> Result<bool, ChainClientError> {
+            *self.active_reads.lock().unwrap() += 1;
+            Ok(self.still_active_after_cancel)
         }
     }
 
@@ -297,5 +326,68 @@ mod tests {
 
         assert_eq!(client.payer_cancels.lock().unwrap().len(), 1);
         assert!(client.manager_cancels.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn manager_cancel_still_active_returns_not_confirmed() {
+        // The manager cancel mined but the post-cancel read shows the agreement
+        // is still live on-chain (silent no-op). Dispatch must surface
+        // CancelNotConfirmed so the caller retries instead of marking terminal.
+        let client = RecordingChainClient {
+            still_active_after_cancel: true,
+            ..Default::default()
+        };
+        let ag = agreement(
+            IndexingAgreementStatus::AcceptedOnChain,
+            Some(vec![7u8; 32]),
+        );
+
+        let err = cancel_agreement_on_chain(&client, &ag, &manager_conf(Address::ZERO))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ChainClientError::CancelNotConfirmed { .. }));
+        assert_eq!(client.manager_cancels.lock().unwrap().len(), 1);
+        assert_eq!(*client.active_reads.lock().unwrap(), 1, "verified once");
+    }
+
+    #[tokio::test]
+    async fn manager_cancel_no_longer_active_returns_ok() {
+        // The post-cancel read shows the agreement left the active set, so the
+        // cancel took effect and dispatch returns Ok for the caller to finalize.
+        let client = RecordingChainClient {
+            still_active_after_cancel: false,
+            ..Default::default()
+        };
+        let ag = agreement(
+            IndexingAgreementStatus::AcceptedOnChain,
+            Some(vec![7u8; 32]),
+        );
+
+        let out = cancel_agreement_on_chain(&client, &ag, &manager_conf(Address::ZERO))
+            .await
+            .expect("cancel confirmed");
+
+        assert!(out.is_some());
+        assert_eq!(client.manager_cancels.lock().unwrap().len(), 1);
+        assert_eq!(*client.active_reads.lock().unwrap(), 1, "verified once");
+    }
+
+    #[tokio::test]
+    async fn external_mode_skips_verification_read() {
+        // The external-payer contract reverts on a bad cancel, so that arm must
+        // not perform the post-cancel verification read at all.
+        let client = RecordingChainClient {
+            still_active_after_cancel: true,
+            ..Default::default()
+        };
+        let ag = agreement(IndexingAgreementStatus::AcceptedOnChain, None);
+
+        cancel_agreement_on_chain(&client, &ag, &base_conf())
+            .await
+            .expect("external cancel dispatch");
+
+        assert_eq!(client.payer_cancels.lock().unwrap().len(), 1);
+        assert_eq!(*client.active_reads.lock().unwrap(), 0, "no verify read");
     }
 }

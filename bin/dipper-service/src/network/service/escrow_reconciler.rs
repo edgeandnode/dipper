@@ -252,6 +252,12 @@ mod tests {
             self.calls.lock().unwrap().push(provider);
             Ok(Some(B256::ZERO))
         }
+        async fn agreement_still_active(
+            &self,
+            _agreement_id: &[u8; 16],
+        ) -> Result<bool, ChainClientError> {
+            unimplemented!()
+        }
     }
 
     /// In-memory registry returning a fixed provider list.

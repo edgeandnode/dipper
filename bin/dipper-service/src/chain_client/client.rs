@@ -58,6 +58,16 @@ const RECEIPT_POLL_TIMEOUT: Duration = Duration::from_secs(15);
 /// loose enough to avoid hammering the RPC.
 const RECEIPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
+/// VERSION_CURRENT index from `IAgreementCollector.sol`: the active (or
+/// pre-acceptance) terms. `getAgreementDetails(id, 0)` reports their state.
+const VERSION_CURRENT: u64 = 0;
+
+/// `AgreementDetails.state` flags from `IAgreementCollector.sol`. ACCEPTED
+/// marks live terms; NOTICE_GIVEN marks a cancellation, set alongside ACCEPTED
+/// when a live agreement is canceled, so a cancel must clear it, not just lack it.
+const STATE_ACCEPTED: u16 = 2;
+const STATE_NOTICE_GIVEN: u16 = 4;
+
 /// Error patterns that indicate a nonce-related issue.
 ///
 /// These errors can be resolved by refreshing the nonce and retrying.
@@ -879,10 +889,72 @@ impl ChainClient for AlloyChainClient {
             "Canceling agreement via RecurringAgreementManager"
         );
 
-        let tx = self
+        let submitted = self
             .build_and_send_call(manager, calldata, agreement_id)
             .await?;
-        Ok(Some(tx.hash))
+
+        // Wait for the receipt so a returned Ok means the cancel mined, not just
+        // that it entered the mempool. The dispatch layer then re-reads on-chain
+        // to catch a mined-but-no-op cancel (stale hash, unknown id, terminal).
+        let SubmittedTx {
+            hash: tx_hash,
+            nonce: dropped_nonce,
+        } = submitted;
+        match self.wait_for_receipt(tx_hash, RECEIPT_POLL_TIMEOUT).await? {
+            Some(true) => Ok(Some(tx_hash)),
+            Some(false) => Err(ChainClientError::TxReverted { tx_hash }),
+            None => {
+                tracing::warn!(
+                    agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                    tx_hash = %tx_hash,
+                    nonce = dropped_nonce,
+                    "Manager cancel tx did not mine within receipt-poll window; treating as dropped"
+                );
+                if let Err(err) = self.fill_nonce_gap(dropped_nonce).await {
+                    tracing::warn!(nonce = dropped_nonce, error = %err, "Failed to fill mempool nonce gap");
+                }
+                Err(ChainClientError::TxDropped { tx_hash })
+            }
+        }
+    }
+
+    async fn agreement_still_active(
+        &self,
+        agreement_id: &[u8; 16],
+    ) -> Result<bool, ChainClientError> {
+        let calldata = IRecurringCollector::getAgreementDetailsCall {
+            agreementId: FixedBytes::<16>::from_slice(agreement_id),
+            index: thegraph_core::alloy::primitives::U256::from(VERSION_CURRENT),
+        }
+        .abi_encode();
+
+        let collector = self.inner.recurring_collector_address;
+        let output = self
+            .inner
+            .rpc_pool
+            .execute("get_agreement_details", |provider| {
+                let calldata = calldata.clone();
+                async move {
+                    let tx = TransactionRequest::default()
+                        .to(collector)
+                        .input(calldata.into());
+                    provider.call(tx).await
+                }
+            })
+            .await?;
+
+        let details = IRecurringCollector::getAgreementDetailsCall::abi_decode_returns(&output)
+            .map_err(|err| {
+                ChainClientError::RpcError(anyhow::anyhow!(
+                    "undecodable getAgreementDetails from {collector}: {err}"
+                ))
+            })?;
+
+        // Live iff the terms are accepted and no cancellation notice exists.
+        // A cancel sets NOTICE_GIVEN while ACCEPTED stays set, so checking the
+        // notice bit is what tells a still-live agreement from a cancelled one.
+        let state = details.state;
+        Ok(state & STATE_ACCEPTED != 0 && state & STATE_NOTICE_GIVEN == 0)
     }
 
     async fn reconcile_provider(
