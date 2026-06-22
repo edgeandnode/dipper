@@ -292,6 +292,24 @@ pub async fn main() -> anyhow::Result<()> {
         Arc::new(client)
     };
 
+    //- Protocol-managed mode requires dipper's signer to hold AGREEMENT_MANAGER_ROLE on
+    //  the manager; without it every offer and cancel reverts on-chain. Fail fast at
+    //  startup instead of discovering the missing grant one reverted offer at a time.
+    if agreement_conf.payer_mode() == config::PayerMode::AgreementManager
+        && let Some(cfg) = conf.chain_client.as_ref().filter(|cfg| cfg.enabled)
+    {
+        let manager = agreement_conf
+            .recurring_agreement_manager()
+            .expect("AgreementManager mode validated to have a manager address at startup");
+        chain_client::verify_signer_has_agreement_manager_role(
+            cfg,
+            manager,
+            wallet_signer.address(),
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!("AGREEMENT_MANAGER_ROLE preflight failed: {err}"))?;
+    }
+
     //- The entity count cache (shared with worker jobs for optimistic fee estimation)
     let entity_count_cache = network::service::entity_count_cache::new_cache();
     let entity_count_handle = match conf.chain_listener {
