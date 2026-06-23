@@ -47,6 +47,15 @@ pub struct GasEstimator {
     max_addition: u64,
 }
 
+/// Outcome of `compute_bounds`: the bounded gas limit plus the intermediate
+/// values and which bound produced it, for transparent gas logging.
+struct GasBounds {
+    gas_limit: u64,
+    with_buffer: u64,
+    ceiling: u64,
+    applied_bound: &'static str,
+}
+
 impl GasEstimator {
     /// Create a new gas estimator with the specified bounds.
     pub fn new(buffer_multiplier: f64, floor: u64, max_addition: u64) -> Self {
@@ -80,27 +89,48 @@ impl GasEstimator {
             .await
             .map_err(classify_estimate_error)?;
 
-        let gas_limit = self.apply_bounds(estimated);
+        let bounds = self.compute_bounds(estimated);
 
         tracing::debug!(
             estimated,
             buffer_multiplier = self.buffer_multiplier,
             floor = self.floor,
             max_addition = self.max_addition,
-            gas_limit,
+            with_buffer = bounds.with_buffer,
+            ceiling = bounds.ceiling,
+            applied_bound = bounds.applied_bound,
+            gas_limit = bounds.gas_limit,
             "Gas estimation with bounds"
         );
 
-        Ok(gas_limit)
+        Ok(bounds.gas_limit)
     }
 
-    /// Apply safety bounds to an estimated gas value.
-    pub fn apply_bounds(&self, estimated: u64) -> u64 {
+    /// Apply the bounds and report which one set the final limit, so the gas
+    /// log can show whether the buffer, the ceiling, or the floor won instead
+    /// of implying `buffer_multiplier` always drives the result.
+    fn compute_bounds(&self, estimated: u64) -> GasBounds {
         let with_buffer = (estimated as f64 * self.buffer_multiplier) as u64;
         let ceiling = estimated.saturating_add(self.max_addition);
 
-        // Result is bounded: floor <= result <= ceiling
-        self.floor.max(with_buffer.min(ceiling))
+        // gas_limit = floor.max(min(with_buffer, ceiling)); track the winner.
+        let (capped, capped_bound) = if ceiling < with_buffer {
+            (ceiling, "ceiling")
+        } else {
+            (with_buffer, "buffer")
+        };
+        let (gas_limit, applied_bound) = if self.floor > capped {
+            (self.floor, "floor")
+        } else {
+            (capped, capped_bound)
+        };
+
+        GasBounds {
+            gas_limit,
+            with_buffer,
+            ceiling,
+            applied_bound,
+        }
     }
 }
 
@@ -162,7 +192,9 @@ mod tests {
         // Normal case: buffer applied
         // estimated = 50,000, with_buffer = 100,000, ceiling = 250,000
         // result = max(100_000, min(100_000, 250_000)) = 100,000
-        assert_eq!(estimator.apply_bounds(50_000), 100_000);
+        let bounds = estimator.compute_bounds(50_000);
+        assert_eq!(bounds.gas_limit, 100_000);
+        assert_eq!(bounds.applied_bound, "buffer");
     }
 
     #[test]
@@ -172,7 +204,9 @@ mod tests {
         // Small estimate should use floor
         // estimated = 10,000, with_buffer = 20,000, ceiling = 210,000
         // result = max(100_000, min(20_000, 210_000)) = 100,000
-        assert_eq!(estimator.apply_bounds(10_000), 100_000);
+        let bounds = estimator.compute_bounds(10_000);
+        assert_eq!(bounds.gas_limit, 100_000);
+        assert_eq!(bounds.applied_bound, "floor");
     }
 
     #[test]
@@ -182,7 +216,9 @@ mod tests {
         // Large estimate should be capped
         // estimated = 500,000, with_buffer = 1,000,000, ceiling = 700,000
         // result = max(100_000, min(1_000_000, 700_000)) = 700,000
-        assert_eq!(estimator.apply_bounds(500_000), 700_000);
+        let bounds = estimator.compute_bounds(500_000);
+        assert_eq!(bounds.gas_limit, 700_000);
+        assert_eq!(bounds.applied_bound, "ceiling");
     }
 
     #[test]
@@ -192,7 +228,9 @@ mod tests {
         // Buffer fits within ceiling
         // estimated = 200,000, with_buffer = 300,000, ceiling = 400,000
         // result = max(100_000, min(300_000, 400_000)) = 300,000
-        assert_eq!(estimator.apply_bounds(200_000), 300_000);
+        let bounds = estimator.compute_bounds(200_000);
+        assert_eq!(bounds.gas_limit, 300_000);
+        assert_eq!(bounds.applied_bound, "buffer");
     }
 
     #[test]
