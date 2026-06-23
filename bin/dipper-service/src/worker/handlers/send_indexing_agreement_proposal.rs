@@ -119,10 +119,7 @@ where
                 tracing::info!(
                     agreement_id = %agreement_id,
                     indexing_request_id = %indexing_request_id,
-                    old_status = "CREATED",
-                    new_status = "CREATED",
-                    reason = "accepted_by_indexer",
-                    "agreement state transition (submitting offer on-chain)"
+                    "Indexer accepted proposal off-chain; submitting offer on-chain (agreement stays CREATED until the chain listener observes on-chain acceptance)"
                 );
 
                 // Indexer accepted the terms. Submit the on-chain offer so
