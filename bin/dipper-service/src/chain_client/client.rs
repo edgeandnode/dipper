@@ -401,6 +401,7 @@ impl AlloyChainClient {
                     tracing::warn!(
                         agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
                         attempt = attempt + 1,
+                        nonce,
                         error = %e,
                         "Nonce error, re-syncing from chain and retrying"
                     );
