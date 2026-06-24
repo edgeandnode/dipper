@@ -943,6 +943,12 @@ mod tests {
         ) -> RegistryResult<HashMap<DeploymentId, Vec<IndexerId>>> {
             unimplemented!()
         }
+        async fn get_unresponsive_indexers(
+            &self,
+            _lookback_days: i32,
+        ) -> RegistryResult<Vec<IndexerId>> {
+            Ok(vec![])
+        }
         async fn get_indexing_agreements_by_indexing_request_id(
             &self,
             _id: &IndexingRequestId,
@@ -968,7 +974,7 @@ mod tests {
         ) -> RegistryResult<IndexingAgreementId> {
             unimplemented!()
         }
-        async fn mark_indexing_agreement_as_delivery_failed(
+        async fn mark_indexing_agreement_as_unresponsive(
             &self,
             _id: &IndexingAgreementId,
         ) -> RegistryResult<()> {
@@ -1273,6 +1279,7 @@ mod tests {
             price_rejection_lookback_days: 0,
             transient_rejection_lookback_minutes: 0,
             uncertain_rejection_lookback_days: 0,
+            unresponsive_indexer_lookback_days: 0,
         }
     }
 

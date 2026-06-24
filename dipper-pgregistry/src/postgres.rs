@@ -605,6 +605,29 @@ impl PgRegistry {
             .collect())
     }
 
+    /// Get indexers with a recent `Unresponsive` agreement, regardless of
+    /// deployment. Used to skip an unresponsive indexer across every deployment
+    /// for `lookback_days` after it last failed to respond.
+    pub async fn get_unresponsive_indexers(
+        &self,
+        lookback_days: i32,
+    ) -> Result<Vec<IndexerId>, Error> {
+        let rows: Vec<(PgIndexerId,)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT indexer_id
+            FROM dipper_reg_indexing_agreements
+            WHERE status = $1
+              AND updated_at >= timezone('UTC', now()) - make_interval(days => $2)
+            "#,
+        )
+        .bind(IndexingAgreementStatus::Unresponsive)
+        .bind(lookback_days)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id.0).collect())
+    }
+
     pub async fn get_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
@@ -636,7 +659,7 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
-    pub async fn mark_indexing_agreement_as_delivery_failed(
+    pub async fn mark_indexing_agreement_as_unresponsive(
         &self,
         agreement_id: &IndexingAgreementId,
     ) -> Result<(), Error> {
@@ -650,7 +673,7 @@ impl PgRegistry {
             RETURNING id
             "#,
         )
-        .bind(IndexingAgreementStatus::DeliveryFailed)
+        .bind(IndexingAgreementStatus::Unresponsive)
         .bind(agreement_id)
         .bind(IndexingAgreementStatus::Created)
         .fetch_optional(&self.pool)
@@ -670,7 +693,7 @@ impl PgRegistry {
     ///
     /// Guarded on `status IN (Created, AcceptedOnChain)` so a delayed
     /// receipt-confirmation cannot stamp `offer_tx_hash` onto a row that
-    /// has since transitioned to `Expired`, `DeliveryFailed`, `Rejected`,
+    /// has since transitioned to `Expired`, `Unresponsive`, `Rejected`,
     /// or one of the cancel states. The caller treats any failure here
     /// as non-fatal and just logs; a no-match result is also non-fatal
     /// and silently skipped.
@@ -743,7 +766,7 @@ impl PgRegistry {
     /// follow-up cancel, which the Accept-then-Cancel-in-one-snapshot
     /// invariant forbids. When both writes find no matching row (caller
     /// passed `apply_accept = false` and the cancel filter rejected, e.g.
-    /// the row is in a terminal-but-not-cancel state like `DeliveryFailed`
+    /// the row is in a terminal-but-not-cancel state like `Unresponsive`
     /// that the chain_listener's Rust-side guard does not catch), commit
     /// the empty tx and return `Ok` with both flags false. The
     /// chain_listener treats that as a successful no-op rather than a

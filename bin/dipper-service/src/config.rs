@@ -716,6 +716,11 @@ pub struct DipsAgreementConfig {
     /// (SENDER_NOT_TRUSTED), or an unspecified/unknown/missing reason. Default: 1 day.
     #[serde(default = "default_uncertain_rejection_lookback_days")]
     pub uncertain_rejection_lookback_days: i32,
+
+    /// Days to skip an indexer across ALL deployments after it failed to respond
+    /// to a proposal (status `Unresponsive`). Default: 1 day.
+    #[serde(default = "default_unresponsive_indexer_lookback_days")]
+    pub unresponsive_indexer_lookback_days: i32,
 }
 
 impl DipsAgreementConfig {
@@ -811,6 +816,10 @@ fn default_transient_rejection_lookback_minutes() -> i32 {
 }
 
 fn default_uncertain_rejection_lookback_days() -> i32 {
+    1
+}
+
+fn default_unresponsive_indexer_lookback_days() -> i32 {
     1
 }
 
@@ -928,6 +937,8 @@ pub struct IndexingAgreementConfig {
     pub transient_rejection_lookback_minutes: i32,
     /// Number of days to look back for uncertain rejections (sender-not-trusted, unspecified).
     pub uncertain_rejection_lookback_days: i32,
+    /// Number of days to skip an unresponsive indexer across all deployments.
+    pub unresponsive_indexer_lookback_days: i32,
 }
 
 /// Per-chain pricing for indexing agreements (runtime).
@@ -995,6 +1006,10 @@ impl IndexingAgreementConfig {
     pub fn uncertain_rejection_lookback_days(&self) -> i32 {
         self.uncertain_rejection_lookback_days
     }
+
+    pub fn unresponsive_indexer_lookback_days(&self) -> i32 {
+        self.unresponsive_indexer_lookback_days
+    }
 }
 
 impl From<DipsAgreementConfig>
@@ -1020,6 +1035,7 @@ impl From<DipsAgreementConfig>
             price_rejection_lookback_days: value.price_rejection_lookback_days,
             transient_rejection_lookback_minutes: value.transient_rejection_lookback_minutes,
             uncertain_rejection_lookback_days: value.uncertain_rejection_lookback_days,
+            unresponsive_indexer_lookback_days: value.unresponsive_indexer_lookback_days,
         };
         let prices = value
             .pricing_table

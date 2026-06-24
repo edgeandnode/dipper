@@ -300,6 +300,12 @@ mod tests {
         > {
             unimplemented!()
         }
+        async fn get_unresponsive_indexers(
+            &self,
+            _lookback_days: i32,
+        ) -> crate::registry::Result<Vec<thegraph_core::IndexerId>> {
+            Ok(vec![])
+        }
         async fn get_indexing_agreements_by_indexing_request_id(
             &self,
             _request_id: &dipper_core::ids::IndexingRequestId,
@@ -325,7 +331,7 @@ mod tests {
         ) -> crate::registry::Result<dipper_core::ids::IndexingAgreementId> {
             unimplemented!()
         }
-        async fn mark_indexing_agreement_as_delivery_failed(
+        async fn mark_indexing_agreement_as_unresponsive(
             &self,
             _id: &dipper_core::ids::IndexingAgreementId,
         ) -> crate::registry::Result<()> {
@@ -453,6 +459,7 @@ mod tests {
             price_rejection_lookback_days: 0,
             transient_rejection_lookback_minutes: 0,
             uncertain_rejection_lookback_days: 0,
+            unresponsive_indexer_lookback_days: 0,
         }
     }
 

@@ -1267,6 +1267,7 @@ mod tests {
             price_rejection_lookback_days: 0,
             transient_rejection_lookback_minutes: 0,
             uncertain_rejection_lookback_days: 0,
+            unresponsive_indexer_lookback_days: 0,
         })
     }
 
@@ -1472,6 +1473,12 @@ mod tests {
         ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>> {
             Ok(std::collections::HashMap::new())
         }
+        async fn get_unresponsive_indexers(
+            &self,
+            _lookback_days: i32,
+        ) -> RegistryResult<Vec<IndexerId>> {
+            Ok(vec![])
+        }
 
         async fn get_indexing_agreements_by_indexing_request_id(
             &self,
@@ -1502,7 +1509,7 @@ mod tests {
             Ok(IndexingAgreementId::from_bytes(rand::random()))
         }
 
-        async fn mark_indexing_agreement_as_delivery_failed(
+        async fn mark_indexing_agreement_as_unresponsive(
             &self,
             _id: &IndexingAgreementId,
         ) -> RegistryResult<()> {
@@ -2160,12 +2167,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_reconcile_no_op_when_local_status_blocks_cancel_filter() {
-        // Local is in a terminal-but-not-cancel status (DeliveryFailed),
+        // Local is in a terminal-but-not-cancel status (Unresponsive),
         // remote snapshot says canceled. The chain_listener's Rust-side
-        // already_terminal_cancel guard does not catch DeliveryFailed,
+        // already_terminal_cancel guard does not catch Unresponsive,
         // so apply_reconciliation is invoked with apply_accept=false and
         // cancel=Some(...). The cancel UPDATE matches no row because
-        // DeliveryFailed is not in the allowed_from list. The function
+        // Unresponsive is not in the allowed_from list. The function
         // must commit the empty tx and return Ok with both flags false,
         // so the chain_listener treats the snapshot as a successful no-op
         // rather than incrementing its `errors` counter.
@@ -2177,7 +2184,7 @@ mod tests {
             .parse()
             .unwrap();
 
-        registry.add_agreement(agreement_id, IndexingAgreementStatus::DeliveryFailed);
+        registry.add_agreement(agreement_id, IndexingAgreementStatus::Unresponsive);
 
         let snapshot = make_snapshot(
             agreement_id,
