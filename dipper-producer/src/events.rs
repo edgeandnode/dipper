@@ -49,7 +49,7 @@
 //!
 //! let emitter = std::sync::Arc::new(SubgraphIndexingAgreementsEventsEmitter::enabled(
 //!     std::sync::Arc::new(producer),
-//!     16::usize
+//!     16,
 //! ));
 //!
 //! emitter.produce_subgraph_indexing_agreement_request_received(

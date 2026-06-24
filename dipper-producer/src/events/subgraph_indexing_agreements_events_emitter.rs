@@ -1,6 +1,6 @@
 //! Subgraph Indexing Agreement event emitter to Kafka topic utilities
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use prost::Message;
 use tokio::sync::mpsc;
@@ -15,8 +15,6 @@ pub struct SubgraphIndexingAgreementsEventsEmitter {
 }
 
 impl SubgraphIndexingAgreementsEventsEmitter {
-    const EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(30);
-
     /// Creates a disabled producer.
     pub fn disabled() -> Self {
         Self { queue: None }
@@ -29,15 +27,9 @@ impl SubgraphIndexingAgreementsEventsEmitter {
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 let (event_type, key, envelope) = Self::prepare_event(event);
-                if tokio::time::timeout(
-                    Self::EVENT_SEND_TIMEOUT,
-                    Self::send_event(&client, event_type, &key, envelope),
-                )
-                .await
-                .is_err()
-                {
-                    tracing::warn!(event_type = %event_type, key, "event send timeout; dropping event");
-                }
+                // `send_event` already bounds the produce attempt via `KafkaProducer`'s
+                // internal produce timeout, so no additional timeout is layered here.
+                Self::send_event(&client, event_type, &key, envelope).await;
             }
         });
 
@@ -306,5 +298,155 @@ impl std::fmt::Display for SubgraphIndexingAgreementEventType {
             Self::Terminated => "subgraph.indexing.agreement.terminated",
         };
         f.write_str(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use proto::subgraph_indexing_agreement_event::Payload;
+
+    use super::*;
+
+    const HASH: &str = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9";
+    const NETWORK: &str = "arbitrum";
+
+    fn metadata() -> EventMetadata {
+        EventMetadata {
+            subgraph_deployment_qm_hash: HASH.to_string(),
+            the_graph_network: NETWORK.to_string(),
+        }
+    }
+
+    /// Every payload variant paired with the event-type string and proto payload
+    /// variant it is contractually required to map to. Adding a new event variant
+    /// without updating this table is a compile error (non-exhaustive match below).
+    fn all_payloads() -> Vec<(EventPayload, &'static str)> {
+        vec![
+            (
+                EventPayload::RequestReceived(Default::default()),
+                "subgraph.indexing.agreement.request.received",
+            ),
+            (
+                EventPayload::Proposed(Default::default()),
+                "subgraph.indexing.agreement.proposed",
+            ),
+            (
+                EventPayload::Accepted(Default::default()),
+                "subgraph.indexing.agreement.accepted",
+            ),
+            (
+                EventPayload::RequestExpired(Default::default()),
+                "subgraph.indexing.agreement.request.expired",
+            ),
+            (
+                EventPayload::NIndexersUnavailable(Default::default()),
+                "subgraph.indexing.agreement.n_indexers_unavailable",
+            ),
+            (
+                EventPayload::Terminated(Default::default()),
+                "subgraph.indexing.agreement.terminated",
+            ),
+        ]
+    }
+
+    #[test]
+    fn partition_key_uses_network_slash_hash_format() {
+        assert_eq!(metadata().partition_key(), format!("{NETWORK}/{HASH}"));
+    }
+
+    #[test]
+    fn event_type_string_matches_payload_for_every_variant() {
+        for (payload, expected) in all_payloads() {
+            assert_eq!(payload.event_type().to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn into_proto_preserves_the_variant_for_every_payload() {
+        for (payload, expected) in all_payloads() {
+            // Guards against a copy-paste swap between two payload arms.
+            let mapped = match payload.into_proto() {
+                Payload::SubgraphIndexingAgreementRequestReceived(_) => {
+                    "subgraph.indexing.agreement.request.received"
+                }
+                Payload::SubgraphIndexingAgreementProposed(_) => {
+                    "subgraph.indexing.agreement.proposed"
+                }
+                Payload::SubgraphIndexingAgreementAccepted(_) => {
+                    "subgraph.indexing.agreement.accepted"
+                }
+                Payload::SubgraphIndexingAgreementRequestExpired(_) => {
+                    "subgraph.indexing.agreement.request.expired"
+                }
+                Payload::SubgraphIndexingAgreementNIndexersUnavailable(_) => {
+                    "subgraph.indexing.agreement.n_indexers_unavailable"
+                }
+                Payload::SubgraphIndexingAgreementTerminated(_) => {
+                    "subgraph.indexing.agreement.terminated"
+                }
+            };
+            assert_eq!(mapped, expected);
+        }
+    }
+
+    #[test]
+    fn create_event_envelope_populates_common_metadata() {
+        let payload =
+            EventPayload::RequestReceived(proto::SubgraphIndexingAgreementRequestReceived {
+                agreements_requested: 2,
+            });
+        let event_type = payload.event_type();
+        let envelope = SubgraphIndexingAgreementsEventsEmitter::create_event_envelope(
+            event_type,
+            &metadata(),
+            payload.into_proto(),
+        );
+
+        assert_eq!(
+            envelope.event_type,
+            "subgraph.indexing.agreement.request.received"
+        );
+        assert_eq!(envelope.event_version, "1.0");
+        assert_eq!(envelope.subgraph_deployment_qm_hash, HASH);
+        assert_eq!(envelope.the_graph_network, NETWORK);
+        assert!(matches!(
+            envelope.payload,
+            Some(Payload::SubgraphIndexingAgreementRequestReceived(_))
+        ));
+
+        let id = uuid::Uuid::parse_str(&envelope.event_id).expect("event_id is a valid uuid");
+        assert_eq!(id.get_version_num(), 7, "event_id should be a UUIDv7");
+        chrono::DateTime::parse_from_rfc3339(&envelope.timestamp)
+            .expect("timestamp is valid rfc3339");
+    }
+
+    #[test]
+    fn prepare_event_builds_key_type_and_wire_encodable_envelope() {
+        let event = QueuedSubgraphIndexingAgreementEvent {
+            metadata: metadata(),
+            payload: EventPayload::Terminated(proto::SubgraphIndexingAgreementTerminated {
+                indexer: "0xabc".to_string(),
+                terminated_at: 42,
+                terminated_by: "0xdef".to_string(),
+                terminated_tx: "0x123".to_string(),
+                ..Default::default()
+            }),
+        };
+
+        let (event_type, key, envelope) =
+            SubgraphIndexingAgreementsEventsEmitter::prepare_event(event);
+
+        assert_eq!(
+            event_type.to_string(),
+            "subgraph.indexing.agreement.terminated"
+        );
+        assert_eq!(key, format!("{NETWORK}/{HASH}"));
+
+        // Round-trips through the same prost encode path `send_event` uses.
+        let mut buf = Vec::with_capacity(envelope.encoded_len());
+        envelope.encode(&mut buf).expect("envelope encodes");
+        let decoded =
+            proto::SubgraphIndexingAgreementEvent::decode(&buf[..]).expect("envelope decodes");
+        assert_eq!(decoded, envelope);
     }
 }

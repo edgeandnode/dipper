@@ -24,7 +24,7 @@ pub struct KafkaConfig {
     pub brokers: Vec<String>,
     /// Kafka topic name.
     pub topic: String,
-    /// Number of partitions for consistent key hashing.
+    /// Number of partitions used for key-based partition hashing.
     pub partitions: u32,
     /// SASL authentication mechanism (e.g., "PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512").
     pub sasl_mechanism: Option<String>,
@@ -51,6 +51,10 @@ impl KafkaProducer {
 
     /// Creates a new Kafka producer with the given configuration.
     pub async fn new(config: &KafkaConfig) -> Result<Self, Error> {
+        if config.partitions == 0 {
+            return Err(Error::InvalidPartitionCount);
+        }
+
         let mut builder = ClientBuilder::new(config.brokers.clone());
 
         // Configure SASL authentication if mechanism is specified
@@ -169,14 +173,20 @@ impl KafkaProducer {
         .map(|_| ())
     }
 
-    /// Computes the partition for a given key using consistent hashing.
+    /// Computes the partition for a given key.
     ///
-    /// The partition count is configured via `KafkaConfig::partitions`.
+    /// Uses a deterministic FNV-1a hash modulo the partition count so that a given
+    /// key always maps to the same partition across restarts and instances,
+    /// preserving per-key ordering. The partition count is configured via
+    /// `KafkaConfig::partitions`.
     fn partition_for_key(&self, key: &str) -> i32 {
-        // Simple hash-based partition selection
-        let hash: u32 = key
-            .bytes()
-            .fold(0u32, |acc, b| acc.wrapping_add(u32::from(b)));
+        // FNV-1a (32-bit): order-dependent and well-distributed, unlike a byte sum.
+        const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
+        const FNV_PRIME: u32 = 0x0100_0193;
+        let hash = key.bytes().fold(FNV_OFFSET_BASIS, |hash, b| {
+            (hash ^ u32::from(b)).wrapping_mul(FNV_PRIME)
+        });
+        // `partitions` is guaranteed non-zero by `KafkaProducer::new`.
         (hash % self.partitions) as i32
     }
 }
@@ -208,9 +218,9 @@ pub enum Error {
     #[error("Kafka operation timed out")]
     Timeout,
 
-    /// Failed to encode protobuf message
-    #[error("failed to encode protobuf message")]
-    Encode(#[source] prost::EncodeError),
+    /// Partition count must be greater than zero
+    #[error("partitions must be greater than zero")]
+    InvalidPartitionCount,
 
     /// Unsupported SASL mechanism
     #[error("unsupported SASL mechanism '{0}', supported: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512")]
@@ -328,6 +338,16 @@ mod tests {
         assert!(matches!(
             KafkaProducer::build_sasl_config(SaslMechanism::Plain, &config),
             Err(Error::MissingSaslPassword)
+        ));
+    }
+
+    #[tokio::test]
+    async fn should_reject_zero_partitions() {
+        let mut config = make_kafka_config(None, None, None);
+        config.partitions = 0;
+        assert!(matches!(
+            KafkaProducer::new(&config).await,
+            Err(Error::InvalidPartitionCount)
         ));
     }
 
