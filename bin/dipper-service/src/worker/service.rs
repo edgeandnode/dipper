@@ -64,6 +64,7 @@ where
         chain_listener_notify,
         bypass_chain_clock_defenses,
         chain_listener_chain_id,
+        reassess_locks,
     } = state.into();
 
     let (tx_stop, rx_stop) = mpsc::channel(1);
@@ -90,6 +91,7 @@ where
             worker: WorkerQueueHandle::new(queue.clone()),
             bypass_chain_clock_defenses,
             chain_listener_chain_id,
+            reassess_locks,
         };
 
         let mut stop_rx = rx_stop;
