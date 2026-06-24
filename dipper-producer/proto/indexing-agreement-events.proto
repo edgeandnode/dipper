@@ -14,7 +14,7 @@
 //  5. subgraph.indexing.agreement.n_indexers_unavailable - Emitted when selection returns fewer candidates than requested
 //  6. subgraph.indexing.agreement.terminated - Emitted if either the Subgraph developer, or Indexer cancel an indexing agreement on a Subgraph.
 //
-// Partition key format: {subgraph_deployment_qm_hash}
+// Partition key format: {the_graph_network}/{subgraph_deployment_qm_hash}
 
 syntax = "proto3";
 
