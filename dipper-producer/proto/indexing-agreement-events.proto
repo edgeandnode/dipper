@@ -1,0 +1,156 @@
+// Indexing Agreements Events Protocol Buffer Schema
+//
+// This schema defines the message body and event types emitted during different event outcomes with indexer agreements
+// through the DIPS ecosystem upgrades to The Graph protocol.
+// When a Subgraph developer submits a Subgraph for 1->many indexing agreements, this emits events through this lifecycle.
+//
+// Events are published to Kafka for realtime monitoring by downstream systems/consumers.
+//
+// Event flow:
+//  1. subgraph.indexing.agreement.request.received - Emitted when the Subgraph dev sends an event to begin looking for indexing agreements for their Subgraph
+//  2. subgraph.indexing.agreement.proposed - Emitted once dipper has gone to IISA, gotten candidates, and sent the gRPC offers, but before anyone has accepted on chain
+//  3. subgraph.indexing.agreement.accepted - Emitted when an Indexer agrees to the indexing request for the Subgraph
+//  4. subgraph.indexing.agreement.request.expired - Emitted when an indexer fails to accept within the time limit
+//  5. subgraph.indexing.agreement.n_indexers_unavailable - Emitted when selection returns fewer candidates than requested
+//  6. subgraph.indexing.agreement.terminated - Emitted if either the Subgraph developer, or Indexer cancel an indexing agreement on a Subgraph.
+//
+// Partition key format: {subgraph_deployment_qm_hash}
+
+syntax = "proto3";
+
+package dipper.subgraph.indexing.agreement.events.v1;
+
+// SubgraphIndexingAgreementEvent is the envelope that wraps all subgraph indexing agreement event types.
+//
+// Provides:
+//  - event_id -> unique identifier (uuid)
+//  - event_type -> event type discrimination
+//  - event_version -> versioning for schema evolution awareness to the consumer
+//  - timestamp -> when the event occurred, useful for ordering/debugging
+//  - subgraph_deployment_qm_hash -> Qm hash of the Subgraph deployment
+//  - the_graph_network -> graph network identifier the Subgraph Deployment is published to
+//  - payload -> the event payload, determined by the event_type
+message SubgraphIndexingAgreementEvent {
+    // Unique event identifier.
+    // Format: UUID v7 (time-ordered) for natural chronological sorting.
+    // Example: "01912345-6789-7abc-def0-123456789abc"
+    string event_id = 1;
+
+    // Event type discriminator for routing and filtering.
+    // Values: "subgraph.indexing.agreement.request.received", "subgraph.indexing.agreement.proposed", "subgraph.indexing.agreement.accepted", "subgraph.indexing.agreement.request.expired", "subgraph.indexing.agreement.n_indexers_unavailable", "subgraph.indexing.agreement.terminated"
+    string event_type = 2;
+
+    // Schema version for forward compatibility.
+    // Consumers should handle unknown fields gracefully.
+    // Current version: "1.0"
+    string event_version = 3;
+
+    // Event timestamp in RFC 3339 format.
+    // Example: "2024-01-15T10:30:00.123Z"
+    string timestamp = 4;
+
+    // Qm hash of the Subgraph deployment with a submitted indexing agreement event.
+    string subgraph_deployment_qm_hash = 5;
+
+    // The Graph network identifier for the network where the Subgraph was published to.
+    // Values: "arbitrum-sepolia", "arbitrum"
+    string the_graph_network = 6;
+
+    // Event payload - exactly one of the specific event types.
+    // Use event_type field to determine which payload is present.
+    oneof payload {
+        SubgraphIndexingAgreementRequestReceived subgraph_indexing_agreement_request_received = 7;
+        SubgraphIndexingAgreementProposed subgraph_indexing_agreement_proposed = 8;
+        SubgraphIndexingAgreementAccepted subgraph_indexing_agreement_accepted = 9;
+        SubgraphIndexingAgreementRequestExpired subgraph_indexing_agreement_request_expired = 10;
+        SubgraphIndexingAgreementNIndexersUnavailable subgraph_indexing_agreement_n_indexers_unavailable = 11;
+        SubgraphIndexingAgreementTerminated subgraph_indexing_agreement_terminated = 12;
+    }
+}
+
+// SubgraphIndexingAgreementRequestReceived is emitted when a Subgraph developer submits a request to the dipper to find
+// indexers to index the given Subgraph.
+//
+// Event type: subgraph.indexing.agreement.request.received
+message SubgraphIndexingAgreementRequestReceived {
+    // Number of indexing agreements requested by the Subgraph developer.
+    int32 agreements_requested = 1;
+}
+
+// SubgraphIndexingAgreementProposed is emitted once the dipper has gone to the IISA, received candidates (indexers),
+// sent gRPC offers to these candidates, but before any candidate has accepted onchain
+//
+// Event type: subgraph.indexing.agreement.proposed
+message SubgraphIndexingAgreementProposed {
+    // The Indexer candidates received from the IISA
+    repeated string candidates = 1;
+
+    // Timestamp of when the request expires
+    uint64 request_expires_at = 2;
+}
+
+// SubgraphIndexingAgreementAccepted is emitted when an Indexer candidate has accepted onchain the Subgraph indexing request.
+//
+// Event type: subgraph.indexing.agreement.accepted
+message SubgraphIndexingAgreementAccepted {
+    // 0x address of the Indexer who accepted the indexing agreement
+    string indexer = 1;
+
+    // Timestamp of when the agreement was accepted
+    uint64 accepted_at = 2;
+
+    // 0x Hex of the onchain transaction for the accepted indexing agreement
+    string accepted_tx = 3;
+
+    // Timestamp of when the agreement is scheduled to end
+    uint64 ends_at = 4;
+
+    // 0x address of the payer
+    string payer = 5;
+}
+
+// SubgraphIndexingAgreementRequestExpired is emitted when an Indexer candidate fails to accept within the provided time limit
+//
+// Event type: subgraph.indexing.agreement.request.expired
+message SubgraphIndexingAgreementRequestExpired {
+    // 0x address of the Indexer who failed to accept the agreement within the given time limit
+    string indexer = 1;
+
+    // Timestamp of when the Indexing agreement was proposed
+    uint64 request_proposed_at = 2;
+
+    // Timestamp of when the required expired
+    uint64 request_expired_at = 3;
+}
+
+// SubgraphIndexingAgreementNIndexersUnavailable is emitted when the IISA selection returns fewer Indexer candidates than requested
+//
+// Event type: subgraph.indexing.agreement.n_indexers_unavailable
+message SubgraphIndexingAgreementNIndexersUnavailable {
+    // Number of indexing agreements requested by the Subgraph developer.
+    int32 agreements_requested = 1;
+
+    // Number of indexer candidates selected by the IISA
+    int32 candidates_returned = 2;
+}
+
+// SubgraphIndexingAgreementTerminated is emitted if either the Subgraph developer, or Indexer, cancel the agreement
+//
+// Event type: subgraph.indexing.agreement.terminated
+message SubgraphIndexingAgreementTerminated {
+    // 0x address of the Indexer that had the accepted agreement that was terminated
+    string indexer = 1;
+
+    // Timestamp of when the Indexing Agreement was terminated
+    uint64 terminated_at = 2;
+
+    // 0x address of the entity (developer, indexer, etc) that terminated the agreement
+    string terminated_by = 3;
+
+    // 0x hex of the onchain transaction of the agreement cancellation
+    string terminated_tx = 4;
+
+    // Count of remaining active agreements on the Subgraph.
+    // If 0, the Subgraph no longer has any active, accepted indexing agreements.
+    int32 remaining_accepted_indexing_agreements = 5;
+}
