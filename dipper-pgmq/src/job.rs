@@ -107,6 +107,20 @@ impl<T> JobGuard<'_, T> {
         tx.commit().await?;
         Ok(())
     }
+
+    /// Re-queue the job for a later time without counting an attempt. Used for
+    /// deferral (e.g. a contended lock) where retrying is normal and must not
+    /// push the job toward its max-attempt ceiling.
+    pub async fn reschedule(mut self, schedule: time::OffsetDateTime) -> anyhow::Result<()> {
+        self.consumed = true;
+        let mut tx = self
+            .tx
+            .take()
+            .expect("JobGuard tx already taken; remove/mark_as_failed called twice");
+        postgres::reschedule(tx.as_mut(), &self.job.id, schedule).await?;
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 /// A job in the queue
