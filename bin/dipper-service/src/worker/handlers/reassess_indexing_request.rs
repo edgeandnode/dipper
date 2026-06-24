@@ -41,6 +41,23 @@ use crate::{
 /// agreement owner. Matches the on-chain `uint16` width.
 const CONDITION_AGREEMENT_OWNER: u16 = 1u16 << 1;
 
+/// Evicts a request's entry from `reassess_locks` on drop when no other job
+/// holds or waits on it, keeping the map bounded to in-flight requests.
+struct EvictReassessLock {
+    locks: crate::worker::context::ReassessLocks,
+    id: IndexingRequestId,
+}
+
+impl Drop for EvictReassessLock {
+    fn drop(&mut self) {
+        // strong_count == 1: only the map's own Arc remains (the handler's clone
+        // and guard already dropped, no other job cloned it). remove_if re-checks
+        // under the shard lock so a concurrent insert can't be lost.
+        self.locks
+            .remove_if(&self.id, |_, lock| std::sync::Arc::strong_count(lock) == 1);
+    }
+}
+
 pub struct Ctx<R, W, I, T> {
     pub signer: Arc<Eip712Signer>,
     pub agreement_conf: Arc<IndexingAgreementConfig>,
@@ -67,6 +84,9 @@ pub struct Ctx<R, W, I, T> {
     /// is true. `None` disables the bypass path even if the flag is set
     /// (handler falls back to wall clock with a warning).
     pub chain_listener_chain_id: Option<u64>,
+    /// Per-request locks that serialise concurrent reassess jobs for the same
+    /// request id (see `crate::worker::context::ReassessLocks`).
+    pub reassess_locks: crate::worker::context::ReassessLocks,
 }
 
 /// Reassess an indexing request against the current IISA target state.
@@ -105,6 +125,34 @@ where
     I: CandidateSelection,
     T: ChainClient,
 {
+    // Declared first so it drops last (after the guard and clone below) and can
+    // then evict this request's now-unused lock entry to bound the map.
+    let _evict = EvictReassessLock {
+        locks: ctx.reassess_locks.clone(),
+        id: *indexing_request_id,
+    };
+
+    // Serialise reassess jobs for this request id: without it two concurrent
+    // jobs compare against the same baseline and both create agreements.
+    let request_lock = ctx
+        .reassess_locks
+        .entry(*indexing_request_id)
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+
+    // If another job already holds this request's lock it is reassessing the
+    // same request against current state, so this pass is redundant: retry
+    // shortly rather than park the worker loop and its DB connection.
+    let _reassess_guard = match request_lock.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return Err(JobError::Retryable(
+                anyhow::anyhow!("a reassessment is already in progress for this request"),
+                Duration::from_secs(1),
+            ));
+        }
+    };
+
     // Gather load balancing context for IISA, including chain/ceiling info
     let mut context = gather_selection_context(
         &ctx.registry,

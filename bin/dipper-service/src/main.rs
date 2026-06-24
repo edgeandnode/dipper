@@ -330,6 +330,8 @@ pub async fn main() -> anyhow::Result<()> {
 
     //- The worker service
     let (worker_handle, worker_service) = {
+        // Per-request reassess locks, shared across all worker tasks.
+        let reassess_locks = Arc::new(dashmap::DashMap::new());
         let ctx = worker::Ctx {
             queue,
             signer: signer.clone(),
@@ -351,6 +353,7 @@ pub async fn main() -> anyhow::Result<()> {
                 .map(|c| c.bypass_chain_clock_defenses)
                 .unwrap_or(false),
             chain_listener_chain_id: conf.chain_listener.as_ref().map(|c| c.chain_id),
+            reassess_locks,
         };
         worker::service::new(ctx)
     };
