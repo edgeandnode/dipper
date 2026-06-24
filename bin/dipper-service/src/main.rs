@@ -330,6 +330,25 @@ pub async fn main() -> anyhow::Result<()> {
 
     //- The worker service
     let (worker_handle, worker_service) = {
+        // Each loop can hold up to three pooled connections at once (listener,
+        // open job transaction, registry query), and the same pool serves the
+        // registry and background reconcilers — warn once the loops crowd it.
+        const CONNECTIONS_PER_LOOP: usize = 3;
+        const SHARED_SERVICES_HEADROOM: usize = 2;
+        let max_conns = conf
+            .db
+            .max_connections
+            .unwrap_or(db::DEFAULT_MAX_CONNECTIONS) as usize;
+        if conf.worker_concurrency * CONNECTIONS_PER_LOOP + SHARED_SERVICES_HEADROOM > max_conns {
+            tracing::warn!(
+                worker_concurrency = conf.worker_concurrency,
+                max_connections = max_conns,
+                "worker_concurrency is high relative to db.max_connections; each loop can hold a \
+                 connection for its listener, its open job transaction and a registry query, and \
+                 the same pool serves the registry and background services — raise db.max_connections"
+            );
+        }
+
         // Per-request reassess locks, shared across all worker tasks.
         let reassess_locks = Arc::new(dashmap::DashMap::new());
         let ctx = worker::Ctx {
@@ -354,6 +373,7 @@ pub async fn main() -> anyhow::Result<()> {
                 .unwrap_or(false),
             chain_listener_chain_id: conf.chain_listener.as_ref().map(|c| c.chain_id),
             reassess_locks,
+            concurrency: conf.worker_concurrency,
         };
         worker::service::new(ctx)
     };

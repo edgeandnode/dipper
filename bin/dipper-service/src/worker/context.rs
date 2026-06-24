@@ -113,6 +113,9 @@ pub struct Ctx<Q, R, C, I, T> {
 
     /// Per-request reassess locks (see `ReassessLocks`).
     pub reassess_locks: ReassessLocks,
+
+    /// Number of concurrent worker loops to spawn (>=1). Defaults to 1.
+    pub concurrency: usize,
 }
 
 /// The inner worker context.
