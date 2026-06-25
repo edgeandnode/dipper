@@ -135,12 +135,20 @@ where
     )
     .await?;
 
-    // Map numeric chain ID to chain name for IISA ceiling/filtering
+    // The chain name is required for IISA filtering, pricing and the breaker; an
+    // unresolved chain means a missing additional_networks entry, so fail loudly
+    // rather than select without a chain filter or price ceiling.
     let chain_name = super::selection_helpers::resolve_chain_name(
         *deployment_chain_id,
         &ctx.networks_registry,
         &ctx.additional_networks,
-    );
+    )
+    .ok_or_else(|| {
+        JobError::Fatal(anyhow::anyhow!(
+            "no network name for chain id {}; add it to additional_networks",
+            *deployment_chain_id
+        ))
+    })?;
 
     // Per-chain mass-unresponsive breaker: when a large fraction of this chain's
     // DIPs-accepting pool is unresponsive at once it's a dipper-side outage, so
@@ -148,19 +156,19 @@ where
     if !unresponsive.is_empty() {
         let snapshot = ctx
             .dips_accepting_cache
-            .get_or_fetch(&ctx.iisa, chain_name.as_deref())
+            .get_or_fetch(&ctx.iisa, &chain_name)
             .await;
         let suppress = ctx.unresponsive_breaker.evaluate(
-            chain_name.as_deref(),
+            &chain_name,
             &unresponsive,
-            snapshot.as_ref(),
+            snapshot.as_deref(),
             ctx.agreement_conf.mass_unresponsive_trip_fraction(),
             ctx.agreement_conf.mass_unresponsive_reset_fraction(),
             ctx.agreement_conf.dips_accepting_snapshot_max_age_hours(),
         );
         if suppress {
             tracing::debug!(
-                chain = ?chain_name,
+                chain = chain_name.as_str(),
                 would_bench = unresponsive.len(),
                 "unresponsive breaker tripped; skipping this chain's unresponsive exclusion"
             );
@@ -169,10 +177,12 @@ where
         }
     }
 
-    if let Some(name) = &chain_name {
-        context.chain_id = Some(name.clone());
-        context.max_grt_per_30_days = ctx.agreement_conf.max_grt_per_30_days().get(name).copied();
-    }
+    context.chain_id = Some(chain_name.clone());
+    context.max_grt_per_30_days = ctx
+        .agreement_conf
+        .max_grt_per_30_days()
+        .get(&chain_name)
+        .copied();
 
     // Select the target group of indexers via IISA. If IISA is unreachable
     // we retry with exponential backoff rather than falling back to a
