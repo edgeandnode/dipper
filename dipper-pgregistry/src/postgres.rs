@@ -19,6 +19,7 @@ pub struct NewAgreementParams {
     pub indexer_id: IndexerId,
     pub indexer_url: Url,
     pub terms: crate::IndexingAgreementTerms,
+    pub terms_version_hash: Option<Vec<u8>>,
 }
 
 use self::common::{
@@ -287,7 +288,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1 AND status IN ($2, $3)
             "#,
@@ -312,6 +314,7 @@ impl PgRegistry {
             indexer_id,
             indexer_url,
             terms,
+            terms_version_hash,
         } = params;
         sqlx::query_as(
             r#"
@@ -325,11 +328,12 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                terms
+                terms,
+                terms_version_hash
             )
             VALUES (
                 $1, $2, timezone('UTC', now()), timezone('UTC', now()), $3, $4, $5, $6,
-                $7, $8
+                $7, $8, $9
             )
             RETURNING id
             "#,
@@ -342,6 +346,7 @@ impl PgRegistry {
         .bind(PgIndexerId(indexer_id))
         .bind(PgUrl(indexer_url))
         .bind(Json(terms))
+        .bind(terms_version_hash)
         .fetch_one(&self.pool)
         .await
         .map(|(id,)| id)
@@ -367,7 +372,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE id = $1
             "#,
@@ -404,7 +410,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE id = ANY($1)
             "#,
@@ -435,7 +442,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE deployment_id = $1
             "#,
@@ -465,7 +473,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE indexer_id = $1
             "#,
@@ -522,20 +531,19 @@ impl PgRegistry {
 
     /// Get declined `CanceledByIndexer`/`Expired`/`Rejected` indexers grouped by
     /// deployment (deployment id -> indexer ids). Each rejection reason gets its own
-    /// exclusion window (price, transient, escrow, uncertain, default); see the constants.
+    /// exclusion window (price, transient, uncertain, default); see the constants.
     pub async fn get_declined_indexers_by_deployment(
         &self,
         default_lookback_days: i32,
         price_lookback_days: i32,
         transient_lookback_minutes: i32,
-        escrow_lookback_minutes: i32,
         uncertain_lookback_days: i32,
     ) -> Result<HashMap<DeploymentId, Vec<IndexerId>>, Error> {
         use crate::rejection_reason::{
             AGREEMENT_EXPIRED, CAPACITY_EXCEEDED, DEADLINE_EXPIRED, INDEXER_UNAVAILABLE,
-            INSUFFICIENT_ESCROW, INVALID_SIGNATURE, PRICE_TOO_LOW, REPLAY_DETECTED,
-            SENDER_NOT_TRUSTED, SUBGRAPH_MANIFEST_UNAVAILABLE, UNEXPECTED_SERVICE_PROVIDER,
-            UNSPECIFIED, UNSUPPORTED_METADATA_VERSION,
+            INVALID_SIGNATURE, PRICE_TOO_LOW, REPLAY_DETECTED, SENDER_NOT_TRUSTED,
+            SUBGRAPH_MANIFEST_UNAVAILABLE, UNEXPECTED_SERVICE_PROVIDER, UNSPECIFIED,
+            UNSUPPORTED_METADATA_VERSION,
         };
 
         let rows: Vec<(PgDeploymentId, Vec<PgIndexerId>)> = sqlx::query_as(
@@ -552,20 +560,16 @@ impl PgRegistry {
                 OR
                 -- Transient, not-indexer's-fault, or dipper-side faults that
                 -- clear once dipper is fixed: very short lookback
-                (rejection_reason IN ($8, $9, $10, $11, $12, $13, $14, $17, $18)
+                (rejection_reason IN ($8, $9, $10, $11, $12, $13, $14, $15, $16)
                  AND updated_at >= timezone('UTC', now()) - make_interval(mins => $7))
-                OR
-                -- INSUFFICIENT_ESCROW: medium lookback (clears when payer tops up)
-                (rejection_reason = $16
-                 AND updated_at >= timezone('UTC', now()) - make_interval(mins => $15))
                 OR
                 -- Uncertain reasons (sender not trusted, unspecified/unknown):
                 -- may clear within about a day, so a 1-day lookback
-                (rejection_reason IN ($20, $21)
-                 AND updated_at >= timezone('UTC', now()) - make_interval(days => $19))
+                (rejection_reason IN ($18, $19)
+                 AND updated_at >= timezone('UTC', now()) - make_interval(days => $17))
                 OR
                 -- All other rejections/expirations/cancellations: standard lookback
-                (COALESCE(rejection_reason, '') NOT IN ($6, $8, $9, $10, $11, $12, $13, $14, $16, $17, $18, $20, $21)
+                (COALESCE(rejection_reason, '') NOT IN ($6, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18, $19)
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $5))
               )
             GROUP BY deployment_id
@@ -585,13 +589,11 @@ impl PgRegistry {
         .bind(UNSUPPORTED_METADATA_VERSION) // $12
         .bind(CAPACITY_EXCEEDED) // $13
         .bind(INDEXER_UNAVAILABLE) // $14
-        .bind(escrow_lookback_minutes) // $15
-        .bind(INSUFFICIENT_ESCROW) // $16
-        .bind(INVALID_SIGNATURE) // $17
-        .bind(REPLAY_DETECTED) // $18
-        .bind(uncertain_lookback_days) // $19
-        .bind(SENDER_NOT_TRUSTED) // $20
-        .bind(UNSPECIFIED) // $21
+        .bind(INVALID_SIGNATURE) // $15
+        .bind(REPLAY_DETECTED) // $16
+        .bind(uncertain_lookback_days) // $17
+        .bind(SENDER_NOT_TRUSTED) // $18
+        .bind(UNSPECIFIED) // $19
         .fetch_all(&self.pool)
         .await?;
 
@@ -601,6 +603,33 @@ impl PgRegistry {
                 (deployment.0, indexers.into_iter().map(|i| i.0).collect())
             })
             .collect())
+    }
+
+    /// Get indexers with a recent `Unresponsive` agreement on a given chain. Used
+    /// to skip an unresponsive indexer for that chain's deployments for
+    /// `lookback_days` after it last failed to respond there.
+    pub async fn get_unresponsive_indexers(
+        &self,
+        lookback_days: i32,
+        chain_id: ChainId,
+    ) -> Result<Vec<IndexerId>, Error> {
+        let rows: Vec<(PgIndexerId,)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT a.indexer_id
+            FROM dipper_reg_indexing_agreements a
+            JOIN dipper_reg_indexing_requests r ON a.indexing_request_id = r.id
+            WHERE a.status = $1
+              AND a.updated_at >= timezone('UTC', now()) - make_interval(days => $2)
+              AND r.deployment_chain_id = $3
+            "#,
+        )
+        .bind(IndexingAgreementStatus::Unresponsive)
+        .bind(lookback_days)
+        .bind(PgU64(chain_id))
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id.0).collect())
     }
 
     pub async fn get_indexing_agreements_by_indexing_request_id(
@@ -622,7 +651,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1
             "#,
@@ -633,7 +663,7 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
-    pub async fn mark_indexing_agreement_as_delivery_failed(
+    pub async fn mark_indexing_agreement_as_unresponsive(
         &self,
         agreement_id: &IndexingAgreementId,
     ) -> Result<(), Error> {
@@ -647,7 +677,7 @@ impl PgRegistry {
             RETURNING id
             "#,
         )
-        .bind(IndexingAgreementStatus::DeliveryFailed)
+        .bind(IndexingAgreementStatus::Unresponsive)
         .bind(agreement_id)
         .bind(IndexingAgreementStatus::Created)
         .fetch_optional(&self.pool)
@@ -667,7 +697,7 @@ impl PgRegistry {
     ///
     /// Guarded on `status IN (Created, AcceptedOnChain)` so a delayed
     /// receipt-confirmation cannot stamp `offer_tx_hash` onto a row that
-    /// has since transitioned to `Expired`, `DeliveryFailed`, `Rejected`,
+    /// has since transitioned to `Expired`, `Unresponsive`, `Rejected`,
     /// or one of the cancel states. The caller treats any failure here
     /// as non-fatal and just logs; a no-match result is also non-fatal
     /// and silently skipped.
@@ -740,7 +770,7 @@ impl PgRegistry {
     /// follow-up cancel, which the Accept-then-Cancel-in-one-snapshot
     /// invariant forbids. When both writes find no matching row (caller
     /// passed `apply_accept = false` and the cancel filter rejected, e.g.
-    /// the row is in a terminal-but-not-cancel state like `DeliveryFailed`
+    /// the row is in a terminal-but-not-cancel state like `Unresponsive`
     /// that the chain_listener's Rust-side guard does not catch), commit
     /// the empty tx and return `Ok` with both flags false. The
     /// chain_listener treats that as a successful no-op rather than a
@@ -1109,7 +1139,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
               AND CAST(terms->>'deadline' AS bigint) < $3
@@ -1220,7 +1251,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
             ORDER BY last_progress_at ASC NULLS FIRST
@@ -1258,7 +1290,8 @@ impl PgRegistry {
                 a.terms,
                 a.last_block_height,
                 a.last_progress_at,
-                a.rejection_reason
+                a.rejection_reason,
+                a.terms_version_hash
             FROM dipper_reg_indexing_agreements a
             JOIN dipper_reg_indexing_requests r
               ON a.indexing_request_id = r.id
@@ -1274,6 +1307,33 @@ impl PgRegistry {
         .fetch_all(&self.pool)
         .await
         .map_err(Into::into)
+    }
+
+    /// Distinct `indexer_id` (on-chain `service_provider`) of agreements whose
+    /// protocol-manager escrow may be orphaned or mid-thaw: ended, canceled, or
+    /// still-accepted. Bounded by `limit`.
+    pub async fn get_providers_for_escrow_reconciliation(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<Address>, Error> {
+        let rows: Vec<(PgIndexerId,)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT indexer_id
+            FROM dipper_reg_indexing_agreements
+            WHERE status IN ($1, $2, $3, $4)
+            ORDER BY indexer_id
+            LIMIT CASE WHEN $5 > 0 THEN $5 ELSE NULL END
+            "#,
+        )
+        .bind(IndexingAgreementStatus::CanceledByRequester)
+        .bind(IndexingAgreementStatus::CanceledByIndexer)
+        .bind(IndexingAgreementStatus::Expired)
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id.0.into_inner()).collect())
     }
 
     /// Update the sync progress for an agreement.
@@ -1385,7 +1445,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             "#,
         )
         .bind(IndexingAgreementStatus::AbandonedByIndexer)
@@ -1550,6 +1611,7 @@ impl PgRegistry {
             indexer_id,
             indexer_url,
             terms,
+            terms_version_hash,
         } = params;
         let mut tx = self.pool.begin().await?;
 
@@ -1565,11 +1627,12 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                terms
+                terms,
+                terms_version_hash
             )
             VALUES (
                 $1, $2, timezone('UTC', now()), timezone('UTC', now()), $3, $4, $5, $6,
-                $7, $8
+                $7, $8, $9
             )
             RETURNING id
             "#,
@@ -1582,6 +1645,7 @@ impl PgRegistry {
         .bind(PgIndexerId(indexer_id))
         .bind(PgUrl(indexer_url))
         .bind(Json(terms))
+        .bind(terms_version_hash)
         .fetch_one(&mut *tx)
         .await?;
 

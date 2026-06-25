@@ -70,6 +70,9 @@ pub struct Config {
     /// The liveness checker service configuration (detects silent agreement abandonment)
     #[serde(default)]
     pub liveness_checker: Option<LivenessCheckerConfig>,
+    /// The escrow reconciler service configuration (AgreementManager mode only)
+    #[serde(default)]
+    pub escrow_reconciler: Option<EscrowReconcilerConfig>,
     /// Additional chain ID to network name mappings for dev/test chains.
     ///
     /// Production chains are resolved via the graph-networks-registry crate.
@@ -80,6 +83,11 @@ pub struct Config {
     /// The chain client configuration (for sending on-chain transactions)
     #[serde(default)]
     pub chain_client: Option<ChainClientConfig>,
+    /// Number of concurrent worker loops draining the job queue (default: 1).
+    /// Each loop can hold up to three pooled DB connections at once and shares
+    /// the pool with the registry and background services; size accordingly.
+    #[serde(default = "default_worker_concurrency")]
+    pub worker_concurrency: usize,
 }
 
 /// The IISA (Indexing Indexer Selection Algorithm) service configuration
@@ -106,6 +114,11 @@ pub struct IisaConfig {
     /// For example, `max_retries = 3` means up to 4 total attempts (1 initial + 3 retries).
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
+
+    /// Bearer token for IISA's authenticated `GET /dips-indexers` endpoint, used by
+    /// the unresponsive breaker. Must match IISA_PUSH_TOKEN. None = no auth header.
+    #[serde(default)]
+    pub push_token: Option<Hidden<String>>,
 }
 
 fn default_request_timeout() -> Duration {
@@ -279,12 +292,58 @@ fn default_expiration_batch_size() -> i64 {
     100
 }
 
+fn default_worker_concurrency() -> usize {
+    1
+}
+
 impl Default for ExpirationConfig {
     fn default() -> Self {
         Self {
             enabled: default_expiration_enabled(),
             interval: default_expiration_interval(),
             batch_size: default_expiration_batch_size(),
+        }
+    }
+}
+
+/// Escrow reconciler service config. Runs only in `AgreementManager` mode;
+/// each tick calls the manager's permissionless `reconcileProvider` for
+/// distinct providers with agreements needing escrow cleanup.
+#[serde_as]
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct EscrowReconcilerConfig {
+    /// Whether the escrow reconciler is enabled (default: true).
+    #[serde(default = "default_escrow_reconciler_enabled")]
+    pub enabled: bool,
+
+    /// Interval between reconciliation sweeps in seconds (default: 600s).
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    #[serde(default = "default_escrow_reconciler_interval")]
+    pub interval: Duration,
+
+    /// Maximum distinct providers to reconcile per sweep (default: 500).
+    #[serde(default = "default_escrow_reconciler_batch_size")]
+    pub batch_size: i64,
+}
+
+fn default_escrow_reconciler_enabled() -> bool {
+    true
+}
+
+fn default_escrow_reconciler_interval() -> Duration {
+    Duration::from_secs(600)
+}
+
+fn default_escrow_reconciler_batch_size() -> i64 {
+    500
+}
+
+impl Default for EscrowReconcilerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_escrow_reconciler_enabled(),
+            interval: default_escrow_reconciler_interval(),
+            batch_size: default_escrow_reconciler_batch_size(),
         }
     }
 }
@@ -522,25 +581,6 @@ pub struct ChainClientConfig {
     #[serde_as(as = "serde_with::DurationSeconds")]
     pub domain_refresh_interval: Duration,
 
-    /// SubgraphService contract address.
-    ///
-    /// This is the contract that manages indexing agreements and exposes
-    /// `cancelIndexingAgreementByPayer(bytes32)`.
-    pub subgraph_service_address: Address,
-
-    /// Indexing-payments-subgraph query URL.
-    ///
-    /// When set, dipper queries the subgraph for an existing `Offer` entity
-    /// before submitting a new `offer()` transaction. This provides
-    /// crash-recovery idempotency: after a restart, if dipper's prior
-    /// submission already landed on-chain and the subgraph has indexed it,
-    /// dipper will skip re-submission rather than wasting gas. When unset,
-    /// dipper will log a warning on startup and always submit, trusting
-    /// the contract's overwrite semantics to make double-submission harmless.
-    #[serde(default)]
-    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
-    pub indexing_payments_subgraph_url: Option<Url>,
-
     /// Gas price multiplier (default: 1.2)
     ///
     /// Applied to the estimated gas price to ensure timely inclusion.
@@ -610,6 +650,9 @@ pub struct DipsAgreementConfig {
     /// The RecurringCollector contract address. Dipper posts on-chain offers
     /// here via `RecurringCollector.offer()` before dispatching gRPC proposals.
     pub recurring_collector: Address,
+    /// The RecurringAgreementManager contract address. The manager is the
+    /// on-chain payer; dipper routes every offer and cancel through it.
+    pub recurring_agreement_manager: Address,
     /// Flat per-agreement payment ceiling (GRT per 30 days). Applied to every
     /// RCA regardless of chain. Drives the RCA's `maxOngoingTokensPerSecond`
     /// (as a rate). `maxInitialTokens` is hard-coded to zero in v1 of the
@@ -673,18 +716,56 @@ pub struct DipsAgreementConfig {
     )]
     pub transient_rejection_lookback_minutes: i32,
 
-    /// Number of minutes to look back for INSUFFICIENT_ESCROW rejections.
-    ///
-    /// Medium window: escrow shortfalls clear once the payer tops up, which
-    /// takes longer than a transient blip but is not permanent. Default: 30 minutes.
-    #[serde(default = "default_escrow_rejection_lookback_minutes")]
-    pub escrow_rejection_lookback_minutes: i32,
-
     /// Days to look back for uncertain rejections that may clear within a day but
     /// aren't a quick transient blip: the indexer not yet trusting the payer
     /// (SENDER_NOT_TRUSTED), or an unspecified/unknown/missing reason. Default: 1 day.
     #[serde(default = "default_uncertain_rejection_lookback_days")]
     pub uncertain_rejection_lookback_days: i32,
+
+    /// Days to skip an indexer across ALL deployments after it failed to respond
+    /// to a proposal (status `Unresponsive`). Default: 1 day.
+    #[serde(default = "default_unresponsive_indexer_lookback_days")]
+    pub unresponsive_indexer_lookback_days: i32,
+
+    /// Fraction of the DIPs-accepting pool that must be unresponsive before the
+    /// breaker trips and suppresses the network-wide exclusion. Default 0.50.
+    #[serde(default = "default_mass_unresponsive_trip_fraction")]
+    pub mass_unresponsive_trip_fraction: f64,
+
+    /// Fraction the unresponsive pool must fall back under before exclusions resume
+    /// (hysteresis dead-band with the trip fraction). Default 0.25.
+    #[serde(default = "default_mass_unresponsive_reset_fraction")]
+    pub mass_unresponsive_reset_fraction: f64,
+
+    /// Max age (hours) of IISA's DIPs-accepting snapshot before it's too stale to
+    /// drive the breaker; a stale snapshot never trips it. Default 48.
+    #[serde(default = "default_dips_accepting_snapshot_max_age_hours")]
+    pub dips_accepting_snapshot_max_age_hours: i64,
+
+    /// How long (seconds) dipper caches IISA's DIPs-accepting set, so a burst of
+    /// reassessments doesn't re-query the same daily snapshot. Default 300.
+    #[serde(default = "default_dips_accepting_cache_ttl_seconds")]
+    pub dips_accepting_cache_ttl_seconds: u64,
+}
+
+impl DipsAgreementConfig {
+    /// Reject a configuration the protocol-managed path cannot run with. Dipper
+    /// routes every offer and cancel through the RecurringAgreementManager, so a
+    /// zero manager address means dipper has nothing to call.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.recurring_agreement_manager == Address::ZERO {
+            return Err(
+                "recurring_agreement_manager must be set to a non-zero address".to_string(),
+            );
+        }
+        if self.mass_unresponsive_reset_fraction >= self.mass_unresponsive_trip_fraction {
+            return Err(format!(
+                "mass_unresponsive_reset_fraction ({}) must be below mass_unresponsive_trip_fraction ({})",
+                self.mass_unresponsive_reset_fraction, self.mass_unresponsive_trip_fraction
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn default_deadline_seconds() -> u64 {
@@ -765,12 +846,28 @@ fn default_transient_rejection_lookback_minutes() -> i32 {
     5
 }
 
-fn default_escrow_rejection_lookback_minutes() -> i32 {
-    30
-}
-
 fn default_uncertain_rejection_lookback_days() -> i32 {
     1
+}
+
+fn default_unresponsive_indexer_lookback_days() -> i32 {
+    1
+}
+
+fn default_mass_unresponsive_trip_fraction() -> f64 {
+    0.50
+}
+
+fn default_mass_unresponsive_reset_fraction() -> f64 {
+    0.25
+}
+
+fn default_dips_accepting_snapshot_max_age_hours() -> i64 {
+    48
+}
+
+fn default_dips_accepting_cache_ttl_seconds() -> u64 {
+    300
 }
 
 /// Per-chain pricing for indexing agreements.
@@ -860,6 +957,8 @@ pub struct IndexingAgreementConfig {
     pub data_service: Address,
     /// The RecurringCollector contract address.
     pub recurring_collector: Address,
+    /// The RecurringAgreementManager address (the on-chain payer).
+    pub recurring_agreement_manager: Address,
     /// Flat per-agreement payment ceiling (GRT per 30 days). Drives the RCA's
     /// `maxOngoingTokensPerSecond` (as a rate); `maxInitialTokens` is
     /// hard-coded to zero in v1. Applied to every agreement regardless of
@@ -883,10 +982,18 @@ pub struct IndexingAgreementConfig {
     pub price_rejection_lookback_days: i32,
     /// Number of minutes to look back for transient rejections.
     pub transient_rejection_lookback_minutes: i32,
-    /// Number of minutes to look back for INSUFFICIENT_ESCROW rejections.
-    pub escrow_rejection_lookback_minutes: i32,
     /// Number of days to look back for uncertain rejections (sender-not-trusted, unspecified).
     pub uncertain_rejection_lookback_days: i32,
+    /// Number of days to skip an unresponsive indexer across all deployments.
+    pub unresponsive_indexer_lookback_days: i32,
+    /// Breaker trip fraction (see `DipsAgreementConfig`).
+    pub mass_unresponsive_trip_fraction: f64,
+    /// Breaker reset fraction.
+    pub mass_unresponsive_reset_fraction: f64,
+    /// Max age (hours) of the DIPs-accepting snapshot before it's too stale to trip.
+    pub dips_accepting_snapshot_max_age_hours: i64,
+    /// TTL (seconds) for caching the DIPs-accepting set.
+    pub dips_accepting_cache_ttl_seconds: u64,
 }
 
 /// Per-chain pricing for indexing agreements (runtime).
@@ -905,6 +1012,10 @@ impl IndexingAgreementConfig {
 
     pub fn recurring_collector(&self) -> Address {
         self.recurring_collector
+    }
+
+    pub fn recurring_agreement_manager(&self) -> Address {
+        self.recurring_agreement_manager
     }
 
     pub fn max_agreement_grt_per_30_days(&self) -> f64 {
@@ -947,12 +1058,28 @@ impl IndexingAgreementConfig {
         self.transient_rejection_lookback_minutes
     }
 
-    pub fn escrow_rejection_lookback_minutes(&self) -> i32 {
-        self.escrow_rejection_lookback_minutes
-    }
-
     pub fn uncertain_rejection_lookback_days(&self) -> i32 {
         self.uncertain_rejection_lookback_days
+    }
+
+    pub fn unresponsive_indexer_lookback_days(&self) -> i32 {
+        self.unresponsive_indexer_lookback_days
+    }
+
+    pub fn mass_unresponsive_trip_fraction(&self) -> f64 {
+        self.mass_unresponsive_trip_fraction
+    }
+
+    pub fn mass_unresponsive_reset_fraction(&self) -> f64 {
+        self.mass_unresponsive_reset_fraction
+    }
+
+    pub fn dips_accepting_snapshot_max_age_hours(&self) -> i64 {
+        self.dips_accepting_snapshot_max_age_hours
+    }
+
+    pub fn dips_accepting_cache_ttl_seconds(&self) -> u64 {
+        self.dips_accepting_cache_ttl_seconds
     }
 }
 
@@ -966,6 +1093,7 @@ impl From<DipsAgreementConfig>
         let config = IndexingAgreementConfig {
             data_service: value.data_service,
             recurring_collector: value.recurring_collector,
+            recurring_agreement_manager: value.recurring_agreement_manager,
             max_agreement_grt_per_30_days: value.max_agreement_grt_per_30_days,
             max_seconds_per_collection: value.max_seconds_per_collection,
             min_seconds_per_collection: value.min_seconds_per_collection,
@@ -977,8 +1105,12 @@ impl From<DipsAgreementConfig>
             declined_indexer_lookback_days: value.declined_indexer_lookback_days,
             price_rejection_lookback_days: value.price_rejection_lookback_days,
             transient_rejection_lookback_minutes: value.transient_rejection_lookback_minutes,
-            escrow_rejection_lookback_minutes: value.escrow_rejection_lookback_minutes,
             uncertain_rejection_lookback_days: value.uncertain_rejection_lookback_days,
+            unresponsive_indexer_lookback_days: value.unresponsive_indexer_lookback_days,
+            mass_unresponsive_trip_fraction: value.mass_unresponsive_trip_fraction,
+            mass_unresponsive_reset_fraction: value.mass_unresponsive_reset_fraction,
+            dips_accepting_snapshot_max_age_hours: value.dips_accepting_snapshot_max_age_hours,
+            dips_accepting_cache_ttl_seconds: value.dips_accepting_cache_ttl_seconds,
         };
         let prices = value
             .pricing_table
@@ -1007,6 +1139,7 @@ mod tests {
         let json = r#"{
             "data_service": "0x1111111111111111111111111111111111111111",
             "recurring_collector": "0x2222222222222222222222222222222222222222",
+            "recurring_agreement_manager": "0x3333333333333333333333333333333333333333",
             "max_agreement_grt_per_30_days": 20000.0,
             "min_seconds_per_collection": 60,
             "max_seconds_per_collection": 3600,
@@ -1040,6 +1173,11 @@ mod tests {
             config.recurring_collector,
             address!("2222222222222222222222222222222222222222"),
             "recurring_collector mismatch"
+        );
+        assert_eq!(
+            config.recurring_agreement_manager,
+            address!("3333333333333333333333333333333333333333"),
+            "recurring_agreement_manager mismatch"
         );
         assert_eq!(
             config.max_agreement_grt_per_30_days, 20000.0,
@@ -1096,11 +1234,45 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_a_zero_manager_address() {
+        // tc-3: validate() is the only guard for the zero-manager-address
+        // footgun that downstream `.expect()`s rely on. Pin both outcomes so a
+        // later change cannot weaken the invariant unseen.
+        fn conf(manager: &str) -> DipsAgreementConfig {
+            let json = format!(
+                r#"{{
+                    "data_service": "0x1111111111111111111111111111111111111111",
+                    "recurring_collector": "0x2222222222222222222222222222222222222222",
+                    "recurring_agreement_manager": "{manager}",
+                    "min_seconds_per_collection": 60,
+                    "max_seconds_per_collection": 3600,
+                    "pricing_table": {{}}
+                }}"#
+            );
+            serde_json::from_str(&json).expect("deserialization")
+        }
+
+        assert!(
+            conf("0x0000000000000000000000000000000000000000")
+                .validate()
+                .is_err(),
+            "a zero manager address must be rejected"
+        );
+        assert!(
+            conf("0x3333333333333333333333333333333333333333")
+                .validate()
+                .is_ok(),
+            "a non-zero manager address is valid"
+        );
+    }
+
+    #[test]
     fn test_dips_agreement_config_defaults() {
         //* Arrange - Minimal JSON with defaults
         let json = r#"{
             "data_service": "0x1111111111111111111111111111111111111111",
             "recurring_collector": "0x2222222222222222222222222222222222222222",
+            "recurring_agreement_manager": "0x3333333333333333333333333333333333333333",
             "min_seconds_per_collection": 60,
             "max_seconds_per_collection": 3600,
             "pricing_table": {}
@@ -1123,6 +1295,10 @@ mod tests {
             config.max_agreement_grt_per_30_days, 20000.0,
             "max_agreement_grt_per_30_days default missing"
         );
+        assert_eq!(config.mass_unresponsive_trip_fraction, 0.50);
+        assert_eq!(config.mass_unresponsive_reset_fraction, 0.25);
+        assert_eq!(config.dips_accepting_snapshot_max_age_hours, 48);
+        assert_eq!(config.dips_accepting_cache_ttl_seconds, 300);
 
         // Test the From conversion - None should map to u64::MAX
         let (agreement_config, _) = <(
@@ -1218,8 +1394,7 @@ mod tests {
     fn test_chain_client_config_accepts_current_keys() {
         let json = r#"{
             "enabled": true,
-            "providers": ["http://chain:8545"],
-            "subgraph_service_address": "0x1111111111111111111111111111111111111111"
+            "providers": ["http://chain:8545"]
         }"#;
 
         let config: ChainClientConfig = serde_json::from_str(json).expect("deserialization failed");
@@ -1245,7 +1420,6 @@ mod tests {
                 r#"{{
                     "enabled": true,
                     "providers": ["http://chain:8545"],
-                    "subgraph_service_address": "0x1111111111111111111111111111111111111111",
                     {stale_key}
                 }}"#
             );

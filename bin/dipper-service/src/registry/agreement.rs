@@ -30,6 +30,9 @@ pub struct NewAgreementParams {
     pub indexer_id: IndexerId,
     pub indexer_url: Url,
     pub terms: Terms,
+    /// EIP-712 terms hash for the protocol-managed cancel path. `None` only for
+    /// pre-migration rows.
+    pub terms_version_hash: Option<Vec<u8>>,
 }
 
 /// Which party cancelled an agreement. Passed to `apply_reconciliation`
@@ -113,15 +116,23 @@ pub trait AgreementRegistry {
 
     /// Get declined `CanceledByIndexer`/`Expired`/`Rejected` indexers grouped by
     /// deployment. Each rejection reason gets its own exclusion window (price,
-    /// transient, escrow, uncertain, or default); see the `rejection_reason` constants.
+    /// transient, uncertain, or default); see the `rejection_reason` constants.
     async fn get_declined_indexers_by_deployment(
         &self,
         default_lookback_days: i32,
         price_lookback_days: i32,
         transient_lookback_minutes: i32,
-        escrow_lookback_minutes: i32,
         uncertain_lookback_days: i32,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>;
+
+    /// Get indexers with a recent `Unresponsive` agreement on `chain_id`. The
+    /// result is skipped for that chain's deployments for `lookback_days` after
+    /// the indexer last failed to respond there.
+    async fn get_unresponsive_indexers(
+        &self,
+        lookback_days: i32,
+        chain_id: ChainId,
+    ) -> RegistryResult<Vec<IndexerId>>;
 
     /// Get all agreements by associated indexing request ID.
     async fn get_indexing_agreements_by_indexing_request_id(
@@ -158,11 +169,11 @@ pub trait AgreementRegistry {
         old_agreement_id: IndexingAgreementId,
     ) -> RegistryResult<IndexingAgreementId>;
 
-    /// Mark an indexing agreement as `DELIVERY_FAILED`.
+    /// Mark an indexing agreement as `UNRESPONSIVE`.
     ///
     /// If there is no indexing agreement with the given ID, or if the agreement is not in the
     /// `CREATED` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
-    async fn mark_indexing_agreement_as_delivery_failed(
+    async fn mark_indexing_agreement_as_unresponsive(
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;
@@ -289,6 +300,18 @@ pub trait AgreementRegistry {
         batch_size: i64,
     ) -> RegistryResult<Vec<IndexingAgreement>>;
 
+    /// Distinct service-provider addresses whose protocol-manager escrow may
+    /// need on-chain reconciliation. Empty by default so mocks need not override.
+    async fn get_providers_for_escrow_reconciliation(
+        &self,
+        _limit: i64,
+    ) -> RegistryResult<Vec<Address>>
+    where
+        Self: Sync,
+    {
+        Ok(Vec::new())
+    }
+
     /// Update the sync progress for an agreement.
     ///
     /// Called when the liveness checker observes the block height has changed
@@ -398,6 +421,10 @@ pub struct IndexingAgreement {
 
     /// Reason the agreement was rejected (only set when status is Rejected).
     pub rejection_reason: Option<String>,
+
+    /// EIP-712 terms hash stored at offer time, used by the protocol-managed
+    /// cancel path. `None` only for pre-migration rows.
+    pub terms_version_hash: Option<Vec<u8>>,
 }
 
 /// The _indexing agreement_ indexer information.
@@ -473,7 +500,7 @@ pub enum Status {
     /// The [`IndexingAgreement`] was registered, but the agreement request failed.
     ///
     /// This is a terminal state.
-    DeliveryFailed,
+    Unresponsive,
 
     /// The associated [`IndexingRequest`] got cancelled.
     ///
@@ -520,7 +547,7 @@ impl std::fmt::Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let status = match self {
             Status::Created => "CREATED",
-            Status::DeliveryFailed => "DELIVERY_FAILED",
+            Status::Unresponsive => "UNRESPONSIVE",
             Status::CanceledByRequester => "CANCELED_BY_REQUESTER",
             Status::CanceledByIndexer => "CANCELED_BY_INDEXER",
             Status::Expired => "EXPIRED",
@@ -543,9 +570,7 @@ impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
             updated_at: value.updated_at,
             status: match value.status {
                 dipper_pgregistry::IndexingAgreementStatus::Created => Status::Created,
-                dipper_pgregistry::IndexingAgreementStatus::DeliveryFailed => {
-                    Status::DeliveryFailed
-                }
+                dipper_pgregistry::IndexingAgreementStatus::Unresponsive => Status::Unresponsive,
                 dipper_pgregistry::IndexingAgreementStatus::CanceledByRequester => {
                     Status::CanceledByRequester
                 }
@@ -570,6 +595,7 @@ impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
             last_block_height: value.last_block_height,
             last_progress_at: value.last_progress_at,
             rejection_reason: value.rejection_reason,
+            terms_version_hash: value.terms_version_hash,
         })
     }
 }

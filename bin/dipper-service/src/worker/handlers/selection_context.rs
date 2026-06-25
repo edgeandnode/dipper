@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use dipper_iisa::SelectionContext;
-use thegraph_core::{DeploymentId, IndexerId};
+use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::ChainId};
 
 use crate::{
     network::service::entity_count_cache::EntityCountCache,
@@ -33,10 +33,11 @@ pub async fn gather_selection_context<R>(
     declined_indexer_lookback_days: i32,
     price_rejection_lookback_days: i32,
     transient_rejection_lookback_minutes: i32,
-    escrow_rejection_lookback_minutes: i32,
     uncertain_rejection_lookback_days: i32,
+    unresponsive_indexer_lookback_days: i32,
+    deployment_chain_id: ChainId,
     entity_count_cache: &EntityCountCache,
-) -> JobResult<SelectionContext>
+) -> JobResult<(SelectionContext, Vec<IndexerId>)>
 where
     R: AgreementRegistry + IndexerDenylistRegistry,
 {
@@ -62,7 +63,6 @@ where
             declined_indexer_lookback_days,
             price_rejection_lookback_days,
             transient_rejection_lookback_minutes,
-            escrow_rejection_lookback_minutes,
             uncertain_rejection_lookback_days,
         )
         .await
@@ -74,18 +74,33 @@ where
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
+    // Recently-unresponsive indexers for this chain, deduped against the base denylist.
+    // Returned to the caller (not merged here) so the per-chain breaker can apply this
+    // exclusion or suppress it during a dipper-side outage.
+    let already_denied: std::collections::HashSet<_> = indexer_denylist.iter().copied().collect();
+    let unresponsive_indexers: Vec<IndexerId> = registry
+        .get_unresponsive_indexers(unresponsive_indexer_lookback_days, deployment_chain_id)
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?
+        .into_iter()
+        .filter(|id| !already_denied.contains(id))
+        .collect();
+
     // Compute optimistic DIPs fees from active agreements, enriched with
     // entity counts from the shared cache when available.
     let optimistic_dips_fees = compute_optimistic_dips_fees(registry, entity_count_cache).await?;
 
-    Ok(SelectionContext {
-        existing_indexers,
-        pending_agreements,
-        declined_indexers,
-        indexer_denylist,
-        optimistic_dips_fees,
-        ..Default::default()
-    })
+    Ok((
+        SelectionContext {
+            existing_indexers,
+            pending_agreements,
+            declined_indexers,
+            indexer_denylist,
+            optimistic_dips_fees,
+            ..Default::default()
+        },
+        unresponsive_indexers,
+    ))
 }
 
 /// Compute optimistic DIPs fees per indexer in GRT per 28 days.

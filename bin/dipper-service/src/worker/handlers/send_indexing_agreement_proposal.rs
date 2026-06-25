@@ -42,9 +42,9 @@ pub struct Message {
 /// This function sends a SignedRCA to the indexer and processes the response:
 /// - `Accept`: The indexer received the proposal and may accept on-chain before the deadline.
 ///   Agreement stays in `Created` until an on-chain acceptance event is observed.
-/// - `Reject`: The indexer explicitly rejected the proposal. Agreement is marked as
-///   `DeliveryFailed` and the indexing request is reassessed to find replacement indexers.
-/// - Network error: Same handling as `Reject` - mark failed and reassess.
+/// - `Reject`: The indexer explicitly rejected the proposal. Agreement is marked
+///   `Rejected` and the indexing request is reassessed to find replacement indexers.
+/// - Network error / no response: Agreement is marked `Unresponsive` and reassessed.
 pub async fn handle<R, W, C>(
     ctx: Ctx<R, W, C>,
     Message {
@@ -119,10 +119,7 @@ where
                 tracing::info!(
                     agreement_id = %agreement_id,
                     indexing_request_id = %indexing_request_id,
-                    old_status = "CREATED",
-                    new_status = "CREATED",
-                    reason = "accepted_by_indexer",
-                    "agreement state transition (submitting offer on-chain)"
+                    "Indexer accepted proposal off-chain; submitting offer on-chain (agreement stays CREATED until the chain listener observes on-chain acceptance)"
                 );
 
                 // Indexer accepted the terms. Submit the on-chain offer so
@@ -228,8 +225,8 @@ where
                 agreement_id = %agreement_id,
                 indexing_request_id = %indexing_request_id,
                 old_status = "CREATED",
-                new_status = "DELIVERY_FAILED",
-                reason = "delivery_failed",
+                new_status = "UNRESPONSIVE",
+                reason = "unresponsive",
                 "agreement state transition"
             );
             tracing::error!(
@@ -306,10 +303,10 @@ where
     tracing::trace!(
         indexing_request_id=%indexing_request_id,
         agreement_id=%agreement_id,
-        "Marking indexing agreement as DELIVERY_FAILED"
+        "Marking indexing agreement as UNRESPONSIVE"
     );
     ctx.registry
-        .mark_indexing_agreement_as_delivery_failed(agreement_id)
+        .mark_indexing_agreement_as_unresponsive(agreement_id)
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
@@ -443,11 +440,17 @@ mod tests {
             _default_lookback_days: i32,
             _price_lookback_days: i32,
             _transient_lookback_minutes: i32,
-            _escrow_lookback_minutes: i32,
             _uncertain_lookback_days: i32,
         ) -> crate::registry::Result<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>
         {
             Ok(std::collections::HashMap::new())
+        }
+        async fn get_unresponsive_indexers(
+            &self,
+            _lookback_days: i32,
+            _chain_id: thegraph_core::alloy::primitives::ChainId,
+        ) -> crate::registry::Result<Vec<IndexerId>> {
+            Ok(vec![])
         }
 
         async fn get_indexing_agreements_by_indexing_request_id(
@@ -479,7 +482,7 @@ mod tests {
             Ok(IndexingAgreementId::from_bytes(rand::random()))
         }
 
-        async fn mark_indexing_agreement_as_delivery_failed(
+        async fn mark_indexing_agreement_as_unresponsive(
             &self,
             id: &IndexingAgreementId,
         ) -> crate::registry::Result<()> {
@@ -877,6 +880,7 @@ mod tests {
             last_block_height: None,
             last_progress_at: None,
             rejection_reason: None,
+            terms_version_hash: None,
         }
     }
 

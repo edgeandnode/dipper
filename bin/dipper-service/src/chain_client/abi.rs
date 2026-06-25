@@ -3,45 +3,8 @@
 use thegraph_core::alloy::sol;
 
 sol! {
-    /// SubgraphService contract interface (minimal subset for agreement cancellation).
-    ///
-    /// The full contract is at
-    /// `packages/subgraph-service/contracts/SubgraphService.sol` in
-    /// `graphprotocol/contracts`. This interface only includes the methods
-    /// needed for dipper's on-chain operations.
-    #[allow(missing_docs)]
-    interface ISubgraphService {
-        /// Cancel an indexing agreement as the payer.
-        ///
-        /// This caps the collectible fees at the cancellation timestamp and
-        /// emits an `IndexingAgreementCanceled` event.
-        ///
-        /// Can only be called by the original payer of the agreement.
-        function cancelIndexingAgreementByPayer(bytes16 agreementId) external;
-
-        /// Reverted by SubgraphService when the agreement is not in an active
-        /// state at the moment of the call. The cancel path treats this as an
-        /// idempotent no-op: the agreement is already canceled (or settled or
-        /// expired) on-chain, so resubmission is unnecessary. Dipper matches
-        /// the 4-byte selector to drop into the success branch.
-        error IndexingAgreementNotActive(bytes16 agreementId);
-    }
-
-    /// RecurringCollector contract interface (minimal subset for offer-based RCA authorization).
-    ///
-    /// The full contract is at
-    /// `packages/horizon/contracts/payments/collectors/RecurringCollector.sol`
-    /// in `graphprotocol/contracts`.
-    ///
-    /// The `offer` function stores an RCA offer on-chain keyed by agreement ID.
-    /// Indexers later call `accept(rca, "")` with an empty signature, and the
-    /// contract verifies the stored offer hash matches `hashRCA(rca)`.
-    /// `msg.sender` of `offer()` must equal `rca.payer`.
-    ///
-    /// The stored offer mapping lives inside an ERC-7201 namespaced storage
-    /// struct and has no public getter, so there is no RPC-level idempotency
-    /// check available. Dipper queries the indexing-payments subgraph's
-    /// Offer entity instead.
+    /// RecurringCollector contract interface (the EIP-712 domain read dipper
+    /// needs). Full contract: `RecurringCollector.sol` in `graphprotocol/contracts`.
     #[allow(missing_docs)]
     interface IRecurringCollector {
         /// Agreement details returned from `offer()`.
@@ -70,6 +33,14 @@ sol! {
             external
             returns (AgreementDetails memory details);
 
+        /// Read-only details for the agreement at a version index. Index 0 is
+        /// VERSION_CURRENT (the active or pre-acceptance terms); the returned
+        /// `state` bitmask says whether the agreement is still live on-chain.
+        function getAgreementDetails(bytes16 agreementId, uint256 index)
+            external
+            view
+            returns (AgreementDetails memory);
+
         /// Emitted when `offer()` stores a new or updated RCA offer.
         event OfferStored(
             bytes16 indexed agreementId,
@@ -93,5 +64,49 @@ sol! {
                 bytes32 salt,
                 uint256[] memory extensions
             );
+    }
+
+    /// RecurringAgreementManager (RAM) contract interface (minimal subset). In
+    /// protocol-managed mode the manager is the RCA payer; dipper drives it as an
+    /// unsigned operator while the manager funds escrow.
+    #[allow(missing_docs)]
+    interface IRecurringAgreementManager {
+        /// Offer an agreement through the manager. `offerType` mirrors
+        /// `RecurringCollector` (1 = OFFER_TYPE_NEW); `offerData` is the
+        /// ABI-encoded `RecurringCollectionAgreement` whose payer is this manager.
+        function offerAgreement(address collector, uint8 offerType, bytes calldata offerData)
+            external
+            returns (bytes16 agreementId);
+
+        /// Cancel an agreement through the manager. `versionHash` is the EIP-712
+        /// terms hash the collector stored; `options` selects the cancel scope
+        /// (1 = active, 2 = pending).
+        function cancelAgreement(address collector, bytes16 agreementId, bytes32 versionHash, uint16 options)
+            external;
+
+        /// Rebalance a provider's escrow across all its agreements, draining and
+        /// cleaning up ended or canceled ones. Permissionless and idempotent;
+        /// returns whether the provider is still tracked afterwards.
+        function reconcileProvider(address collector, address provider)
+            external
+            returns (bool tracked);
+
+        /// Reconcile a single agreement's escrow through the manager.
+        /// Permissionless and idempotent; returns whether the agreement is
+        /// still tracked afterwards.
+        function reconcileAgreement(address collector, bytes16 agreementId)
+            external
+            returns (bool tracked);
+
+        /// Emitted when the manager stores a new agreement.
+        event AgreementAdded(
+            bytes16 indexed agreementId,
+            address indexed collector,
+            address indexed dataService,
+            address provider
+        );
+
+        /// Emitted when the manager cancels an agreement.
+        event AgreementRemoved(bytes16 indexed agreementId);
     }
 }

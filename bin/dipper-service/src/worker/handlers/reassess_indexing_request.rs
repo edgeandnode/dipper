@@ -32,14 +32,22 @@ use crate::{
     },
     signing::eip712::Eip712Signer,
     worker::{
+        DipsAcceptingCache, UnresponsiveBreaker,
         result::{JobError, JobResult},
         service::WorkerQueue,
     },
 };
 
+/// RCA `conditions` bit that flags the RecurringAgreementManager contract as the
+/// agreement owner. Matches the on-chain `uint16` width.
+const CONDITION_AGREEMENT_OWNER: u16 = 1u16 << 1;
+
 pub struct Ctx<R, W, I, T> {
     pub signer: Arc<Eip712Signer>,
     pub agreement_conf: Arc<IndexingAgreementConfig>,
+    /// EIP-712 domain the RCA terms hash is computed under, to persist
+    /// `terms_version_hash` for the cancel path.
+    pub rca_domain: Arc<std::sync::RwLock<thegraph_core::alloy::sol_types::Eip712Domain>>,
     pub chain_price: Arc<BTreeMap<ChainId, IndexingAgreementChainPrices>>,
     pub registry: R,
     pub network: NetworkProviderService,
@@ -60,6 +68,13 @@ pub struct Ctx<R, W, I, T> {
     /// is true. `None` disables the bypass path even if the flag is set
     /// (handler falls back to wall clock with a warning).
     pub chain_listener_chain_id: Option<u64>,
+    /// Global reassess lock; only one reassessment runs at a time across all
+    /// worker loops (see `crate::worker::context::ReassessLock`).
+    pub reassess_lock: crate::worker::context::ReassessLock,
+    /// Mass-unresponsive circuit breaker (see its module).
+    pub unresponsive_breaker: Arc<UnresponsiveBreaker>,
+    /// Cache of IISA's DIPs-accepting set (the breaker's denominator).
+    pub dips_accepting_cache: DipsAcceptingCache,
 }
 
 /// Reassess an indexing request against the current IISA target state.
@@ -98,29 +113,80 @@ where
     I: CandidateSelection,
     T: ChainClient,
 {
+    // Only one reassessment runs globally at a time; if another loop holds the
+    // lock this pass would diff the same baseline, so defer ~1s rather than park
+    // this loop. Deferral isn't a failure: no backoff, no attempt count.
+    let _reassess_guard = match ctx.reassess_lock.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => return Err(JobError::Deferred(Duration::from_secs(1))),
+    };
+
     // Gather load balancing context for IISA, including chain/ceiling info
-    let mut context = gather_selection_context(
+    let (mut context, unresponsive) = gather_selection_context(
         &ctx.registry,
         deployment_id,
         ctx.agreement_conf.declined_indexer_lookback_days(),
         ctx.agreement_conf.price_rejection_lookback_days(),
         ctx.agreement_conf.transient_rejection_lookback_minutes(),
-        ctx.agreement_conf.escrow_rejection_lookback_minutes(),
         ctx.agreement_conf.uncertain_rejection_lookback_days(),
+        ctx.agreement_conf.unresponsive_indexer_lookback_days(),
+        *deployment_chain_id,
         &ctx.entity_count_cache,
     )
     .await?;
 
-    // Map numeric chain ID to chain name for IISA ceiling/filtering
+    // The chain name is required for IISA filtering, pricing and the breaker; an
+    // unresolved chain means a missing additional_networks entry, so fail loudly
+    // rather than select without a chain filter or price ceiling.
     let chain_name = super::selection_helpers::resolve_chain_name(
         *deployment_chain_id,
         &ctx.networks_registry,
         &ctx.additional_networks,
-    );
-    if let Some(name) = &chain_name {
-        context.chain_id = Some(name.clone());
-        context.max_grt_per_30_days = ctx.agreement_conf.max_grt_per_30_days().get(name).copied();
+    )
+    .ok_or_else(|| {
+        JobError::Fatal(anyhow::anyhow!(
+            "no network name for chain id {}; add it to additional_networks",
+            *deployment_chain_id
+        ))
+    })?;
+
+    // Cap the breaker's pool to indexers dipper could actually pay on this chain, so
+    // the denominator matches the indexers the unresponsive numerator is drawn from.
+    let max_grt_per_30_days = ctx
+        .agreement_conf
+        .max_grt_per_30_days()
+        .get(&chain_name)
+        .copied();
+
+    // Per-chain mass-unresponsive breaker: when a large fraction of this chain's
+    // DIPs-accepting pool is unresponsive at once it's a dipper-side outage, so
+    // suppress this chain's exclusion rather than benching everyone serving it.
+    if !unresponsive.is_empty() {
+        let snapshot = ctx
+            .dips_accepting_cache
+            .get_or_fetch(&ctx.iisa, &chain_name, max_grt_per_30_days)
+            .await;
+        let suppress = ctx.unresponsive_breaker.evaluate(
+            &chain_name,
+            &unresponsive,
+            snapshot.as_deref(),
+            ctx.agreement_conf.mass_unresponsive_trip_fraction(),
+            ctx.agreement_conf.mass_unresponsive_reset_fraction(),
+            ctx.agreement_conf.dips_accepting_snapshot_max_age_hours(),
+        );
+        if suppress {
+            tracing::debug!(
+                chain = chain_name.as_str(),
+                would_bench = unresponsive.len(),
+                "unresponsive breaker tripped; skipping this chain's unresponsive exclusion"
+            );
+        } else {
+            context.indexer_denylist.extend(unresponsive);
+        }
     }
+
+    context.chain_id = Some(chain_name.clone());
+    context.max_grt_per_30_days = max_grt_per_30_days;
 
     // Select the target group of indexers via IISA. If IISA is unreachable
     // we retry with exponential backoff rather than falling back to a
@@ -286,8 +352,12 @@ where
         // gather data on how indexers actually exercise the cap.
         let agreement_cap_grt = ctx.agreement_conf.max_agreement_grt_per_30_days();
 
+        // The RecurringAgreementManager contract is the payer and is flagged as
+        // the agreement owner via the conditions bit.
+        let payer = ctx.agreement_conf.recurring_agreement_manager();
+
         let terms = IndexingAgreementTerms {
-            payer: ctx.signer.address(),
+            payer,
             service_provider: candidate.id.into_inner(),
             data_service: ctx.agreement_conf.data_service(),
             ends_at: now.saturating_add(ctx.agreement_conf.duration_seconds()),
@@ -297,7 +367,7 @@ where
             min_seconds_per_collection: ctx.agreement_conf.min_seconds_per_collection(),
             max_seconds_per_collection: ctx.agreement_conf.max_seconds_per_collection(),
             deadline: now.saturating_add(ctx.agreement_conf.deadline_seconds()),
-            conditions: 0,
+            conditions: CONDITION_AGREEMENT_OWNER,
             metadata: terms_metadata,
         };
 
@@ -305,6 +375,14 @@ where
         // which becomes the agreement's primary key.
         let nonce_uuid = uuid::Uuid::now_v7();
         let agreement_id_candidate = compute_on_chain_id(nonce_uuid, &terms);
+
+        // Persist the EIP-712 terms hash now so the cancel path can pass it to
+        // the manager's cancelAgreement().
+        let terms_version_hash = Some(compute_terms_version_hash(
+            nonce_uuid,
+            &terms,
+            &ctx.rca_domain,
+        ));
 
         // If this add replaces an old agreement, register both atomically
         // so a crash cannot leave an agreement without its pending cancellation.
@@ -320,6 +398,7 @@ where
                         indexer_id: candidate.id,
                         indexer_url: candidate.url.clone(),
                         terms,
+                        terms_version_hash,
                     },
                     old_agreement.id,
                 )
@@ -359,6 +438,7 @@ where
                     indexer_id: candidate.id,
                     indexer_url: candidate.url.clone(),
                     terms,
+                    terms_version_hash,
                 })
                 .await
             {
@@ -428,10 +508,12 @@ where
         );
 
         if needs_on_chain_cancel {
-            match ctx
-                .chain_client
-                .cancel_indexing_agreement_by_payer(old_agreement.id.as_bytes())
-                .await
+            match crate::cancel_dispatch::cancel_agreement_on_chain(
+                &ctx.chain_client,
+                old_agreement,
+                &ctx.agreement_conf,
+            )
+            .await
             {
                 Ok(Some(tx_hash)) => {
                     tracing::info!(
@@ -529,6 +611,24 @@ where
     Ok(())
 }
 
+/// Compute the EIP-712 terms hash persisted for the protocol-managed cancel
+/// path, reusing the proposal signer's RCA-to-sol conversion and signing-hash so
+/// the value matches the hash dipper signs over.
+fn compute_terms_version_hash(
+    nonce_uuid: uuid::Uuid,
+    terms: &IndexingAgreementTerms,
+    rca_domain: &std::sync::RwLock<thegraph_core::alloy::sol_types::Eip712Domain>,
+) -> Vec<u8> {
+    use thegraph_core::alloy::sol_types::SolStruct;
+
+    // versionHash is the domain-separated EIP-712 signing hash, matching
+    // RecurringCollector._hashRCA (the value it stores and checks on cancel);
+    // frozen by terms_version_hash_matches_frozen_golden_value.
+    let (rca, _) = crate::indexer_rpc_client::into_sol_rca(nonce_uuid, terms.clone());
+    let domain = rca_domain.read().expect("RCA domain lock poisoned").clone();
+    rca.eip712_signing_hash(&domain).to_vec()
+}
+
 /// Pick the clock to denominate `terms.deadline` and `terms.ends_at`.
 ///
 /// When `bypass` is false (production), return wall clock — matching
@@ -594,5 +694,94 @@ where
                 Duration::from_secs(5),
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod terms_hash_tests {
+    use std::sync::RwLock;
+
+    use thegraph_core::alloy::{
+        primitives::{Address, B256, U256, b256},
+        sol_types::Eip712Domain,
+    };
+
+    use super::compute_terms_version_hash;
+    use crate::registry::{IndexingAgreementTerms, IndexingAgreementTermsMetadata};
+
+    fn fixed_nonce() -> uuid::Uuid {
+        uuid::Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef)
+    }
+
+    fn fixed_domain() -> Eip712Domain {
+        Eip712Domain::new(
+            Some("RecurringCollector".into()),
+            Some("1".into()),
+            Some(U256::from(1u64)),
+            Some(Address::repeat_byte(0x42)),
+            None,
+        )
+    }
+
+    fn fixed_terms() -> IndexingAgreementTerms {
+        IndexingAgreementTerms {
+            payer: Address::repeat_byte(0x01),
+            service_provider: Address::repeat_byte(0x02),
+            data_service: Address::repeat_byte(0x03),
+            deadline: 1_700_000_000,
+            ends_at: 1_700_086_400,
+            max_initial_tokens: U256::from(1_000u64),
+            max_ongoing_tokens_per_second: U256::from(5u64),
+            min_seconds_per_collection: 60,
+            max_seconds_per_collection: 3_600,
+            conditions: 2,
+            metadata: IndexingAgreementTermsMetadata {
+                tokens_per_second: U256::from(7u64),
+                tokens_per_entity_per_second: U256::from(3u64),
+                subgraph_deployment_id: "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+                    .parse()
+                    .unwrap(),
+                protocol_network: 1u64,
+                chain_id: 1u64,
+            },
+        }
+    }
+
+    #[test]
+    fn terms_version_hash_matches_frozen_golden_value() {
+        // tc-2: freeze the exact EIP-712 terms hash. Every protocol-managed
+        // cancel hands this 32-byte value to the collector as the versionHash it
+        // checks against its own _hashRCA, so a silent encoding drift must fail.
+        let hash =
+            compute_terms_version_hash(fixed_nonce(), &fixed_terms(), &RwLock::new(fixed_domain()));
+        assert_eq!(hash.len(), 32);
+        assert_eq!(
+            B256::from_slice(&hash),
+            b256!("45b21c6b2757363fa9aa2219cb378a623fbf9d50204b6deab2368fb09512f31e"),
+        );
+    }
+
+    #[test]
+    fn terms_version_hash_is_input_sensitive() {
+        let base =
+            compute_terms_version_hash(fixed_nonce(), &fixed_terms(), &RwLock::new(fixed_domain()));
+
+        let other_nonce = compute_terms_version_hash(
+            uuid::Uuid::from_u128(0xdead_beef),
+            &fixed_terms(),
+            &RwLock::new(fixed_domain()),
+        );
+        assert_ne!(base, other_nonce, "nonce must change the hash");
+
+        let other_domain = Eip712Domain::new(
+            Some("RecurringCollector".into()),
+            Some("2".into()),
+            Some(U256::from(1u64)),
+            Some(Address::repeat_byte(0x42)),
+            None,
+        );
+        let other =
+            compute_terms_version_hash(fixed_nonce(), &fixed_terms(), &RwLock::new(other_domain));
+        assert_ne!(base, other, "domain must change the hash");
     }
 }

@@ -18,6 +18,7 @@ mod abi;
 mod client;
 mod eip5267;
 mod gas;
+mod manager_role;
 mod rpc_provider;
 
 use std::sync::Arc;
@@ -26,6 +27,7 @@ use async_trait::async_trait;
 pub use client::AlloyChainClient;
 use dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement;
 pub use eip5267::{fetch_rca_eip712_domain, refresh_rca_eip712_domain};
+pub use manager_role::verify_signer_has_agreement_manager_role;
 use thegraph_core::alloy::primitives::{B256, Bytes};
 
 /// Error type for chain client operations
@@ -39,36 +41,28 @@ pub enum ChainClientError {
     #[error("configuration error: {0}")]
     ConfigError(String),
 
+    /// The agreement has no 32-byte `terms_version_hash`, so it cannot be
+    /// canceled via the RecurringAgreementManager. Permanent and per-agreement
+    /// — distinct from a globally-disabled chain client; never retry or abandon.
+    #[error("agreement {agreement_id} has no 32-byte terms_version_hash for manager cancel")]
+    MissingTermsVersionHash { agreement_id: String },
+
+    /// A manager-routed cancel tx mined, but a follow-up read shows the
+    /// agreement is still active on-chain (stale/wrong hash, unknown id, or
+    /// already-terminal made the cancel a silent no-op). Callers retry.
+    #[error("manager cancel for agreement {agreement_id} mined but the agreement is still active")]
+    CancelNotConfirmed { agreement_id: String },
+
     /// RPC error
     #[error("RPC error: {0}")]
     RpcError(#[source] anyhow::Error),
 
-    /// Subgraph reports a stored offer whose hash does not match the locally-computed hash.
-    ///
-    /// Indicates the agreement terms drifted between a prior submission and
-    /// the current invocation (e.g. a stale nonce or deadline). Since the
-    /// RecurringCollector stores offers inside a namespaced storage struct
-    /// with no public getter, dipper treats the indexing-payments-subgraph's
-    /// Offer entity as the source of truth for this check. When a mismatch
-    /// is detected, dipper marks the agreement as delivery-failed and bails;
-    /// the reassignment service finds a replacement.
-    #[error(
-        "offer hash mismatch for agreement {agreement_id}: stored={stored}, expected={expected}"
-    )]
-    OfferHashMismatch {
-        agreement_id: String,
-        stored: B256,
-        expected: B256,
-    },
-
     /// Tx was accepted by the RPC (returned a hash) but no receipt appeared
     /// within the poll window.
     ///
-    /// In practice this means the tx was evicted from the mempool before
-    /// being mined — typically because another tx from the same sender
-    /// claimed the same nonce with a higher fee. Callers should re-sync
-    /// their nonce and resubmit; `post_offer`'s subgraph idempotency check
-    /// will short-circuit if the original tx eventually did land.
+    /// In practice the tx was evicted from the mempool — typically a same-sender
+    /// tx claimed the nonce with a higher fee. Callers re-sync the nonce and
+    /// resubmit; there is no idempotency guard, so a replay re-sends the offer.
     #[error("tx {tx_hash} did not mine within the receipt-poll window")]
     TxDropped { tx_hash: B256 },
 
@@ -88,39 +82,41 @@ pub enum ChainClientError {
 /// Trait for sending on-chain transactions related to indexing agreements
 #[async_trait]
 pub trait ChainClient {
-    /// Cancel an indexing agreement as the payer.
-    ///
-    /// Calls `cancelIndexingAgreementByPayer(agreementId)` on the SubgraphService contract.
-    /// The `agreement_id` is the keccak-derived bytes16 stored on-chain. The call
-    /// caps the collectible fees at the cancellation timestamp.
-    ///
-    /// Returns:
-    /// - `Ok(Some(tx_hash))` when a transaction was submitted.
-    /// - `Ok(None)` when the agreement is already canceled on-chain (the
-    ///   contract reverts gas estimation with `IndexingAgreementNotActive`).
-    ///   Callers should treat this as an idempotent success and proceed with
-    ///   any local-state cleanup that would have followed a real submission.
-    async fn cancel_indexing_agreement_by_payer(
-        &self,
-        agreement_id: &[u8; 16],
-    ) -> Result<Option<B256>, ChainClientError>;
-
-    /// Submit an RCA offer on-chain via `RecurringCollector.offer(OFFER_TYPE_NEW, ...)`.
-    ///
-    /// Crash-recovery idempotency is handled via a query to the
-    /// indexing-payments subgraph (not an RPC call): if a matching
-    /// `Offer` entity already exists the method returns `Ok(None)` without
-    /// sending a transaction. If an offer exists with a different hash,
-    /// returns `OfferHashMismatch`. Otherwise submits an `offer()` transaction
-    /// and returns `Ok(Some(tx_hash))`. When no subgraph URL is configured,
-    /// the idempotency check is skipped and every call unconditionally submits.
-    ///
-    /// `msg.sender` of the transaction must equal `rca.payer` or the contract
-    /// reverts with `RecurringCollectorUnauthorizedCaller`.
-    async fn post_offer(
+    /// Offer an RCA via `RecurringAgreementManager.offerAgreement` (manager as
+    /// payer); returns the tx hash once mined. No crash-recovery idempotency,
+    /// so a re-run re-sends — pending validation of the contract's re-offer path.
+    async fn offer_via_manager(
         &self,
         rca: &RecurringCollectionAgreement,
     ) -> Result<Option<B256>, ChainClientError>;
+
+    /// Cancel an RCA via `RecurringAgreementManager.cancelAgreement`. Returns
+    /// the tx hash when a transaction was submitted, or `Ok(None)` when the
+    /// agreement is already canceled on-chain.
+    async fn cancel_via_manager(
+        &self,
+        collector: thegraph_core::alloy::primitives::Address,
+        agreement_id: &[u8; 16],
+        version_hash: B256,
+        options: u16,
+    ) -> Result<Option<B256>, ChainClientError>;
+
+    /// Reconcile a provider's escrow via the RecurringAgreementManager
+    /// (`AgreementManager` mode) by calling `reconcileProvider(collector,
+    /// provider)`. Permissionless and idempotent; `Ok(Some(tx_hash))` on submit.
+    async fn reconcile_provider(
+        &self,
+        collector: thegraph_core::alloy::primitives::Address,
+        provider: thegraph_core::alloy::primitives::Address,
+    ) -> Result<Option<B256>, ChainClientError>;
+
+    /// Read whether the agreement is still live on-chain (terms accepted and no
+    /// cancellation notice given) via the RecurringCollector's
+    /// `getAgreementDetails(id, VERSION_CURRENT)`.
+    async fn agreement_still_active(
+        &self,
+        agreement_id: &[u8; 16],
+    ) -> Result<bool, ChainClientError>;
 }
 
 /// Blanket impl for Arc-wrapped trait objects.
@@ -129,19 +125,37 @@ pub trait ChainClient {
 /// chain client, enabling runtime selection between implementations.
 #[async_trait]
 impl<T: ChainClient + Send + Sync + ?Sized> ChainClient for Arc<T> {
-    async fn cancel_indexing_agreement_by_payer(
-        &self,
-        agreement_id: &[u8; 16],
-    ) -> Result<Option<B256>, ChainClientError> {
-        (**self)
-            .cancel_indexing_agreement_by_payer(agreement_id)
-            .await
-    }
-
-    async fn post_offer(
+    async fn offer_via_manager(
         &self,
         rca: &RecurringCollectionAgreement,
     ) -> Result<Option<B256>, ChainClientError> {
-        (**self).post_offer(rca).await
+        (**self).offer_via_manager(rca).await
+    }
+
+    async fn cancel_via_manager(
+        &self,
+        collector: thegraph_core::alloy::primitives::Address,
+        agreement_id: &[u8; 16],
+        version_hash: B256,
+        options: u16,
+    ) -> Result<Option<B256>, ChainClientError> {
+        (**self)
+            .cancel_via_manager(collector, agreement_id, version_hash, options)
+            .await
+    }
+
+    async fn reconcile_provider(
+        &self,
+        collector: thegraph_core::alloy::primitives::Address,
+        provider: thegraph_core::alloy::primitives::Address,
+    ) -> Result<Option<B256>, ChainClientError> {
+        (**self).reconcile_provider(collector, provider).await
+    }
+
+    async fn agreement_still_active(
+        &self,
+        agreement_id: &[u8; 16],
+    ) -> Result<bool, ChainClientError> {
+        (**self).agreement_still_active(agreement_id).await
     }
 }

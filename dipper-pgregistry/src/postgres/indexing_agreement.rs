@@ -21,6 +21,7 @@ impl sqlx::FromRow<'_, PgRow> for IndexingAgreement {
         let last_block_height: Option<i64> = row.try_get("last_block_height")?;
         let last_progress_at = row.try_get("last_progress_at")?;
         let rejection_reason: Option<String> = row.try_get("rejection_reason")?;
+        let terms_version_hash: Option<Vec<u8>> = row.try_get("terms_version_hash")?;
 
         Ok(Self {
             id,
@@ -34,6 +35,7 @@ impl sqlx::FromRow<'_, PgRow> for IndexingAgreement {
             last_block_height: last_block_height.map(|v| v as u64),
             last_progress_at,
             rejection_reason,
+            terms_version_hash,
         })
     }
 }

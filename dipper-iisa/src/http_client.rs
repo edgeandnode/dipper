@@ -18,7 +18,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use thegraph_core::{DeploymentId, IndexerId};
 
-use crate::api::{CandidateSelection, SelectedIndexer, SelectionContext, SelectionError};
+use crate::api::{
+    CandidateSelection, DipsAcceptingSnapshot, SelectedIndexer, SelectionContext, SelectionError,
+};
 
 /// Configuration for the HTTP client.
 #[derive(Debug, Clone)]
@@ -32,6 +34,10 @@ pub struct HttpClientConfig {
     /// This is the number of *additional* attempts after the initial request fails.
     /// For example, `max_retries = 3` means up to 4 total attempts (1 initial + 3 retries).
     pub max_retries: u32,
+
+    /// Bearer token for the authenticated `GET /dips-indexers` endpoint. `None`
+    /// omits the header (local dev where IISA auth is off).
+    pub push_token: Option<String>,
 }
 
 impl Default for HttpClientConfig {
@@ -40,6 +46,7 @@ impl Default for HttpClientConfig {
             request_timeout: Duration::from_secs(30),
             connect_timeout: Duration::from_secs(10),
             max_retries: 3,
+            push_token: None,
         }
     }
 }
@@ -122,6 +129,15 @@ enum IndexerEntry {
         min_grt_per_billion_entities_per_30_days: Option<f64>,
     },
     LegacyId(String),
+}
+
+/// Response from the `GET /dips-indexers` endpoint (the `count` field is ignored).
+#[derive(Debug, Deserialize)]
+struct DipsIndexersResponse {
+    #[serde(default)]
+    computed_at: Option<String>,
+    #[serde(default)]
+    indexers: Vec<String>,
 }
 
 /// Check if an HTTP error is retryable.
@@ -210,6 +226,54 @@ impl HttpIisaClient {
             })?;
 
         Ok(response.status().is_success())
+    }
+
+    /// GET the DIPs-accepting set from IISA, with retry/backoff and bearer auth.
+    async fn get_dips_indexers(
+        &self,
+        chain: &str,
+        max_grt_per_30_days: Option<f64>,
+    ) -> Result<DipsIndexersResponse, SelectionError> {
+        let url = format!("{}dips-indexers", self.endpoint);
+        let mut last_error = SelectionError::IisaServiceUnavailable;
+
+        for attempt in 0..=self.config.max_retries {
+            if attempt > 0 {
+                tokio::time::sleep(calculate_retry_delay(attempt)).await;
+            }
+            let mut req = self.client.get(&url).query(&[("chain", chain)]);
+            if let Some(max_grt) = max_grt_per_30_days {
+                req = req.query(&[("max_grt_per_30_days", max_grt.to_string().as_str())]);
+            }
+            if let Some(token) = &self.config.push_token {
+                req = req.bearer_auth(token);
+            }
+            match req.send().await {
+                Ok(response) if response.status().is_success() => {
+                    return response.json().await.map_err(|e| {
+                        SelectionError::Error(anyhow::anyhow!(
+                            "Failed to parse /dips-indexers response: {}",
+                            e
+                        ))
+                    });
+                }
+                Ok(response) if is_retryable_status(response.status()) => {
+                    last_error = SelectionError::IisaServiceUnavailable;
+                }
+                Ok(response) => {
+                    tracing::error!(
+                        "IISA /dips-indexers returned client error status: {}",
+                        response.status()
+                    );
+                    return Err(SelectionError::IisaServiceUnavailable);
+                }
+                Err(e) if is_retryable_error(&e) => {
+                    last_error = SelectionError::IisaServiceUnavailable;
+                }
+                Err(e) => return Err(SelectionError::Error(e.into())),
+            }
+        }
+        Err(last_error)
     }
 
     /// Execute an HTTP POST request with retry logic.
@@ -437,6 +501,31 @@ impl CandidateSelection for HttpIisaClient {
 
         Ok(selected)
     }
+
+    async fn dips_accepting_indexers(
+        &self,
+        chain: &str,
+        max_grt_per_30_days: Option<f64>,
+    ) -> Result<DipsAcceptingSnapshot, SelectionError> {
+        let response = self.get_dips_indexers(chain, max_grt_per_30_days).await?;
+        let mut indexers = Vec::with_capacity(response.indexers.len());
+        for id_str in response.indexers {
+            match id_str.parse::<IndexerId>() {
+                Ok(id) => indexers.push(id),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse DIPs-accepting indexer ID '{}': {}",
+                        id_str,
+                        e
+                    )
+                }
+            }
+        }
+        Ok(DipsAcceptingSnapshot {
+            computed_at: response.computed_at,
+            indexers,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -473,6 +562,7 @@ mod tests {
             request_timeout: Duration::from_secs(60),
             connect_timeout: Duration::from_secs(5),
             max_retries: 5,
+            push_token: None,
         };
         let client = HttpIisaClient::with_config("http://localhost:8080".to_string(), config);
 
@@ -768,6 +858,7 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             connect_timeout: Duration::from_secs(2),
             max_retries: 3,
+            push_token: None,
         };
         let client = HttpIisaClient::with_config(mock_server.uri(), config);
 
@@ -807,6 +898,7 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             connect_timeout: Duration::from_secs(2),
             max_retries: 3,
+            push_token: None,
         };
         let client = HttpIisaClient::with_config(mock_server.uri(), config);
 
@@ -840,6 +932,7 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             connect_timeout: Duration::from_secs(2),
             max_retries: 3,
+            push_token: None,
         };
         let client = HttpIisaClient::with_config(mock_server.uri(), config);
 
@@ -881,6 +974,7 @@ mod tests {
             request_timeout: Duration::from_millis(100), // Very short timeout
             connect_timeout: Duration::from_secs(2),
             max_retries: 0, // No retries to speed up test
+            push_token: None,
         };
         let client = HttpIisaClient::with_config(mock_server.uri(), config);
 
@@ -912,6 +1006,7 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             connect_timeout: Duration::from_secs(2),
             max_retries: 0,
+            push_token: None,
         };
         let client = HttpIisaClient::with_config(mock_server.uri(), config);
 
@@ -928,5 +1023,131 @@ mod tests {
         // Should fail due to JSON parse error
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), SelectionError::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_dips_accepting_indexers_sends_chain_and_ceiling() {
+        let mock_server = MockServer::start().await;
+        // The mock only matches when both query params are present, so a success
+        // proves dipper sent the chain and the price ceiling.
+        Mock::given(method("GET"))
+            .and(path("/dips-indexers"))
+            .and(wiremock::matchers::query_param("chain", "arbitrum-one"))
+            .and(wiremock::matchers::query_param(
+                "max_grt_per_30_days",
+                "4500",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "computed_at": "2026-06-23T09:00:00+00:00",
+                "count": 2,
+                "indexers": [
+                    "0x1234567890123456789012345678901234567890",
+                    "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = HttpIisaClient::new(mock_server.uri());
+        let snap = client
+            .dips_accepting_indexers("arbitrum-one", Some(4500.0))
+            .await
+            .unwrap();
+        assert_eq!(
+            snap.computed_at.as_deref(),
+            Some("2026-06-23T09:00:00+00:00")
+        );
+        assert_eq!(snap.indexers.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_dips_accepting_sends_bearer_when_token_configured() {
+        let mock_server = MockServer::start().await;
+        // The mock only matches with the bearer header, so a success proves it was sent.
+        Mock::given(method("GET"))
+            .and(path("/dips-indexers"))
+            .and(wiremock::matchers::header("authorization", "Bearer secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "computed_at": null, "count": 0, "indexers": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let config = HttpClientConfig {
+            request_timeout: Duration::from_secs(5),
+            connect_timeout: Duration::from_secs(2),
+            max_retries: 0,
+            push_token: Some("secret".to_string()),
+        };
+        let client = HttpIisaClient::with_config(mock_server.uri(), config);
+        assert!(
+            client
+                .dips_accepting_indexers("mainnet", None)
+                .await
+                .unwrap()
+                .indexers
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dips_accepting_tolerates_null_computed_at_and_skips_bad_ids() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/dips-indexers"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "computed_at": null,
+                "count": 2,
+                "indexers": ["0x1234567890123456789012345678901234567890", "not-an-id"]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = HttpIisaClient::new(mock_server.uri());
+        let snap = client
+            .dips_accepting_indexers("mainnet", None)
+            .await
+            .unwrap();
+        assert!(snap.computed_at.is_none());
+        // The malformed id is warn-and-skipped, leaving only the valid one.
+        assert_eq!(snap.indexers.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_dips_accepting_retries_on_5xx_then_succeeds() {
+        let mock_server = MockServer::start().await;
+        let call_count = std::sync::Arc::new(AtomicU32::new(0));
+        let call_count_clone = call_count.clone();
+        Mock::given(method("GET"))
+            .and(path("/dips-indexers"))
+            .respond_with(move |_: &wiremock::Request| {
+                let count = call_count_clone.fetch_add(1, Ordering::SeqCst);
+                if count < 1 {
+                    ResponseTemplate::new(503)
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "computed_at": "2026-06-23T09:00:00+00:00", "count": 0, "indexers": []
+                    }))
+                }
+            })
+            .mount(&mock_server)
+            .await;
+
+        let config = HttpClientConfig {
+            request_timeout: Duration::from_secs(5),
+            connect_timeout: Duration::from_secs(2),
+            max_retries: 3,
+            push_token: None,
+        };
+        let client = HttpIisaClient::with_config(mock_server.uri(), config);
+        assert!(
+            client
+                .dips_accepting_indexers("mainnet", None)
+                .await
+                .unwrap()
+                .indexers
+                .is_empty()
+        );
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
     }
 }

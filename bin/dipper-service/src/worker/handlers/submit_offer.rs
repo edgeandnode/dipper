@@ -116,7 +116,9 @@ where
         "Submitting RCA offer on-chain"
     );
 
-    match ctx.chain_client.post_offer(&rca).await {
+    // The RecurringAgreementManager is the on-chain payer, so route the offer
+    // through it rather than posting directly.
+    match ctx.chain_client.offer_via_manager(&rca).await {
         Ok(None) => {
             tracing::info!(
                 agreement_id = %agreement_id,
@@ -144,32 +146,10 @@ where
                 );
             }
         }
-        Err(ChainClientError::OfferHashMismatch {
-            stored, expected, ..
-        }) => {
-            // Stored hash does not match our locally-computed hash. This
-            // means someone else submitted an offer for this agreement ID
-            // with different terms -- either a dev-state race or a genuine
-            // conflict. Mark the agreement delivery-failed and bail; the
-            // reassignment service will find a replacement.
-            tracing::error!(
-                agreement_id = %agreement_id,
-                stored = %stored,
-                expected = %expected,
-                "Offer hash mismatch on-chain, marking agreement as delivery-failed"
-            );
-            ctx.registry
-                .mark_indexing_agreement_as_delivery_failed(agreement_id)
-                .await
-                .map_err(|err| JobError::Fatal(err.into()))?;
-            return Ok(());
-        }
         Err(err @ ChainClientError::TxDropped { .. }) => {
             // Accepted by the RPC but never mined — typically evicted by a
-            // colliding-nonce tx. `post_offer` already re-synced the nonce
-            // counter; re-running the handler will resubmit with a fresh
-            // nonce, and the subgraph idempotency check short-circuits if
-            // the dropped tx eventually lands before the replay.
+            // colliding-nonce tx. The nonce was re-synced; re-running resubmits
+            // with a fresh nonce. No idempotency guard, so a replay re-sends.
             tracing::warn!(
                 agreement_id = %agreement_id,
                 error = %err,

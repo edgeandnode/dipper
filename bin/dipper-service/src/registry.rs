@@ -41,6 +41,7 @@ impl From<NewAgreementParams> for dipper_pgregistry::NewAgreementParams {
             indexer_id: params.indexer_id,
             indexer_url: params.indexer_url,
             terms: params.terms.into(),
+            terms_version_hash: params.terms_version_hash,
         }
     }
 }
@@ -228,7 +229,6 @@ impl AgreementRegistry for RegistryProvider {
         default_lookback_days: i32,
         price_lookback_days: i32,
         transient_lookback_minutes: i32,
-        escrow_lookback_minutes: i32,
         uncertain_lookback_days: i32,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>> {
         Ok(self
@@ -237,9 +237,19 @@ impl AgreementRegistry for RegistryProvider {
                 default_lookback_days,
                 price_lookback_days,
                 transient_lookback_minutes,
-                escrow_lookback_minutes,
                 uncertain_lookback_days,
             )
+            .await?)
+    }
+
+    async fn get_unresponsive_indexers(
+        &self,
+        lookback_days: i32,
+        chain_id: ChainId,
+    ) -> RegistryResult<Vec<IndexerId>> {
+        Ok(self
+            .inner
+            .get_unresponsive_indexers(lookback_days, chain_id)
             .await?)
     }
 
@@ -290,12 +300,12 @@ impl AgreementRegistry for RegistryProvider {
             .map_err(Into::into)
     }
 
-    async fn mark_indexing_agreement_as_delivery_failed(
+    async fn mark_indexing_agreement_as_unresponsive(
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<()> {
         self.inner
-            .mark_indexing_agreement_as_delivery_failed(id)
+            .mark_indexing_agreement_as_unresponsive(id)
             .await
             .map_err(Into::into)
     }
@@ -437,6 +447,16 @@ impl AgreementRegistry for RegistryProvider {
             .map(IndexingAgreement::try_from)
             .filter_map(filter_map_with_logging)
             .collect())
+    }
+
+    async fn get_providers_for_escrow_reconciliation(
+        &self,
+        limit: i64,
+    ) -> RegistryResult<Vec<Address>> {
+        self.inner
+            .get_providers_for_escrow_reconciliation(limit)
+            .await
+            .map_err(Into::into)
     }
 
     async fn update_agreement_sync_progress(

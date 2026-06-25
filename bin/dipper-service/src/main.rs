@@ -13,6 +13,7 @@ use self::{
 };
 
 mod admin_rpc_server;
+mod cancel_dispatch;
 mod chain_client;
 mod config;
 mod db;
@@ -47,8 +48,20 @@ pub async fn main() -> anyhow::Result<()> {
     let conf = config::load_from_file(&conf_path).expect("Failed to load config");
     tracing::debug!(conf=?conf, "configuration loaded");
 
+    // Reject a config the protocol-managed path can't run with before building
+    // anything from it.
+    if let Err(err) = conf.dips.validate() {
+        anyhow::bail!("invalid dips agreement config: {err}");
+    }
+
     // TODO: Decouple the config file format from the internal representation
     let (agreement_conf, pricing_table) = conf.dips.into();
+
+    // Clones for services that outlive the worker's move of `agreement_conf`;
+    // they need the manager address for cancel dispatch.
+    let chain_listener_agreement_conf = agreement_conf.clone();
+    let liveness_agreement_conf = agreement_conf.clone();
+    let escrow_reconciler_agreement_conf = agreement_conf.clone();
 
     // Canonical chain id and RecurringCollector address, read once and shared by the
     // admin signer, the gRPC proposal signer, and the on-chain chain client so their
@@ -213,6 +226,7 @@ pub async fn main() -> anyhow::Result<()> {
         request_timeout: conf.iisa.request_timeout,
         connect_timeout: conf.iisa.connect_timeout,
         max_retries: conf.iisa.max_retries,
+        push_token: conf.iisa.push_token.as_ref().map(|t| t.0.clone()),
     };
     let iisa_client =
         iisa::HttpIisaClient::with_config(conf.iisa.endpoint.to_string(), iisa_config);
@@ -267,17 +281,30 @@ pub async fn main() -> anyhow::Result<()> {
             cfg,
             chain_id,
             recurring_collector,
-            rca_domain.clone(),
+            agreement_conf.recurring_agreement_manager(),
             &secret_bytes,
         )
         .expect("Failed to create AlloyChainClient");
         tracing::info!(
-            subgraph_service = %cfg.subgraph_service_address,
             chain_id,
             "initialized AlloyChainClient for on-chain transactions"
         );
         Arc::new(client)
     };
+
+    //- Protocol-managed mode requires dipper's signer to hold AGREEMENT_MANAGER_ROLE on
+    //  the manager; without it every offer and cancel reverts on-chain. Fail fast at
+    //  startup instead of discovering the missing grant one reverted offer at a time.
+    if let Some(cfg) = conf.chain_client.as_ref().filter(|cfg| cfg.enabled) {
+        let manager = agreement_conf.recurring_agreement_manager();
+        chain_client::verify_signer_has_agreement_manager_role(
+            cfg,
+            manager,
+            wallet_signer.address(),
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!("AGREEMENT_MANAGER_ROLE preflight failed: {err}"))?;
+    }
 
     //- The entity count cache (shared with worker jobs for optimistic fee estimation)
     let entity_count_cache = network::service::entity_count_cache::new_cache();
@@ -304,10 +331,50 @@ pub async fn main() -> anyhow::Result<()> {
 
     //- The worker service
     let (worker_handle, worker_service) = {
+        // Each loop can hold up to three pooled connections at once and shares
+        // the pool with the registry and background reconcilers. Refuse to start
+        // when the loops would crowd it, rather than deadlocking under load.
+        const CONNECTIONS_PER_LOOP: usize = 3;
+        const SHARED_SERVICES_HEADROOM: usize = 2;
+        if conf.worker_concurrency == 0 {
+            anyhow::bail!("worker_concurrency must be at least 1");
+        }
+        let max_conns = conf
+            .db
+            .max_connections
+            .unwrap_or(db::DEFAULT_MAX_CONNECTIONS) as usize;
+        // Saturating so an absurd configured value can't overflow and slip past
+        // the check below (the very check meant to catch oversized sizing).
+        let required_conns = conf
+            .worker_concurrency
+            .saturating_mul(CONNECTIONS_PER_LOOP)
+            .saturating_add(SHARED_SERVICES_HEADROOM);
+        if required_conns > max_conns {
+            anyhow::bail!(
+                "worker_concurrency ({}) needs at least {} db connections (each loop may hold {} \
+                 for its listener, open job transaction and a registry query, plus {} reserved for \
+                 the registry and background services), but db.max_connections is {}; raise \
+                 db.max_connections to at least {} or lower worker_concurrency",
+                conf.worker_concurrency,
+                required_conns,
+                CONNECTIONS_PER_LOOP,
+                SHARED_SERVICES_HEADROOM,
+                max_conns,
+                required_conns,
+            );
+        }
+
+        // A single global reassess lock, shared across all worker loops.
+        let reassess_lock = Arc::new(tokio::sync::Mutex::new(()));
+        let unresponsive_breaker = Arc::new(worker::UnresponsiveBreaker::new());
+        let dips_accepting_cache = worker::DipsAcceptingCache::new(std::time::Duration::from_secs(
+            agreement_conf.dips_accepting_cache_ttl_seconds(),
+        ));
         let ctx = worker::Ctx {
             queue,
             signer: signer.clone(),
             agreement_conf,
+            rca_domain: rca_domain.clone(),
             pricing_table,
             registry: registry.clone(),
             network: network_provider.clone(),
@@ -324,6 +391,10 @@ pub async fn main() -> anyhow::Result<()> {
                 .map(|c| c.bypass_chain_clock_defenses)
                 .unwrap_or(false),
             chain_listener_chain_id: conf.chain_listener.as_ref().map(|c| c.chain_id),
+            reassess_lock,
+            unresponsive_breaker,
+            dips_accepting_cache,
+            concurrency: conf.worker_concurrency,
         };
         worker::service::new(ctx)
     };
@@ -362,11 +433,16 @@ pub async fn main() -> anyhow::Result<()> {
     // Monitors on-chain events for agreement acceptance/cancellation via subgraph
     let chain_listener_handle = match conf.chain_listener {
         Some(ref chain_listener_conf) if chain_listener_conf.enabled => {
+            // The subgraph filters agreements by on-chain payer, which is the
+            // RecurringAgreementManager contract.
+            let listener_payer_address =
+                chain_listener_agreement_conf.recurring_agreement_manager();
+
             // Create the subgraph event source
             let event_source_config = network::service::chain_events::SubgraphEventSourceConfig {
                 endpoint: chain_listener_conf.subgraph_endpoint.clone(),
                 api_key: chain_listener_conf.subgraph_api_key.clone(),
-                payer_address: signer.address(),
+                payer_address: listener_payer_address,
                 request_timeout: chain_listener_conf.request_timeout,
                 max_retries: chain_listener_conf.max_retries,
                 wall_clock_skew_tolerance_secs: chain_listener_conf.wall_clock_skew_tolerance_secs,
@@ -380,6 +456,7 @@ pub async fn main() -> anyhow::Result<()> {
                 worker_queue: worker_handle.queue().clone(),
                 event_source,
                 chain_client: chain_client.clone(),
+                agreement_conf: chain_listener_agreement_conf.clone(),
                 config: chain_listener_conf.clone(),
                 signer_address: signer.address(),
                 chain_listener_notify: chain_listener_notify.clone(),
@@ -399,12 +476,32 @@ pub async fn main() -> anyhow::Result<()> {
                 worker_queue: worker_handle.queue().clone(),
                 chain_client: chain_client.clone(),
                 network: network_provider.clone(),
+                agreement_conf: liveness_agreement_conf.clone(),
                 config: lc_conf.clone(),
             };
             let (handle, service) = network::service::liveness_checker::new(ctx);
             Some((handle, service))
         }
         _ => None,
+    };
+
+    //- The escrow reconciler service (AgreementManager mode only)
+    // Reclaims orphaned manager-owned escrow the indexer has no reason to touch.
+    let escrow_reconciler_handle = if network::service::escrow_reconciler::should_run(
+        conf.escrow_reconciler.as_ref(),
+        &escrow_reconciler_agreement_conf,
+    ) {
+        let er_conf = conf.escrow_reconciler.clone().unwrap_or_default();
+        let ctx = network::service::escrow_reconciler::Ctx {
+            registry: registry.clone(),
+            chain_client: chain_client.clone(),
+            config: er_conf,
+            collector: escrow_reconciler_agreement_conf.recurring_collector(),
+        };
+        let (handle, service) = network::service::escrow_reconciler::new(ctx);
+        Some((handle, service))
+    } else {
+        None
     };
 
     //- The admin RPC service
@@ -470,6 +567,15 @@ pub async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // Spawn the escrow reconciler service if enabled
+    let escrow_reconciler_stop_handle = if let Some((handle, service)) = escrow_reconciler_handle {
+        let task_handle = task_tree.spawn(service);
+        tracing::debug!(task_id=%task_handle.id(), "Escrow reconciler service started");
+        Some(handle)
+    } else {
+        None
+    };
+
     let admin_rpc_task_handle = task_tree.spawn(admin_rpc_service);
     tracing::debug!(task_id=%admin_rpc_task_handle.id(), "Admin RPC service started");
 
@@ -516,6 +622,13 @@ pub async fn main() -> anyhow::Result<()> {
             tracing::trace!("stopping Chain listener service");
             handle.stop().await;
             tracing::trace!("stopped Chain listener service");
+        }
+
+        // Stop escrow reconciler service before the DB pool closes
+        if let Some(handle) = escrow_reconciler_stop_handle {
+            tracing::trace!("stopping Escrow reconciler service");
+            handle.stop().await;
+            tracing::trace!("stopped Escrow reconciler service");
         }
 
         // Stop entity count cache service

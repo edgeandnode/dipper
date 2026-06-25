@@ -5,7 +5,7 @@
 
 use std::{
     sync::{
-        Arc, RwLock,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -14,19 +14,17 @@ use std::{
 use async_trait::async_trait;
 use dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement;
 use thegraph_core::alloy::{
-    hex,
     network::{EthereumWallet, TransactionBuilder},
     primitives::{Address, B256, FixedBytes},
     providers::{Provider, ProviderBuilder},
     rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
-    sol_types::{Eip712Domain, SolCall, SolError, SolStruct, SolValue},
+    sol_types::{SolCall, SolValue},
 };
 use tokio::sync::Mutex;
-use url::Url;
 
 use super::{
-    abi::{IRecurringCollector, ISubgraphService},
+    abi::{IRecurringAgreementManager, IRecurringCollector},
     gas::{GasEstimator, calculate_max_fee, exceeds_max_gas_price, get_gas_prices},
     rpc_provider::RpcProviderPool,
 };
@@ -34,11 +32,6 @@ use crate::{
     chain_client::{ChainClient, ChainClientError},
     config::ChainClientConfig,
 };
-
-/// HTTP timeout for the indexing-payments subgraph idempotency query.
-/// Kept tight because dipper polls this on every offer submission and a
-/// slow response stalls the worker handler.
-const SUBGRAPH_QUERY_TIMEOUT_SECS: u64 = 10;
 
 /// OFFER_TYPE_NEW from `RecurringCollector.sol`. Used when submitting a new
 /// agreement offer on-chain. The contract defines OFFER_TYPE_NONE=0,
@@ -57,6 +50,16 @@ const RECEIPT_POLL_TIMEOUT: Duration = Duration::from_secs(15);
 /// tx to mine. Tight enough to respond quickly on sub-second block times,
 /// loose enough to avoid hammering the RPC.
 const RECEIPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// VERSION_CURRENT index from `IAgreementCollector.sol`: the active (or
+/// pre-acceptance) terms. `getAgreementDetails(id, 0)` reports their state.
+const VERSION_CURRENT: u64 = 0;
+
+/// `AgreementDetails.state` flags from `IAgreementCollector.sol` (ACCEPTED=2,
+/// NOTICE_GIVEN=4). `getAgreementDetails` keeps ACCEPTED set on a canceled
+/// agreement and ORs in NOTICE_GIVEN, so a cancel must clear it, not just lack it.
+const STATE_ACCEPTED: u16 = 2;
+const STATE_NOTICE_GIVEN: u16 = 4;
 
 /// Error patterns that indicate a nonce-related issue.
 ///
@@ -143,25 +146,17 @@ struct AlloyChainClientInner {
     gas_estimator: GasEstimator,
     /// Transaction signer
     signer: PrivateKeySigner,
-    /// SubgraphService contract address
-    subgraph_service_address: Address,
     /// RecurringCollector contract address (for RCA offer submission)
     recurring_collector_address: Address,
-    /// EIP-712 domain the RCA offer hash is computed under. Shared with the
-    /// proposal signer so the hash dipper posts on-chain matches the one the
-    /// contract recomputes when the indexer accepts.
-    rca_domain: Arc<RwLock<Eip712Domain>>,
+    /// RecurringAgreementManager address: the on-chain payer the manager-routed
+    /// offer/cancel paths drive.
+    recurring_agreement_manager_address: Address,
     /// Chain ID
     chain_id: u64,
     /// Gas price multiplier
     gas_price_multiplier: f64,
     /// Maximum gas price in gwei
     max_gas_price_gwei: u64,
-    /// Indexing-payments-subgraph query URL for offer idempotency checks.
-    /// When None, the idempotency check is skipped and every call submits.
-    indexing_payments_subgraph_url: Option<Url>,
-    /// HTTP client used to query the indexing-payments subgraph.
-    http_client: reqwest::Client,
     /// In-memory nonce counter. Concurrent callers atomically increment this
     /// to get unique nonces without querying the chain, avoiding
     /// "replacement transaction underpriced" errors when multiple offer()
@@ -186,7 +181,7 @@ impl AlloyChainClient {
         config: &ChainClientConfig,
         chain_id: u64,
         recurring_collector: Address,
-        rca_domain: Arc<RwLock<Eip712Domain>>,
+        recurring_agreement_manager: Address,
         secret_key: &[u8; 32],
     ) -> Result<Self, ChainClientError> {
         let signer = PrivateKeySigner::from_bytes(&FixedBytes::from(*secret_key))
@@ -204,28 +199,11 @@ impl AlloyChainClient {
             config.gas_max_addition,
         );
 
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(SUBGRAPH_QUERY_TIMEOUT_SECS))
-            .build()
-            .map_err(|e| {
-                ChainClientError::ConfigError(format!("Failed to build subgraph HTTP client: {e}"))
-            })?;
-
-        if config.indexing_payments_subgraph_url.is_none() {
-            tracing::warn!(
-                "indexing_payments_subgraph_url not configured; offer submission \
-                 will skip crash-recovery idempotency and unconditionally send a \
-                 new offer tx. The contract's overwrite semantics make this safe \
-                 but wastes gas on re-submission after a crashed restart."
-            );
-        }
-
         tracing::info!(
             signer_address = %signer.address(),
-            subgraph_service = %config.subgraph_service_address,
             recurring_collector = %recurring_collector,
+            recurring_agreement_manager = %recurring_agreement_manager,
             chain_id,
-            indexing_payments_subgraph = ?config.indexing_payments_subgraph_url,
             "AlloyChainClient initialized"
         );
 
@@ -234,33 +212,20 @@ impl AlloyChainClient {
                 rpc_pool,
                 gas_estimator,
                 signer,
-                subgraph_service_address: config.subgraph_service_address,
                 recurring_collector_address: recurring_collector,
-                rca_domain,
+                recurring_agreement_manager_address: recurring_agreement_manager,
                 chain_id,
                 gas_price_multiplier: config.gas_price_multiplier,
                 max_gas_price_gwei: config.max_gas_price_gwei,
-                indexing_payments_subgraph_url: config.indexing_payments_subgraph_url.clone(),
-                http_client,
                 nonce: AtomicU64::new(NONCE_UNINITIALIZED),
                 submit_lock: Mutex::new(()),
             }),
         })
     }
 
-    /// Encode the calldata for `cancelIndexingAgreementByPayer(bytes16)`.
-    fn encode_cancel_call(&self, agreement_id: &[u8; 16]) -> Vec<u8> {
-        let agreement_bytes = FixedBytes::<16>::from_slice(agreement_id);
-
-        ISubgraphService::cancelIndexingAgreementByPayerCall {
-            agreementId: agreement_bytes,
-        }
-        .abi_encode()
-    }
-
     /// Build, gas-estimate, and send a call to any contract.
     ///
-    /// Shared entry point for `cancelIndexingAgreementByPayer` and `offer`.
+    /// Shared entry point for the manager-routed offer and cancel calls.
     /// `log_agreement_id` is used only for structured logging.
     async fn build_and_send_call(
         &self,
@@ -339,83 +304,6 @@ impl AlloyChainClient {
 
         // 7. Sign and send with nonce handling
         self.sign_and_send(tx, log_agreement_id).await
-    }
-
-    /// Query the indexing-payments-subgraph for an existing `Offer` entity.
-    ///
-    /// Returns `Ok(Some(offerHash))` if the subgraph has indexed a prior
-    /// `OfferStored` event for this agreement id, `Ok(None)` if no offer is
-    /// present yet, and `Ok(None)` with a warning if the subgraph URL is not
-    /// configured. Network or query errors are returned as `RpcError`.
-    ///
-    /// The agreement id is serialized as a 0x-prefixed 32-char hex string
-    /// to match how graph-node stores `Bytes` entity ids.
-    async fn read_offer_hash_from_subgraph(
-        &self,
-        agreement_id: &[u8; 16],
-    ) -> Result<Option<B256>, ChainClientError> {
-        let subgraph_url = match &self.inner.indexing_payments_subgraph_url {
-            Some(url) => url,
-            None => return Ok(None),
-        };
-
-        let id_hex = format!("0x{}", hex::encode(agreement_id));
-
-        let query = r#"query GetOffer($id: Bytes!) { offer(id: $id) { offerHash } }"#;
-        let body = serde_json::json!({
-            "query": query,
-            "variables": { "id": id_hex },
-        });
-
-        let response = self
-            .inner
-            .http_client
-            .post(subgraph_url.as_str())
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                ChainClientError::RpcError(anyhow::anyhow!("subgraph POST failed: {e}"))
-            })?;
-
-        if !response.status().is_success() {
-            return Err(ChainClientError::RpcError(anyhow::anyhow!(
-                "subgraph returned HTTP {}",
-                response.status()
-            )));
-        }
-
-        let json: serde_json::Value = response.json().await.map_err(|e| {
-            ChainClientError::RpcError(anyhow::anyhow!("decode subgraph body: {e}"))
-        })?;
-
-        if let Some(errors) = json.get("errors") {
-            return Err(ChainClientError::RpcError(anyhow::anyhow!(
-                "subgraph returned errors: {errors}"
-            )));
-        }
-
-        let offer_hash_hex = match json
-            .get("data")
-            .and_then(|d| d.get("offer"))
-            .and_then(|o| o.get("offerHash"))
-            .and_then(|h| h.as_str())
-        {
-            Some(s) => s,
-            None => return Ok(None),
-        };
-
-        let stripped = offer_hash_hex.strip_prefix("0x").unwrap_or(offer_hash_hex);
-        let bytes = hex::decode(stripped).map_err(|e| {
-            ChainClientError::RpcError(anyhow::anyhow!("decode offerHash from subgraph: {e}"))
-        })?;
-        if bytes.len() != 32 {
-            return Err(ChainClientError::RpcError(anyhow::anyhow!(
-                "subgraph offerHash is not 32 bytes: len={}",
-                bytes.len()
-            )));
-        }
-        Ok(Some(B256::from_slice(&bytes)))
     }
 
     /// Get the next nonce, initializing from chain on first call.
@@ -513,6 +401,7 @@ impl AlloyChainClient {
                     tracing::warn!(
                         agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
                         attempt = attempt + 1,
+                        nonce,
                         error = %e,
                         "Nonce error, re-syncing from chain and retrying"
                     );
@@ -635,128 +524,34 @@ impl AlloyChainClient {
 
 #[async_trait]
 impl ChainClient for AlloyChainClient {
-    async fn cancel_indexing_agreement_by_payer(
-        &self,
-        agreement_id: &[u8; 16],
-    ) -> Result<Option<B256>, ChainClientError> {
-        let agreement_hex = format!(
-            "0x{}",
-            agreement_id
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
-        );
-
-        tracing::info!(
-            agreement_id = %agreement_hex,
-            contract = %self.inner.subgraph_service_address,
-            "Canceling indexing agreement on-chain"
-        );
-
-        let calldata = self.encode_cancel_call(agreement_id);
-        match self
-            .build_and_send_call(self.inner.subgraph_service_address, calldata, agreement_id)
-            .await
-        {
-            Ok(tx) => Ok(Some(tx.hash)),
-            // SubgraphService returns IndexingAgreementNotActive when the
-            // agreement is no longer in the active set (already canceled,
-            // settled, or expired). The cancel becomes a no-op: there is
-            // nothing left on the contract to flip. Callers can proceed
-            // with any local cleanup that would have followed a submission.
-            Err(ChainClientError::ContractRevert { selector, .. })
-                if selector == ISubgraphService::IndexingAgreementNotActive::SELECTOR =>
-            {
-                tracing::info!(
-                    agreement_id = %agreement_hex,
-                    "Agreement already canceled on-chain (IndexingAgreementNotActive); treating as idempotent success"
-                );
-                Ok(None)
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    async fn post_offer(
+    async fn offer_via_manager(
         &self,
         rca: &RecurringCollectionAgreement,
     ) -> Result<Option<B256>, ChainClientError> {
-        // 1. Derive the on-chain agreement ID deterministically from the RCA.
+        let manager = self.inner.recurring_agreement_manager_address;
+
         let agreement_id = dipper_rpc::indexer::derive_agreement_id(rca);
 
-        // 2. Compute the local EIP-712 hash of the RCA; this is what the
-        //    contract compares against the stored offer hash when the indexer
-        //    later calls `accept(rca, "")`.
-        let domain = self
-            .inner
-            .rca_domain
-            .read()
-            .expect("RCA domain lock poisoned")
-            .clone();
-        let local_hash = rca.eip712_signing_hash(&domain);
-
-        // 3. Idempotency via the indexing-payments-subgraph. If the subgraph
-        //    has indexed a prior OfferStored for this agreement id with a
-        //    matching hash, skip re-submission. If it has indexed one with
-        //    a different hash, abort the proposal cycle as a hash conflict.
-        //    If the URL isn't configured, this returns None and we submit
-        //    unconditionally (see AlloyChainClient::new for the warning).
-        //
-        //    Note: there is a short window between an offer tx confirming
-        //    and the subgraph indexing it. A crashed-restart during that
-        //    window will re-submit. The subgraph handler absorbs the
-        //    duplicate OfferStored event via an existence check, so the
-        //    resulting second write is a no-op at the entity level.
-        if let Some(stored) = self.read_offer_hash_from_subgraph(&agreement_id).await? {
-            if stored == local_hash {
-                tracing::info!(
-                    agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
-                    offer_hash = %stored,
-                    "Offer already indexed by subgraph with matching hash, skipping submission"
-                );
-                return Ok(None);
-            }
-            return Err(ChainClientError::OfferHashMismatch {
-                agreement_id: format!(
-                    "0x{}",
-                    agreement_id
-                        .iter()
-                        .map(|b| format!("{b:02x}"))
-                        .collect::<String>()
-                ),
-                stored,
-                expected: local_hash,
-            });
-        }
-
-        // 4. Encode offer(OFFER_TYPE_NEW, abi.encode(rca), 0).
-        let rca_bytes = rca.abi_encode();
-        let calldata = IRecurringCollector::offerCall {
+        // The manager is the payer; dipper is just the operator submitting the
+        // tx, so encode offerAgreement(collector, NEW, abi(rca)).
+        let calldata = IRecurringAgreementManager::offerAgreementCall {
+            collector: self.inner.recurring_collector_address,
             offerType: OFFER_TYPE_NEW,
-            data: rca_bytes.into(),
-            options: 0,
+            offerData: rca.abi_encode().into(),
         }
         .abi_encode();
 
         tracing::info!(
             agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
-            contract = %self.inner.recurring_collector_address,
-            offer_hash = %local_hash,
-            "Submitting RCA offer on-chain"
+            manager = %manager,
+            collector = %self.inner.recurring_collector_address,
+            "Submitting RCA offer via RecurringAgreementManager"
         );
 
         let submitted = self
-            .build_and_send_call(
-                self.inner.recurring_collector_address,
-                calldata,
-                &agreement_id,
-            )
+            .build_and_send_call(manager, calldata, &agreement_id)
             .await?;
 
-        // The RPC accepting the tx into the mempool doesn't guarantee
-        // inclusion; eviction leaves a nonce gap that wedges any
-        // higher-nonce txs from the same wallet, so the timeout branch
-        // surfaces `TxDropped` and best-effort fills the gap.
         let SubmittedTx {
             hash: tx_hash,
             nonce: dropped_nonce,
@@ -769,19 +564,134 @@ impl ChainClient for AlloyChainClient {
                     agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
                     tx_hash = %tx_hash,
                     nonce = dropped_nonce,
-                    timeout_secs = RECEIPT_POLL_TIMEOUT.as_secs(),
-                    "Offer tx did not mine within receipt-poll window; treating as dropped"
+                    "Manager offer tx did not mine within receipt-poll window; treating as dropped"
                 );
                 if let Err(err) = self.fill_nonce_gap(dropped_nonce).await {
-                    tracing::warn!(
-                        nonce = dropped_nonce,
-                        error = %err,
-                        "Failed to fill mempool nonce gap; wallet may stay wedged until the original tx clears"
-                    );
+                    tracing::warn!(nonce = dropped_nonce, error = %err, "Failed to fill mempool nonce gap");
                 }
                 Err(ChainClientError::TxDropped { tx_hash })
             }
         }
+    }
+
+    async fn cancel_via_manager(
+        &self,
+        collector: Address,
+        agreement_id: &[u8; 16],
+        version_hash: B256,
+        options: u16,
+    ) -> Result<Option<B256>, ChainClientError> {
+        let manager = self.inner.recurring_agreement_manager_address;
+
+        let calldata = IRecurringAgreementManager::cancelAgreementCall {
+            collector,
+            agreementId: FixedBytes::<16>::from_slice(agreement_id),
+            versionHash: version_hash,
+            options,
+        }
+        .abi_encode();
+
+        tracing::info!(
+            agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            manager = %manager,
+            options,
+            "Canceling agreement via RecurringAgreementManager"
+        );
+
+        let submitted = self
+            .build_and_send_call(manager, calldata, agreement_id)
+            .await?;
+
+        // Wait for the receipt so a returned Ok means the cancel mined, not just
+        // that it entered the mempool. The dispatch layer then re-reads on-chain
+        // to catch a mined-but-no-op cancel (stale hash, unknown id, terminal).
+        let SubmittedTx {
+            hash: tx_hash,
+            nonce: dropped_nonce,
+        } = submitted;
+        match self.wait_for_receipt(tx_hash, RECEIPT_POLL_TIMEOUT).await? {
+            Some(true) => Ok(Some(tx_hash)),
+            Some(false) => Err(ChainClientError::TxReverted { tx_hash }),
+            None => {
+                tracing::warn!(
+                    agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                    tx_hash = %tx_hash,
+                    nonce = dropped_nonce,
+                    "Manager cancel tx did not mine within receipt-poll window; treating as dropped"
+                );
+                if let Err(err) = self.fill_nonce_gap(dropped_nonce).await {
+                    tracing::warn!(nonce = dropped_nonce, error = %err, "Failed to fill mempool nonce gap");
+                }
+                Err(ChainClientError::TxDropped { tx_hash })
+            }
+        }
+    }
+
+    async fn agreement_still_active(
+        &self,
+        agreement_id: &[u8; 16],
+    ) -> Result<bool, ChainClientError> {
+        let calldata = IRecurringCollector::getAgreementDetailsCall {
+            agreementId: FixedBytes::<16>::from_slice(agreement_id),
+            index: thegraph_core::alloy::primitives::U256::from(VERSION_CURRENT),
+        }
+        .abi_encode();
+
+        let collector = self.inner.recurring_collector_address;
+        let output = self
+            .inner
+            .rpc_pool
+            .execute("get_agreement_details", |provider| {
+                let calldata = calldata.clone();
+                async move {
+                    let tx = TransactionRequest::default()
+                        .to(collector)
+                        .input(calldata.into());
+                    provider.call(tx).await
+                }
+            })
+            .await?;
+
+        let details = IRecurringCollector::getAgreementDetailsCall::abi_decode_returns(&output)
+            .map_err(|err| {
+                ChainClientError::RpcError(anyhow::anyhow!(
+                    "undecodable getAgreementDetails from {collector}: {err}"
+                ))
+            })?;
+
+        // Live iff the terms are accepted and no cancellation notice exists.
+        // A cancel sets NOTICE_GIVEN while ACCEPTED stays set, so checking the
+        // notice bit is what tells a still-live agreement from a cancelled one.
+        let state = details.state;
+        Ok(state & STATE_ACCEPTED != 0 && state & STATE_NOTICE_GIVEN == 0)
+    }
+
+    async fn reconcile_provider(
+        &self,
+        collector: Address,
+        provider: Address,
+    ) -> Result<Option<B256>, ChainClientError> {
+        let manager = self.inner.recurring_agreement_manager_address;
+
+        let calldata = IRecurringAgreementManager::reconcileProviderCall {
+            collector,
+            provider,
+        }
+        .abi_encode();
+
+        tracing::info!(
+            manager = %manager,
+            collector = %collector,
+            provider = %provider,
+            "Reconciling provider escrow via RecurringAgreementManager"
+        );
+
+        // No agreement context here; pass a zero id for the shared call's
+        // logging field only. The call target is the manager.
+        let tx = self
+            .build_and_send_call(manager, calldata, &[0u8; 16])
+            .await?;
+        Ok(Some(tx.hash))
     }
 }
 
@@ -842,21 +752,6 @@ mod tests {
             result.is_err(),
             "non-nonce errors must propagate so the wedged-wallet path is observable"
         );
-    }
-
-    #[test]
-    fn test_encode_cancel_call() {
-        let agreement_id: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-        let agreement_bytes = FixedBytes::<16>::from_slice(&agreement_id);
-
-        let call = ISubgraphService::cancelIndexingAgreementByPayerCall {
-            agreementId: agreement_bytes,
-        };
-
-        let encoded = call.abi_encode();
-
-        // 4-byte selector + bytes16 argument (right-padded to 32 bytes in ABI encoding)
-        assert_eq!(encoded.len(), 4 + 32);
     }
 
     #[tokio::test]

@@ -8,7 +8,6 @@ anyhow.workspace = true
 async-signal = "0.2.10"
 async-trait.workspace = true
 custom_debug = "0.6.1"
-dashmap = "6.1.0"
 dipper-core = { version = "0.1.0", path = "../../dipper-core" }
 dipper-iisa = { path = "../../dipper-iisa" }
 dipper-pgmq = { path = "../../dipper-pgmq" }
@@ -28,7 +27,7 @@ sqlx.workspace = true
 thegraph-core = { workspace = true, features = ["alloy-signer-local", "serde", "signed-message"] }
 thegraph-graphql-http = { version = "0.4.0", features = ["reqwest"] }
 thiserror.workspace = true
-time.workspace = true
+time = { workspace = true, features = ["parsing", "formatting"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tonic = { version = "0.14", default-features = false, features = ["server", "channel"] }
 tracing.workspace = true

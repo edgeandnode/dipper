@@ -1,6 +1,7 @@
 //! Expires `Created` agreements whose RCA deadline has passed on-chain.
+//!
 //! Compares deadlines against the chain_listener's block timestamp, not wall
-//! clock time, and stays dormant when no chain time is available.
+//! clock time. Stays dormant when no chain time is available.
 
 use std::{future::Future, time::Duration};
 
@@ -43,9 +44,11 @@ pub struct Ctx<R, W> {
     pub chain_id: Option<u64>,
 }
 
-/// Create the expiration service: returns a control handle and a future to spawn
-/// on a runtime. It periodically queries `Created` agreements past their
-/// deadline, marks them `Expired`, and queues reassessment jobs.
+/// Create a new expiration service
+///
+/// Returns a handle for controlling the service and a future that must be spawned
+/// on a runtime. The service periodically queries for `Created` agreements past
+/// their deadline, marks them as `Expired`, and queues reassessment jobs.
 pub fn new<R, W>(ctx: Ctx<R, W>) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
     R: AgreementRegistry
@@ -333,6 +336,7 @@ mod tests {
     struct MockState {
         chain_state: Option<ChainListenerState>,
         expired_agreements: Vec<IndexingAgreement>,
+        marked_expired: Vec<IndexingAgreementId>,
         get_expired_calls: Vec<u64>,
     }
 
@@ -342,6 +346,7 @@ mod tests {
                 state: Arc::new(Mutex::new(MockState {
                     chain_state: None,
                     expired_agreements: vec![],
+                    marked_expired: vec![],
                     get_expired_calls: vec![],
                 })),
             }
@@ -353,6 +358,11 @@ mod tests {
 
         fn get_expired_calls(&self) -> Vec<u64> {
             self.state.lock().unwrap().get_expired_calls.clone()
+        }
+
+        #[allow(dead_code)] // available for future test assertions
+        fn marked_expired(&self) -> Vec<IndexingAgreementId> {
+            self.state.lock().unwrap().marked_expired.clone()
         }
     }
 
@@ -406,10 +416,16 @@ mod tests {
             _default_lookback_days: i32,
             _price_lookback_days: i32,
             _transient_lookback_minutes: i32,
-            _escrow_lookback_minutes: i32,
             _uncertain_lookback_days: i32,
         ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>> {
             unimplemented!()
+        }
+        async fn get_unresponsive_indexers(
+            &self,
+            _lookback_days: i32,
+            _chain_id: thegraph_core::alloy::primitives::ChainId,
+        ) -> RegistryResult<Vec<IndexerId>> {
+            Ok(vec![])
         }
         async fn get_indexing_agreements_by_indexing_request_id(
             &self,
@@ -436,7 +452,7 @@ mod tests {
         ) -> RegistryResult<IndexingAgreementId> {
             unimplemented!()
         }
-        async fn mark_indexing_agreement_as_delivery_failed(
+        async fn mark_indexing_agreement_as_unresponsive(
             &self,
             _id: &IndexingAgreementId,
         ) -> RegistryResult<()> {
@@ -474,8 +490,9 @@ mod tests {
         }
         async fn mark_indexing_agreement_as_expired(
             &self,
-            _id: &IndexingAgreementId,
+            id: &IndexingAgreementId,
         ) -> RegistryResult<()> {
+            self.state.lock().unwrap().marked_expired.push(*id);
             Ok(())
         }
         async fn mark_indexing_agreement_as_rejected(
