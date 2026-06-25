@@ -150,13 +150,21 @@ where
         ))
     })?;
 
+    // Cap the breaker's pool to indexers dipper could actually pay on this chain, so
+    // the denominator matches the indexers the unresponsive numerator is drawn from.
+    let max_grt_per_30_days = ctx
+        .agreement_conf
+        .max_grt_per_30_days()
+        .get(&chain_name)
+        .copied();
+
     // Per-chain mass-unresponsive breaker: when a large fraction of this chain's
     // DIPs-accepting pool is unresponsive at once it's a dipper-side outage, so
     // suppress this chain's exclusion rather than benching everyone serving it.
     if !unresponsive.is_empty() {
         let snapshot = ctx
             .dips_accepting_cache
-            .get_or_fetch(&ctx.iisa, &chain_name)
+            .get_or_fetch(&ctx.iisa, &chain_name, max_grt_per_30_days)
             .await;
         let suppress = ctx.unresponsive_breaker.evaluate(
             &chain_name,
@@ -178,11 +186,7 @@ where
     }
 
     context.chain_id = Some(chain_name.clone());
-    context.max_grt_per_30_days = ctx
-        .agreement_conf
-        .max_grt_per_30_days()
-        .get(&chain_name)
-        .copied();
+    context.max_grt_per_30_days = max_grt_per_30_days;
 
     // Select the target group of indexers via IISA. If IISA is unreachable
     // we retry with exponential backoff rather than falling back to a
