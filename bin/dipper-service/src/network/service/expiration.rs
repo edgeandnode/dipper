@@ -423,6 +423,7 @@ mod tests {
         async fn get_unresponsive_indexers(
             &self,
             _lookback_days: i32,
+            _chain_id: thegraph_core::alloy::primitives::ChainId,
         ) -> RegistryResult<Vec<IndexerId>> {
             Ok(vec![])
         }

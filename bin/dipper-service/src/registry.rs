@@ -245,8 +245,12 @@ impl AgreementRegistry for RegistryProvider {
     async fn get_unresponsive_indexers(
         &self,
         lookback_days: i32,
+        chain_id: ChainId,
     ) -> RegistryResult<Vec<IndexerId>> {
-        Ok(self.inner.get_unresponsive_indexers(lookback_days).await?)
+        Ok(self
+            .inner
+            .get_unresponsive_indexers(lookback_days, chain_id)
+            .await?)
     }
 
     async fn get_indexing_agreements_by_indexing_request_id(

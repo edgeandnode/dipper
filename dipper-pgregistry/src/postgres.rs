@@ -605,23 +605,27 @@ impl PgRegistry {
             .collect())
     }
 
-    /// Get indexers with a recent `Unresponsive` agreement, regardless of
-    /// deployment. Used to skip an unresponsive indexer across every deployment
-    /// for `lookback_days` after it last failed to respond.
+    /// Get indexers with a recent `Unresponsive` agreement on a given chain. Used
+    /// to skip an unresponsive indexer for that chain's deployments for
+    /// `lookback_days` after it last failed to respond there.
     pub async fn get_unresponsive_indexers(
         &self,
         lookback_days: i32,
+        chain_id: ChainId,
     ) -> Result<Vec<IndexerId>, Error> {
         let rows: Vec<(PgIndexerId,)> = sqlx::query_as(
             r#"
-            SELECT DISTINCT indexer_id
-            FROM dipper_reg_indexing_agreements
-            WHERE status = $1
-              AND updated_at >= timezone('UTC', now()) - make_interval(days => $2)
+            SELECT DISTINCT a.indexer_id
+            FROM dipper_reg_indexing_agreements a
+            JOIN dipper_reg_indexing_requests r ON a.indexing_request_id = r.id
+            WHERE a.status = $1
+              AND a.updated_at >= timezone('UTC', now()) - make_interval(days => $2)
+              AND r.deployment_chain_id = $3
             "#,
         )
         .bind(IndexingAgreementStatus::Unresponsive)
         .bind(lookback_days)
+        .bind(PgU64(chain_id))
         .fetch_all(&self.pool)
         .await?;
 

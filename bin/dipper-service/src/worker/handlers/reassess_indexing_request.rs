@@ -130,6 +130,7 @@ where
         ctx.agreement_conf.transient_rejection_lookback_minutes(),
         ctx.agreement_conf.uncertain_rejection_lookback_days(),
         ctx.agreement_conf.unresponsive_indexer_lookback_days(),
+        *deployment_chain_id,
         &ctx.entity_count_cache,
     )
     .await?;
@@ -141,15 +142,16 @@ where
         &ctx.additional_networks,
     );
 
-    // Mass-unresponsive circuit breaker: when a large fraction of the DIPs-accepting
-    // pool is unresponsive at once it's a dipper-side outage, so suppress this
-    // network-wide exclusion rather than benching the whole network.
+    // Per-chain mass-unresponsive breaker: when a large fraction of this chain's
+    // DIPs-accepting pool is unresponsive at once it's a dipper-side outage, so
+    // suppress this chain's exclusion rather than benching everyone serving it.
     if !unresponsive.is_empty() {
         let snapshot = ctx
             .dips_accepting_cache
             .get_or_fetch(&ctx.iisa, chain_name.as_deref())
             .await;
         let suppress = ctx.unresponsive_breaker.evaluate(
+            chain_name.as_deref(),
             &unresponsive,
             snapshot.as_ref(),
             ctx.agreement_conf.mass_unresponsive_trip_fraction(),
@@ -158,8 +160,9 @@ where
         );
         if suppress {
             tracing::debug!(
+                chain = ?chain_name,
                 would_bench = unresponsive.len(),
-                "unresponsive breaker tripped; skipping network-wide unresponsive exclusion"
+                "unresponsive breaker tripped; skipping this chain's unresponsive exclusion"
             );
         } else {
             context.indexer_denylist.extend(unresponsive);
