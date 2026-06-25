@@ -8,7 +8,6 @@ anyhow.workspace = true
 async-signal = "0.2.10"
 async-trait.workspace = true
 custom_debug = "0.6.1"
-dashmap = "6.1.0"
 dipper-core = { version = "0.1.0", path = "../../dipper-core" }
 dipper-iisa = { path = "../../dipper-iisa" }
 dipper-pgmq = { path = "../../dipper-pgmq" }

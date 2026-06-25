@@ -330,8 +330,41 @@ pub async fn main() -> anyhow::Result<()> {
 
     //- The worker service
     let (worker_handle, worker_service) = {
-        // Per-request reassess locks, shared across all worker tasks.
-        let reassess_locks = Arc::new(dashmap::DashMap::new());
+        // Each loop can hold up to three pooled connections at once and shares
+        // the pool with the registry and background reconcilers. Refuse to start
+        // when the loops would crowd it, rather than deadlocking under load.
+        const CONNECTIONS_PER_LOOP: usize = 3;
+        const SHARED_SERVICES_HEADROOM: usize = 2;
+        if conf.worker_concurrency == 0 {
+            anyhow::bail!("worker_concurrency must be at least 1");
+        }
+        let max_conns = conf
+            .db
+            .max_connections
+            .unwrap_or(db::DEFAULT_MAX_CONNECTIONS) as usize;
+        // Saturating so an absurd configured value can't overflow and slip past
+        // the check below (the very check meant to catch oversized sizing).
+        let required_conns = conf
+            .worker_concurrency
+            .saturating_mul(CONNECTIONS_PER_LOOP)
+            .saturating_add(SHARED_SERVICES_HEADROOM);
+        if required_conns > max_conns {
+            anyhow::bail!(
+                "worker_concurrency ({}) needs at least {} db connections (each loop may hold {} \
+                 for its listener, open job transaction and a registry query, plus {} reserved for \
+                 the registry and background services), but db.max_connections is {}; raise \
+                 db.max_connections to at least {} or lower worker_concurrency",
+                conf.worker_concurrency,
+                required_conns,
+                CONNECTIONS_PER_LOOP,
+                SHARED_SERVICES_HEADROOM,
+                max_conns,
+                required_conns,
+            );
+        }
+
+        // A single global reassess lock, shared across all worker loops.
+        let reassess_lock = Arc::new(tokio::sync::Mutex::new(()));
         let ctx = worker::Ctx {
             queue,
             signer: signer.clone(),
@@ -353,7 +386,8 @@ pub async fn main() -> anyhow::Result<()> {
                 .map(|c| c.bypass_chain_clock_defenses)
                 .unwrap_or(false),
             chain_listener_chain_id: conf.chain_listener.as_ref().map(|c| c.chain_id),
-            reassess_locks,
+            reassess_lock,
+            concurrency: conf.worker_concurrency,
         };
         worker::service::new(ctx)
     };

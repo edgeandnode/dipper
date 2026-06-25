@@ -83,6 +83,11 @@ pub struct Config {
     /// The chain client configuration (for sending on-chain transactions)
     #[serde(default)]
     pub chain_client: Option<ChainClientConfig>,
+    /// Number of concurrent worker loops draining the job queue (default: 1).
+    /// Each loop can hold up to three pooled DB connections at once and shares
+    /// the pool with the registry and background services; size accordingly.
+    #[serde(default = "default_worker_concurrency")]
+    pub worker_concurrency: usize,
 }
 
 /// The IISA (Indexing Indexer Selection Algorithm) service configuration
@@ -280,6 +285,10 @@ fn default_expiration_interval() -> Duration {
 
 fn default_expiration_batch_size() -> i64 {
     100
+}
+
+fn default_worker_concurrency() -> usize {
+    1
 }
 
 impl Default for ExpirationConfig {
