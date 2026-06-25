@@ -460,6 +460,10 @@ mod tests {
             transient_rejection_lookback_minutes: 0,
             uncertain_rejection_lookback_days: 0,
             unresponsive_indexer_lookback_days: 0,
+            mass_unresponsive_trip_fraction: 0.5,
+            mass_unresponsive_reset_fraction: 0.25,
+            dips_accepting_snapshot_max_age_hours: 48,
+            dips_accepting_cache_ttl_seconds: 300,
         }
     }
 

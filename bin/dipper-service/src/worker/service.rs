@@ -66,6 +66,8 @@ where
         bypass_chain_clock_defenses,
         chain_listener_chain_id,
         reassess_lock,
+        unresponsive_breaker,
+        dips_accepting_cache,
         concurrency,
     } = state.into();
 
@@ -98,6 +100,8 @@ where
             bypass_chain_clock_defenses,
             chain_listener_chain_id,
             reassess_lock,
+            unresponsive_breaker,
+            dips_accepting_cache,
         };
 
         let mut set = JoinSet::new();
