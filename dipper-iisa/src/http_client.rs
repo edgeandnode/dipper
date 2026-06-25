@@ -229,10 +229,7 @@ impl HttpIisaClient {
     }
 
     /// GET the DIPs-accepting set from IISA, with retry/backoff and bearer auth.
-    async fn get_dips_indexers(
-        &self,
-        chain: Option<&str>,
-    ) -> Result<DipsIndexersResponse, SelectionError> {
+    async fn get_dips_indexers(&self, chain: &str) -> Result<DipsIndexersResponse, SelectionError> {
         let url = format!("{}dips-indexers", self.endpoint);
         let mut last_error = SelectionError::IisaServiceUnavailable;
 
@@ -240,10 +237,7 @@ impl HttpIisaClient {
             if attempt > 0 {
                 tokio::time::sleep(calculate_retry_delay(attempt)).await;
             }
-            let mut req = self.client.get(&url);
-            if let Some(chain) = chain {
-                req = req.query(&[("chain", chain)]);
-            }
+            let mut req = self.client.get(&url).query(&[("chain", chain)]);
             if let Some(token) = &self.config.push_token {
                 req = req.bearer_auth(token);
             }
@@ -503,7 +497,7 @@ impl CandidateSelection for HttpIisaClient {
 
     async fn dips_accepting_indexers(
         &self,
-        chain: Option<&str>,
+        chain: &str,
     ) -> Result<DipsAcceptingSnapshot, SelectionError> {
         let response = self.get_dips_indexers(chain).await?;
         let mut indexers = Vec::with_capacity(response.indexers.len());
@@ -1042,7 +1036,7 @@ mod tests {
 
         let client = HttpIisaClient::new(mock_server.uri());
         let snap = client
-            .dips_accepting_indexers(Some("arbitrum-one"))
+            .dips_accepting_indexers("arbitrum-one")
             .await
             .unwrap();
         assert_eq!(
@@ -1074,7 +1068,7 @@ mod tests {
         let client = HttpIisaClient::with_config(mock_server.uri(), config);
         assert!(
             client
-                .dips_accepting_indexers(None)
+                .dips_accepting_indexers("mainnet")
                 .await
                 .unwrap()
                 .indexers
@@ -1096,7 +1090,7 @@ mod tests {
             .await;
 
         let client = HttpIisaClient::new(mock_server.uri());
-        let snap = client.dips_accepting_indexers(None).await.unwrap();
+        let snap = client.dips_accepting_indexers("mainnet").await.unwrap();
         assert!(snap.computed_at.is_none());
         // The malformed id is warn-and-skipped, leaving only the valid one.
         assert_eq!(snap.indexers.len(), 1);
@@ -1131,7 +1125,7 @@ mod tests {
         let client = HttpIisaClient::with_config(mock_server.uri(), config);
         assert!(
             client
-                .dips_accepting_indexers(None)
+                .dips_accepting_indexers("mainnet")
                 .await
                 .unwrap()
                 .indexers

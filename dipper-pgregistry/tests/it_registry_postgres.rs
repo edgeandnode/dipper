@@ -1028,7 +1028,7 @@ async fn get_unresponsive_indexers_returns_unresponsive() {
     .expect("Failed to run fixture");
 
     // 0003 has no Unresponsive (status 1) rows; mark indexer 2222's agreement
-    // Unresponsive so exactly that indexer should come back, network-wide.
+    // Unresponsive so exactly that indexer comes back for the request's chain.
     let agreement_id =
         IndexingAgreementId::from_bytes([0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     sqlx::query(
@@ -1047,7 +1047,7 @@ async fn get_unresponsive_indexers_returns_unresponsive() {
 
     //* When
     let result = registry
-        .get_unresponsive_indexers(1)
+        .get_unresponsive_indexers(1, 42161)
         .await
         .expect("Failed to get unresponsive indexers");
 
@@ -1090,7 +1090,7 @@ async fn get_unresponsive_indexers_excludes_old() {
 
     //* When
     let result = registry
-        .get_unresponsive_indexers(30)
+        .get_unresponsive_indexers(30, 42161)
         .await
         .expect("Failed to get unresponsive indexers");
 
@@ -1098,6 +1098,56 @@ async fn get_unresponsive_indexers_excludes_old() {
     assert!(
         result.is_empty(),
         "an Unresponsive row older than the lookback window is excluded"
+    );
+}
+
+#[tokio::test]
+async fn get_unresponsive_indexers_is_scoped_to_chain() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // The fixture's request is on chain 42161; mark indexer 2222 Unresponsive there.
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = 1, updated_at = timezone('UTC', now())
+        WHERE id = $1
+        "#,
+    )
+    .bind(agreement_id)
+    .execute(&db)
+    .await
+    .expect("Failed to mark agreement Unresponsive");
+
+    let registry = PgRegistry::new(db);
+
+    //* Then - querying the same chain returns the indexer
+    let same_chain = registry
+        .get_unresponsive_indexers(1, 42161)
+        .await
+        .expect("query same chain");
+    assert_eq!(
+        same_chain.len(),
+        1,
+        "an indexer unresponsive on the queried chain is returned"
+    );
+
+    //* Then - querying a different chain returns nothing
+    let other_chain = registry
+        .get_unresponsive_indexers(1, 1)
+        .await
+        .expect("query other chain");
+    assert!(
+        other_chain.is_empty(),
+        "an indexer unresponsive on another chain is not returned"
     );
 }
 

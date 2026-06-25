@@ -130,46 +130,59 @@ where
         ctx.agreement_conf.transient_rejection_lookback_minutes(),
         ctx.agreement_conf.uncertain_rejection_lookback_days(),
         ctx.agreement_conf.unresponsive_indexer_lookback_days(),
+        *deployment_chain_id,
         &ctx.entity_count_cache,
     )
     .await?;
 
-    // Map numeric chain ID to chain name for IISA ceiling/filtering
+    // The chain name is required for IISA filtering, pricing and the breaker; an
+    // unresolved chain means a missing additional_networks entry, so fail loudly
+    // rather than select without a chain filter or price ceiling.
     let chain_name = super::selection_helpers::resolve_chain_name(
         *deployment_chain_id,
         &ctx.networks_registry,
         &ctx.additional_networks,
-    );
+    )
+    .ok_or_else(|| {
+        JobError::Fatal(anyhow::anyhow!(
+            "no network name for chain id {}; add it to additional_networks",
+            *deployment_chain_id
+        ))
+    })?;
 
-    // Mass-unresponsive circuit breaker: when a large fraction of the DIPs-accepting
-    // pool is unresponsive at once it's a dipper-side outage, so suppress this
-    // network-wide exclusion rather than benching the whole network.
+    // Per-chain mass-unresponsive breaker: when a large fraction of this chain's
+    // DIPs-accepting pool is unresponsive at once it's a dipper-side outage, so
+    // suppress this chain's exclusion rather than benching everyone serving it.
     if !unresponsive.is_empty() {
         let snapshot = ctx
             .dips_accepting_cache
-            .get_or_fetch(&ctx.iisa, chain_name.as_deref())
+            .get_or_fetch(&ctx.iisa, &chain_name)
             .await;
         let suppress = ctx.unresponsive_breaker.evaluate(
+            &chain_name,
             &unresponsive,
-            snapshot.as_ref(),
+            snapshot.as_deref(),
             ctx.agreement_conf.mass_unresponsive_trip_fraction(),
             ctx.agreement_conf.mass_unresponsive_reset_fraction(),
             ctx.agreement_conf.dips_accepting_snapshot_max_age_hours(),
         );
         if suppress {
             tracing::debug!(
+                chain = chain_name.as_str(),
                 would_bench = unresponsive.len(),
-                "unresponsive breaker tripped; skipping network-wide unresponsive exclusion"
+                "unresponsive breaker tripped; skipping this chain's unresponsive exclusion"
             );
         } else {
             context.indexer_denylist.extend(unresponsive);
         }
     }
 
-    if let Some(name) = &chain_name {
-        context.chain_id = Some(name.clone());
-        context.max_grt_per_30_days = ctx.agreement_conf.max_grt_per_30_days().get(name).copied();
-    }
+    context.chain_id = Some(chain_name.clone());
+    context.max_grt_per_30_days = ctx
+        .agreement_conf
+        .max_grt_per_30_days()
+        .get(&chain_name)
+        .copied();
 
     // Select the target group of indexers via IISA. If IISA is unreachable
     // we retry with exponential backoff rather than falling back to a

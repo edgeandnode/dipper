@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use dipper_iisa::SelectionContext;
-use thegraph_core::{DeploymentId, IndexerId};
+use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::ChainId};
 
 use crate::{
     network::service::entity_count_cache::EntityCountCache,
@@ -35,6 +35,7 @@ pub async fn gather_selection_context<R>(
     transient_rejection_lookback_minutes: i32,
     uncertain_rejection_lookback_days: i32,
     unresponsive_indexer_lookback_days: i32,
+    deployment_chain_id: ChainId,
     entity_count_cache: &EntityCountCache,
 ) -> JobResult<(SelectionContext, Vec<IndexerId>)>
 where
@@ -73,12 +74,12 @@ where
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
-    // Recently-unresponsive indexers, deduped against the base denylist. Returned to
-    // the caller (not merged here) so the mass-unresponsive breaker can apply this
-    // network-wide exclusion or suppress it during a dipper-side outage.
+    // Recently-unresponsive indexers for this chain, deduped against the base denylist.
+    // Returned to the caller (not merged here) so the per-chain breaker can apply this
+    // exclusion or suppress it during a dipper-side outage.
     let already_denied: std::collections::HashSet<_> = indexer_denylist.iter().copied().collect();
     let unresponsive_indexers: Vec<IndexerId> = registry
-        .get_unresponsive_indexers(unresponsive_indexer_lookback_days)
+        .get_unresponsive_indexers(unresponsive_indexer_lookback_days, deployment_chain_id)
         .await
         .map_err(|err| JobError::Fatal(err.into()))?
         .into_iter()

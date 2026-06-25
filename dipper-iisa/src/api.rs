@@ -115,11 +115,11 @@ pub trait CandidateSelection {
         context: &SelectionContext,
     ) -> Result<Vec<SelectedIndexer>, SelectionError>;
 
-    /// Fetch the indexers that currently accept DIPs (stricter than "IISA scores
-    /// it"). `chain` is a chain *name* (e.g. "arbitrum-one"); `None` returns every
-    /// accepting indexer.
+    /// Fetch the indexers that currently accept DIPs on `chain` (stricter than
+    /// "IISA scores it"). `chain` is a required chain *name* (e.g. "arbitrum-one");
+    /// the endpoint rejects a missing chain.
     async fn dips_accepting_indexers(
         &self,
-        chain: Option<&str>,
+        chain: &str,
     ) -> Result<DipsAcceptingSnapshot, SelectionError>;
 }

@@ -125,11 +125,14 @@ pub trait AgreementRegistry {
         uncertain_lookback_days: i32,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>;
 
-    /// Get indexers with a recent `Unresponsive` agreement, regardless of
-    /// deployment. The result is skipped across every deployment for
-    /// `lookback_days` after the indexer last failed to respond.
-    async fn get_unresponsive_indexers(&self, lookback_days: i32)
-    -> RegistryResult<Vec<IndexerId>>;
+    /// Get indexers with a recent `Unresponsive` agreement on `chain_id`. The
+    /// result is skipped for that chain's deployments for `lookback_days` after
+    /// the indexer last failed to respond there.
+    async fn get_unresponsive_indexers(
+        &self,
+        lookback_days: i32,
+        chain_id: ChainId,
+    ) -> RegistryResult<Vec<IndexerId>>;
 
     /// Get all agreements by associated indexing request ID.
     async fn get_indexing_agreements_by_indexing_request_id(
