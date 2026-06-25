@@ -1013,6 +1013,95 @@ async fn get_declined_indexers_includes_rejected_status() {
 }
 
 // =============================================================================
+// get_unresponsive_indexers tests
+// =============================================================================
+
+#[tokio::test]
+async fn get_unresponsive_indexers_returns_unresponsive() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // 0003 has no Unresponsive (status 1) rows; mark indexer 2222's agreement
+    // Unresponsive so exactly that indexer should come back, network-wide.
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = 1, updated_at = timezone('UTC', now())
+        WHERE id = $1
+        "#,
+    )
+    .bind(agreement_id)
+    .execute(&db)
+    .await
+    .expect("Failed to mark agreement Unresponsive");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_unresponsive_indexers(1)
+        .await
+        .expect("Failed to get unresponsive indexers");
+
+    //* Then
+    let indexer_b = indexer_id!("2222222222222222222222222222222222222222");
+    assert_eq!(result.len(), 1, "only the unresponsive indexer is returned");
+    assert!(
+        result.contains(&indexer_b),
+        "the unresponsive indexer should be returned"
+    );
+}
+
+#[tokio::test]
+async fn get_unresponsive_indexers_excludes_old() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // Mark indexer 2222 Unresponsive but 31 days ago, outside a 30-day window.
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = 1, updated_at = timezone('UTC', now()) - interval '31 days'
+        WHERE id = $1
+        "#,
+    )
+    .bind(agreement_id)
+    .execute(&db)
+    .await
+    .expect("Failed to age the Unresponsive agreement");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_unresponsive_indexers(30)
+        .await
+        .expect("Failed to get unresponsive indexers");
+
+    //* Then
+    assert!(
+        result.is_empty(),
+        "an Unresponsive row older than the lookback window is excluded"
+    );
+}
+
+// =============================================================================
 // Deadline expiration tests
 // =============================================================================
 

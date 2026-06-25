@@ -1,0 +1,233 @@
+//! Mass-unresponsive circuit breaker: when a dipper-side outage makes proposals to
+//! many indexers time out at once, suppress the network-wide unresponsive exclusion
+//! (a large unresponsive fraction signals a dipper-side cause, not the indexers).
+
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
+
+use dipper_iisa::{CandidateSelection, DipsAcceptingSnapshot};
+use thegraph_core::IndexerId;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+/// Hysteresis state for the breaker. One in-memory bool shared across all worker
+/// loops (dipper is single-replica). `tripped` means the network-wide unresponsive
+/// exclusion is currently being suppressed.
+#[derive(Default)]
+pub struct UnresponsiveBreaker {
+    tripped: AtomicBool,
+}
+
+impl UnresponsiveBreaker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Decide whether to suppress the unresponsive exclusion this round, updating the
+    /// hysteresis state (trip above `trip`, resume below `reset`, hold between). Fail-safe:
+    /// a missing/stale/empty snapshot returns `false` (apply exclusions) without mutating state.
+    pub fn evaluate(
+        &self,
+        unresponsive: &[IndexerId],
+        snapshot: Option<&DipsAcceptingSnapshot>,
+        trip: f64,
+        reset: f64,
+        max_age_hours: i64,
+    ) -> bool {
+        let Some(snapshot) = snapshot else {
+            return false;
+        };
+        let Some(computed_at) = snapshot.computed_at.as_deref() else {
+            return false;
+        };
+        let Ok(computed_at) = OffsetDateTime::parse(computed_at, &Rfc3339) else {
+            tracing::warn!(
+                computed_at,
+                "could not parse IISA snapshot timestamp; treating as stale"
+            );
+            return false;
+        };
+        if OffsetDateTime::now_utc() - computed_at > time::Duration::hours(max_age_hours) {
+            return false;
+        }
+        let pool: HashSet<IndexerId> = snapshot.indexers.iter().copied().collect();
+        if pool.is_empty() {
+            return false;
+        }
+
+        let benched = unresponsive.iter().filter(|id| pool.contains(id)).count();
+        let fraction = benched as f64 / pool.len() as f64;
+        let tripped = self.tripped.load(Ordering::Relaxed);
+
+        if !tripped && fraction > trip {
+            self.tripped.store(true, Ordering::Relaxed);
+            tracing::warn!(
+                benched,
+                pool = pool.len(),
+                fraction,
+                trip,
+                "mass-unresponsive breaker TRIPPED; suppressing network-wide unresponsive \
+                 exclusions (likely a dipper-side outage, not indexer faults)"
+            );
+            true
+        } else if tripped && fraction < reset {
+            self.tripped.store(false, Ordering::Relaxed);
+            tracing::warn!(
+                fraction,
+                reset,
+                "mass-unresponsive breaker RESET; resuming exclusions"
+            );
+            false
+        } else {
+            tripped
+        }
+    }
+
+    #[cfg(test)]
+    fn is_tripped(&self) -> bool {
+        self.tripped.load(Ordering::Relaxed)
+    }
+}
+
+/// Cache keyed by chain name (`None` = all chains) -> (fetch time, snapshot).
+type CacheStore =
+    Arc<tokio::sync::Mutex<HashMap<Option<String>, (Instant, DipsAcceptingSnapshot)>>>;
+
+/// Short-TTL, per-chain cache of IISA's DIPs-accepting set, so a burst of
+/// reassessments doesn't re-query the same daily snapshot once per request.
+#[derive(Clone)]
+pub struct DipsAcceptingCache {
+    inner: CacheStore,
+    ttl: Duration,
+}
+
+impl DipsAcceptingCache {
+    pub fn new(ttl: Duration) -> Self {
+        Self {
+            inner: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            ttl,
+        }
+    }
+
+    /// Return a cached snapshot if it's within the TTL, otherwise fetch from IISA
+    /// and cache it. A fetch error yields `None` (the breaker stays inactive this
+    /// pass) rather than failing the job. The lock is never held across the await.
+    pub async fn get_or_fetch<I: CandidateSelection + ?Sized>(
+        &self,
+        iisa: &I,
+        chain: Option<&str>,
+    ) -> Option<DipsAcceptingSnapshot> {
+        let key = chain.map(|c| c.to_string());
+        {
+            let guard = self.inner.lock().await;
+            if let Some((fetched_at, snapshot)) = guard.get(&key)
+                && fetched_at.elapsed() < self.ttl
+            {
+                return Some(snapshot.clone());
+            }
+        }
+        match iisa.dips_accepting_indexers(chain).await {
+            Ok(snapshot) => {
+                let mut guard = self.inner.lock().await;
+                guard.insert(key, (Instant::now(), snapshot.clone()));
+                Some(snapshot)
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "DIPs-accepting fetch failed; breaker inactive this pass");
+                None
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn indexer(byte: u8) -> IndexerId {
+        IndexerId::from(thegraph_core::alloy::primitives::Address::repeat_byte(byte))
+    }
+
+    fn snapshot(pool: &[IndexerId], age_hours: i64) -> DipsAcceptingSnapshot {
+        let ts = (OffsetDateTime::now_utc() - time::Duration::hours(age_hours))
+            .format(&Rfc3339)
+            .unwrap();
+        DipsAcceptingSnapshot {
+            computed_at: Some(ts),
+            indexers: pool.to_vec(),
+        }
+    }
+
+    #[test]
+    fn trips_above_trip_and_resets_below_reset_with_deadband() {
+        let pool: Vec<IndexerId> = (0..10).map(indexer).collect();
+        let breaker = UnresponsiveBreaker::new();
+        let fresh = snapshot(&pool, 0);
+
+        // 6/10 = 0.6 > 0.5 -> trip (suppress).
+        let six = &pool[..6];
+        assert!(breaker.evaluate(six, Some(&fresh), 0.5, 0.25, 48));
+        assert!(breaker.is_tripped());
+
+        // 4/10 = 0.4 sits in the dead-band -> hold suppressed.
+        let four = &pool[..4];
+        assert!(breaker.evaluate(four, Some(&fresh), 0.5, 0.25, 48));
+        assert!(breaker.is_tripped());
+
+        // 2/10 = 0.2 < 0.25 -> reset (resume exclusions).
+        let two = &pool[..2];
+        assert!(!breaker.evaluate(two, Some(&fresh), 0.5, 0.25, 48));
+        assert!(!breaker.is_tripped());
+    }
+
+    #[test]
+    fn does_not_trip_below_trip_from_untripped() {
+        let pool: Vec<IndexerId> = (0..10).map(indexer).collect();
+        let breaker = UnresponsiveBreaker::new();
+        // 4/10 = 0.4, still under 0.5 from an untripped start -> apply exclusions.
+        assert!(!breaker.evaluate(&pool[..4], Some(&snapshot(&pool, 0)), 0.5, 0.25, 48));
+        assert!(!breaker.is_tripped());
+    }
+
+    #[test]
+    fn fail_safe_paths_do_not_suppress_or_mutate_state() {
+        let pool: Vec<IndexerId> = (0..10).map(indexer).collect();
+        let all = &pool[..]; // 10/10 = 1.0, would trip if the snapshot were usable
+        let breaker = UnresponsiveBreaker::new();
+
+        // No snapshot (IISA unreachable).
+        assert!(!breaker.evaluate(all, None, 0.5, 0.25, 48));
+        assert!(!breaker.is_tripped());
+
+        // No computed_at (IISA has no scores).
+        let no_ts = DipsAcceptingSnapshot {
+            computed_at: None,
+            indexers: pool.clone(),
+        };
+        assert!(!breaker.evaluate(all, Some(&no_ts), 0.5, 0.25, 48));
+        assert!(!breaker.is_tripped());
+
+        // Stale snapshot (older than max age).
+        assert!(!breaker.evaluate(all, Some(&snapshot(&pool, 72)), 0.5, 0.25, 48));
+        assert!(!breaker.is_tripped());
+
+        // Empty pool (denominator 0).
+        let empty = snapshot(&[], 0);
+        assert!(!breaker.evaluate(all, Some(&empty), 0.5, 0.25, 48));
+        assert!(!breaker.is_tripped());
+    }
+
+    #[test]
+    fn numerator_only_counts_indexers_in_the_pool() {
+        let pool: Vec<IndexerId> = (0..4).map(indexer).collect();
+        let breaker = UnresponsiveBreaker::new();
+        // Six unresponsive, but only the 4 pool members count -> 4/4 = 1.0 > 0.5.
+        let unresponsive: Vec<IndexerId> = (0..6).map(indexer).collect();
+        assert!(breaker.evaluate(&unresponsive, Some(&snapshot(&pool, 0)), 0.5, 0.25, 48));
+    }
+}

@@ -5,9 +5,12 @@ use graph_networks_registry::NetworksRegistry;
 use thegraph_core::alloy::primitives::ChainId;
 use tokio::sync::{Mutex, Notify};
 
-use super::handlers::{
-    CancelRejectedAgreementOnChainCtx, ReassessIndexingRequestCtx,
-    SendIndexingAgreementProposalCtx, SubmitOfferCtx,
+use super::{
+    handlers::{
+        CancelRejectedAgreementOnChainCtx, ReassessIndexingRequestCtx,
+        SendIndexingAgreementProposalCtx, SubmitOfferCtx,
+    },
+    unresponsive_breaker::{DipsAcceptingCache, UnresponsiveBreaker},
 };
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
@@ -114,6 +117,12 @@ pub struct Ctx<Q, R, C, I, T> {
     /// Global reassess lock (see `ReassessLock`).
     pub reassess_lock: ReassessLock,
 
+    /// Suppresses the network-wide unresponsive exclusion during a dipper-side outage.
+    pub unresponsive_breaker: Arc<UnresponsiveBreaker>,
+
+    /// Short-TTL cache of IISA's DIPs-accepting set (the breaker's denominator).
+    pub dips_accepting_cache: DipsAcceptingCache,
+
     /// Number of concurrent worker loops to spawn (>=1). Defaults to 1.
     pub concurrency: usize,
 }
@@ -173,6 +182,12 @@ pub(super) struct InnerCtx<R, W, C, I, T> {
 
     /// See `Ctx::reassess_lock`.
     pub reassess_lock: ReassessLock,
+
+    /// See `Ctx::unresponsive_breaker`.
+    pub unresponsive_breaker: Arc<UnresponsiveBreaker>,
+
+    /// See `Ctx::dips_accepting_cache`.
+    pub dips_accepting_cache: DipsAcceptingCache,
 }
 
 impl_from_state!(ReassessIndexingRequestCtx<R, W, I, T> {
@@ -192,6 +207,8 @@ impl_from_state!(ReassessIndexingRequestCtx<R, W, I, T> {
     bypass_chain_clock_defenses,
     chain_listener_chain_id,
     reassess_lock,
+    unresponsive_breaker,
+    dips_accepting_cache,
 });
 
 impl_from_state!(SendIndexingAgreementProposalCtx<R, W, C> {

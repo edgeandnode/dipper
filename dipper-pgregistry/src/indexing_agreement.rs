@@ -162,10 +162,9 @@ pub enum Status {
     #[default]
     Created = -1,
 
-    /// The [`IndexingAgreement`] was registered, but the agreement request failed.
-    ///
-    /// This is a terminal state.
-    DeliveryFailed = 1,
+    /// The proposal was sent but the indexer never responded (timeout,
+    /// connection failure, or unreachable). Terminal state.
+    Unresponsive = 1,
 
     /// The associated [`IndexingRequest`] got cancelled.
     ///
@@ -215,7 +214,7 @@ impl std::fmt::Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let status = match self {
             Status::Created => "CREATED",
-            Status::DeliveryFailed => "DELIVERY_FAILED",
+            Status::Unresponsive => "UNRESPONSIVE",
             Status::CanceledByRequester => "CANCELED_BY_REQUESTER",
             Status::CanceledByIndexer => "CANCELED_BY_INDEXER",
             Status::Expired => "EXPIRED",

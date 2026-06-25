@@ -242,6 +242,13 @@ impl AgreementRegistry for RegistryProvider {
             .await?)
     }
 
+    async fn get_unresponsive_indexers(
+        &self,
+        lookback_days: i32,
+    ) -> RegistryResult<Vec<IndexerId>> {
+        Ok(self.inner.get_unresponsive_indexers(lookback_days).await?)
+    }
+
     async fn get_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
@@ -289,12 +296,12 @@ impl AgreementRegistry for RegistryProvider {
             .map_err(Into::into)
     }
 
-    async fn mark_indexing_agreement_as_delivery_failed(
+    async fn mark_indexing_agreement_as_unresponsive(
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<()> {
         self.inner
-            .mark_indexing_agreement_as_delivery_failed(id)
+            .mark_indexing_agreement_as_unresponsive(id)
             .await
             .map_err(Into::into)
     }

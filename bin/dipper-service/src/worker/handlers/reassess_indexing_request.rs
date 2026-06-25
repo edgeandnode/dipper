@@ -32,6 +32,7 @@ use crate::{
     },
     signing::eip712::Eip712Signer,
     worker::{
+        DipsAcceptingCache, UnresponsiveBreaker,
         result::{JobError, JobResult},
         service::WorkerQueue,
     },
@@ -70,6 +71,10 @@ pub struct Ctx<R, W, I, T> {
     /// Global reassess lock; only one reassessment runs at a time across all
     /// worker loops (see `crate::worker::context::ReassessLock`).
     pub reassess_lock: crate::worker::context::ReassessLock,
+    /// Mass-unresponsive circuit breaker (see its module).
+    pub unresponsive_breaker: Arc<UnresponsiveBreaker>,
+    /// Cache of IISA's DIPs-accepting set (the breaker's denominator).
+    pub dips_accepting_cache: DipsAcceptingCache,
 }
 
 /// Reassess an indexing request against the current IISA target state.
@@ -117,13 +122,14 @@ where
     };
 
     // Gather load balancing context for IISA, including chain/ceiling info
-    let mut context = gather_selection_context(
+    let (mut context, unresponsive) = gather_selection_context(
         &ctx.registry,
         deployment_id,
         ctx.agreement_conf.declined_indexer_lookback_days(),
         ctx.agreement_conf.price_rejection_lookback_days(),
         ctx.agreement_conf.transient_rejection_lookback_minutes(),
         ctx.agreement_conf.uncertain_rejection_lookback_days(),
+        ctx.agreement_conf.unresponsive_indexer_lookback_days(),
         &ctx.entity_count_cache,
     )
     .await?;
@@ -134,6 +140,32 @@ where
         &ctx.networks_registry,
         &ctx.additional_networks,
     );
+
+    // Mass-unresponsive circuit breaker: when a large fraction of the DIPs-accepting
+    // pool is unresponsive at once it's a dipper-side outage, so suppress this
+    // network-wide exclusion rather than benching the whole network.
+    if !unresponsive.is_empty() {
+        let snapshot = ctx
+            .dips_accepting_cache
+            .get_or_fetch(&ctx.iisa, chain_name.as_deref())
+            .await;
+        let suppress = ctx.unresponsive_breaker.evaluate(
+            &unresponsive,
+            snapshot.as_ref(),
+            ctx.agreement_conf.mass_unresponsive_trip_fraction(),
+            ctx.agreement_conf.mass_unresponsive_reset_fraction(),
+            ctx.agreement_conf.dips_accepting_snapshot_max_age_hours(),
+        );
+        if suppress {
+            tracing::debug!(
+                would_bench = unresponsive.len(),
+                "unresponsive breaker tripped; skipping network-wide unresponsive exclusion"
+            );
+        } else {
+            context.indexer_denylist.extend(unresponsive);
+        }
+    }
+
     if let Some(name) = &chain_name {
         context.chain_id = Some(name.clone());
         context.max_grt_per_30_days = ctx.agreement_conf.max_grt_per_30_days().get(name).copied();

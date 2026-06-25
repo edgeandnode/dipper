@@ -114,6 +114,11 @@ pub struct IisaConfig {
     /// For example, `max_retries = 3` means up to 4 total attempts (1 initial + 3 retries).
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
+
+    /// Bearer token for IISA's authenticated `GET /dips-indexers` endpoint, used by
+    /// the unresponsive breaker. Must match IISA_PUSH_TOKEN. None = no auth header.
+    #[serde(default)]
+    pub push_token: Option<Hidden<String>>,
 }
 
 fn default_request_timeout() -> Duration {
@@ -716,6 +721,31 @@ pub struct DipsAgreementConfig {
     /// (SENDER_NOT_TRUSTED), or an unspecified/unknown/missing reason. Default: 1 day.
     #[serde(default = "default_uncertain_rejection_lookback_days")]
     pub uncertain_rejection_lookback_days: i32,
+
+    /// Days to skip an indexer across ALL deployments after it failed to respond
+    /// to a proposal (status `Unresponsive`). Default: 1 day.
+    #[serde(default = "default_unresponsive_indexer_lookback_days")]
+    pub unresponsive_indexer_lookback_days: i32,
+
+    /// Fraction of the DIPs-accepting pool that must be unresponsive before the
+    /// breaker trips and suppresses the network-wide exclusion. Default 0.50.
+    #[serde(default = "default_mass_unresponsive_trip_fraction")]
+    pub mass_unresponsive_trip_fraction: f64,
+
+    /// Fraction the unresponsive pool must fall back under before exclusions resume
+    /// (hysteresis dead-band with the trip fraction). Default 0.25.
+    #[serde(default = "default_mass_unresponsive_reset_fraction")]
+    pub mass_unresponsive_reset_fraction: f64,
+
+    /// Max age (hours) of IISA's DIPs-accepting snapshot before it's too stale to
+    /// drive the breaker; a stale snapshot never trips it. Default 48.
+    #[serde(default = "default_dips_accepting_snapshot_max_age_hours")]
+    pub dips_accepting_snapshot_max_age_hours: i64,
+
+    /// How long (seconds) dipper caches IISA's DIPs-accepting set, so a burst of
+    /// reassessments doesn't re-query the same daily snapshot. Default 300.
+    #[serde(default = "default_dips_accepting_cache_ttl_seconds")]
+    pub dips_accepting_cache_ttl_seconds: u64,
 }
 
 impl DipsAgreementConfig {
@@ -727,6 +757,12 @@ impl DipsAgreementConfig {
             return Err(
                 "recurring_agreement_manager must be set to a non-zero address".to_string(),
             );
+        }
+        if self.mass_unresponsive_reset_fraction >= self.mass_unresponsive_trip_fraction {
+            return Err(format!(
+                "mass_unresponsive_reset_fraction ({}) must be below mass_unresponsive_trip_fraction ({})",
+                self.mass_unresponsive_reset_fraction, self.mass_unresponsive_trip_fraction
+            ));
         }
         Ok(())
     }
@@ -812,6 +848,26 @@ fn default_transient_rejection_lookback_minutes() -> i32 {
 
 fn default_uncertain_rejection_lookback_days() -> i32 {
     1
+}
+
+fn default_unresponsive_indexer_lookback_days() -> i32 {
+    1
+}
+
+fn default_mass_unresponsive_trip_fraction() -> f64 {
+    0.50
+}
+
+fn default_mass_unresponsive_reset_fraction() -> f64 {
+    0.25
+}
+
+fn default_dips_accepting_snapshot_max_age_hours() -> i64 {
+    48
+}
+
+fn default_dips_accepting_cache_ttl_seconds() -> u64 {
+    300
 }
 
 /// Per-chain pricing for indexing agreements.
@@ -928,6 +984,16 @@ pub struct IndexingAgreementConfig {
     pub transient_rejection_lookback_minutes: i32,
     /// Number of days to look back for uncertain rejections (sender-not-trusted, unspecified).
     pub uncertain_rejection_lookback_days: i32,
+    /// Number of days to skip an unresponsive indexer across all deployments.
+    pub unresponsive_indexer_lookback_days: i32,
+    /// Breaker trip fraction (see `DipsAgreementConfig`).
+    pub mass_unresponsive_trip_fraction: f64,
+    /// Breaker reset fraction.
+    pub mass_unresponsive_reset_fraction: f64,
+    /// Max age (hours) of the DIPs-accepting snapshot before it's too stale to trip.
+    pub dips_accepting_snapshot_max_age_hours: i64,
+    /// TTL (seconds) for caching the DIPs-accepting set.
+    pub dips_accepting_cache_ttl_seconds: u64,
 }
 
 /// Per-chain pricing for indexing agreements (runtime).
@@ -995,6 +1061,26 @@ impl IndexingAgreementConfig {
     pub fn uncertain_rejection_lookback_days(&self) -> i32 {
         self.uncertain_rejection_lookback_days
     }
+
+    pub fn unresponsive_indexer_lookback_days(&self) -> i32 {
+        self.unresponsive_indexer_lookback_days
+    }
+
+    pub fn mass_unresponsive_trip_fraction(&self) -> f64 {
+        self.mass_unresponsive_trip_fraction
+    }
+
+    pub fn mass_unresponsive_reset_fraction(&self) -> f64 {
+        self.mass_unresponsive_reset_fraction
+    }
+
+    pub fn dips_accepting_snapshot_max_age_hours(&self) -> i64 {
+        self.dips_accepting_snapshot_max_age_hours
+    }
+
+    pub fn dips_accepting_cache_ttl_seconds(&self) -> u64 {
+        self.dips_accepting_cache_ttl_seconds
+    }
 }
 
 impl From<DipsAgreementConfig>
@@ -1020,6 +1106,11 @@ impl From<DipsAgreementConfig>
             price_rejection_lookback_days: value.price_rejection_lookback_days,
             transient_rejection_lookback_minutes: value.transient_rejection_lookback_minutes,
             uncertain_rejection_lookback_days: value.uncertain_rejection_lookback_days,
+            unresponsive_indexer_lookback_days: value.unresponsive_indexer_lookback_days,
+            mass_unresponsive_trip_fraction: value.mass_unresponsive_trip_fraction,
+            mass_unresponsive_reset_fraction: value.mass_unresponsive_reset_fraction,
+            dips_accepting_snapshot_max_age_hours: value.dips_accepting_snapshot_max_age_hours,
+            dips_accepting_cache_ttl_seconds: value.dips_accepting_cache_ttl_seconds,
         };
         let prices = value
             .pricing_table
@@ -1204,6 +1295,10 @@ mod tests {
             config.max_agreement_grt_per_30_days, 20000.0,
             "max_agreement_grt_per_30_days default missing"
         );
+        assert_eq!(config.mass_unresponsive_trip_fraction, 0.50);
+        assert_eq!(config.mass_unresponsive_reset_fraction, 0.25);
+        assert_eq!(config.dips_accepting_snapshot_max_age_hours, 48);
+        assert_eq!(config.dips_accepting_cache_ttl_seconds, 300);
 
         // Test the From conversion - None should map to u64::MAX
         let (agreement_config, _) = <(

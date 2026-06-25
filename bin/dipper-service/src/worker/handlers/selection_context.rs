@@ -34,8 +34,9 @@ pub async fn gather_selection_context<R>(
     price_rejection_lookback_days: i32,
     transient_rejection_lookback_minutes: i32,
     uncertain_rejection_lookback_days: i32,
+    unresponsive_indexer_lookback_days: i32,
     entity_count_cache: &EntityCountCache,
-) -> JobResult<SelectionContext>
+) -> JobResult<(SelectionContext, Vec<IndexerId>)>
 where
     R: AgreementRegistry + IndexerDenylistRegistry,
 {
@@ -72,18 +73,33 @@ where
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
+    // Recently-unresponsive indexers, deduped against the base denylist. Returned to
+    // the caller (not merged here) so the mass-unresponsive breaker can apply this
+    // network-wide exclusion or suppress it during a dipper-side outage.
+    let already_denied: std::collections::HashSet<_> = indexer_denylist.iter().copied().collect();
+    let unresponsive_indexers: Vec<IndexerId> = registry
+        .get_unresponsive_indexers(unresponsive_indexer_lookback_days)
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?
+        .into_iter()
+        .filter(|id| !already_denied.contains(id))
+        .collect();
+
     // Compute optimistic DIPs fees from active agreements, enriched with
     // entity counts from the shared cache when available.
     let optimistic_dips_fees = compute_optimistic_dips_fees(registry, entity_count_cache).await?;
 
-    Ok(SelectionContext {
-        existing_indexers,
-        pending_agreements,
-        declined_indexers,
-        indexer_denylist,
-        optimistic_dips_fees,
-        ..Default::default()
-    })
+    Ok((
+        SelectionContext {
+            existing_indexers,
+            pending_agreements,
+            declined_indexers,
+            indexer_denylist,
+            optimistic_dips_fees,
+            ..Default::default()
+        },
+        unresponsive_indexers,
+    ))
 }
 
 /// Compute optimistic DIPs fees per indexer in GRT per 28 days.

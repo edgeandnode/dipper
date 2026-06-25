@@ -226,6 +226,7 @@ pub async fn main() -> anyhow::Result<()> {
         request_timeout: conf.iisa.request_timeout,
         connect_timeout: conf.iisa.connect_timeout,
         max_retries: conf.iisa.max_retries,
+        push_token: conf.iisa.push_token.as_ref().map(|t| t.0.clone()),
     };
     let iisa_client =
         iisa::HttpIisaClient::with_config(conf.iisa.endpoint.to_string(), iisa_config);
@@ -365,6 +366,10 @@ pub async fn main() -> anyhow::Result<()> {
 
         // A single global reassess lock, shared across all worker loops.
         let reassess_lock = Arc::new(tokio::sync::Mutex::new(()));
+        let unresponsive_breaker = Arc::new(worker::UnresponsiveBreaker::new());
+        let dips_accepting_cache = worker::DipsAcceptingCache::new(std::time::Duration::from_secs(
+            agreement_conf.dips_accepting_cache_ttl_seconds(),
+        ));
         let ctx = worker::Ctx {
             queue,
             signer: signer.clone(),
@@ -387,6 +392,8 @@ pub async fn main() -> anyhow::Result<()> {
                 .unwrap_or(false),
             chain_listener_chain_id: conf.chain_listener.as_ref().map(|c| c.chain_id),
             reassess_lock,
+            unresponsive_breaker,
+            dips_accepting_cache,
             concurrency: conf.worker_concurrency,
         };
         worker::service::new(ctx)
