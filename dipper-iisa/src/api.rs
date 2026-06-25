@@ -116,10 +116,11 @@ pub trait CandidateSelection {
     ) -> Result<Vec<SelectedIndexer>, SelectionError>;
 
     /// Fetch the indexers that currently accept DIPs on `chain` (stricter than
-    /// "IISA scores it"). `chain` is a required chain *name* (e.g. "arbitrum-one");
-    /// the endpoint rejects a missing chain.
+    /// "IISA scores it"). `chain` is a required chain *name*; `max_grt_per_30_days`
+    /// optionally caps the set to indexers priced at or under that ceiling.
     async fn dips_accepting_indexers(
         &self,
         chain: &str,
+        max_grt_per_30_days: Option<f64>,
     ) -> Result<DipsAcceptingSnapshot, SelectionError>;
 }

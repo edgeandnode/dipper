@@ -229,7 +229,11 @@ impl HttpIisaClient {
     }
 
     /// GET the DIPs-accepting set from IISA, with retry/backoff and bearer auth.
-    async fn get_dips_indexers(&self, chain: &str) -> Result<DipsIndexersResponse, SelectionError> {
+    async fn get_dips_indexers(
+        &self,
+        chain: &str,
+        max_grt_per_30_days: Option<f64>,
+    ) -> Result<DipsIndexersResponse, SelectionError> {
         let url = format!("{}dips-indexers", self.endpoint);
         let mut last_error = SelectionError::IisaServiceUnavailable;
 
@@ -238,6 +242,9 @@ impl HttpIisaClient {
                 tokio::time::sleep(calculate_retry_delay(attempt)).await;
             }
             let mut req = self.client.get(&url).query(&[("chain", chain)]);
+            if let Some(max_grt) = max_grt_per_30_days {
+                req = req.query(&[("max_grt_per_30_days", max_grt.to_string().as_str())]);
+            }
             if let Some(token) = &self.config.push_token {
                 req = req.bearer_auth(token);
             }
@@ -498,8 +505,9 @@ impl CandidateSelection for HttpIisaClient {
     async fn dips_accepting_indexers(
         &self,
         chain: &str,
+        max_grt_per_30_days: Option<f64>,
     ) -> Result<DipsAcceptingSnapshot, SelectionError> {
-        let response = self.get_dips_indexers(chain).await?;
+        let response = self.get_dips_indexers(chain, max_grt_per_30_days).await?;
         let mut indexers = Vec::with_capacity(response.indexers.len());
         for id_str in response.indexers {
             match id_str.parse::<IndexerId>() {
@@ -1018,11 +1026,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dips_accepting_indexers_success_with_chain_param() {
+    async fn test_dips_accepting_indexers_sends_chain_and_ceiling() {
         let mock_server = MockServer::start().await;
+        // The mock only matches when both query params are present, so a success
+        // proves dipper sent the chain and the price ceiling.
         Mock::given(method("GET"))
             .and(path("/dips-indexers"))
             .and(wiremock::matchers::query_param("chain", "arbitrum-one"))
+            .and(wiremock::matchers::query_param(
+                "max_grt_per_30_days",
+                "4500",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "computed_at": "2026-06-23T09:00:00+00:00",
                 "count": 2,
@@ -1036,7 +1050,7 @@ mod tests {
 
         let client = HttpIisaClient::new(mock_server.uri());
         let snap = client
-            .dips_accepting_indexers("arbitrum-one")
+            .dips_accepting_indexers("arbitrum-one", Some(4500.0))
             .await
             .unwrap();
         assert_eq!(
@@ -1068,7 +1082,7 @@ mod tests {
         let client = HttpIisaClient::with_config(mock_server.uri(), config);
         assert!(
             client
-                .dips_accepting_indexers("mainnet")
+                .dips_accepting_indexers("mainnet", None)
                 .await
                 .unwrap()
                 .indexers
@@ -1090,7 +1104,10 @@ mod tests {
             .await;
 
         let client = HttpIisaClient::new(mock_server.uri());
-        let snap = client.dips_accepting_indexers("mainnet").await.unwrap();
+        let snap = client
+            .dips_accepting_indexers("mainnet", None)
+            .await
+            .unwrap();
         assert!(snap.computed_at.is_none());
         // The malformed id is warn-and-skipped, leaving only the valid one.
         assert_eq!(snap.indexers.len(), 1);
@@ -1125,7 +1142,7 @@ mod tests {
         let client = HttpIisaClient::with_config(mock_server.uri(), config);
         assert!(
             client
-                .dips_accepting_indexers("mainnet")
+                .dips_accepting_indexers("mainnet", None)
                 .await
                 .unwrap()
                 .indexers
