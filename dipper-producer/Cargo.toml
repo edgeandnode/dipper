@@ -11,6 +11,8 @@ prost = "0.14.4"
 rskafka = { version = "0.6.0", features = ["transport-tls"] }
 rustls = "0.23.41"
 rustls-pemfile = "2.2.0"
+serde.workspace = true
+thegraph-core.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

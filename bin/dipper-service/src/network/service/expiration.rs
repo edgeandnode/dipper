@@ -3,8 +3,13 @@
 //! Compares deadlines against the chain_listener's block timestamp, not wall
 //! clock time. Stays dormant when no chain time is available.
 
-use std::{future::Future, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
+// The concrete emitter is only constructed in tests (`disabled()`); the runtime
+// paths depend on the `dyn` trait, so keep this import test-gated.
+#[cfg(test)]
+use dipper_producer::events::SubgraphIndexingAgreementsEventsEmitter;
+use dipper_producer::{events::SubgraphIndexingAgreementEventsProducer, proto};
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::{
@@ -42,6 +47,9 @@ pub struct Ctx<R, W> {
     pub config: ExpirationConfig,
     /// Chain ID for reading block timestamps. `None` = stay dormant.
     pub chain_id: Option<u64>,
+    /// Emits the `request.expired` lifecycle event when an agreement expires.
+    pub subgraph_indexing_agreements_events_emitter:
+        Arc<dyn SubgraphIndexingAgreementEventsProducer>,
 }
 
 /// Create a new expiration service
@@ -66,6 +74,7 @@ where
         worker_queue,
         config,
         chain_id,
+        subgraph_indexing_agreements_events_emitter,
     } = ctx;
 
     let service = async move {
@@ -178,6 +187,22 @@ where
                             new_status = "Expired",
                             "agreement state transition"
                         );
+
+                        // The indexer failed to accept within the deadline: emit the
+                        // `request.expired` lifecycle event. `request_expired_at` is the
+                        // chain-time clock the deadline was compared against.
+                        subgraph_indexing_agreements_events_emitter
+                            .produce_subgraph_indexing_agreement_request_expired(
+                                agreement.terms.metadata.subgraph_deployment_id,
+                                agreement.terms.metadata.protocol_network,
+                                proto::SubgraphIndexingAgreementRequestExpired {
+                                    indexer: agreement.indexer.id.to_string(),
+                                    request_proposed_at: agreement.created_at.unix_timestamp()
+                                        as u64,
+                                    request_expired_at: chain_ts,
+                                },
+                            );
+
                         // Clean up pending cancellations: the replacement expired
                         // before on-chain acceptance, so old agreements stay active.
                         if let Err(err) = registry
@@ -304,17 +329,20 @@ mod tests {
     use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
     use thegraph_core::{
         DeploymentId, IndexerId,
-        alloy::primitives::{Address, ChainId},
+        alloy::primitives::{Address, ChainId, U256},
     };
+    use time::OffsetDateTime;
     use url::Url;
 
     use super::*;
     use crate::{
         network::service::chain_listener::ChainListenerState,
         registry::{
-            AgreementFeeRate, IndexingAgreement, IndexingRequest, PendingCancellation,
-            Result as RegistryResult,
+            AgreementFeeRate, Indexer, IndexingAgreement, IndexingAgreementStatus,
+            IndexingAgreementTerms, IndexingAgreementTermsMetadata, IndexingRequest,
+            IndexingRequestStatus, PendingCancellation, Result as RegistryResult,
         },
+        test_support::{CapturedEvent, CapturingEventsProducer},
         worker::{queue::JobId, service::WorkerQueue},
     };
 
@@ -338,6 +366,7 @@ mod tests {
         expired_agreements: Vec<IndexingAgreement>,
         marked_expired: Vec<IndexingAgreementId>,
         get_expired_calls: Vec<u64>,
+        indexing_request: Option<IndexingRequest>,
     }
 
     impl MockExpirationRegistry {
@@ -348,12 +377,25 @@ mod tests {
                     expired_agreements: vec![],
                     marked_expired: vec![],
                     get_expired_calls: vec![],
+                    indexing_request: None,
                 })),
             }
         }
 
         fn set_chain_state(&self, state: Option<ChainListenerState>) {
             self.state.lock().unwrap().chain_state = state;
+        }
+
+        /// Agreements returned by the next `get_expired_created_agreements` call
+        /// (the mock drains them, so they are returned exactly once).
+        fn set_expired_agreements(&self, agreements: Vec<IndexingAgreement>) {
+            self.state.lock().unwrap().expired_agreements = agreements;
+        }
+
+        /// The request returned by `get_indexing_request_by_id`. The loop fetches
+        /// it after marking an agreement expired (to queue reassessment).
+        fn set_indexing_request(&self, request: IndexingRequest) {
+            self.state.lock().unwrap().indexing_request = Some(request);
         }
 
         fn get_expired_calls(&self) -> Vec<u64> {
@@ -431,6 +473,12 @@ mod tests {
             _request_id: &IndexingRequestId,
         ) -> RegistryResult<Vec<IndexingAgreement>> {
             unimplemented!()
+        }
+        async fn count_accepted_agreements_by_deployment(
+            &self,
+            _deployment_id: &DeploymentId,
+        ) -> RegistryResult<i64> {
+            Ok(0)
         }
         async fn register_new_indexing_agreement(
             &self,
@@ -549,7 +597,7 @@ mod tests {
             &self,
             _id: &IndexingRequestId,
         ) -> RegistryResult<Option<IndexingRequest>> {
-            unimplemented!()
+            Ok(self.state.lock().unwrap().indexing_request.clone())
         }
         async fn get_indexing_requests_by_deployment_id(
             &self,
@@ -637,6 +685,187 @@ mod tests {
         }
     }
 
+    // -- Helpers for the event-emission tests --
+
+    /// Build a `Created` agreement that the mock registry will report as expired.
+    /// Callers control the fields the `request.expired` event payload is derived
+    /// from: the deployment, protocol network, indexer, and `created_at`.
+    fn make_expired_agreement(
+        deployment: DeploymentId,
+        protocol_network: ChainId,
+        indexer_id: IndexerId,
+        created_at: OffsetDateTime,
+    ) -> IndexingAgreement {
+        IndexingAgreement {
+            id: IndexingAgreementId::from_bytes(rand::random()),
+            nonce_uuid: uuid::Uuid::now_v7(),
+            created_at,
+            updated_at: created_at,
+            status: IndexingAgreementStatus::Created,
+            indexing_request_id: IndexingRequestId::new(),
+            indexer: Indexer {
+                id: indexer_id,
+                url: "https://indexer.example.com".parse().unwrap(),
+            },
+            terms: IndexingAgreementTerms {
+                payer: Address::ZERO,
+                service_provider: Address::ZERO,
+                data_service: Address::ZERO,
+                deadline: 0,
+                ends_at: 0,
+                max_initial_tokens: U256::ZERO,
+                max_ongoing_tokens_per_second: U256::ZERO,
+                min_seconds_per_collection: 0,
+                max_seconds_per_collection: 0,
+                conditions: 0,
+                metadata: IndexingAgreementTermsMetadata {
+                    tokens_per_second: U256::ZERO,
+                    tokens_per_entity_per_second: U256::ZERO,
+                    subgraph_deployment_id: deployment,
+                    protocol_network,
+                    chain_id: 1u64,
+                },
+            },
+            last_block_height: None,
+            last_progress_at: None,
+            rejection_reason: None,
+            terms_version_hash: Some(vec![0u8; 32]),
+        }
+    }
+
+    fn make_indexing_request(id: IndexingRequestId, deployment: DeploymentId) -> IndexingRequest {
+        IndexingRequest {
+            id,
+            created_at: OffsetDateTime::now_utc(),
+            updated_at: OffsetDateTime::now_utc(),
+            status: IndexingRequestStatus::Open,
+            requested_by: Address::ZERO,
+            deployment_id: deployment,
+            deployment_chain_id: 1u64,
+            num_candidates: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_emits_request_expired_event_once_per_expired_agreement() {
+        const CHAIN_TS: u64 = 1_700_000_000;
+        let deployment: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let protocol_network: ChainId = 42161;
+        let indexer_id = IndexerId::from(Address::from([0x11u8; 20]));
+        let created_at = OffsetDateTime::from_unix_timestamp(1_699_000_000).unwrap();
+
+        let registry = MockExpirationRegistry::new();
+        registry.set_chain_state(Some(ChainListenerState {
+            _chain_id: 1337,
+            last_processed_block: 500,
+            last_processed_id: None,
+            last_processed_block_timestamp: Some(CHAIN_TS),
+        }));
+        let agreement =
+            make_expired_agreement(deployment, protocol_network, indexer_id, created_at);
+        registry.set_indexing_request(make_indexing_request(
+            agreement.indexing_request_id,
+            deployment,
+        ));
+        registry.set_expired_agreements(vec![agreement]);
+
+        let events = CapturingEventsProducer::new();
+
+        let ctx = Ctx {
+            registry: registry.clone(),
+            worker_queue: MockWorkerQueue,
+            config: ExpirationConfig {
+                enabled: true,
+                interval: Duration::from_millis(10),
+                batch_size: 100,
+            },
+            chain_id: Some(1337),
+            subgraph_indexing_agreements_events_emitter: Arc::new(events.clone()),
+        };
+
+        let (handle, service) = new(ctx);
+        let svc = tokio::spawn(service);
+
+        // Wait until the cycle has run (the agreement is drained exactly once),
+        // then stop. Subsequent cycles see an empty expired set, so no extra
+        // events can be produced.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        handle.stop().await;
+        svc.await.unwrap().unwrap();
+
+        // Invariant 1: exactly one event, and it is the RequestExpired variant.
+        let captured = events.events();
+        assert_eq!(
+            captured.len(),
+            1,
+            "expected exactly one emitted event, got {captured:?}"
+        );
+
+        // Invariant 2: the routing metadata and payload match the expired agreement.
+        match &captured[0] {
+            CapturedEvent::RequestExpired {
+                deployment: ev_deployment,
+                chain_id: ev_chain_id,
+                event,
+            } => {
+                assert_eq!(*ev_deployment, deployment);
+                assert_eq!(*ev_chain_id, protocol_network);
+                assert_eq!(event.indexer, indexer_id.to_string());
+                assert_eq!(event.request_expired_at, CHAIN_TS);
+                assert_eq!(
+                    event.request_proposed_at,
+                    created_at.unix_timestamp() as u64
+                );
+            }
+            other => panic!("expected RequestExpired event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_emits_no_event_when_nothing_expires() {
+        let registry = MockExpirationRegistry::new();
+        // Chain time is available (so the service is active), but no agreement
+        // is configured as expired: get_expired_created_agreements returns empty.
+        registry.set_chain_state(Some(ChainListenerState {
+            _chain_id: 1337,
+            last_processed_block: 500,
+            last_processed_id: None,
+            last_processed_block_timestamp: Some(1_700_000_000),
+        }));
+
+        let events = CapturingEventsProducer::new();
+
+        let ctx = Ctx {
+            registry: registry.clone(),
+            worker_queue: MockWorkerQueue,
+            config: ExpirationConfig {
+                enabled: true,
+                interval: Duration::from_millis(10),
+                batch_size: 100,
+            },
+            chain_id: Some(1337),
+            subgraph_indexing_agreements_events_emitter: Arc::new(events.clone()),
+        };
+
+        let (handle, service) = new(ctx);
+        let svc = tokio::spawn(service);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        handle.stop().await;
+        svc.await.unwrap().unwrap();
+
+        // The query ran (service was active), but nothing expired.
+        assert!(!registry.get_expired_calls().is_empty());
+        // Invariant 3: the producer was never called.
+        assert!(
+            events.events().is_empty(),
+            "expected no events when nothing expires, got {:?}",
+            events.events()
+        );
+    }
+
     #[tokio::test]
     async fn test_skips_when_no_chain_id() {
         let registry = MockExpirationRegistry::new();
@@ -650,6 +879,9 @@ mod tests {
                 batch_size: 100,
             },
             chain_id: None,
+            subgraph_indexing_agreements_events_emitter: Arc::new(
+                SubgraphIndexingAgreementsEventsEmitter::disabled(),
+            ),
         };
 
         let (handle, service) = new(ctx);
@@ -677,6 +909,9 @@ mod tests {
                 batch_size: 100,
             },
             chain_id: Some(1337),
+            subgraph_indexing_agreements_events_emitter: Arc::new(
+                SubgraphIndexingAgreementsEventsEmitter::disabled(),
+            ),
         };
 
         let (handle, service) = new(ctx);
@@ -711,6 +946,9 @@ mod tests {
                 batch_size: 100,
             },
             chain_id: Some(1337),
+            subgraph_indexing_agreements_events_emitter: Arc::new(
+                SubgraphIndexingAgreementsEventsEmitter::disabled(),
+            ),
         };
 
         let (handle, service) = new(ctx);
@@ -743,6 +981,9 @@ mod tests {
                 batch_size: 100,
             },
             chain_id: Some(1337),
+            subgraph_indexing_agreements_events_emitter: Arc::new(
+                SubgraphIndexingAgreementsEventsEmitter::disabled(),
+            ),
         };
 
         let (handle, service) = new(ctx);

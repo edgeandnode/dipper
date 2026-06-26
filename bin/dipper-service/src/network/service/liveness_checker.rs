@@ -37,6 +37,11 @@
 
 use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
 
+// The concrete emitter is only constructed in tests (`disabled()`); the runtime
+// paths depend on the `dyn` trait, so keep this import test-gated.
+#[cfg(test)]
+use dipper_producer::events::SubgraphIndexingAgreementsEventsEmitter;
+use dipper_producer::{events::SubgraphIndexingAgreementEventsProducer, proto};
 use thegraph_core::{DeploymentId, IndexerId};
 use time::OffsetDateTime;
 use tokio::{sync::mpsc, time::MissedTickBehavior};
@@ -83,6 +88,9 @@ pub struct Ctx<R, W, C> {
     pub agreement_conf: Arc<crate::config::IndexingAgreementConfig>,
     /// Service configuration.
     pub config: LivenessCheckerConfig,
+    /// Emits the `terminated` lifecycle event when a stale agreement is canceled.
+    pub subgraph_indexing_agreements_events_emitter:
+        Arc<dyn SubgraphIndexingAgreementEventsProducer>,
 }
 
 /// Create a new liveness checker service.
@@ -105,6 +113,7 @@ where
         network,
         agreement_conf,
         config,
+        subgraph_indexing_agreements_events_emitter,
     } = ctx;
 
     let service = async move {
@@ -209,6 +218,7 @@ where
                             &worker_queue,
                             &chain_client,
                             &agreement_conf,
+                            subgraph_indexing_agreements_events_emitter.as_ref(),
                             DB_UPDATE_TIMEOUT,
                             QUEUE_PUSH_TIMEOUT,
                         )
@@ -301,6 +311,7 @@ where
                                 &worker_queue,
                                 &chain_client,
                                 &agreement_conf,
+                                subgraph_indexing_agreements_events_emitter.as_ref(),
                                 DB_UPDATE_TIMEOUT,
                                 QUEUE_PUSH_TIMEOUT,
                             )
@@ -359,6 +370,7 @@ async fn process_agreements_with_no_data<R, W, C>(
     worker_queue: &W,
     chain_client: &C,
     agreement_conf: &crate::config::IndexingAgreementConfig,
+    events_emitter: &dyn SubgraphIndexingAgreementEventsProducer,
     db_timeout: Duration,
     queue_timeout: Duration,
 ) where
@@ -424,6 +436,7 @@ async fn process_agreements_with_no_data<R, W, C>(
                     worker_queue,
                     chain_client,
                     agreement_conf,
+                    events_emitter,
                     db_timeout,
                     queue_timeout,
                 )
@@ -476,12 +489,14 @@ async fn record_progress<R>(
 ///
 /// If the on-chain cancel fails, the DB is not updated and reassessment is not
 /// queued, leaving the agreement in `AcceptedOnChain` for the next cycle to retry.
+#[allow(clippy::too_many_arguments)]
 async fn cancel_and_reassess<R, W, C>(
     agreement: &IndexingAgreement,
     registry: &R,
     worker_queue: &W,
     chain_client: &C,
     agreement_conf: &crate::config::IndexingAgreementConfig,
+    events_emitter: &dyn SubgraphIndexingAgreementEventsProducer,
     db_timeout: Duration,
     queue_timeout: Duration,
 ) where
@@ -490,6 +505,7 @@ async fn cancel_and_reassess<R, W, C>(
     C: ChainClient + Send + Sync,
 {
     // 1. Cancel on-chain (mode-aware dispatch)
+    let mut on_chain_cancel_tx: Option<String> = None;
     match crate::cancel_dispatch::cancel_agreement_on_chain(chain_client, agreement, agreement_conf)
         .await
     {
@@ -499,6 +515,7 @@ async fn cancel_and_reassess<R, W, C>(
                 tx_hash = %tx_hash,
                 "canceled stale agreement on-chain"
             );
+            on_chain_cancel_tx = Some(tx_hash.to_string());
         }
         Ok(None) => {
             tracing::info!(
@@ -559,6 +576,29 @@ async fn cancel_and_reassess<R, W, C>(
             return;
         }
     };
+
+    // The accepted agreement was canceled on-chain because the indexer went
+    // stale: emit the `terminated` lifecycle event. dipper initiated the cancel,
+    // so `terminated_by` is the manager. This row is marked `AbandonedByIndexer`,
+    // and the chain_listener's `did_cancel` emit is gated on
+    // `status != AbandonedByIndexer`, so it won't duplicate when it later observes
+    // this cancel. Count is read after the local mark is persisted (excludes this one).
+    let remaining = crate::registry::remaining_accepted_indexing_agreements(
+        registry,
+        &agreement.terms.metadata.subgraph_deployment_id,
+    )
+    .await;
+    events_emitter.produce_subgraph_indexing_agreement_terminated(
+        agreement.terms.metadata.subgraph_deployment_id,
+        agreement.terms.metadata.protocol_network,
+        proto::SubgraphIndexingAgreementTerminated {
+            indexer: agreement.indexer.id.to_string(),
+            terminated_at: dipper_core::time::now_secs(),
+            terminated_by: agreement_conf.recurring_agreement_manager().to_string(),
+            terminated_tx: on_chain_cancel_tx.unwrap_or_default(),
+            remaining_accepted_indexing_agreements: remaining,
+        },
+    );
 
     // Clean up pending cancellations: if this abandoned agreement was a
     // replacement, the old agreement it was replacing should stay active.
@@ -791,8 +831,8 @@ mod tests {
     use url::Url;
 
     use super::{
-        LivenessAction, cancel_and_reassess, decide_liveness_action, group_by_indexer_id,
-        record_progress, tolerance_duration,
+        LivenessAction, SubgraphIndexingAgreementsEventsEmitter, cancel_and_reassess,
+        decide_liveness_action, group_by_indexer_id, record_progress, tolerance_duration,
     };
     use crate::{
         chain_client::{ChainClient, ChainClientError},
@@ -954,6 +994,12 @@ mod tests {
             _id: &IndexingRequestId,
         ) -> RegistryResult<Vec<IndexingAgreement>> {
             unimplemented!()
+        }
+        async fn count_accepted_agreements_by_deployment(
+            &self,
+            _deployment_id: &DeploymentId,
+        ) -> RegistryResult<i64> {
+            Ok(0)
         }
         async fn register_new_indexing_agreement(
             &self,
@@ -1541,6 +1587,7 @@ mod tests {
             &queue,
             &chain,
             &test_agreement_conf(),
+            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
             DB_TIMEOUT,
             QUEUE_TIMEOUT,
         )
@@ -1553,6 +1600,62 @@ mod tests {
         );
         assert_eq!(calls.abandoned.lock().unwrap().as_slice(), &[agr_id]);
         assert_eq!(calls.reassessments.lock().unwrap().as_slice(), &[req_id]);
+    }
+
+    #[tokio::test]
+    async fn cancel_and_reassess_emits_terminated_event() {
+        use crate::test_support::{CapturedEvent, CapturingEventsProducer};
+
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let indexer_id = IndexerId::from(Address::ZERO);
+        let url: Url = "http://indexer.example.com/".parse().unwrap();
+        let agreement = make_agreement(
+            indexer_id,
+            url,
+            dep,
+            Some(100),
+            Some(OffsetDateTime::now_utc()),
+        );
+
+        let calls = MockCalls::default();
+        let registry = MockRegistry::new(calls.clone(), agreement.clone());
+        let queue = MockWorkerQueue {
+            calls: calls.clone(),
+        };
+        let chain = MockChainClient::success(calls.clone());
+        let events = CapturingEventsProducer::new();
+
+        cancel_and_reassess(
+            &agreement,
+            &registry,
+            &queue,
+            &chain,
+            &test_agreement_conf(),
+            &events,
+            DB_TIMEOUT,
+            QUEUE_TIMEOUT,
+        )
+        .await;
+
+        let captured = events.events();
+        assert_eq!(captured.len(), 1, "exactly one terminated event");
+        match &captured[0] {
+            CapturedEvent::Terminated {
+                deployment,
+                chain_id,
+                event,
+            } => {
+                assert_eq!(*deployment, dep);
+                assert_eq!(*chain_id, 1);
+                assert_eq!(event.indexer, Address::ZERO.to_string());
+                // dipper-initiated cancel: terminated_by is the manager (ZERO in test conf).
+                assert_eq!(event.terminated_by, Address::ZERO.to_string());
+                assert_eq!(event.remaining_accepted_indexing_agreements, 0);
+            }
+            other => panic!("expected Terminated, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -1587,6 +1690,7 @@ mod tests {
             &queue,
             &chain,
             &test_agreement_conf(),
+            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
             DB_TIMEOUT,
             QUEUE_TIMEOUT,
         )
@@ -1632,6 +1736,7 @@ mod tests {
             &queue,
             &chain,
             &test_agreement_conf(),
+            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
             DB_TIMEOUT,
             QUEUE_TIMEOUT,
         )

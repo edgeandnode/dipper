@@ -13,6 +13,7 @@ dipper-core = { version = "0.1.0", path = "../../dipper-core" }
 dipper-iisa = { path = "../../dipper-iisa" }
 dipper-pgmq = { path = "../../dipper-pgmq" }
 dipper-pgregistry = { path = "../../dipper-pgregistry" }
+dipper-producer = { path = "../../dipper-producer" }
 dipper-rpc = { version = "0.1.0", path = "../../dipper-rpc", features = ["admin-rpc", "indexer-rpc"] }
 futures-lite = { version = "2.4.0", default-features = false }
 graph-networks-registry.workspace = true

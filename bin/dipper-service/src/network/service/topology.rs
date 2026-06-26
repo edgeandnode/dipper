@@ -75,6 +75,21 @@ impl Handle {
         self.rx_snapshot.borrow()
     }
 
+    /// Build a `Handle` directly from a seeded snapshot for tests.
+    ///
+    /// Creates a `watch` channel seeded with `snapshot` and a dummy stop channel
+    /// (its receiver is dropped immediately; the handle is only used to read the
+    /// snapshot via `snapshot()`). Test-only: there is no background service.
+    #[cfg(test)]
+    pub(crate) fn for_test(snapshot: Snapshot) -> Self {
+        let (tx_stop, _rx_stop) = mpsc::channel(1);
+        let (_tx_snapshot, rx_snapshot) = watch::channel(snapshot);
+        Self {
+            rx_snapshot,
+            tx_stop,
+        }
+    }
+
     /// Stop the network topology service.
     ///
     /// This method sends a stop signal to the service and waits for it to shut down.
@@ -256,6 +271,24 @@ impl Snapshot {
     /// Get an [Indexer] by its [IndexerId].
     pub fn get_indexer(&self, id: &IndexerId) -> Option<&Indexer> {
         self.indexers.get(id)
+    }
+
+    /// Insert an indexer (id + url) into the snapshot for tests.
+    ///
+    /// The production snapshot is only populated via `Extend` from fetched
+    /// network data; this gives tests a direct way to seed the indexers table
+    /// so `get_indexer` resolves a known id.
+    #[cfg(test)]
+    pub(crate) fn insert_indexer_for_test(&mut self, id: IndexerId, url: Url) {
+        self.indexers.insert(
+            id,
+            Indexer {
+                id,
+                url,
+                indexings: BTreeSet::new(),
+                operators: BTreeSet::new(),
+            },
+        );
     }
 }
 

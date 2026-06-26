@@ -302,6 +302,29 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
+    /// Counts the indexing agreements for a deployment that are accepted on-chain.
+    ///
+    /// Used to populate `remaining_accepted_indexing_agreements` on the
+    /// `terminated` lifecycle event: the number of still-active accepted
+    /// agreements left on the Subgraph (deployment) after a cancellation.
+    pub async fn count_accepted_agreements_by_deployment(
+        &self,
+        deployment_id: &DeploymentId,
+    ) -> Result<i64, Error> {
+        let (count,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*)
+            FROM dipper_reg_indexing_agreements
+            WHERE deployment_id = $1 AND status = $2
+            "#,
+        )
+        .bind(PgDeploymentId(*deployment_id))
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count)
+    }
+
     pub async fn register_new_indexing_agreement(
         &self,
         params: NewAgreementParams,

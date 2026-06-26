@@ -139,6 +139,16 @@ pub trait AgreementRegistry {
         request_id: &IndexingRequestId,
     ) -> RegistryResult<Vec<IndexingAgreement>>;
 
+    /// Count the agreements for a deployment that are accepted on-chain.
+    ///
+    /// Populates `remaining_accepted_indexing_agreements` on the `terminated`
+    /// lifecycle event: the number of still-active accepted agreements left on
+    /// the Subgraph (deployment) after a cancellation.
+    async fn count_accepted_agreements_by_deployment(
+        &self,
+        deployment_id: &DeploymentId,
+    ) -> RegistryResult<i64>;
+
     /// Register a new indexing agreement.
     ///
     /// The caller generates the `agreement_id` (on-chain bytes16) and

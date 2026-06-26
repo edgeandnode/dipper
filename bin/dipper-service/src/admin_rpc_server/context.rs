@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use dipper_core::state::FromState;
+use dipper_producer::events::SubgraphIndexingAgreementEventsProducer;
 use thegraph_core::alloy::primitives::Address;
 
 use super::handlers::{IndexingAgreementsCtx, IndexingRequestsCtx};
@@ -23,6 +24,10 @@ pub struct Ctx<R, W> {
 
     /// The message queue worker
     pub worker: W,
+
+    /// Subgraph Indexing Agreements Events emitter for sending on the topic, if configured and enabled
+    pub subgraph_indexing_agreements_events_emitter:
+        Arc<dyn SubgraphIndexingAgreementEventsProducer>,
 }
 
 impl<R, W> FromState<Ctx<R, W>> for IndexingRequestsCtx<R, W>
@@ -37,6 +42,9 @@ where
             registry: ctx.registry.clone(),
             worker: ctx.worker.clone(),
             max_candidates: ctx.max_candidates,
+            subgraph_indexing_agreements_events_emitter: ctx
+                .subgraph_indexing_agreements_events_emitter
+                .clone(),
         }
     }
 }

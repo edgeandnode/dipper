@@ -3,9 +3,87 @@
 use std::sync::Arc;
 
 use prost::Message;
+use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 use tokio::sync::mpsc;
 
 use crate::{kafka::KafkaProducer, proto};
+
+/// CAIP-2 identifier for an EVM (`eip155`) chain.
+///
+/// Wraps a numeric [`ChainId`] and renders to its CAIP-2 string form
+/// `eip155:{chain_id}` (e.g. `eip155:42161`) when written to the wire. Construct
+/// one from a chain id via [`From`] / `ChainId::into`, so call sites pass the raw
+/// chain id without repeating the `eip155:` formatting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Caip2ChainId(ChainId);
+
+impl From<ChainId> for Caip2ChainId {
+    fn from(chain_id: ChainId) -> Self {
+        Self(chain_id)
+    }
+}
+
+impl std::fmt::Display for Caip2ChainId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "eip155:{}", self.0)
+    }
+}
+
+/// Produces Subgraph Indexing Agreement lifecycle events.
+///
+/// Abstracts [`SubgraphIndexingAgreementsEventsEmitter`] so callers can depend on
+/// the behavior rather than the concrete Kafka emitter, and tests can substitute a
+/// capturing double. `the_graph_network` is the protocol network's numeric
+/// [`ChainId`]; implementors render it to its CAIP-2 form (`eip155:{id}`) on the wire.
+pub trait SubgraphIndexingAgreementEventsProducer: Send + Sync {
+    /// Produces a subgraph.indexing.agreement.request.received event
+    fn produce_subgraph_indexing_agreement_request_received(
+        &self,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
+        event: proto::SubgraphIndexingAgreementRequestReceived,
+    );
+
+    /// Produces a subgraph.indexing.agreement.proposed event
+    fn produce_subgraph_indexing_agreement_proposed(
+        &self,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
+        event: proto::SubgraphIndexingAgreementProposed,
+    );
+
+    /// Produces a subgraph.indexing.agreement.accepted event
+    fn produce_subgraph_indexing_agreement_accepted(
+        &self,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
+        event: proto::SubgraphIndexingAgreementAccepted,
+    );
+
+    /// Produces a subgraph.indexing.agreement.request.expired event
+    fn produce_subgraph_indexing_agreement_request_expired(
+        &self,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
+        event: proto::SubgraphIndexingAgreementRequestExpired,
+    );
+
+    /// Produces a subgraph.indexing.agreement.n_indexers_unavailable event
+    fn produce_subgraph_indexing_agreement_n_indexers_unavailable(
+        &self,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
+        event: proto::SubgraphIndexingAgreementNIndexersUnavailable,
+    );
+
+    /// Produces a subgraph.indexing.agreement.terminated event
+    fn produce_subgraph_indexing_agreement_terminated(
+        &self,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
+        event: proto::SubgraphIndexingAgreementTerminated,
+    );
+}
 
 /// Kafka producer wrapper for Subgraph Indexing agreements lifecycle events
 ///
@@ -35,95 +113,93 @@ impl SubgraphIndexingAgreementsEventsEmitter {
 
         Self { queue: Some(tx) }
     }
+}
 
-    /// Produces a subgraph.indexing.agreement.request.received event
-    pub fn produce_subgraph_indexing_agreement_request_received(
+impl SubgraphIndexingAgreementEventsProducer for SubgraphIndexingAgreementsEventsEmitter {
+    fn produce_subgraph_indexing_agreement_request_received(
         &self,
-        subgraph_deployment_qm_hash: &str,
-        the_graph_network: &str,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
         event: proto::SubgraphIndexingAgreementRequestReceived,
     ) {
         self.enqueue(
             subgraph_deployment_qm_hash,
-            the_graph_network,
+            the_graph_network.into(),
             EventPayload::RequestReceived(event),
         );
     }
 
-    /// Produces a subgraph.indexing.agreement.proposed event
-    pub fn produce_subgraph_indexing_agreement_proposed(
+    fn produce_subgraph_indexing_agreement_proposed(
         &self,
-        subgraph_deployment_qm_hash: &str,
-        the_graph_network: &str,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
         event: proto::SubgraphIndexingAgreementProposed,
     ) {
         self.enqueue(
             subgraph_deployment_qm_hash,
-            the_graph_network,
+            the_graph_network.into(),
             EventPayload::Proposed(event),
         );
     }
 
-    /// Produces a subgraph.indexing.agreement.accepted event
-    pub fn produce_subgraph_indexing_agreement_accepted(
+    fn produce_subgraph_indexing_agreement_accepted(
         &self,
-        subgraph_deployment_qm_hash: &str,
-        the_graph_network: &str,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
         event: proto::SubgraphIndexingAgreementAccepted,
     ) {
         self.enqueue(
             subgraph_deployment_qm_hash,
-            the_graph_network,
+            the_graph_network.into(),
             EventPayload::Accepted(event),
         );
     }
 
-    /// Produces a subgraph.indexing.agreement.request.expired event
-    pub fn produce_subgraph_indexing_agreement_request_expired(
+    fn produce_subgraph_indexing_agreement_request_expired(
         &self,
-        subgraph_deployment_qm_hash: &str,
-        the_graph_network: &str,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
         event: proto::SubgraphIndexingAgreementRequestExpired,
     ) {
         self.enqueue(
             subgraph_deployment_qm_hash,
-            the_graph_network,
+            the_graph_network.into(),
             EventPayload::RequestExpired(event),
         );
     }
 
-    /// Produces a subgraph.indexing.agreement.n_indexers_unavailable event
-    pub fn produce_subgraph_indexing_agreement_n_indexers_unavailable(
+    fn produce_subgraph_indexing_agreement_n_indexers_unavailable(
         &self,
-        subgraph_deployment_qm_hash: &str,
-        the_graph_network: &str,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
         event: proto::SubgraphIndexingAgreementNIndexersUnavailable,
     ) {
         self.enqueue(
             subgraph_deployment_qm_hash,
-            the_graph_network,
+            the_graph_network.into(),
             EventPayload::NIndexersUnavailable(event),
         );
     }
 
-    /// Produces a subgraph.indexing.agreement.terminated event
-    pub fn produce_subgraph_indexing_agreement_terminated(
+    fn produce_subgraph_indexing_agreement_terminated(
         &self,
-        subgraph_deployment_qm_hash: &str,
-        the_graph_network: &str,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
         event: proto::SubgraphIndexingAgreementTerminated,
     ) {
         self.enqueue(
             subgraph_deployment_qm_hash,
-            the_graph_network,
+            the_graph_network.into(),
             EventPayload::Terminated(event),
         );
     }
+}
 
+impl SubgraphIndexingAgreementsEventsEmitter {
     fn enqueue(
         &self,
-        subgraph_deployment_qm_hash: &str,
-        the_graph_network: &str,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: Caip2ChainId,
         payload: EventPayload,
     ) {
         let Some(queue) = &self.queue else {
@@ -132,8 +208,8 @@ impl SubgraphIndexingAgreementsEventsEmitter {
 
         let event = QueuedSubgraphIndexingAgreementEvent {
             metadata: EventMetadata {
-                subgraph_deployment_qm_hash: subgraph_deployment_qm_hash.to_string(),
-                the_graph_network: the_graph_network.to_string(),
+                subgraph_deployment_qm_hash,
+                the_graph_network,
             },
             payload,
         };
@@ -206,8 +282,8 @@ impl SubgraphIndexingAgreementsEventsEmitter {
             event_type: event_type.to_string(),
             event_version: "1.0".to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
-            subgraph_deployment_qm_hash: metadata.subgraph_deployment_qm_hash.clone(),
-            the_graph_network: metadata.the_graph_network.clone(),
+            subgraph_deployment_qm_hash: metadata.subgraph_deployment_qm_hash.to_string(),
+            the_graph_network: metadata.the_graph_network.to_string(),
             payload: Some(payload),
         }
     }
@@ -221,14 +297,19 @@ struct QueuedSubgraphIndexingAgreementEvent {
 
 /// Routing metadata common to every Subgraph Indexing Agreement event.
 struct EventMetadata {
-    subgraph_deployment_qm_hash: String,
-    the_graph_network: String,
+    /// The Subgraph deployment. Rendered to its `Qm...` hash representation
+    /// when building the envelope and partition key.
+    subgraph_deployment_qm_hash: DeploymentId,
+    /// The Graph protocol network. Rendered to its CAIP-2 form
+    /// (e.g. `eip155:42161`) when building the envelope and partition key.
+    the_graph_network: Caip2ChainId,
 }
 
 impl EventMetadata {
     /// Creates the partition key for the Subgraph Indexing Agreement events
     ///
     /// Format: `{the_graph_network}/{subgraph_deployment_qm_hash}`
+    /// e.g. `eip155:42161/QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9`
     fn partition_key(&self) -> String {
         format!(
             "{}/{}",
@@ -308,12 +389,17 @@ mod tests {
     use super::*;
 
     const HASH: &str = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9";
-    const NETWORK: &str = "arbitrum";
+    const CHAIN_ID: ChainId = 42161;
+    const NETWORK: &str = "eip155:42161";
+
+    fn deployment_id() -> DeploymentId {
+        HASH.parse().expect("HASH is a valid deployment id")
+    }
 
     fn metadata() -> EventMetadata {
         EventMetadata {
-            subgraph_deployment_qm_hash: HASH.to_string(),
-            the_graph_network: NETWORK.to_string(),
+            subgraph_deployment_qm_hash: deployment_id(),
+            the_graph_network: CHAIN_ID.into(),
         }
     }
 
@@ -347,6 +433,13 @@ mod tests {
                 "subgraph.indexing.agreement.terminated",
             ),
         ]
+    }
+
+    #[test]
+    fn caip2_chain_id_from_chain_id_renders_eip155() {
+        let network: Caip2ChainId = CHAIN_ID.into();
+        assert_eq!(network.to_string(), NETWORK);
+        assert_eq!(network.to_string(), "eip155:42161");
     }
 
     #[test]
@@ -418,6 +511,33 @@ mod tests {
         assert_eq!(id.get_version_num(), 7, "event_id should be a UUIDv7");
         chrono::DateTime::parse_from_rfc3339(&envelope.timestamp)
             .expect("timestamp is valid rfc3339");
+    }
+
+    #[test]
+    fn deployment_id_renders_to_qm_hash_in_envelope_and_partition_key() {
+        // The emitter takes a strongly-typed DeploymentId and is responsible for
+        // rendering it to its Qm-hash string on the wire. Assert that rendering is
+        // the canonical Qm hash (round-trips back to the same DeploymentId) and that
+        // the partition key uses the same rendering.
+        let dep = deployment_id();
+        let envelope = SubgraphIndexingAgreementsEventsEmitter::create_event_envelope(
+            SubgraphIndexingAgreementEventType::RequestReceived,
+            &metadata(),
+            EventPayload::RequestReceived(Default::default()).into_proto(),
+        );
+
+        assert_eq!(envelope.subgraph_deployment_qm_hash, HASH);
+        let parsed: DeploymentId = envelope
+            .subgraph_deployment_qm_hash
+            .parse()
+            .expect("envelope qm hash parses back into a DeploymentId");
+        assert_eq!(parsed, dep, "qm-hash rendering must be lossless");
+
+        assert_eq!(
+            metadata().partition_key(),
+            format!("eip155:42161/{dep}"),
+            "partition key must use the caip2 network and the Qm-hash rendering"
+        );
     }
 
     #[test]

@@ -46,6 +46,40 @@ impl From<NewAgreementParams> for dipper_pgregistry::NewAgreementParams {
     }
 }
 
+/// Resolve the `remaining_accepted_indexing_agreements` value for a `terminated`
+/// lifecycle event: the number of still-accepted agreements on the deployment.
+///
+/// MUST be called AFTER the just-cancelled agreement's terminal status is persisted,
+/// so the count (which matches only `AcceptedOnChain`) excludes it and returns only
+/// the *other* agreements still active on the subgraph.
+///
+/// Returns `-1` (unknown) on a registry error rather than a misleading `0` — the
+/// proto defines `0` as "the Subgraph has no remaining accepted agreements", so a
+/// transient DB failure must not be reported as "fully unstaffed".
+pub(crate) async fn remaining_accepted_indexing_agreements<R>(
+    registry: &R,
+    deployment_id: &DeploymentId,
+) -> i32
+where
+    R: AgreementRegistry,
+{
+    match registry
+        .count_accepted_agreements_by_deployment(deployment_id)
+        .await
+    {
+        Ok(count) => i32::try_from(count).unwrap_or(i32::MAX),
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                deployment_id = %deployment_id,
+                "failed to count remaining accepted agreements for terminated event; \
+                 emitting -1 (unknown)"
+            );
+            -1
+        }
+    }
+}
+
 /// Filter and log conversion errors instead of silently dropping them.
 ///
 /// This is a replacement for `.filter_map(filter_map_with_logging)` that logs warnings
@@ -267,6 +301,15 @@ impl AgreementRegistry for RegistryProvider {
             .map(IndexingAgreement::try_from)
             .filter_map(filter_map_with_logging)
             .collect())
+    }
+    async fn count_accepted_agreements_by_deployment(
+        &self,
+        deployment_id: &DeploymentId,
+    ) -> RegistryResult<i64> {
+        self.inner
+            .count_accepted_agreements_by_deployment(deployment_id)
+            .await
+            .map_err(Into::into)
     }
     async fn register_new_indexing_agreement(
         &self,

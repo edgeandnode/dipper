@@ -312,6 +312,12 @@ mod tests {
         ) -> crate::registry::Result<Vec<crate::registry::IndexingAgreement>> {
             unimplemented!()
         }
+        async fn count_accepted_agreements_by_deployment(
+            &self,
+            _deployment_id: &thegraph_core::DeploymentId,
+        ) -> crate::registry::Result<i64> {
+            Ok(0)
+        }
         async fn register_new_indexing_agreement(
             &self,
             _params: crate::registry::NewAgreementParams,
