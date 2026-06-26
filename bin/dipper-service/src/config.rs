@@ -83,7 +83,7 @@ pub struct Config {
     /// The chain client configuration (for sending on-chain transactions)
     #[serde(default)]
     pub chain_client: Option<ChainClientConfig>,
-    /// Number of concurrent worker loops draining the job queue (default: 1).
+    /// Number of concurrent worker loops draining the job queue (default: 8).
     /// Each loop can hold up to three pooled DB connections at once and shares
     /// the pool with the registry and background services; size accordingly.
     #[serde(default = "default_worker_concurrency")]
@@ -293,7 +293,7 @@ fn default_expiration_batch_size() -> i64 {
 }
 
 fn default_worker_concurrency() -> usize {
-    1
+    8
 }
 
 impl Default for ExpirationConfig {
