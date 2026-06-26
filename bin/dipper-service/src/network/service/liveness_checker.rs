@@ -1212,6 +1212,14 @@ mod tests {
 
     #[async_trait]
     impl ChainClient for MockChainClient {
+        async fn latest_block_timestamp(&self) -> Result<u64, ChainClientError> {
+            // Err by default so a test must mock this explicitly to take the
+            // live-chain-head path instead of silently reading timestamp 0.
+            Err(ChainClientError::RpcError(anyhow::anyhow!(
+                "latest_block_timestamp not mocked"
+            )))
+        }
+
         async fn offer_via_manager(
             &self,
             _rca: &dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement,
