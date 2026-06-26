@@ -9,7 +9,7 @@ use sqlx::{
 use crate::config::DbConfig;
 
 /// Default max connections
-pub const DEFAULT_MAX_CONNECTIONS: u32 = 10;
+pub const DEFAULT_MAX_CONNECTIONS: u32 = 32;
 
 /// How long a caller waits for a free pooled connection before erroring. Set
 /// explicitly so connection-pool starvation surfaces as a bounded error
