@@ -241,9 +241,24 @@ where
         "reassessment diff computed"
     );
 
+    if to_cancel.is_empty() && to_add.is_empty() {
+        tracing::debug!(
+            indexing_request_id=%indexing_request_id,
+            deployment_id=%deployment_id,
+            "reassessment: no changes needed"
+        );
+        return Ok(());
+    }
+
     // IISA returned fewer candidates than requested: emit the lifecycle event so
     // downstream consumers see the shortfall (typically declined/denylisted indexers).
-    if target_selected.len() < *num_candidates {
+    //
+    // Gate on `!to_add.is_empty()` so this only fires when the reassessment is
+    // actually trying to fill slots and comes up short -- not on every recurring
+    // reassessment of an already-synced request. Reassessment runs periodically and
+    // is re-triggered from several lifecycle paths; emitting purely on the standing
+    // `selected < requested` supply condition would re-fire the event forever.
+    if !to_add.is_empty() && target_selected.len() < *num_candidates {
         ctx.subgraph_indexing_agreements_events_emitter
             .produce_subgraph_indexing_agreement_n_indexers_unavailable(
                 *deployment_id,
@@ -253,15 +268,6 @@ where
                     candidates_returned: target_selected.len() as i32,
                 },
             );
-    }
-
-    if to_cancel.is_empty() && to_add.is_empty() {
-        tracing::debug!(
-            indexing_request_id=%indexing_request_id,
-            deployment_id=%deployment_id,
-            "reassessment: no changes needed"
-        );
-        return Ok(());
     }
 
     let fallback_prices = ctx.chain_price.get(deployment_chain_id);
@@ -1347,36 +1353,86 @@ mod lifecycle_event_tests {
 
     #[tokio::test]
     async fn emits_n_indexers_unavailable_when_iisa_returns_fewer() {
-        // IISA returns 0 candidates for a request of 3, with no current
-        // agreements: the diff is empty so the handler emits the shortfall
-        // event and early-returns. Exactly one NIndexersUnavailable, nothing else.
+        // Request of 3, IISA returns 1 resolvable candidate, no current
+        // agreements: the diff has a real addition (to_add = {new}) AND the
+        // selection falls short (1 < 3), so the handler emits exactly one
+        // NIndexersUnavailable (alongside the Proposed for the queued add).
+        let new_idx = indexer_id(0x21);
+        let mut snapshot = topology::Snapshot::new();
+        snapshot.insert_indexer_for_test(new_idx, indexer_url());
+
         let events = CapturingEventsProducer::new();
         let ctx = build_ctx(
             MockRegistry::default(),
-            MockIisa { selected: vec![] },
+            MockIisa {
+                selected: vec![selected(new_idx)],
+            },
+            MockQueue::default(),
+            MockChainClient,
+            events.clone(),
+            snapshot,
+        );
+
+        handle(ctx, &test_message(3)).await.expect("handler ok");
+
+        let captured = events.events();
+        let unavailable: Vec<_> = captured
+            .iter()
+            .filter_map(|e| match e {
+                CapturedEvent::NIndexersUnavailable {
+                    deployment: d,
+                    chain_id,
+                    event,
+                } => Some((d, chain_id, event)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            unavailable.len(),
+            1,
+            "exactly one NIndexersUnavailable: {captured:?}"
+        );
+        let (d, chain_id, event) = unavailable[0];
+        assert_eq!(*d, deployment());
+        assert_eq!(*chain_id, TEST_PROTOCOL_CHAIN_ID);
+        assert_eq!(event.agreements_requested, 3);
+        assert_eq!(event.candidates_returned, 1);
+    }
+
+    // ---- Scenario 1b: regression -- standing shortfall on a synced request --
+
+    #[tokio::test]
+    async fn no_n_indexers_unavailable_on_synced_request_with_standing_shortfall() {
+        // Reviewer's case: a request whose target is already fully synced
+        // (current == target) while IISA keeps returning fewer than requested.
+        // The diff is empty (no adds, no cancels), so reassessment is a no-op
+        // and MUST NOT re-emit n_indexers_unavailable on every recurring cycle.
+        let idx = indexer_id(0x11);
+        let events = CapturingEventsProducer::new();
+        let registry = MockRegistry {
+            active_agreements: vec![agreement(idx, IndexingAgreementStatus::AcceptedOnChain)],
+            accepted_count: 1,
+        };
+        let ctx = build_ctx(
+            registry,
+            MockIisa {
+                selected: vec![selected(idx)],
+            },
             MockQueue::default(),
             MockChainClient,
             events.clone(),
             topology::Snapshot::new(),
         );
 
+        // Requested 3, but the only available indexer is already accepted:
+        // to_add and to_cancel are both empty -> standing shortfall, no event.
         handle(ctx, &test_message(3)).await.expect("handler ok");
 
-        let captured = events.events();
-        assert_eq!(captured.len(), 1, "exactly one event emitted");
-        match &captured[0] {
-            CapturedEvent::NIndexersUnavailable {
-                deployment: d,
-                chain_id,
-                event,
-            } => {
-                assert_eq!(*d, deployment());
-                assert_eq!(*chain_id, TEST_PROTOCOL_CHAIN_ID);
-                assert_eq!(event.agreements_requested, 3);
-                assert_eq!(event.candidates_returned, 0);
-            }
-            other => panic!("expected NIndexersUnavailable, got {other:?}"),
-        }
+        assert!(
+            events.events().is_empty(),
+            "synced request with standing shortfall must not re-emit: {:?}",
+            events.events()
+        );
     }
 
     // ---- Scenario 2: negative (no shortfall, empty diff) --------------------
