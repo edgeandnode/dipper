@@ -1409,6 +1409,7 @@ mod tests {
                     .unwrap(),
                 protocol_network: ChainId::from(42161u64),
                 chain_id: ChainId::from(1u64),
+                proposed_at: 0,
             },
         }
     }

@@ -489,6 +489,9 @@ pub struct TermsMetadata {
     pub protocol_network: ChainId,
     /// Indexed chain, e.g., `eip155:1` (Ethereum Mainnet).
     pub chain_id: ChainId,
+
+    /// Unix-seconds proposal time, in the same clock as the acceptance deadline.
+    pub proposed_at: u64,
 }
 
 /// The status of the [`IndexingAgreement`].
@@ -638,6 +641,7 @@ impl From<dipper_pgregistry::IndexingAgreementTermsMetadata> for TermsMetadata {
             subgraph_deployment_id: value.subgraph_deployment_id,
             protocol_network: value.protocol_network,
             chain_id: value.chain_id,
+            proposed_at: value.proposed_at,
         }
     }
 }
@@ -668,6 +672,7 @@ impl From<TermsMetadata> for dipper_pgregistry::IndexingAgreementTermsMetadata {
             subgraph_deployment_id: value.subgraph_deployment_id,
             protocol_network: value.protocol_network,
             chain_id: value.chain_id,
+            proposed_at: value.proposed_at,
         }
     }
 }
@@ -718,6 +723,7 @@ pub mod fake_impl {
                 subgraph_deployment_id: DeploymentId::dummy_with_rng(config, rng),
                 protocol_network: ChainId::dummy_with_rng(config, rng),
                 chain_id: ChainId::dummy_with_rng(config, rng),
+                proposed_at: u64::dummy_with_rng(config, rng),
             }
         }
     }

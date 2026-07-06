@@ -188,6 +188,13 @@ where
                             "agreement state transition"
                         );
 
+                        // Prefer the chain-time proposal stamp so both event timestamps
+                        // share a clock; pre-existing rows lack it (0) -> use created_at.
+                        let request_proposed_at = match agreement.terms.metadata.proposed_at {
+                            0 => agreement.created_at.unix_timestamp() as u64,
+                            ts => ts,
+                        };
+
                         // The indexer failed to accept within the deadline: emit the
                         // `request.expired` lifecycle event. `request_expired_at` is the
                         // chain-time clock the deadline was compared against.
@@ -197,8 +204,7 @@ where
                                 agreement.terms.metadata.protocol_network,
                                 proto::SubgraphIndexingAgreementRequestExpired {
                                     indexer: agreement.indexer.id.to_string(),
-                                    request_proposed_at: agreement.created_at.unix_timestamp()
-                                        as u64,
+                                    request_proposed_at,
                                     request_expired_at: chain_ts,
                                 },
                             );
@@ -724,6 +730,7 @@ mod tests {
                     subgraph_deployment_id: deployment,
                     protocol_network,
                     chain_id: 1u64,
+                    proposed_at: 0,
                 },
             },
             last_block_height: None,
@@ -818,6 +825,69 @@ mod tests {
                     event.request_proposed_at,
                     created_at.unix_timestamp() as u64
                 );
+            }
+            other => panic!("expected RequestExpired event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_request_expired_prefers_stored_proposed_at() {
+        // With a chain-time proposal stamp present, the expiry event reports it
+        // rather than the wall-clock created_at, so both timestamps share a clock.
+        // (The 0/fallback-to-created_at path is covered by the sibling test above.)
+        const CHAIN_TS: u64 = 1_700_000_000;
+        const PROPOSED_AT: u64 = 1_699_999_400;
+        let deployment: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let protocol_network: ChainId = 42161;
+        let indexer_id = IndexerId::from(Address::from([0x11u8; 20]));
+        let created_at = OffsetDateTime::from_unix_timestamp(1_699_000_000).unwrap();
+
+        let registry = MockExpirationRegistry::new();
+        registry.set_chain_state(Some(ChainListenerState {
+            _chain_id: 1337,
+            last_processed_block: 500,
+            last_processed_id: None,
+            last_processed_block_timestamp: Some(CHAIN_TS),
+        }));
+        let mut agreement =
+            make_expired_agreement(deployment, protocol_network, indexer_id, created_at);
+        agreement.terms.metadata.proposed_at = PROPOSED_AT;
+        registry.set_indexing_request(make_indexing_request(
+            agreement.indexing_request_id,
+            deployment,
+        ));
+        registry.set_expired_agreements(vec![agreement]);
+
+        let events = CapturingEventsProducer::new();
+        let ctx = Ctx {
+            registry: registry.clone(),
+            worker_queue: MockWorkerQueue,
+            config: ExpirationConfig {
+                enabled: true,
+                interval: Duration::from_millis(10),
+                batch_size: 100,
+            },
+            chain_id: Some(1337),
+            subgraph_indexing_agreements_events_emitter: Arc::new(events.clone()),
+        };
+
+        let (handle, service) = new(ctx);
+        let svc = tokio::spawn(service);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        handle.stop().await;
+        svc.await.unwrap().unwrap();
+
+        let captured = events.events();
+        assert_eq!(captured.len(), 1, "expected one event, got {captured:?}");
+        match &captured[0] {
+            CapturedEvent::RequestExpired { event, .. } => {
+                assert_eq!(
+                    event.request_proposed_at, PROPOSED_AT,
+                    "expiry event should carry the stored chain-time proposal, not created_at"
+                );
+                assert_eq!(event.request_expired_at, CHAIN_TS);
             }
             other => panic!("expected RequestExpired event, got {other:?}"),
         }

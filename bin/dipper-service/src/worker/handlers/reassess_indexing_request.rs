@@ -350,6 +350,8 @@ where
             subgraph_deployment_id: *deployment_id,
             protocol_network: ctx.signer.chain_id(),
             chain_id: *deployment_chain_id,
+            // Same clock as `deadline` below, so the expiry event's two timestamps agree.
+            proposed_at: now,
         };
 
         // The RCA's contract caps don't need to be per-chain. At large
@@ -1338,6 +1340,7 @@ mod lifecycle_event_tests {
                     subgraph_deployment_id: deployment(),
                     protocol_network: TEST_PROTOCOL_CHAIN_ID,
                     chain_id: TEST_DEPLOYMENT_CHAIN_ID,
+                    proposed_at: 0,
                 },
             },
             last_block_height: None,
@@ -1692,6 +1695,7 @@ mod terms_hash_tests {
                     .unwrap(),
                 protocol_network: 1u64,
                 chain_id: 1u64,
+                proposed_at: 0,
             },
         }
     }
