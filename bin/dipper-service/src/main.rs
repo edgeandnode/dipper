@@ -144,7 +144,7 @@ pub async fn main() -> anyhow::Result<()> {
 
     let signer = {
         let domain = dipper_rpc::admin::eip712_domain();
-        Arc::new(Eip712Signer::new(wallet_signer.address(), chain_id, domain))
+        Arc::new(Eip712Signer::new(chain_id, domain))
     };
 
     //- DB connect and run migrations
@@ -458,7 +458,6 @@ pub async fn main() -> anyhow::Result<()> {
                 chain_client: chain_client.clone(),
                 agreement_conf: chain_listener_agreement_conf.clone(),
                 config: chain_listener_conf.clone(),
-                signer_address: signer.address(),
                 chain_listener_notify: chain_listener_notify.clone(),
             };
             let (handle, service) = network::service::chain_listener::new(ctx);

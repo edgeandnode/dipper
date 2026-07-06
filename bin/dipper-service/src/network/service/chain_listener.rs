@@ -38,7 +38,7 @@ use tokio::{
     time::MissedTickBehavior,
 };
 
-use super::chain_events::{AgreementStateSnapshot, ChainEventSource, Cursor};
+use super::chain_events::{AgreementState, AgreementStateSnapshot, ChainEventSource, Cursor};
 use crate::{
     chain_client::ChainClient,
     config::ChainListenerConfig,
@@ -107,8 +107,6 @@ pub struct Ctx<R, W, E, T> {
     pub agreement_conf: Arc<crate::config::IndexingAgreementConfig>,
     /// Service configuration
     pub config: ChainListenerConfig,
-    /// The payer/signer address (used to identify who initiated cancellations)
-    pub signer_address: thegraph_core::alloy::primitives::Address,
     /// Signalled by the worker when proposals are dispatched, waking the listener
     /// from the slow (300s) idle interval so it starts fast-polling immediately.
     pub chain_listener_notify: Arc<Notify>,
@@ -148,7 +146,6 @@ where
         chain_client,
         agreement_conf,
         config,
-        signer_address,
         chain_listener_notify,
     } = ctx;
 
@@ -285,7 +282,6 @@ where
                 reorg_buffer_blocks,
                 chain_ts_drift_tolerance_secs,
                 bypass_chain_clock_defenses,
-                signer_address,
                 &registry,
                 &worker_queue,
                 &chain_client,
@@ -376,7 +372,6 @@ async fn drain_once<R, W, E, T>(
     reorg_buffer_blocks: u32,
     chain_ts_drift_tolerance_secs: u64,
     bypass_chain_clock_defenses: bool,
-    signer_address: Address,
     registry: &R,
     worker_queue: &W,
     chain_client: &T,
@@ -529,7 +524,7 @@ where
             }
 
             let agreement = agreements_by_id.remove(&snapshot.agreement_id);
-            match prepare_reconciliation(&snapshot, agreement, worker_queue, signer_address).await {
+            match prepare_reconciliation(&snapshot, agreement, worker_queue).await {
                 Ok(Some(prep)) => prepared.push(prep),
                 Ok(None) => {}
                 Err(err) => {
@@ -746,7 +741,6 @@ async fn prepare_reconciliation<W>(
     snapshot: &AgreementStateSnapshot,
     agreement: Option<IndexingAgreement>,
     worker_queue: &W,
-    signer_address: Address,
 ) -> anyhow::Result<Option<PreparedReconciliation>>
 where
     W: WorkerQueue,
@@ -755,6 +749,7 @@ where
         agreement_id = %snapshot.agreement_id,
         indexer = %snapshot.indexer,
         state = ?snapshot.state,
+        canceled_by = %snapshot.canceled_by,
         last_state_change_block = snapshot.last_state_change_block,
         "Preparing reconciliation against snapshot"
     );
@@ -804,12 +799,15 @@ where
         agreement.status,
         IndexingAgreementStatus::CanceledByRequester | IndexingAgreementStatus::CanceledByIndexer,
     );
+    // Classify off the on-chain state, which carries the contract's own
+    // "canceled by" flag. The canceler address is the payer, not dipper's
+    // signer, so comparing it against the signer misreads payer cancels.
     let cancel_kind = if snapshot.state.is_canceled() && !already_terminal_cancel {
-        Some(if snapshot.canceled_by == signer_address {
-            CancelKind::ByRequester
-        } else {
-            CancelKind::ByIndexer
-        })
+        match snapshot.state {
+            AgreementState::CanceledByPayer => Some(CancelKind::ByRequester),
+            AgreementState::CanceledByServiceProvider => Some(CancelKind::ByIndexer),
+            AgreementState::NotAccepted | AgreementState::Accepted => None,
+        }
     } else {
         None
     };
@@ -900,7 +898,6 @@ async fn reconcile_agreement<R, W, T>(
     registry: &R,
     worker_queue: &W,
     chain_client: &T,
-    signer_address: Address,
     config: &crate::config::IndexingAgreementConfig,
 ) -> anyhow::Result<()>
 where
@@ -911,9 +908,7 @@ where
     let agreement = registry
         .get_indexing_agreement_by_id(&snapshot.agreement_id)
         .await?;
-    let Some(prep) =
-        prepare_reconciliation(snapshot, agreement, worker_queue, signer_address).await?
-    else {
+    let Some(prep) = prepare_reconciliation(snapshot, agreement, worker_queue).await? else {
         return Ok(());
     };
 
@@ -1955,7 +1950,6 @@ mod tests {
             &registry,
             &worker_queue,
             &chain_client,
-            Address::ZERO,
             test_agreement_conf().as_ref(),
         )
         .await;
@@ -1980,7 +1974,6 @@ mod tests {
             &registry,
             &worker_queue,
             &chain_client,
-            Address::ZERO,
             test_agreement_conf().as_ref(),
         )
         .await;
@@ -2017,7 +2010,6 @@ mod tests {
             &registry,
             &worker_queue,
             &chain_client,
-            signer_address,
             test_agreement_conf().as_ref(),
         )
         .await;
@@ -2042,7 +2034,6 @@ mod tests {
             &registry,
             &worker_queue,
             &chain_client,
-            Address::ZERO,
             test_agreement_conf().as_ref(),
         )
         .await;
@@ -2070,7 +2061,6 @@ mod tests {
             &registry,
             &worker_queue,
             &chain_client,
-            Address::ZERO,
             test_agreement_conf().as_ref(),
         )
         .await;
@@ -2087,9 +2077,6 @@ mod tests {
         let chain_client = MockChainClient::default();
         let worker_queue = MockWorkerQueue::default();
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
-        let signer_address: Address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            .parse()
-            .unwrap();
         let indexer_address: Address = "0x1234567890123456789012345678901234567890"
             .parse()
             .unwrap();
@@ -2106,7 +2093,6 @@ mod tests {
             &registry,
             &worker_queue,
             &chain_client,
-            signer_address,
             test_agreement_conf().as_ref(),
         )
         .await;
@@ -2138,7 +2124,6 @@ mod tests {
             &registry,
             &worker_queue,
             &chain_client,
-            signer_address,
             test_agreement_conf().as_ref(),
         )
         .await;
@@ -2149,14 +2134,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_reconcile_rejected_payer_cancel_recovers_by_requester() {
+        // A Rejected row observed canceled on-chain by the payer. The canceler
+        // is the payer, never dipper's signer, so classification must come from
+        // the state: CanceledByPayer -> ByRequester, the only kind allowed here.
+        let registry = MockRegistry::new();
+        let chain_client = MockChainClient::default();
+        let worker_queue = MockWorkerQueue::default();
+        let agreement_id = IndexingAgreementId::from_bytes(rand::random());
+        // A payer address deliberately distinct from dipper's signer key.
+        let payer_address: Address = "0xcccccccccccccccccccccccccccccccccccccccc"
+            .parse()
+            .unwrap();
+
+        registry.add_agreement(agreement_id, IndexingAgreementStatus::Rejected);
+
+        let snapshot = make_snapshot(agreement_id, AgreementState::CanceledByPayer, payer_address);
+        let result = reconcile_agreement(
+            &snapshot,
+            &registry,
+            &worker_queue,
+            &chain_client,
+            test_agreement_conf().as_ref(),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert!(registry.was_marked_canceled_by_requester(&agreement_id));
+        assert!(!registry.was_marked_canceled_by_indexer(&agreement_id));
+        assert!(!registry.was_marked_accepted_on_chain(&agreement_id));
+        // Already canceled on-chain: must not queue a fresh cancel job.
+        assert!(!worker_queue.was_cancellation_queued(&agreement_id));
+    }
+
+    #[tokio::test]
     async fn test_reconcile_ignores_already_canceled() {
         let registry = MockRegistry::new();
         let chain_client = MockChainClient::default();
         let worker_queue = MockWorkerQueue::default();
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
-        let signer_address: Address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            .parse()
-            .unwrap();
 
         registry.add_agreement(agreement_id, IndexingAgreementStatus::CanceledByIndexer);
 
@@ -2170,7 +2186,6 @@ mod tests {
             &registry,
             &worker_queue,
             &chain_client,
-            signer_address,
             test_agreement_conf().as_ref(),
         )
         .await;
@@ -2211,7 +2226,6 @@ mod tests {
             &registry,
             &worker_queue,
             &chain_client,
-            signer_address,
             test_agreement_conf().as_ref(),
         )
         .await;
@@ -2251,7 +2265,6 @@ mod tests {
             &registry,
             &worker_queue,
             &chain_client,
-            signer_address,
             test_agreement_conf().as_ref(),
         )
         .await;
@@ -2625,7 +2638,6 @@ mod tests {
             event_source,
             config,
             agreement_conf: test_agreement_conf(),
-            signer_address: Address::ZERO,
             chain_listener_notify: Arc::new(tokio::sync::Notify::new()),
         };
 
@@ -2703,7 +2715,6 @@ mod tests {
             event_source,
             config,
             agreement_conf: test_agreement_conf(),
-            signer_address: Address::ZERO,
             chain_listener_notify: Arc::new(tokio::sync::Notify::new()),
         };
 
@@ -2778,7 +2789,6 @@ mod tests {
             event_source,
             config,
             agreement_conf: test_agreement_conf(),
-            signer_address: Address::ZERO,
             chain_listener_notify: Arc::new(tokio::sync::Notify::new()),
         };
 
@@ -2851,7 +2861,6 @@ mod tests {
             0,
             10,
             false,
-            Address::ZERO,
             &registry,
             &MockWorkerQueue::default(),
             &chain_client,
@@ -2917,7 +2926,6 @@ mod tests {
             0,
             10,
             false,
-            Address::ZERO,
             &registry,
             &MockWorkerQueue::default(),
             &chain_client,
@@ -2946,7 +2954,6 @@ mod tests {
             0,
             10,
             false,
-            Address::ZERO,
             &registry,
             &MockWorkerQueue::default(),
             &chain_client,
@@ -3051,7 +3058,6 @@ mod tests {
             0,
             10,
             false,
-            Address::ZERO,
             &registry,
             &MockWorkerQueue::default(),
             &chain_client,
@@ -3101,7 +3107,6 @@ mod tests {
             },
             config,
             agreement_conf: test_agreement_conf(),
-            signer_address: Address::ZERO,
             chain_listener_notify: notify.clone(),
         };
 

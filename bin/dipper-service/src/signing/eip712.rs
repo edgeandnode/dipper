@@ -1,7 +1,5 @@
-//! An EIP-712 signer-recovery helper.
-//!
-//! Wraps an EIP-712 domain separator plus the signer's address and chain ID,
-//! and exposes recovery for signed admin-RPC messages.
+//! An EIP-712 signer-recovery helper. Wraps an EIP-712 domain separator plus
+//! the signer's chain ID, and exposes recovery for signed admin-RPC messages.
 
 use thegraph_core::{
     alloy::{
@@ -14,24 +12,17 @@ use thegraph_core::{
 /// Carries the signer's identity and the EIP-712 domain used to verify
 /// inbound admin-RPC messages. Dipper does not produce outbound signatures.
 pub struct Eip712Signer {
-    signer_address: Address,
     signer_chain: ChainId,
     domain: Eip712Domain,
 }
 
 impl Eip712Signer {
     /// Create a new [`Eip712Signer`] instance.
-    pub fn new(signer_address: Address, signer_chain: ChainId, domain: Eip712Domain) -> Self {
+    pub fn new(signer_chain: ChainId, domain: Eip712Domain) -> Self {
         Self {
-            signer_address,
             signer_chain,
             domain,
         }
-    }
-
-    /// Get the signer's address
-    pub fn address(&self) -> Address {
-        self.signer_address
     }
 
     /// Get the signer's chain ID
@@ -102,7 +93,7 @@ mod tests {
         };
 
         // Create an Eip712Signer instance for verifying inbound messages
-        let eip712_signer = Eip712Signer::new(signer_address, signer_chain, domain.clone());
+        let eip712_signer = Eip712Signer::new(signer_chain, domain.clone());
 
         // Sign the message with a freestanding signer
         let signed_message = sign(&signer, &domain, message).expect("message signing failed");
