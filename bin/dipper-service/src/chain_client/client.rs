@@ -14,6 +14,7 @@ use std::{
 use async_trait::async_trait;
 use dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement;
 use thegraph_core::alloy::{
+    eips::BlockNumberOrTag,
     network::{EthereumWallet, TransactionBuilder},
     primitives::{Address, B256, FixedBytes},
     providers::{Provider, ProviderBuilder},
@@ -524,6 +525,20 @@ impl AlloyChainClient {
 
 #[async_trait]
 impl ChainClient for AlloyChainClient {
+    async fn latest_block_timestamp(&self) -> Result<u64, ChainClientError> {
+        let block = self
+            .inner
+            .rpc_pool
+            .execute("get_latest_block", |provider| async move {
+                provider.get_block_by_number(BlockNumberOrTag::Latest).await
+            })
+            .await?
+            .ok_or_else(|| {
+                ChainClientError::RpcError(anyhow::anyhow!("no latest block returned"))
+            })?;
+        Ok(block.header.timestamp)
+    }
+
     async fn offer_via_manager(
         &self,
         rca: &RecurringCollectionAgreement,

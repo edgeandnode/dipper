@@ -277,6 +277,7 @@ where
         ctx.bypass_chain_clock_defenses,
         ctx.chain_listener_chain_id,
         &ctx.registry,
+        &ctx.chain_client,
     )
     .await?;
 
@@ -629,28 +630,34 @@ fn compute_terms_version_hash(
     rca.eip712_signing_hash(&domain).to_vec()
 }
 
-/// Pick the clock to denominate `terms.deadline` and `terms.ends_at`.
-///
-/// When `bypass` is false (production), return wall clock — matching
-/// the original behavior and the simple, NTP-tracking case.
-///
-/// When `bypass` is true (local-network testing), fetch the
-/// chain_listener's persisted chain timestamp instead so deadlines
-/// stay denominated in chain time. Falls back to wall clock (with a
-/// warning) when the chain listener hasn't bootstrapped yet or no
-/// chain ID is configured; returns `JobError::Retryable` only if the
-/// registry call itself errors, which the worker framework will
-/// back-off and retry.
-async fn resolve_deadline_clock<R>(
+/// Pick the clock denominating `terms.deadline`/`terms.ends_at`: wall clock when
+/// `bypass` is false; otherwise chain time — live chain head, else the listener's
+/// persisted timestamp, else wall clock, warning on each demotion; registry errors retry.
+async fn resolve_deadline_clock<R, C>(
     bypass: bool,
     chain_listener_chain_id: Option<u64>,
     registry: &R,
+    chain_client: &C,
 ) -> JobResult<u64>
 where
     R: ChainListenerStateRegistry,
+    C: ChainClient,
 {
     if !bypass {
         return Ok(now_secs());
+    }
+    // Prefer a live chain-head read: the persisted chain_listener timestamp
+    // idles behind a fast-moving local chain, so trusting it would stamp a
+    // deadline in the chain's past and make the agreement born-expired.
+    match chain_client.latest_block_timestamp().await {
+        Ok(ts) => return Ok(ts),
+        Err(err) => {
+            tracing::warn!(
+                event = "deadline_clock_live_chain_unavailable",
+                error = %err,
+                "live chain timestamp read failed; falling back to persisted listener state or wall clock"
+            );
+        }
     }
     let Some(chain_id) = chain_listener_chain_id else {
         tracing::warn!(
@@ -783,5 +790,215 @@ mod terms_hash_tests {
         let other =
             compute_terms_version_hash(fixed_nonce(), &fixed_terms(), &RwLock::new(other_domain));
         assert_ne!(base, other, "domain must change the hash");
+    }
+}
+
+#[cfg(test)]
+mod deadline_clock_tests {
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use dipper_core::time::now_secs;
+    use thegraph_core::alloy::primitives::{Address, B256};
+
+    use super::{JobError, resolve_deadline_clock};
+    use crate::{
+        chain_client::{ChainClient, ChainClientError},
+        network::service::{
+            chain_events::Cursor,
+            chain_listener::{ChainListenerState, ChainListenerStateRegistry},
+        },
+    };
+
+    /// `head: Some(ts)` mocks a live chain-head read; `None` mocks an RPC failure.
+    struct MockChainClient {
+        head: Option<u64>,
+    }
+
+    #[async_trait]
+    impl ChainClient for MockChainClient {
+        async fn latest_block_timestamp(&self) -> Result<u64, ChainClientError> {
+            self.head
+                .ok_or_else(|| ChainClientError::RpcError(anyhow::anyhow!("head read failed")))
+        }
+
+        async fn offer_via_manager(
+            &self,
+            _rca: &dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement,
+        ) -> Result<Option<B256>, ChainClientError> {
+            Ok(None)
+        }
+
+        async fn cancel_via_manager(
+            &self,
+            _collector: Address,
+            _agreement_id: &[u8; 16],
+            _version_hash: B256,
+            _options: u16,
+        ) -> Result<Option<B256>, ChainClientError> {
+            Ok(None)
+        }
+
+        async fn reconcile_provider(
+            &self,
+            _collector: Address,
+            _provider: Address,
+        ) -> Result<Option<B256>, ChainClientError> {
+            Ok(None)
+        }
+
+        async fn agreement_still_active(
+            &self,
+            _agreement_id: &[u8; 16],
+        ) -> Result<bool, ChainClientError> {
+            Ok(false)
+        }
+    }
+
+    /// `fail: true` makes the state lookup itself error, exercising the
+    /// retryable-job branch rather than any clock fallback.
+    struct MockRegistry {
+        state: Option<ChainListenerState>,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl ChainListenerStateRegistry for MockRegistry {
+        async fn get_chain_listener_state(
+            &self,
+            _chain_id: u64,
+        ) -> Result<Option<ChainListenerState>, crate::registry::Error> {
+            if self.fail {
+                return Err(crate::registry::Error::NoRecordsUpdated);
+            }
+            Ok(self.state.clone())
+        }
+
+        async fn update_chain_listener_state(
+            &self,
+            _chain_id: u64,
+            _cursor: &Cursor,
+            _last_processed_block_timestamp: Option<u64>,
+        ) -> Result<(), crate::registry::Error> {
+            Ok(())
+        }
+    }
+
+    fn listener_state(ts: Option<u64>) -> ChainListenerState {
+        ChainListenerState {
+            _chain_id: 1337,
+            last_processed_block: 1,
+            last_processed_id: None,
+            last_processed_block_timestamp: ts,
+        }
+    }
+
+    /// Asserts `got` was produced by `now_secs()` between `before` and now.
+    fn assert_wall_clock(got: u64, before: u64) {
+        assert!(
+            got >= before && got <= now_secs(),
+            "expected wall clock, got {got}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bypass_off_uses_wall_clock() {
+        let before = now_secs();
+        let got = resolve_deadline_clock(
+            false,
+            Some(1337),
+            &MockRegistry {
+                state: Some(listener_state(Some(42))),
+                fail: false,
+            },
+            &MockChainClient { head: Some(9) },
+        )
+        .await
+        .unwrap();
+        assert_wall_clock(got, before);
+    }
+
+    #[tokio::test]
+    async fn bypass_prefers_live_chain_head() {
+        let got = resolve_deadline_clock(
+            true,
+            Some(1337),
+            &MockRegistry {
+                state: Some(listener_state(Some(999))),
+                fail: false,
+            },
+            &MockChainClient { head: Some(12_345) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(got, 12_345, "live head must win over listener state");
+    }
+
+    #[tokio::test]
+    async fn head_failure_falls_back_to_listener_state() {
+        let got = resolve_deadline_clock(
+            true,
+            Some(1337),
+            &MockRegistry {
+                state: Some(listener_state(Some(4_242))),
+                fail: false,
+            },
+            &MockChainClient { head: None },
+        )
+        .await
+        .unwrap();
+        assert_eq!(got, 4_242, "listener state is the second preference");
+    }
+
+    #[tokio::test]
+    async fn head_failure_without_chain_id_falls_back_to_wall_clock() {
+        let before = now_secs();
+        let got = resolve_deadline_clock(
+            true,
+            None,
+            &MockRegistry {
+                state: None,
+                fail: false,
+            },
+            &MockChainClient { head: None },
+        )
+        .await
+        .unwrap();
+        assert_wall_clock(got, before);
+    }
+
+    #[tokio::test]
+    async fn head_failure_without_listener_state_falls_back_to_wall_clock() {
+        let before = now_secs();
+        let got = resolve_deadline_clock(
+            true,
+            Some(1337),
+            &MockRegistry {
+                state: None,
+                fail: false,
+            },
+            &MockChainClient { head: None },
+        )
+        .await
+        .unwrap();
+        assert_wall_clock(got, before);
+    }
+
+    #[tokio::test]
+    async fn head_failure_with_registry_error_retries_the_job() {
+        let got = resolve_deadline_clock(
+            true,
+            Some(1337),
+            &MockRegistry {
+                state: None,
+                fail: true,
+            },
+            &MockChainClient { head: None },
+        )
+        .await;
+        match got {
+            Err(JobError::Retryable(_, delay)) => assert_eq!(delay, Duration::from_secs(5)),
+            other => panic!("expected a retryable job error, got {other:?}"),
+        }
     }
 }
