@@ -292,6 +292,11 @@ pub struct TermsMetadata {
     pub protocol_network: ChainId,
     /// Indexed chain, e.g., `eip155:1` (Ethereum Mainnet).
     pub chain_id: ChainId,
+
+    /// Unix-seconds proposal time, in the same clock as `Terms::deadline`.
+    /// `serde(default)` yields 0 for rows written before this field existed.
+    #[serde(default)]
+    pub proposed_at: u64,
 }
 
 /// The _indexing agreement_ [`fake`] implementation for test data generation.
@@ -348,6 +353,7 @@ pub mod fake_impl {
                 subgraph_deployment_id: DeploymentId::dummy_with_rng(config, rng),
                 protocol_network: ChainId::dummy_with_rng(config, rng),
                 chain_id: ChainId::dummy_with_rng(config, rng),
+                proposed_at: u64::dummy_with_rng(config, rng),
             }
         }
     }
@@ -384,6 +390,7 @@ mod tests {
                 .unwrap(),
                 protocol_network: 42161,
                 chain_id: 1,
+                proposed_at: 1_700_000_000,
             },
         };
 

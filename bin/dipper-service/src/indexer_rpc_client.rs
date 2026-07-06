@@ -371,6 +371,7 @@ mod tests {
                 subgraph_deployment_id: deployment_id,
                 protocol_network: 42161,
                 chain_id: 1,
+                proposed_at: 0,
             },
         };
 
@@ -456,6 +457,7 @@ mod tests {
                 .unwrap(),
                 protocol_network: 42161,
                 chain_id: 1,
+                proposed_at: 0,
             },
         }
     }

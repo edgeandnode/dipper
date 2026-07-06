@@ -872,6 +872,7 @@ mod tests {
                 subgraph_deployment_id: deployment_id,
                 protocol_network: 1u64,
                 chain_id: 1u64,
+                proposed_at: 0,
             },
         };
         IndexingAgreement {
