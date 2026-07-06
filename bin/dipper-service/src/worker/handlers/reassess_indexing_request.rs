@@ -250,26 +250,6 @@ where
         return Ok(());
     }
 
-    // IISA returned fewer candidates than requested: emit the lifecycle event so
-    // downstream consumers see the shortfall (typically declined/denylisted indexers).
-    //
-    // Gate on `!to_add.is_empty()` so this only fires when the reassessment is
-    // actually trying to fill slots and comes up short -- not on every recurring
-    // reassessment of an already-synced request. Reassessment runs periodically and
-    // is re-triggered from several lifecycle paths; emitting purely on the standing
-    // `selected < requested` supply condition would re-fire the event forever.
-    if !to_add.is_empty() && target_selected.len() < *num_candidates {
-        ctx.subgraph_indexing_agreements_events_emitter
-            .produce_subgraph_indexing_agreement_n_indexers_unavailable(
-                *deployment_id,
-                ctx.signer.chain_id(),
-                proto::SubgraphIndexingAgreementNIndexersUnavailable {
-                    agreements_requested: *num_candidates as i32,
-                    candidates_returned: target_selected.len() as i32,
-                },
-            );
-    }
-
     let fallback_prices = ctx.chain_price.get(deployment_chain_id);
 
     // --- Add new agreements FIRST ---
@@ -290,6 +270,29 @@ where
         &ctx.registry,
     )
     .await?;
+
+    // IISA returned fewer candidates than requested: emit the lifecycle event so
+    // downstream consumers see the shortfall (typically declined/denylisted indexers).
+    //
+    // Gate on `!to_add.is_empty()` so this only fires when the reassessment is
+    // actually trying to fill slots and comes up short -- not on every recurring
+    // reassessment of an already-synced request. Reassessment runs periodically and
+    // is re-triggered from several lifecycle paths; emitting purely on the standing
+    // `selected < requested` supply condition would re-fire the event forever.
+    //
+    // Kept below `resolve_deadline_clock` -- the only fallible step under it -- so a
+    // failed bypass-path read retries the job before this emits, not after.
+    if !to_add.is_empty() && target_selected.len() < *num_candidates {
+        ctx.subgraph_indexing_agreements_events_emitter
+            .produce_subgraph_indexing_agreement_n_indexers_unavailable(
+                *deployment_id,
+                ctx.signer.chain_id(),
+                proto::SubgraphIndexingAgreementNIndexersUnavailable {
+                    agreements_requested: *num_candidates as i32,
+                    candidates_returned: target_selected.len() as i32,
+                },
+            );
+    }
 
     // Pre-compute old agreements to cancel so we can pair replacements
     // atomically during registration.
@@ -947,6 +950,9 @@ mod lifecycle_event_tests {
     struct MockRegistry {
         active_agreements: Vec<IndexingAgreement>,
         accepted_count: i64,
+        /// When true, `get_chain_listener_state` errors, driving `resolve_deadline_clock`
+        /// onto its retry path -- used to assert the shortfall event isn't emitted first.
+        chain_state_lookup_fails: bool,
     }
 
     #[async_trait]
@@ -1189,7 +1195,9 @@ mod lifecycle_event_tests {
             &self,
             _chain_id: u64,
         ) -> RegistryResult<Option<ChainListenerState>> {
-            // Only read on the bypass-chain-clock path, which the tests disable.
+            if self.chain_state_lookup_fails {
+                return Err(crate::registry::Error::NoRecordsUpdated);
+            }
             Ok(None)
         }
         async fn update_chain_listener_state(
@@ -1402,6 +1410,47 @@ mod lifecycle_event_tests {
     // ---- Scenario 1b: regression -- standing shortfall on a synced request --
 
     #[tokio::test]
+    async fn no_n_indexers_unavailable_when_deadline_clock_read_fails() {
+        // The shortfall event is emitted only after `resolve_deadline_clock`. Under
+        // bypass, a failed chain_listener-state read errors out before the emit, so a
+        // retried job doesn't re-fire the event for the same round.
+        let new_idx = indexer_id(0x21);
+        let mut snapshot = topology::Snapshot::new();
+        snapshot.insert_indexer_for_test(new_idx, indexer_url());
+
+        let events = CapturingEventsProducer::new();
+        let mut ctx = build_ctx(
+            MockRegistry {
+                chain_state_lookup_fails: true,
+                ..Default::default()
+            },
+            MockIisa {
+                selected: vec![selected(new_idx)],
+            },
+            MockQueue::default(),
+            MockChainClient,
+            events.clone(),
+            snapshot,
+        );
+        ctx.bypass_chain_clock_defenses = true;
+        ctx.chain_listener_chain_id = Some(1337);
+
+        // Request 3, IISA returns 1: a real add plus a shortfall, so the event WOULD
+        // fire if the handler reached it -- but the clock read fails first.
+        let result = handle(ctx, &test_message(3)).await;
+
+        assert!(
+            result.is_err(),
+            "a failed deadline-clock read must fail the job"
+        );
+        assert!(
+            events.events().is_empty(),
+            "no shortfall event may be emitted before the clock resolves: {:?}",
+            events.events()
+        );
+    }
+
+    #[tokio::test]
     async fn no_n_indexers_unavailable_on_synced_request_with_standing_shortfall() {
         // Reviewer's case: a request whose target is already fully synced
         // (current == target) while IISA keeps returning fewer than requested.
@@ -1412,6 +1461,7 @@ mod lifecycle_event_tests {
         let registry = MockRegistry {
             active_agreements: vec![agreement(idx, IndexingAgreementStatus::AcceptedOnChain)],
             accepted_count: 1,
+            chain_state_lookup_fails: false,
         };
         let ctx = build_ctx(
             registry,
@@ -1446,6 +1496,7 @@ mod lifecycle_event_tests {
         let registry = MockRegistry {
             active_agreements: vec![agreement(idx, IndexingAgreementStatus::AcceptedOnChain)],
             accepted_count: 1,
+            chain_state_lookup_fails: false,
         };
         let ctx = build_ctx(
             registry,
@@ -1494,6 +1545,7 @@ mod lifecycle_event_tests {
                 agreement(old_unpaired, IndexingAgreementStatus::AcceptedOnChain),
             ],
             accepted_count: 0,
+            chain_state_lookup_fails: false,
         };
         let ctx = build_ctx(
             registry,
@@ -1569,6 +1621,7 @@ mod lifecycle_event_tests {
                 agreement(old_unpaired, IndexingAgreementStatus::Created),
             ],
             accepted_count: 0,
+            chain_state_lookup_fails: false,
         };
         let ctx = build_ctx(
             registry,
