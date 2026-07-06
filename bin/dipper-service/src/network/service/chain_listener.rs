@@ -14,7 +14,7 @@
 //! | Created            | Accepted            | mark AcceptedOnChain, run pending cancellations                         |
 //! | Created            | CanceledBy*         | mark AcceptedOnChain, run pending cancellations, then mark canceled    |
 //! | AcceptedOnChain    | Accepted            | no-op                                                                  |
-//! | AcceptedOnChain    | CanceledBy*         | mark canceled (by requester vs indexer based on `canceled_by` address) |
+//! | AcceptedOnChain    | CanceledBy*         | mark canceled (requester vs indexer from the CanceledBy* state)        |
 //! | Expired            | Accepted            | mark AcceptedOnChain (recovery), run pending cancellations              |
 //! | Expired            | CanceledBy*         | recover to AcceptedOnChain, run pending cancellations, then cancel     |
 //! | Rejected           | Accepted            | queue cancel-on-chain (adversarial path, dead code under proposal-first) |
@@ -24,10 +24,11 @@
 //!
 //! Snapshots come from the indexing-payments-subgraph's aggregated
 //! `IndexingAgreement` entity (see [`AgreementStateSnapshot`]). The subgraph
-//! exposes `lastStateChangeBlock` for cursor pagination and `canceledBy`
-//! as the actual canceler address, which dipper compares against its own
-//! signer to distinguish self-initiated cancels from indexer-initiated
-//! cancels.
+//! exposes `lastStateChangeBlock` for cursor pagination and the aggregated
+//! `state` (`CanceledByPayer` / `CanceledByServiceProvider`), which dipper
+//! reads to tell payer-initiated cancels (requester) apart from
+//! indexer-initiated ones. `canceledBy` is still carried as the canceler
+//! address for observability.
 
 use std::{future::Future, sync::Arc, time::Duration};
 
