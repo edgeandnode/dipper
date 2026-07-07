@@ -121,6 +121,49 @@ where
         Err(_) => return Err(JobError::Deferred(Duration::from_secs(1))),
     };
 
+    // Get current active agreements for this indexing request. Fetched once here
+    // (before the IISA call) so the saturated short-circuit below and the diff
+    // further down share the same baseline without a second query.
+    let active_agreements = ctx
+        .registry
+        .get_active_indexing_agreements_by_indexing_request_id(indexing_request_id)
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
+
+    let current_ids: HashSet<IndexerId> = active_agreements
+        .iter()
+        .map(|agreement| agreement.indexer.id)
+        .collect();
+
+    // In-flight offer counts, fetched once and reused by both the saturated
+    // short-circuit (global figure only) and the per-indexer cap after IISA.
+    let (in_flight_per_indexer, global_in_flight) = ctx
+        .registry
+        .count_created_agreements_by_indexer()
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
+    let global_cap = ctx.agreement_conf.max_in_flight_offers_total();
+
+    // Global short-circuit: when the in-flight window is known-full a top-up or
+    // swap can't proceed anyway, so defer before paying for selection context and
+    // an IISA network call. A shrink still runs — it frees slots via cancellation.
+    if should_defer_saturated(
+        global_in_flight,
+        global_cap,
+        *num_candidates,
+        active_agreements.len(),
+    ) {
+        tracing::debug!(
+            event = "offer_pacing_saturated",
+            indexing_request_id = %indexing_request_id,
+            deployment_id = %deployment_id,
+            global_in_flight,
+            global_cap = ?global_cap,
+            "in-flight window full; deferring before IISA selection"
+        );
+        return Err(JobError::Deferred(pacing_defer_delay(indexing_request_id)));
+    }
+
     // Gather load balancing context for IISA, including chain/ceiling info
     let (mut context, unresponsive) = gather_selection_context(
         &ctx.registry,
@@ -218,18 +261,6 @@ where
     let target_pricing: HashMap<IndexerId, &SelectedIndexer> =
         target_selected.iter().map(|s| (s.id, s)).collect();
 
-    // Get current active agreements for this indexing request
-    let active_agreements = ctx
-        .registry
-        .get_active_indexing_agreements_by_indexing_request_id(indexing_request_id)
-        .await
-        .map_err(|err| JobError::Fatal(err.into()))?;
-
-    let current_ids: HashSet<IndexerId> = active_agreements
-        .iter()
-        .map(|agreement| agreement.indexer.id)
-        .collect();
-
     // Compute the diff
     let to_cancel: HashSet<&IndexerId> = current_ids.difference(&target_ids).collect();
     let to_add: HashSet<&IndexerId> = target_ids.difference(&current_ids).collect();
@@ -271,13 +302,8 @@ where
     let (capped_to_add, offer_pacing_withheld, reserved_cancel_count) = if to_add.is_empty() {
         (HashSet::new(), 0usize, 0usize)
     } else {
-        let (in_flight_per_indexer, global_in_flight) = ctx
-            .registry
-            .count_created_agreements_by_indexer()
-            .await
-            .map_err(|err| JobError::Fatal(err.into()))?;
+        // Reuse the in-flight counts and global cap fetched at the top of the pass.
         let per_indexer_cap = ctx.agreement_conf.max_in_flight_offers_per_indexer();
-        let global_cap = ctx.agreement_conf.max_in_flight_offers_total();
         let candidates: Vec<IndexerId> = to_add.iter().map(|id| **id).collect();
         let (allowed, withheld) = plan_capped_additions(
             candidates,
@@ -658,7 +684,7 @@ where
     // withheld adds: acceptance events don't re-trigger reassessment, and the
     // re-run re-diffs so already-created agreements drop out of to_add.
     if offer_pacing_withheld > 0 {
-        return Err(JobError::Deferred(Duration::from_secs(15)));
+        return Err(JobError::Deferred(pacing_defer_delay(indexing_request_id)));
     }
 
     Ok(())
@@ -756,9 +782,33 @@ where
     }
 }
 
+/// Whether the pass can defer before selection because the global in-flight
+/// window is full: a full window blocks adds and swaps wait for a slot anyway,
+/// but a shrink (num_candidates < active, 0 = user cancel) frees slots and runs.
+fn should_defer_saturated(
+    global_in_flight: u64,
+    global_cap: Option<u32>,
+    num_candidates: usize,
+    active_count: usize,
+) -> bool {
+    match global_cap {
+        Some(cap) => global_in_flight >= cap as u64 && num_candidates >= active_count,
+        None => false,
+    }
+}
+
+/// Deferral delay in 12..=18s, derived from the request id. Capped requests poll
+/// on a shared cadence; keying the delay off the id de-synchronises the herd so
+/// they don't all contend for the single reassess lock on the same tick.
+fn pacing_defer_delay(indexing_request_id: &IndexingRequestId) -> Duration {
+    let bytes = indexing_request_id.as_uuid().as_bytes();
+    let sum: u64 = bytes.iter().map(|&b| b as u64).sum();
+    Duration::from_secs(12 + (sum % 7))
+}
+
 /// Decide which candidate indexers may receive a fresh offer without exceeding
 /// the in-flight caps. Iterates in sorted order so a global-cap cutoff is
-/// deterministic; a zero cap disables that dimension.
+/// deterministic; None removes a cap, and a cap of 0 deliberately pauses offers.
 fn plan_capped_additions(
     mut candidates: Vec<IndexerId>,
     in_flight_per_indexer: &HashMap<IndexerId, u64>,
@@ -899,6 +949,65 @@ mod cap_tests {
             plan_capped_additions(vec![], &HashMap::new(), 0, Some(5), Some(100));
         assert!(allowed.is_empty());
         assert_eq!(withheld, 0);
+    }
+}
+
+#[cfg(test)]
+mod pacing_tests {
+    use std::time::Duration;
+
+    use dipper_core::ids::IndexingRequestId;
+
+    use super::{pacing_defer_delay, should_defer_saturated};
+
+    #[test]
+    fn saturated_full_window_blocks_topup() {
+        // Window full (10 of 10), a top-up (candidates >= active) has nowhere to go.
+        assert!(should_defer_saturated(10, Some(10), 3, 2));
+        assert!(should_defer_saturated(11, Some(10), 3, 3));
+    }
+
+    #[test]
+    fn saturated_full_window_allows_shrink() {
+        // Full window but a shrink (candidates < active) frees slots, so it must run.
+        assert!(!should_defer_saturated(10, Some(10), 1, 3));
+    }
+
+    #[test]
+    fn saturated_below_cap_never_defers() {
+        assert!(!should_defer_saturated(9, Some(10), 3, 2));
+    }
+
+    #[test]
+    fn saturated_cap_none_never_defers() {
+        assert!(!should_defer_saturated(1_000, None, 3, 2));
+    }
+
+    #[test]
+    fn saturated_cap_zero() {
+        // Cap 0 with a top-up (candidates >= active) defers; a shrink still runs.
+        assert!(should_defer_saturated(0, Some(0), 2, 2));
+        assert!(should_defer_saturated(0, Some(0), 0, 0));
+        assert!(!should_defer_saturated(0, Some(0), 0, 3));
+    }
+
+    #[test]
+    fn defer_delay_is_within_bounds() {
+        for n in 0..64u128 {
+            let id: IndexingRequestId =
+                uuid::Uuid::from_u128(0x1234_5678_9abc_def0 ^ (n.wrapping_mul(0x9e37_79b9))).into();
+            let delay = pacing_defer_delay(&id);
+            assert!(
+                delay >= Duration::from_secs(12) && delay <= Duration::from_secs(18),
+                "delay {delay:?} out of 12..=18s"
+            );
+        }
+    }
+
+    #[test]
+    fn defer_delay_is_deterministic() {
+        let id: IndexingRequestId = uuid::Uuid::from_u128(0xdead_beef_cafe_f00d).into();
+        assert_eq!(pacing_defer_delay(&id), pacing_defer_delay(&id));
     }
 }
 
