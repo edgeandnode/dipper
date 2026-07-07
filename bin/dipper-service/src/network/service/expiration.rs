@@ -527,6 +527,14 @@ mod tests {
         ) -> RegistryResult<std::collections::HashMap<DeploymentId, usize>> {
             unimplemented!()
         }
+        async fn count_created_agreements_by_indexer(
+            &self,
+        ) -> RegistryResult<(
+            std::collections::HashMap<thegraph_core::IndexerId, u64>,
+            u64,
+        )> {
+            unimplemented!()
+        }
         async fn mark_indexing_agreement_as_abandoned(
             &self,
             _id: &IndexingAgreementId,

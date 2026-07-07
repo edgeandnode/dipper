@@ -121,6 +121,49 @@ where
         Err(_) => return Err(JobError::Deferred(Duration::from_secs(1))),
     };
 
+    // Get current active agreements for this indexing request. Fetched once here
+    // (before the IISA call) so the saturated short-circuit below and the diff
+    // further down share the same baseline without a second query.
+    let active_agreements = ctx
+        .registry
+        .get_active_indexing_agreements_by_indexing_request_id(indexing_request_id)
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
+
+    let current_ids: HashSet<IndexerId> = active_agreements
+        .iter()
+        .map(|agreement| agreement.indexer.id)
+        .collect();
+
+    // In-flight offer counts, fetched once and reused by both the saturated
+    // short-circuit (global figure only) and the per-indexer cap after IISA.
+    let (in_flight_per_indexer, global_in_flight) = ctx
+        .registry
+        .count_created_agreements_by_indexer()
+        .await
+        .map_err(|err| JobError::Fatal(err.into()))?;
+    let global_cap = ctx.agreement_conf.max_in_flight_offers_total();
+
+    // When the in-flight window is known-full a top-up can't proceed, so defer
+    // before paying for selection context and an IISA call. Anything else runs:
+    // shrinks free slots and satisfied requests finish instead of polling.
+    if should_defer_saturated(
+        global_in_flight,
+        global_cap,
+        *num_candidates,
+        active_agreements.len(),
+    ) {
+        tracing::debug!(
+            event = "offer_pacing_saturated",
+            indexing_request_id = %indexing_request_id,
+            deployment_id = %deployment_id,
+            global_in_flight,
+            global_cap = ?global_cap,
+            "in-flight window full; deferring before IISA selection"
+        );
+        return Err(JobError::Deferred(pacing_defer_delay(indexing_request_id)));
+    }
+
     // Gather load balancing context for IISA, including chain/ceiling info
     let (mut context, unresponsive) = gather_selection_context(
         &ctx.registry,
@@ -218,18 +261,6 @@ where
     let target_pricing: HashMap<IndexerId, &SelectedIndexer> =
         target_selected.iter().map(|s| (s.id, s)).collect();
 
-    // Get current active agreements for this indexing request
-    let active_agreements = ctx
-        .registry
-        .get_active_indexing_agreements_by_indexing_request_id(indexing_request_id)
-        .await
-        .map_err(|err| JobError::Fatal(err.into()))?;
-
-    let current_ids: HashSet<IndexerId> = active_agreements
-        .iter()
-        .map(|agreement| agreement.indexer.id)
-        .collect();
-
     // Compute the diff
     let to_cancel: HashSet<&IndexerId> = current_ids.difference(&target_ids).collect();
     let to_add: HashSet<&IndexerId> = target_ids.difference(&current_ids).collect();
@@ -259,6 +290,49 @@ where
         return Ok(());
     }
 
+    // Pre-compute old agreements to cancel so we can pair replacements
+    // atomically during registration.
+    let mut old_to_cancel: Vec<_> = active_agreements
+        .iter()
+        .filter(|a| to_cancel.contains(&a.indexer.id))
+        .collect();
+
+    // Offer pacing: only create as many agreements as the network can accept
+    // before the deadline, so a burst does not queue offers that expire unaccepted.
+    let (capped_to_add, offer_pacing_withheld, reserved_cancel_count) = if to_add.is_empty() {
+        (HashSet::new(), 0usize, 0usize)
+    } else {
+        // Reuse the in-flight counts and global cap fetched at the top of the pass.
+        let per_indexer_cap = ctx.agreement_conf.max_in_flight_offers_per_indexer();
+        let candidates: Vec<IndexerId> = to_add.iter().map(|id| **id).collect();
+        let (allowed, withheld) = plan_capped_additions(
+            candidates,
+            &in_flight_per_indexer,
+            global_in_flight,
+            per_indexer_cap,
+            global_cap,
+        );
+        let reserved = reserved_cancel_count(old_to_cancel.len(), to_add.len(), allowed.len());
+        if withheld > 0 {
+            tracing::info!(
+                event = "offer_pacing_capped",
+                indexing_request_id = %indexing_request_id,
+                deployment_id = %deployment_id,
+                withheld_count = withheld,
+                reserved_cancel_count = reserved,
+                global_in_flight,
+                global_cap = ?global_cap,
+                per_indexer_cap = ?per_indexer_cap,
+                "withholding offers to stay within in-flight caps"
+            );
+        }
+        (
+            allowed.into_iter().collect::<HashSet<IndexerId>>(),
+            withheld,
+            reserved,
+        )
+    };
+
     let fallback_prices = ctx.chain_price.get(deployment_chain_id);
 
     // --- Add new agreements FIRST ---
@@ -281,18 +355,15 @@ where
     )
     .await?;
 
-    // Pre-compute old agreements to cancel so we can pair replacements
-    // atomically during registration.
-    let old_to_cancel: Vec<_> = active_agreements
-        .iter()
-        .filter(|a| to_cancel.contains(&a.indexer.id))
-        .collect();
+    // Hold back the olds whose replacement pairing was lost to withheld adds;
+    // olds beyond the pairing count are true surplus and still cancel now.
+    old_to_cancel.truncate(old_to_cancel.len() - reserved_cancel_count);
     let mut old_iter = old_to_cancel.into_iter();
 
     let mut successful_new_ids: Vec<dipper_core::ids::IndexingAgreementId> = vec![];
     let mut add_failures = 0u32;
     let mut _pending_recorded = 0u32;
-    for indexer_id in &to_add {
+    for indexer_id in &capped_to_add {
         let candidate = match ctx.network.get_indexer_by_id(indexer_id) {
             Some(indexer) => indexer,
             None => {
@@ -609,6 +680,13 @@ where
         ctx.chain_listener_notify.notify_one();
     }
 
+    // Deferred re-queues without counting an attempt, so we poll to top up the
+    // withheld adds: acceptance events don't re-trigger reassessment, and the
+    // re-run re-diffs so already-created agreements drop out of to_add.
+    if offer_pacing_withheld > 0 {
+        return Err(JobError::Deferred(pacing_defer_delay(indexing_request_id)));
+    }
+
     Ok(())
 }
 
@@ -701,6 +779,260 @@ where
                 Duration::from_secs(5),
             ))
         }
+    }
+}
+
+/// Olds reserved from cancellation: one per add-cancel pairing lost to a
+/// withheld addition. Olds beyond the pairing count are true surplus (IISA
+/// dropped them outright) and cancel immediately regardless of pacing.
+fn reserved_cancel_count(cancels: usize, total_adds: usize, admitted_adds: usize) -> usize {
+    cancels.min(total_adds) - cancels.min(admitted_adds)
+}
+
+/// Whether the pass can defer before selection because the global in-flight
+/// window is full: a full window blocks adds, so only a request still wanting
+/// growth (num_candidates > active) waits. Shrinks (0 = user cancel) and
+/// satisfied requests proceed; an IISA-ordered swap for a growing request waits.
+fn should_defer_saturated(
+    global_in_flight: u64,
+    global_cap: Option<u32>,
+    num_candidates: usize,
+    active_count: usize,
+) -> bool {
+    match global_cap {
+        Some(cap) => global_in_flight >= cap as u64 && num_candidates > active_count,
+        None => false,
+    }
+}
+
+/// Deferral delay in 12..=18s, derived from the request id. Capped requests poll
+/// on a shared cadence; keying the delay off the id de-synchronises the herd so
+/// they don't all contend for the single reassess lock on the same tick.
+fn pacing_defer_delay(indexing_request_id: &IndexingRequestId) -> Duration {
+    let bytes = indexing_request_id.as_uuid().as_bytes();
+    let sum: u64 = bytes.iter().map(|&b| b as u64).sum();
+    Duration::from_secs(12 + (sum % 7))
+}
+
+/// Decide which candidate indexers may receive a fresh offer without exceeding
+/// the in-flight caps. Iterates in sorted order so a global-cap cutoff is
+/// deterministic; None removes a cap, and a cap of 0 deliberately pauses offers.
+fn plan_capped_additions(
+    mut candidates: Vec<IndexerId>,
+    in_flight_per_indexer: &HashMap<IndexerId, u64>,
+    global_in_flight: u64,
+    per_indexer_cap: Option<u32>,
+    global_cap: Option<u32>,
+) -> (Vec<IndexerId>, usize) {
+    candidates.sort();
+    let total = candidates.len();
+    let mut admitted = Vec::with_capacity(total);
+    let mut admitted_per_indexer: HashMap<IndexerId, u64> = HashMap::new();
+    let mut admitted_total: u64 = 0;
+    for id in candidates {
+        if let Some(cap) = global_cap
+            && global_in_flight + admitted_total >= cap as u64
+        {
+            continue;
+        }
+        if let Some(cap) = per_indexer_cap {
+            let existing = in_flight_per_indexer.get(&id).copied().unwrap_or(0);
+            let already = admitted_per_indexer.get(&id).copied().unwrap_or(0);
+            if existing + already >= cap as u64 {
+                continue;
+            }
+        }
+        *admitted_per_indexer.entry(id).or_insert(0) += 1;
+        admitted_total += 1;
+        admitted.push(id);
+    }
+    let withheld = total - admitted.len();
+    (admitted, withheld)
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use std::collections::HashMap;
+
+    use thegraph_core::{IndexerId, alloy::primitives::Address};
+
+    use super::plan_capped_additions;
+
+    fn idx(byte: u8) -> IndexerId {
+        IndexerId::new(Address::repeat_byte(byte))
+    }
+
+    #[test]
+    fn absent_caps_admit_everyone() {
+        let candidates = vec![idx(3), idx(1), idx(2)];
+        let (allowed, withheld) = plan_capped_additions(candidates, &HashMap::new(), 0, None, None);
+        assert_eq!(
+            allowed,
+            vec![idx(1), idx(2), idx(3)],
+            "sorted, all admitted"
+        );
+        assert_eq!(withheld, 0);
+    }
+
+    #[test]
+    fn per_indexer_cap_bites() {
+        // idx(1) already holds 5 in-flight; a cap of 5 admits nothing for it,
+        // while idx(2) with 0 in-flight is admitted.
+        let mut in_flight = HashMap::new();
+        in_flight.insert(idx(1), 5u64);
+        let (allowed, withheld) =
+            plan_capped_additions(vec![idx(1), idx(2)], &in_flight, 5, Some(5), None);
+        assert_eq!(allowed, vec![idx(2)]);
+        assert_eq!(withheld, 1);
+    }
+
+    #[test]
+    fn global_cap_bites_mid_list() {
+        // Global in-flight is 8, cap 10: only two more may be admitted, and
+        // sorting makes it deterministically the two lowest ids.
+        let (allowed, withheld) = plan_capped_additions(
+            vec![idx(4), idx(1), idx(3), idx(2)],
+            &HashMap::new(),
+            8,
+            None,
+            Some(10),
+        );
+        assert_eq!(allowed, vec![idx(1), idx(2)]);
+        assert_eq!(withheld, 2);
+    }
+
+    #[test]
+    fn both_caps_withhold_different_candidates() {
+        let mut in_flight = HashMap::new();
+        in_flight.insert(idx(1), 5u64);
+        // idx(1) is at the per-indexer cap; idx(2) takes the single remaining
+        // global slot (9 of 10); idx(3) is then withheld by the global cap.
+        let (allowed, withheld) = plan_capped_additions(
+            vec![idx(3), idx(1), idx(2)],
+            &in_flight,
+            9,
+            Some(5),
+            Some(10),
+        );
+        assert_eq!(allowed, vec![idx(2)]);
+        assert_eq!(withheld, 2, "one per-indexer withhold plus one global");
+    }
+
+    #[test]
+    fn exact_boundary_per_indexer() {
+        let mut at_cap = HashMap::new();
+        at_cap.insert(idx(1), 3u64);
+        let (allowed, withheld) = plan_capped_additions(vec![idx(1)], &at_cap, 3, Some(3), None);
+        assert_eq!(
+            allowed,
+            Vec::<IndexerId>::new(),
+            "in_flight == cap admits none"
+        );
+        assert_eq!(withheld, 1);
+
+        let mut below_cap = HashMap::new();
+        below_cap.insert(idx(1), 2u64);
+        let (allowed, withheld) = plan_capped_additions(vec![idx(1)], &below_cap, 2, Some(3), None);
+        assert_eq!(allowed, vec![idx(1)], "cap-1 admits one");
+        assert_eq!(withheld, 0);
+    }
+
+    #[test]
+    fn zero_cap_pauses_all_offers() {
+        // 0 is a literal cap, not a disable: nothing may be admitted.
+        let (allowed, withheld) =
+            plan_capped_additions(vec![idx(1), idx(2)], &HashMap::new(), 0, Some(0), None);
+        assert!(allowed.is_empty(), "per-indexer 0 pauses everyone");
+        assert_eq!(withheld, 2);
+
+        let (allowed, withheld) =
+            plan_capped_additions(vec![idx(1)], &HashMap::new(), 0, None, Some(0));
+        assert!(allowed.is_empty(), "global 0 pauses everything");
+        assert_eq!(withheld, 1);
+    }
+
+    #[test]
+    fn reserve_counts_only_lost_pairings() {
+        // Growth with unrelated cancels: admitted adds still cover both cancels.
+        assert_eq!(super::reserved_cancel_count(2, 4, 2), 0);
+        // 1 pairing lost to a withheld add: reserve exactly 1 old.
+        assert_eq!(super::reserved_cancel_count(2, 4, 1), 1);
+        // Net shrink with a withheld swap: surplus olds still cancel.
+        assert_eq!(super::reserved_cancel_count(5, 2, 1), 1);
+        assert_eq!(super::reserved_cancel_count(5, 2, 2), 0);
+        // Everything withheld: every pairing reserved.
+        assert_eq!(super::reserved_cancel_count(3, 3, 0), 3);
+        // No cancels: nothing to reserve.
+        assert_eq!(super::reserved_cancel_count(0, 4, 0), 0);
+    }
+
+    #[test]
+    fn empty_candidates_admit_nothing() {
+        let (allowed, withheld) =
+            plan_capped_additions(vec![], &HashMap::new(), 0, Some(5), Some(100));
+        assert!(allowed.is_empty());
+        assert_eq!(withheld, 0);
+    }
+}
+
+#[cfg(test)]
+mod pacing_tests {
+    use std::time::Duration;
+
+    use dipper_core::ids::IndexingRequestId;
+
+    use super::{pacing_defer_delay, should_defer_saturated};
+
+    #[test]
+    fn saturated_full_window_blocks_topup() {
+        // Window full (10 of 10), a top-up (candidates >= active) has nowhere to go.
+        assert!(should_defer_saturated(10, Some(10), 3, 2));
+        // A satisfied request (num == active) completes instead of polling.
+        assert!(!should_defer_saturated(11, Some(10), 3, 3));
+    }
+
+    #[test]
+    fn saturated_full_window_allows_shrink() {
+        // Full window but a shrink (candidates < active) frees slots, so it must run.
+        assert!(!should_defer_saturated(10, Some(10), 1, 3));
+    }
+
+    #[test]
+    fn saturated_below_cap_never_defers() {
+        assert!(!should_defer_saturated(9, Some(10), 3, 2));
+    }
+
+    #[test]
+    fn saturated_cap_none_never_defers() {
+        assert!(!should_defer_saturated(1_000, None, 3, 2));
+    }
+
+    #[test]
+    fn saturated_cap_zero() {
+        // Cap 0 with a top-up (candidates >= active) defers; a shrink still runs.
+        assert!(should_defer_saturated(0, Some(0), 3, 2));
+        assert!(!should_defer_saturated(0, Some(0), 2, 2));
+        assert!(!should_defer_saturated(0, Some(0), 0, 0));
+        assert!(!should_defer_saturated(0, Some(0), 0, 3));
+    }
+
+    #[test]
+    fn defer_delay_is_within_bounds() {
+        for n in 0..64u128 {
+            let id: IndexingRequestId =
+                uuid::Uuid::from_u128(0x1234_5678_9abc_def0 ^ (n.wrapping_mul(0x9e37_79b9))).into();
+            let delay = pacing_defer_delay(&id);
+            assert!(
+                delay >= Duration::from_secs(12) && delay <= Duration::from_secs(18),
+                "delay {delay:?} out of 12..=18s"
+            );
+        }
+    }
+
+    #[test]
+    fn defer_delay_is_deterministic() {
+        let id: IndexingRequestId = uuid::Uuid::from_u128(0xdead_beef_cafe_f00d).into();
+        assert_eq!(pacing_defer_delay(&id), pacing_defer_delay(&id));
     }
 }
 

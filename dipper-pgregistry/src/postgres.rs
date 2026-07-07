@@ -1391,6 +1391,39 @@ impl PgRegistry {
             .collect())
     }
 
+    /// Count `Created` (in-flight, not yet accepted) agreements per indexer,
+    /// returning the per-indexer map and global total in one round-trip. Offer
+    /// pacing reads both to gauge spare acceptance capacity before creating more.
+    pub async fn count_created_agreements_by_indexer(
+        &self,
+    ) -> Result<(HashMap<IndexerId, u64>, u64), Error> {
+        // GROUPING SETS emits one row per indexer plus a single ()-group row
+        // with a NULL indexer_id carrying the global total.
+        let rows: Vec<(Option<PgIndexerId>, i64)> = sqlx::query_as(
+            r#"
+            SELECT indexer_id, COUNT(*) as count
+            FROM dipper_reg_indexing_agreements
+            WHERE status = $1
+            GROUP BY GROUPING SETS ((indexer_id), ())
+            "#,
+        )
+        .bind(IndexingAgreementStatus::Created)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut per_indexer = HashMap::new();
+        let mut global = 0u64;
+        for (indexer, count) in rows {
+            match indexer {
+                Some(id) => {
+                    per_indexer.insert(id.0, count as u64);
+                }
+                None => global = count as u64,
+            }
+        }
+        Ok((per_indexer, global))
+    }
+
     /// Whether any agreement is in `Created` or `AcceptedOnChain` status.
     ///
     /// Cheap `EXISTS` probe used by the chain listener's adaptive-interval

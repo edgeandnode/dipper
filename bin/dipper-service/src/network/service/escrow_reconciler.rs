@@ -431,6 +431,14 @@ mod tests {
         {
             unimplemented!()
         }
+        async fn count_created_agreements_by_indexer(
+            &self,
+        ) -> crate::registry::Result<(
+            std::collections::HashMap<thegraph_core::IndexerId, u64>,
+            u64,
+        )> {
+            unimplemented!()
+        }
         async fn mark_indexing_agreement_as_abandoned(
             &self,
             _id: &dipper_core::ids::IndexingAgreementId,
@@ -473,6 +481,8 @@ mod tests {
             mass_unresponsive_reset_fraction: 0.25,
             dips_accepting_snapshot_max_age_hours: 48,
             dips_accepting_cache_ttl_seconds: 300,
+            max_in_flight_offers_per_indexer: None,
+            max_in_flight_offers_total: None,
         }
     }
 

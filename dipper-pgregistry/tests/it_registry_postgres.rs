@@ -2936,3 +2936,135 @@ async fn apply_reconciliation_batch_paired_rolls_back_on_unmatched_cancel() {
         .status;
     assert_eq!(final_status, IndexingAgreementStatus::CanceledByIndexer);
 }
+
+#[tokio::test]
+async fn count_created_agreements_by_indexer_counts_only_created() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+
+    let requested_by = address!("8f8c426f956876325b1e037c6eae9b189952994c");
+    let deployments = [
+        deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv"),
+        deployment_id!("QmXbNL4EMkQ6DAPUcBjYSDXZJdpu1Kb1XkKvNvS8JdT7Hs"),
+        deployment_id!("QmYbNL4EMkQ6DAPUcBjYSDXZJdpu1Kb1XkKvNvS8JdT7Hs"),
+        deployment_id!("QmZbNL4EMkQ6DAPUcBjYSDXZJdpu1Kb1XkKvNvS8JdT7Hs"),
+    ];
+    let indexer_a = indexer_id!("3c584ee1d89f43c6ccee17e886a001de2bb4d8a9");
+    let indexer_b = indexer_id!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let indexer_c = indexer_id!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    let indexer_url: Url = "http://localhost:8020".parse().expect("Invalid URL");
+
+    // Register one agreement per (indexer, deployment) and return its id, so
+    // each is a distinct Created row respecting the per-pair unique index.
+    async fn seed(
+        registry: &PgRegistry,
+        requested_by: thegraph_core::alloy::primitives::Address,
+        deployment_id: DeploymentId,
+        indexer_id: IndexerId,
+        indexer_url: Url,
+    ) -> IndexingAgreementId {
+        let request_id = match registry
+            .set_indexing_target_candidates(requested_by, deployment_id, 42161, 3)
+            .await
+            .expect("set target candidates")
+        {
+            dipper_pgregistry::IndexingRequestSetTargetOutcome::Inserted { id }
+            | dipper_pgregistry::IndexingRequestSetTargetOutcome::Updated { id, .. }
+            | dipper_pgregistry::IndexingRequestSetTargetOutcome::NoOp { id } => id,
+            other => panic!("unexpected set-target outcome: {other:?}"),
+        };
+        let mut terms = Faker.fake::<IndexingAgreementTerms>();
+        terms.metadata.subgraph_deployment_id = deployment_id;
+        registry
+            .register_new_indexing_agreement(NewAgreementParams {
+                agreement_id: Faker.fake::<IndexingAgreementId>(),
+                nonce_uuid: uuid::Uuid::now_v7(),
+                request_id,
+                deployment_id,
+                indexer_id,
+                indexer_url,
+                terms,
+                terms_version_hash: None,
+            })
+            .await
+            .expect("register agreement")
+    }
+
+    // Indexer A: 2 Created (deployments 0,1). Indexer B: 1 Created + 1 that
+    // we flip to AcceptedOnChain (deployments 0,1). Indexer C: 1 that we flip
+    // to Expired (deployment 0). Only Created rows should be counted.
+    let _a0 = seed(
+        &registry,
+        requested_by,
+        deployments[0],
+        indexer_a,
+        indexer_url.clone(),
+    )
+    .await;
+    let _a1 = seed(
+        &registry,
+        requested_by,
+        deployments[1],
+        indexer_a,
+        indexer_url.clone(),
+    )
+    .await;
+    let _b0 = seed(
+        &registry,
+        requested_by,
+        deployments[0],
+        indexer_b,
+        indexer_url.clone(),
+    )
+    .await;
+    let b1 = seed(
+        &registry,
+        requested_by,
+        deployments[1],
+        indexer_b,
+        indexer_url.clone(),
+    )
+    .await;
+    let c0 = seed(
+        &registry,
+        requested_by,
+        deployments[0],
+        indexer_c,
+        indexer_url.clone(),
+    )
+    .await;
+
+    registry
+        .apply_reconciliation(&b1, true, None)
+        .await
+        .expect("flip b1 to AcceptedOnChain");
+    registry
+        .mark_indexing_agreement_as_expired(&c0)
+        .await
+        .expect("flip c0 to Expired");
+
+    //* When
+    let (per_indexer, global) = registry
+        .count_created_agreements_by_indexer()
+        .await
+        .expect("count created agreements");
+
+    //* Then
+    assert_eq!(
+        per_indexer.get(&indexer_a).copied(),
+        Some(2),
+        "A has 2 Created"
+    );
+    assert_eq!(
+        per_indexer.get(&indexer_b).copied(),
+        Some(1),
+        "B has 1 Created"
+    );
+    assert_eq!(
+        per_indexer.get(&indexer_c).copied(),
+        None,
+        "C's only row is Expired, so it should be absent"
+    );
+    assert_eq!(global, 3, "global counts only the 3 Created rows");
+}

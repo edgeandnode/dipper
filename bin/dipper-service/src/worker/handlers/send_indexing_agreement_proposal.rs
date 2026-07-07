@@ -574,6 +574,15 @@ mod tests {
             Ok(std::collections::HashMap::new())
         }
 
+        async fn count_created_agreements_by_indexer(
+            &self,
+        ) -> crate::registry::Result<(
+            std::collections::HashMap<thegraph_core::IndexerId, u64>,
+            u64,
+        )> {
+            Ok((std::collections::HashMap::new(), 0))
+        }
+
         async fn mark_indexing_agreement_as_abandoned(
             &self,
             _id: &IndexingAgreementId,
