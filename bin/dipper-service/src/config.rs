@@ -1027,9 +1027,11 @@ pub struct IndexingAgreementConfig {
     pub dips_accepting_snapshot_max_age_hours: i64,
     /// TTL (seconds) for caching the DIPs-accepting set.
     pub dips_accepting_cache_ttl_seconds: u64,
-    /// Per-indexer in-flight (created but unaccepted) offer cap; 0 disables.
+    /// Per-indexer in-flight (created but unaccepted) offer cap; None removes
+    /// the cap and 0 pauses new offers.
     pub max_in_flight_offers_per_indexer: Option<u32>,
-    /// Global in-flight (created but unaccepted) offer cap; 0 disables.
+    /// Global in-flight (created but unaccepted) offer cap; None removes the
+    /// cap and 0 pauses all new offers.
     pub max_in_flight_offers_total: Option<u32>,
 }
 

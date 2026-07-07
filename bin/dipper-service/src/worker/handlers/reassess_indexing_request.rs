@@ -144,9 +144,9 @@ where
         .map_err(|err| JobError::Fatal(err.into()))?;
     let global_cap = ctx.agreement_conf.max_in_flight_offers_total();
 
-    // Global short-circuit: when the in-flight window is known-full a top-up or
-    // swap can't proceed anyway, so defer before paying for selection context and
-    // an IISA network call. A shrink still runs — it frees slots via cancellation.
+    // When the in-flight window is known-full a top-up can't proceed, so defer
+    // before paying for selection context and an IISA call. Anything else runs:
+    // shrinks free slots and satisfied requests finish instead of polling.
     if should_defer_saturated(
         global_in_flight,
         global_cap,
@@ -312,7 +312,7 @@ where
             per_indexer_cap,
             global_cap,
         );
-        let reserved = withheld.min(old_to_cancel.len());
+        let reserved = reserved_cancel_count(old_to_cancel.len(), to_add.len(), allowed.len());
         if withheld > 0 {
             tracing::info!(
                 event = "offer_pacing_capped",
@@ -355,8 +355,8 @@ where
     )
     .await?;
 
-    // Reserve one old per withheld add so a capped replacement's predecessor
-    // stays active; the next pass re-diffs and pairs it with its replacement.
+    // Hold back the olds whose replacement pairing was lost to withheld adds;
+    // olds beyond the pairing count are true surplus and still cancel now.
     old_to_cancel.truncate(old_to_cancel.len() - reserved_cancel_count);
     let mut old_iter = old_to_cancel.into_iter();
 
@@ -782,9 +782,17 @@ where
     }
 }
 
+/// Olds reserved from cancellation: one per add-cancel pairing lost to a
+/// withheld addition. Olds beyond the pairing count are true surplus (IISA
+/// dropped them outright) and cancel immediately regardless of pacing.
+fn reserved_cancel_count(cancels: usize, total_adds: usize, admitted_adds: usize) -> usize {
+    cancels.min(total_adds) - cancels.min(admitted_adds)
+}
+
 /// Whether the pass can defer before selection because the global in-flight
-/// window is full: a full window blocks adds and swaps wait for a slot anyway,
-/// but a shrink (num_candidates < active, 0 = user cancel) frees slots and runs.
+/// window is full: a full window blocks adds, so only a request still wanting
+/// growth (num_candidates > active) waits. Shrinks (0 = user cancel) and
+/// satisfied requests proceed; an IISA-ordered swap for a growing request waits.
 fn should_defer_saturated(
     global_in_flight: u64,
     global_cap: Option<u32>,
@@ -792,7 +800,7 @@ fn should_defer_saturated(
     active_count: usize,
 ) -> bool {
     match global_cap {
-        Some(cap) => global_in_flight >= cap as u64 && num_candidates >= active_count,
+        Some(cap) => global_in_flight >= cap as u64 && num_candidates > active_count,
         None => false,
     }
 }
@@ -944,6 +952,21 @@ mod cap_tests {
     }
 
     #[test]
+    fn reserve_counts_only_lost_pairings() {
+        // Growth with unrelated cancels: admitted adds still cover both cancels.
+        assert_eq!(super::reserved_cancel_count(2, 4, 2), 0);
+        // 1 pairing lost to a withheld add: reserve exactly 1 old.
+        assert_eq!(super::reserved_cancel_count(2, 4, 1), 1);
+        // Net shrink with a withheld swap: surplus olds still cancel.
+        assert_eq!(super::reserved_cancel_count(5, 2, 1), 1);
+        assert_eq!(super::reserved_cancel_count(5, 2, 2), 0);
+        // Everything withheld: every pairing reserved.
+        assert_eq!(super::reserved_cancel_count(3, 3, 0), 3);
+        // No cancels: nothing to reserve.
+        assert_eq!(super::reserved_cancel_count(0, 4, 0), 0);
+    }
+
+    #[test]
     fn empty_candidates_admit_nothing() {
         let (allowed, withheld) =
             plan_capped_additions(vec![], &HashMap::new(), 0, Some(5), Some(100));
@@ -964,7 +987,8 @@ mod pacing_tests {
     fn saturated_full_window_blocks_topup() {
         // Window full (10 of 10), a top-up (candidates >= active) has nowhere to go.
         assert!(should_defer_saturated(10, Some(10), 3, 2));
-        assert!(should_defer_saturated(11, Some(10), 3, 3));
+        // A satisfied request (num == active) completes instead of polling.
+        assert!(!should_defer_saturated(11, Some(10), 3, 3));
     }
 
     #[test]
@@ -986,8 +1010,9 @@ mod pacing_tests {
     #[test]
     fn saturated_cap_zero() {
         // Cap 0 with a top-up (candidates >= active) defers; a shrink still runs.
-        assert!(should_defer_saturated(0, Some(0), 2, 2));
-        assert!(should_defer_saturated(0, Some(0), 0, 0));
+        assert!(should_defer_saturated(0, Some(0), 3, 2));
+        assert!(!should_defer_saturated(0, Some(0), 2, 2));
+        assert!(!should_defer_saturated(0, Some(0), 0, 0));
         assert!(!should_defer_saturated(0, Some(0), 0, 3));
     }
 
