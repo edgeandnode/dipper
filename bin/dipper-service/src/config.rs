@@ -746,6 +746,18 @@ pub struct DipsAgreementConfig {
     /// reassessments doesn't re-query the same daily snapshot. Default 300.
     #[serde(default = "default_dips_accepting_cache_ttl_seconds")]
     pub dips_accepting_cache_ttl_seconds: u64,
+
+    /// Cap on agreements a single indexer may hold in-flight (created but not
+    /// yet accepted on-chain) before dipper withholds new offers to it. Default
+    /// 5; explicit null removes the cap; 0 pauses new offers to every indexer.
+    #[serde(default = "default_max_in_flight_offers_per_indexer")]
+    pub max_in_flight_offers_per_indexer: Option<u32>,
+
+    /// Cap on agreements in-flight (created but not yet accepted on-chain)
+    /// across all indexers before dipper withholds new offers. Default 100;
+    /// explicit null removes the cap; 0 pauses all new offers.
+    #[serde(default = "default_max_in_flight_offers_total")]
+    pub max_in_flight_offers_total: Option<u32>,
 }
 
 impl DipsAgreementConfig {
@@ -762,6 +774,19 @@ impl DipsAgreementConfig {
             return Err(format!(
                 "mass_unresponsive_reset_fraction ({}) must be below mass_unresponsive_trip_fraction ({})",
                 self.mass_unresponsive_reset_fraction, self.mass_unresponsive_trip_fraction
+            ));
+        }
+        // A per-indexer cap above the global cap can never bind; reject the
+        // contradiction. A total of 0 is a deliberate pause (nothing binds
+        // beyond it), so the ordering check only applies to a positive total.
+        if let (Some(per_indexer), Some(total)) = (
+            self.max_in_flight_offers_per_indexer,
+            self.max_in_flight_offers_total,
+        ) && total > 0
+            && per_indexer > total
+        {
+            return Err(format!(
+                "max_in_flight_offers_per_indexer ({per_indexer}) must not exceed max_in_flight_offers_total ({total})"
             ));
         }
         Ok(())
@@ -868,6 +893,14 @@ fn default_dips_accepting_snapshot_max_age_hours() -> i64 {
 
 fn default_dips_accepting_cache_ttl_seconds() -> u64 {
     300
+}
+
+fn default_max_in_flight_offers_per_indexer() -> Option<u32> {
+    Some(5)
+}
+
+fn default_max_in_flight_offers_total() -> Option<u32> {
+    Some(100)
 }
 
 /// Per-chain pricing for indexing agreements.
@@ -994,6 +1027,10 @@ pub struct IndexingAgreementConfig {
     pub dips_accepting_snapshot_max_age_hours: i64,
     /// TTL (seconds) for caching the DIPs-accepting set.
     pub dips_accepting_cache_ttl_seconds: u64,
+    /// Per-indexer in-flight (created but unaccepted) offer cap; 0 disables.
+    pub max_in_flight_offers_per_indexer: Option<u32>,
+    /// Global in-flight (created but unaccepted) offer cap; 0 disables.
+    pub max_in_flight_offers_total: Option<u32>,
 }
 
 /// Per-chain pricing for indexing agreements (runtime).
@@ -1081,6 +1118,14 @@ impl IndexingAgreementConfig {
     pub fn dips_accepting_cache_ttl_seconds(&self) -> u64 {
         self.dips_accepting_cache_ttl_seconds
     }
+
+    pub fn max_in_flight_offers_per_indexer(&self) -> Option<u32> {
+        self.max_in_flight_offers_per_indexer
+    }
+
+    pub fn max_in_flight_offers_total(&self) -> Option<u32> {
+        self.max_in_flight_offers_total
+    }
 }
 
 impl From<DipsAgreementConfig>
@@ -1111,6 +1156,8 @@ impl From<DipsAgreementConfig>
             mass_unresponsive_reset_fraction: value.mass_unresponsive_reset_fraction,
             dips_accepting_snapshot_max_age_hours: value.dips_accepting_snapshot_max_age_hours,
             dips_accepting_cache_ttl_seconds: value.dips_accepting_cache_ttl_seconds,
+            max_in_flight_offers_per_indexer: value.max_in_flight_offers_per_indexer,
+            max_in_flight_offers_total: value.max_in_flight_offers_total,
         };
         let prices = value
             .pricing_table
@@ -1145,6 +1192,8 @@ mod tests {
             "max_seconds_per_collection": 3600,
             "duration_seconds": 86400,
             "deadline_seconds": 300,
+            "max_in_flight_offers_per_indexer": 7,
+            "max_in_flight_offers_total": 42,
             "pricing_table": {
                 "1": {
                     "tokens_per_second": "10",
@@ -1197,6 +1246,16 @@ mod tests {
             "duration_seconds mismatch"
         );
         assert_eq!(config.deadline_seconds, 300, "deadline_seconds mismatch");
+        assert_eq!(
+            config.max_in_flight_offers_per_indexer,
+            Some(7),
+            "max_in_flight_offers_per_indexer mismatch"
+        );
+        assert_eq!(
+            config.max_in_flight_offers_total,
+            Some(42),
+            "max_in_flight_offers_total mismatch"
+        );
 
         // Verify pricing table
         assert_eq!(
@@ -1299,6 +1358,16 @@ mod tests {
         assert_eq!(config.mass_unresponsive_reset_fraction, 0.25);
         assert_eq!(config.dips_accepting_snapshot_max_age_hours, 48);
         assert_eq!(config.dips_accepting_cache_ttl_seconds, 300);
+        assert_eq!(
+            config.max_in_flight_offers_per_indexer,
+            Some(5),
+            "max_in_flight_offers_per_indexer should default to 5"
+        );
+        assert_eq!(
+            config.max_in_flight_offers_total,
+            Some(100),
+            "max_in_flight_offers_total should default to 100"
+        );
 
         // Test the From conversion - None should map to u64::MAX
         let (agreement_config, _) = <(
@@ -1309,6 +1378,63 @@ mod tests {
             agreement_config.duration_seconds(),
             u64::MAX,
             "duration_seconds None should convert to u64::MAX"
+        );
+        assert_eq!(
+            agreement_config.max_in_flight_offers_per_indexer(),
+            Some(5),
+            "per-indexer cap should survive the From conversion"
+        );
+        assert_eq!(
+            agreement_config.max_in_flight_offers_total(),
+            Some(100),
+            "total cap should survive the From conversion"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_per_indexer_cap_above_total() {
+        fn conf(per: &str, total: &str) -> DipsAgreementConfig {
+            let json = format!(
+                r#"{{
+                    "data_service": "0x1111111111111111111111111111111111111111",
+                    "recurring_collector": "0x2222222222222222222222222222222222222222",
+                    "recurring_agreement_manager": "0x3333333333333333333333333333333333333333",
+                    "min_seconds_per_collection": 60,
+                    "max_seconds_per_collection": 3600,
+                    "max_in_flight_offers_per_indexer": {per},
+                    "max_in_flight_offers_total": {total},
+                    "pricing_table": {{}}
+                }}"#
+            );
+            serde_json::from_str(&json).expect("deserialization")
+        }
+
+        assert!(
+            conf("10", "5").validate().is_err(),
+            "per-indexer cap above total cap must be rejected"
+        );
+        assert!(
+            conf("5", "100").validate().is_ok(),
+            "per-indexer cap below total cap is valid"
+        );
+        // 0 is a deliberate pause, not a disable: a paused total makes the
+        // ordering irrelevant, and a paused per-indexer cap is always valid.
+        assert!(
+            conf("10", "0").validate().is_ok(),
+            "a paused (0) total cap must not trigger the ordering check"
+        );
+        assert!(
+            conf("0", "5").validate().is_ok(),
+            "a paused (0) per-indexer cap is valid"
+        );
+        // null removes a cap entirely; the ordering check needs both present.
+        assert!(
+            conf("null", "5").validate().is_ok(),
+            "an uncapped per-indexer side skips the ordering check"
+        );
+        assert!(
+            conf("10", "null").validate().is_ok(),
+            "an uncapped total side skips the ordering check"
         );
     }
 

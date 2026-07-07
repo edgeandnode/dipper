@@ -259,6 +259,54 @@ where
         return Ok(());
     }
 
+    // Pre-compute old agreements to cancel so we can pair replacements
+    // atomically during registration.
+    let mut old_to_cancel: Vec<_> = active_agreements
+        .iter()
+        .filter(|a| to_cancel.contains(&a.indexer.id))
+        .collect();
+
+    // Offer pacing: only create as many agreements as the network can accept
+    // before the deadline, so a burst does not queue offers that expire unaccepted.
+    let (capped_to_add, offer_pacing_withheld, reserved_cancel_count) = if to_add.is_empty() {
+        (HashSet::new(), 0usize, 0usize)
+    } else {
+        let (in_flight_per_indexer, global_in_flight) = ctx
+            .registry
+            .count_created_agreements_by_indexer()
+            .await
+            .map_err(|err| JobError::Fatal(err.into()))?;
+        let per_indexer_cap = ctx.agreement_conf.max_in_flight_offers_per_indexer();
+        let global_cap = ctx.agreement_conf.max_in_flight_offers_total();
+        let candidates: Vec<IndexerId> = to_add.iter().map(|id| **id).collect();
+        let (allowed, withheld) = plan_capped_additions(
+            candidates,
+            &in_flight_per_indexer,
+            global_in_flight,
+            per_indexer_cap,
+            global_cap,
+        );
+        let reserved = withheld.min(old_to_cancel.len());
+        if withheld > 0 {
+            tracing::info!(
+                event = "offer_pacing_capped",
+                indexing_request_id = %indexing_request_id,
+                deployment_id = %deployment_id,
+                withheld_count = withheld,
+                reserved_cancel_count = reserved,
+                global_in_flight,
+                global_cap = ?global_cap,
+                per_indexer_cap = ?per_indexer_cap,
+                "withholding offers to stay within in-flight caps"
+            );
+        }
+        (
+            allowed.into_iter().collect::<HashSet<IndexerId>>(),
+            withheld,
+            reserved,
+        )
+    };
+
     let fallback_prices = ctx.chain_price.get(deployment_chain_id);
 
     // --- Add new agreements FIRST ---
@@ -281,18 +329,15 @@ where
     )
     .await?;
 
-    // Pre-compute old agreements to cancel so we can pair replacements
-    // atomically during registration.
-    let old_to_cancel: Vec<_> = active_agreements
-        .iter()
-        .filter(|a| to_cancel.contains(&a.indexer.id))
-        .collect();
+    // Reserve one old per withheld add so a capped replacement's predecessor
+    // stays active; the next pass re-diffs and pairs it with its replacement.
+    old_to_cancel.truncate(old_to_cancel.len() - reserved_cancel_count);
     let mut old_iter = old_to_cancel.into_iter();
 
     let mut successful_new_ids: Vec<dipper_core::ids::IndexingAgreementId> = vec![];
     let mut add_failures = 0u32;
     let mut _pending_recorded = 0u32;
-    for indexer_id in &to_add {
+    for indexer_id in &capped_to_add {
         let candidate = match ctx.network.get_indexer_by_id(indexer_id) {
             Some(indexer) => indexer,
             None => {
@@ -609,6 +654,13 @@ where
         ctx.chain_listener_notify.notify_one();
     }
 
+    // Deferred re-queues without counting an attempt, so we poll to top up the
+    // withheld adds: acceptance events don't re-trigger reassessment, and the
+    // re-run re-diffs so already-created agreements drop out of to_add.
+    if offer_pacing_withheld > 0 {
+        return Err(JobError::Deferred(Duration::from_secs(15)));
+    }
+
     Ok(())
 }
 
@@ -701,6 +753,145 @@ where
                 Duration::from_secs(5),
             ))
         }
+    }
+}
+
+/// Decide which candidate indexers may receive a fresh offer without exceeding
+/// the in-flight caps. Iterates in sorted order so a global-cap cutoff is
+/// deterministic; a zero cap disables that dimension.
+fn plan_capped_additions(
+    mut candidates: Vec<IndexerId>,
+    in_flight_per_indexer: &HashMap<IndexerId, u64>,
+    global_in_flight: u64,
+    per_indexer_cap: Option<u32>,
+    global_cap: Option<u32>,
+) -> (Vec<IndexerId>, usize) {
+    candidates.sort();
+    let total = candidates.len();
+    let mut admitted = Vec::with_capacity(total);
+    let mut admitted_per_indexer: HashMap<IndexerId, u64> = HashMap::new();
+    let mut admitted_total: u64 = 0;
+    for id in candidates {
+        if let Some(cap) = global_cap
+            && global_in_flight + admitted_total >= cap as u64
+        {
+            continue;
+        }
+        if let Some(cap) = per_indexer_cap {
+            let existing = in_flight_per_indexer.get(&id).copied().unwrap_or(0);
+            let already = admitted_per_indexer.get(&id).copied().unwrap_or(0);
+            if existing + already >= cap as u64 {
+                continue;
+            }
+        }
+        *admitted_per_indexer.entry(id).or_insert(0) += 1;
+        admitted_total += 1;
+        admitted.push(id);
+    }
+    let withheld = total - admitted.len();
+    (admitted, withheld)
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use std::collections::HashMap;
+
+    use thegraph_core::{IndexerId, alloy::primitives::Address};
+
+    use super::plan_capped_additions;
+
+    fn idx(byte: u8) -> IndexerId {
+        IndexerId::new(Address::repeat_byte(byte))
+    }
+
+    #[test]
+    fn absent_caps_admit_everyone() {
+        let candidates = vec![idx(3), idx(1), idx(2)];
+        let (allowed, withheld) = plan_capped_additions(candidates, &HashMap::new(), 0, None, None);
+        assert_eq!(
+            allowed,
+            vec![idx(1), idx(2), idx(3)],
+            "sorted, all admitted"
+        );
+        assert_eq!(withheld, 0);
+    }
+
+    #[test]
+    fn per_indexer_cap_bites() {
+        // idx(1) already holds 5 in-flight; a cap of 5 admits nothing for it,
+        // while idx(2) with 0 in-flight is admitted.
+        let mut in_flight = HashMap::new();
+        in_flight.insert(idx(1), 5u64);
+        let (allowed, withheld) = plan_capped_additions(vec![idx(1), idx(2)], &in_flight, 5, Some(5), None);
+        assert_eq!(allowed, vec![idx(2)]);
+        assert_eq!(withheld, 1);
+    }
+
+    #[test]
+    fn global_cap_bites_mid_list() {
+        // Global in-flight is 8, cap 10: only two more may be admitted, and
+        // sorting makes it deterministically the two lowest ids.
+        let (allowed, withheld) = plan_capped_additions(
+            vec![idx(4), idx(1), idx(3), idx(2)],
+            &HashMap::new(),
+            8,
+            None,
+            Some(10),
+        );
+        assert_eq!(allowed, vec![idx(1), idx(2)]);
+        assert_eq!(withheld, 2);
+    }
+
+    #[test]
+    fn both_caps_withhold_different_candidates() {
+        let mut in_flight = HashMap::new();
+        in_flight.insert(idx(1), 5u64);
+        // idx(1) is at the per-indexer cap; idx(2) takes the single remaining
+        // global slot (9 of 10); idx(3) is then withheld by the global cap.
+        let (allowed, withheld) =
+            plan_capped_additions(vec![idx(3), idx(1), idx(2)], &in_flight, 9, Some(5), Some(10));
+        assert_eq!(allowed, vec![idx(2)]);
+        assert_eq!(withheld, 2, "one per-indexer withhold plus one global");
+    }
+
+    #[test]
+    fn exact_boundary_per_indexer() {
+        let mut at_cap = HashMap::new();
+        at_cap.insert(idx(1), 3u64);
+        let (allowed, withheld) = plan_capped_additions(vec![idx(1)], &at_cap, 3, Some(3), None);
+        assert_eq!(
+            allowed,
+            Vec::<IndexerId>::new(),
+            "in_flight == cap admits none"
+        );
+        assert_eq!(withheld, 1);
+
+        let mut below_cap = HashMap::new();
+        below_cap.insert(idx(1), 2u64);
+        let (allowed, withheld) = plan_capped_additions(vec![idx(1)], &below_cap, 2, Some(3), None);
+        assert_eq!(allowed, vec![idx(1)], "cap-1 admits one");
+        assert_eq!(withheld, 0);
+    }
+
+    #[test]
+    fn zero_cap_pauses_all_offers() {
+        // 0 is a literal cap, not a disable: nothing may be admitted.
+        let (allowed, withheld) =
+            plan_capped_additions(vec![idx(1), idx(2)], &HashMap::new(), 0, Some(0), None);
+        assert!(allowed.is_empty(), "per-indexer 0 pauses everyone");
+        assert_eq!(withheld, 2);
+
+        let (allowed, withheld) =
+            plan_capped_additions(vec![idx(1)], &HashMap::new(), 0, None, Some(0));
+        assert!(allowed.is_empty(), "global 0 pauses everything");
+        assert_eq!(withheld, 1);
+    }
+
+    #[test]
+    fn empty_candidates_admit_nothing() {
+        let (allowed, withheld) = plan_capped_additions(vec![], &HashMap::new(), 0, Some(5), Some(100));
+        assert!(allowed.is_empty());
+        assert_eq!(withheld, 0);
     }
 }
 

@@ -480,6 +480,15 @@ impl AgreementRegistry for RegistryProvider {
             .map_err(Into::into)
     }
 
+    async fn count_created_agreements_by_indexer(
+        &self,
+    ) -> RegistryResult<(std::collections::HashMap<IndexerId, u64>, u64)> {
+        self.inner
+            .count_created_agreements_by_indexer()
+            .await
+            .map_err(Into::into)
+    }
+
     async fn exists_active_agreements(&self) -> RegistryResult<bool> {
         self.inner
             .exists_active_agreements()

@@ -1268,6 +1268,8 @@ mod tests {
             mass_unresponsive_reset_fraction: 0.25,
             dips_accepting_snapshot_max_age_hours: 48,
             dips_accepting_cache_ttl_seconds: 300,
+            max_in_flight_offers_per_indexer: None,
+            max_in_flight_offers_total: None,
         })
     }
 
@@ -1717,6 +1719,24 @@ mod tests {
                 }
             }
             Ok(counts)
+        }
+
+        async fn count_created_agreements_by_indexer(
+            &self,
+        ) -> RegistryResult<(
+            std::collections::HashMap<thegraph_core::IndexerId, u64>,
+            u64,
+        )> {
+            let mut per_indexer: std::collections::HashMap<thegraph_core::IndexerId, u64> =
+                std::collections::HashMap::new();
+            let mut global = 0u64;
+            for agreement in self.state.lock().unwrap().agreements.values() {
+                if matches!(agreement.status, IndexingAgreementStatus::Created) {
+                    *per_indexer.entry(agreement.indexer.id).or_insert(0) += 1;
+                    global += 1;
+                }
+            }
+            Ok((per_indexer, global))
         }
 
         async fn mark_indexing_agreement_as_abandoned(
