@@ -19,7 +19,7 @@ use crate::{
         IndexingRequestStatus as IndexingRequestRecordStatus, SetTargetOutcome,
     },
     signing::eip712::Eip712Signer,
-    worker::service::WorkerQueue,
+    worker::service::{JobPriority, WorkerQueue},
 };
 
 /// The substate for the [`IndexingRequestsRpc`] handler
@@ -183,7 +183,14 @@ where
         if let (Some(id), Some(count)) = (id_opt, reassess_count)
             && let Err(err) = self
                 .worker
-                .reassess_indexing_request(id, deployment_id, chain_id, count)
+                .reassess_indexing_request(
+                    id,
+                    deployment_id,
+                    chain_id,
+                    count,
+                    // Interactive: a caller is waiting on this set-target result.
+                    JobPriority::Interactive,
+                )
                 .await
         {
             tracing::error!(

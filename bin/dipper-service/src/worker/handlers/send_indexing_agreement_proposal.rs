@@ -14,7 +14,7 @@ use crate::{
     },
     worker::{
         result::{JobError, JobResult},
-        service::WorkerQueue,
+        service::{JobPriority, WorkerQueue},
     },
 };
 
@@ -133,6 +133,8 @@ where
                         indexer_url.clone(),
                         *deployment_id,
                         *deployment_chain_id,
+                        // Background: a follow-up proposal-pipeline job (see JobPriority).
+                        JobPriority::Background,
                     )
                     .await
                 {
@@ -350,6 +352,8 @@ where
             *deployment_id,
             *deployment_chain_id,
             num_candidates,
+            // Background: reassessment retry after a proposal failure.
+            JobPriority::Background,
         )
         .await
     {
@@ -690,6 +694,7 @@ mod tests {
             _indexing_request_id: IndexingRequestId,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             Ok(JobId::default())
         }
@@ -700,6 +705,7 @@ mod tests {
             deployment_id: DeploymentId,
             chain_id: ChainId,
             num_candidates: usize,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             self.state.lock().unwrap().reassess_calls.push((
                 request_id,
@@ -713,6 +719,7 @@ mod tests {
         async fn cancel_rejected_agreement_on_chain(
             &self,
             _agreement_id: IndexingAgreementId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             Ok(JobId::default())
         }
@@ -724,6 +731,7 @@ mod tests {
             _indexer_url: Url,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             Ok(JobId::default())
         }

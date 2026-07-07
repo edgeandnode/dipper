@@ -49,7 +49,7 @@ use crate::{
     registry::{
         AgreementRegistry, IndexingAgreement, IndexingRequestRegistry, PendingCancellationRegistry,
     },
-    worker::service::WorkerQueue,
+    worker::service::{JobPriority, WorkerQueue},
 };
 
 /// Handle for controlling the liveness checker service lifecycle.
@@ -614,6 +614,8 @@ async fn cancel_and_reassess<R, W, C>(
             abandoned.terms.metadata.subgraph_deployment_id,
             abandoned.terms.metadata.chain_id,
             request.num_candidates,
+            // Background: abandonment remediation yields to interactive work.
+            JobPriority::Background,
         ),
     )
     .await;
@@ -802,7 +804,7 @@ mod tests {
             IndexingAgreementTerms, IndexingAgreementTermsMetadata, IndexingRequest,
             IndexingRequestRegistry, PendingCancellationRegistry, Result as RegistryResult,
         },
-        worker::service::WorkerQueue,
+        worker::service::{JobPriority, WorkerQueue},
     };
 
     // ---- Test helpers ----
@@ -1156,6 +1158,7 @@ mod tests {
             _req_id: IndexingRequestId,
             _dep: DeploymentId,
             _chain: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
@@ -1165,6 +1168,7 @@ mod tests {
             _dep: DeploymentId,
             _chain: ChainId,
             _n: usize,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             self.calls.reassessments.lock().unwrap().push(req_id);
             Ok(JobId::default())
@@ -1172,6 +1176,7 @@ mod tests {
         async fn cancel_rejected_agreement_on_chain(
             &self,
             _agr_id: IndexingAgreementId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
@@ -1182,6 +1187,7 @@ mod tests {
             _indexer_url: Url,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }

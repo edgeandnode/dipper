@@ -25,7 +25,12 @@ where
 }
 
 /// Push a job into the queue
-pub async fn push<'q, E, T>(executor: E, desc: T, max_attempts: i32) -> anyhow::Result<JobId>
+pub async fn push<'q, E, T>(
+    executor: E,
+    desc: T,
+    max_attempts: i32,
+    priority: JobPriority,
+) -> anyhow::Result<JobId>
 where
     E: sqlx::Executor<'q, Database = Postgres>,
     T: serde::Serialize,
@@ -37,14 +42,16 @@ where
                 id,
                 status,
                 max_attempts,
+                priority,
                 descriptor
             ) VALUES (
-                $1, $2, $3, $4
+                $1, $2, $3, $4, $5
             )"#,
     )
     .bind(id)
     .bind(PgJobStatus::default())
     .bind(max_attempts)
+    .bind(priority)
     .bind(Json(desc))
     .execute(executor)
     .await?;
@@ -58,6 +65,7 @@ pub async fn push_scheduled<'q, E, T>(
     desc: T,
     max_attempts: i32,
     scheduled_for: OffsetDateTime,
+    priority: JobPriority,
 ) -> anyhow::Result<JobId>
 where
     E: sqlx::Executor<'q, Database = Postgres>,
@@ -70,15 +78,17 @@ where
                 scheduled_for,
                 status,
                 max_attempts,
+                priority,
                 descriptor
             ) VALUES (
-                $1, $2, $3, $4, $5
+                $1, $2, $3, $4, $5, $6
             )"#,
     )
     .bind(id)
     .bind(scheduled_for)
     .bind(PgJobStatus::default())
     .bind(max_attempts)
+    .bind(priority)
     .bind(Json(desc))
     .execute(executor)
     .await?;
@@ -100,11 +110,11 @@ where
                 SELECT id
                 FROM pgmq_queue
                 WHERE status = $2 AND scheduled_for <= timezone('UTC', now())
-                -- Order by insertion time, not scheduled_for: a deferred job is
-                -- re-queued at now()+delay, so ordering by scheduled_for would
-                -- sort it behind freshly inserted jobs and could starve it. The
-                -- monotonic v7 id breaks same-timestamp ties for stable FIFO.
-                ORDER BY created_at, id
+                -- Highest priority first, then insertion time, not scheduled_for:
+                -- a deferred job is re-queued at now()+delay, so ordering by
+                -- scheduled_for would sort it behind fresh jobs and could starve
+                -- it. The monotonic v7 id breaks same-timestamp ties for FIFO.
+                ORDER BY priority DESC, created_at, id
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
             )
@@ -239,6 +249,53 @@ pub struct PgJob<T> {
 
     /// The job descriptor (serialized).
     pub(crate) descriptor: Json<T>,
+}
+
+/// The scheduling priority of a job; `pop()` serves higher priority first.
+/// Policy: Interactive = a human or Studio waits on first assessment;
+/// everything else is remediation or hygiene and yields.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Default)]
+#[repr(i16)]
+pub enum JobPriority {
+    /// Reassignment sweeps, expiration, liveness remediation, follow-up jobs.
+    /// Downstream proposal/offer jobs also run Background by design for now.
+    #[default]
+    Background = 0,
+    /// Admin RPC set-target and the Studio Kafka listener wait on this.
+    Interactive = 1,
+}
+
+impl From<i16> for JobPriority {
+    fn from(value: i16) -> Self {
+        match value {
+            i16::MIN..=0 => Self::Background,
+            1..=i16::MAX => Self::Interactive,
+        }
+    }
+}
+
+impl sqlx::Type<Postgres> for JobPriority {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        sqlx::postgres::PgTypeInfo::with_name("INT2")
+    }
+}
+
+impl sqlx::Encode<'_, Postgres> for JobPriority {
+    fn encode_by_ref(
+        &self,
+        buf: &mut <Postgres as sqlx::Database>::ArgumentBuffer<'_>,
+    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+        sqlx::Encode::<Postgres>::encode_by_ref(&(*self as i16), buf)
+    }
+}
+
+impl sqlx::Decode<'_, Postgres> for JobPriority {
+    fn decode(
+        value: <Postgres as sqlx::Database>::ValueRef<'_>,
+    ) -> Result<Self, sqlx::error::BoxDynError> {
+        let value: i16 = sqlx::Decode::<Postgres>::decode(value)?;
+        Ok(value.into())
+    }
 }
 
 /// The job status.
