@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use dipper_pgmq::{JobBuilder, JobGuard, PgQueue};
+use dipper_pgmq::{JobBuilder, JobGuard, JobPriority, PgQueue};
 use fake::{Dummy, Fake, Faker};
 use pgtemp::PgTempDB;
 use sqlx::{Pool, Postgres};
@@ -715,4 +715,163 @@ async fn deferred_job_does_not_count_an_attempt() {
         .expect("expected the deferred job");
     assert_eq!(job.id(), &job_id);
     assert_eq!(job.failed_attempts(), 0);
+}
+
+#[tokio::test]
+async fn interactive_pops_before_earlier_background() {
+    // pop() orders by priority DESC first: an Interactive job pushed after two
+    // Background jobs still pops first. Within a priority class, order stays FIFO
+    // by created_at (the monotonic v7 id breaks same-timestamp ties).
+
+    //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
+    let queue = PgQueue::new(db);
+
+    let bg_first = Faker.fake::<TestMsg>();
+    let bg_second = Faker.fake::<TestMsg>();
+    let interactive = Faker.fake::<TestMsg>();
+
+    //* When
+    // Two Background jobs first, then an Interactive job last.
+    let bg_first_id = queue
+        .push(JobBuilder::new(bg_first).priority(JobPriority::Background))
+        .await
+        .expect("Failed to push first background job");
+    let bg_second_id = queue
+        .push(JobBuilder::new(bg_second).priority(JobPriority::Background))
+        .await
+        .expect("Failed to push second background job");
+    let interactive_id = queue
+        .push(JobBuilder::new(interactive).priority(JobPriority::Interactive))
+        .await
+        .expect("Failed to push interactive job");
+
+    //* Then
+    // Interactive wins despite being inserted last.
+    let first = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop")
+        .expect("expected a job");
+    assert_eq!(
+        first.id(),
+        &interactive_id,
+        "the interactive job must pop before earlier background jobs"
+    );
+    first.remove().await.expect("Failed to remove interactive");
+
+    // Then the two Background jobs come back in insertion order (FIFO).
+    let second = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop")
+        .expect("expected a job");
+    assert_eq!(
+        second.id(),
+        &bg_first_id,
+        "within a class, the earlier background job pops first"
+    );
+    second.remove().await.expect("Failed to remove bg_first");
+
+    let third = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop")
+        .expect("expected a job");
+    assert_eq!(
+        third.id(),
+        &bg_second_id,
+        "within a class, the later background job pops last"
+    );
+}
+
+#[tokio::test]
+async fn reschedule_preserves_priority() {
+    // reschedule() re-queues a job without touching its priority column (it is
+    // preserved by omission from the UPDATE), so a deferred Interactive job keeps
+    // outranking Background work after being put back.
+
+    //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
+    let queue = PgQueue::new(db.clone());
+
+    let msg = Faker.fake::<TestMsg>();
+
+    //* When
+    let job_id = queue
+        .push(JobBuilder::new(msg).priority(JobPriority::Interactive))
+        .await
+        .expect("Failed to push interactive job");
+    let job = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop")
+        .expect("expected a job");
+    // Defer it back into the queue, eligible immediately.
+    job.reschedule(time::OffsetDateTime::now_utc())
+        .await
+        .expect("Failed to reschedule");
+
+    //* Then
+    let (priority,): (i16,) = sqlx::query_as("SELECT priority FROM pgmq_queue WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&db)
+        .await
+        .expect("Failed to read priority");
+    assert_eq!(
+        priority, 1,
+        "reschedule must preserve the Interactive priority (1)"
+    );
+}
+
+#[tokio::test]
+async fn future_interactive_does_not_preempt_eligible_background() {
+    // Priority ordering applies only among eligible rows: the scheduled_for gate
+    // runs first. An Interactive job scheduled in the future must not preempt a
+    // Background job that is already eligible.
+
+    //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
+    let queue = PgQueue::new(db);
+
+    let background = Faker.fake::<TestMsg>();
+    let interactive = Faker.fake::<TestMsg>();
+    let future = time::OffsetDateTime::now_utc().saturating_add(time::Duration::minutes(1));
+
+    //* When
+    // An eligible Background job, plus a higher-priority Interactive job gated
+    // one minute into the future.
+    let background_id = queue
+        .push(JobBuilder::new(background).priority(JobPriority::Background))
+        .await
+        .expect("Failed to push background job");
+    queue
+        .push(
+            JobBuilder::new(interactive)
+                .priority(JobPriority::Interactive)
+                .schedule_at(future),
+        )
+        .await
+        .expect("Failed to push future interactive job");
+
+    //* Then
+    // Only the eligible Background job is returned; the future Interactive one
+    // is not yet visible to pop().
+    let first = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop")
+        .expect("expected a job");
+    assert_eq!(
+        first.id(),
+        &background_id,
+        "a future interactive job must not preempt an eligible background job"
+    );
+    first.remove().await.expect("Failed to remove background");
+
+    let second: Option<JobGuard<TestMsg>> = queue.pop().await.expect("Failed to pop");
+    assert!(
+        second.is_none(),
+        "the future interactive job must stay gated until its scheduled_for"
+    );
 }

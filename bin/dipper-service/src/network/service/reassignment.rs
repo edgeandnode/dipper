@@ -11,7 +11,9 @@ use time::OffsetDateTime;
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::{
-    config::ReassignmentConfig, registry::IndexingRequestRegistry, worker::service::WorkerQueue,
+    config::ReassignmentConfig,
+    registry::IndexingRequestRegistry,
+    worker::service::{JobPriority, WorkerQueue},
 };
 
 /// Calculate the duration until the next occurrence of the target UTC hour.
@@ -181,6 +183,8 @@ where
                         request.deployment_id,
                         request.deployment_chain_id,
                         request.num_candidates,
+                        // Background: the periodic sweep yields to interactive work.
+                        JobPriority::Background,
                     ),
                 )
                 .await;

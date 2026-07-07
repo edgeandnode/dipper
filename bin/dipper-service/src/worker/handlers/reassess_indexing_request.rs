@@ -34,7 +34,7 @@ use crate::{
     worker::{
         DipsAcceptingCache, UnresponsiveBreaker,
         result::{JobError, JobResult},
-        service::WorkerQueue,
+        service::{JobPriority, WorkerQueue},
     },
 };
 
@@ -545,6 +545,8 @@ where
                 *indexing_request_id,
                 *deployment_id,
                 *deployment_chain_id,
+                // Background: a downstream proposal job (see JobPriority).
+                JobPriority::Background,
             )
             .await
         {

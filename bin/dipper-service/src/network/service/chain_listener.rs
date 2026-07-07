@@ -47,7 +47,7 @@ use crate::{
         AgreementRegistry, CancelKind, IndexingAgreement, IndexingAgreementStatus,
         PendingCancellationRegistry, ReconciliationItem,
     },
-    worker::service::WorkerQueue,
+    worker::service::{JobPriority, WorkerQueue},
 };
 
 /// Idle interval used when no `Created` agreements are awaiting acceptance.
@@ -784,7 +784,8 @@ where
             "Rejected agreement accepted on-chain, queuing cancellation"
         );
         worker_queue
-            .cancel_rejected_agreement_on_chain(agreement.id)
+            // Background: on-chain cleanup of a rejected-then-accepted agreement.
+            .cancel_rejected_agreement_on_chain(agreement.id, JobPriority::Background)
             .await?;
     }
 
@@ -1920,6 +1921,7 @@ mod tests {
             _indexing_request_id: IndexingRequestId,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<dipper_pgmq::JobId> {
             Ok(dipper_pgmq::JobId::default())
         }
@@ -1930,6 +1932,7 @@ mod tests {
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
             _num_candidates: usize,
+            _priority: JobPriority,
         ) -> anyhow::Result<dipper_pgmq::JobId> {
             Ok(dipper_pgmq::JobId::default())
         }
@@ -1937,6 +1940,7 @@ mod tests {
         async fn cancel_rejected_agreement_on_chain(
             &self,
             agreement_id: IndexingAgreementId,
+            _priority: JobPriority,
         ) -> anyhow::Result<dipper_pgmq::JobId> {
             self.cancel_jobs.lock().unwrap().push(agreement_id);
             Ok(dipper_pgmq::JobId::default())
@@ -1949,6 +1953,7 @@ mod tests {
             _indexer_url: Url,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<dipper_pgmq::JobId> {
             Ok(dipper_pgmq::JobId::default())
         }

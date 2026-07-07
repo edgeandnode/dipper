@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-pub use dipper_pgmq::{JobGuard, JobId, PgQueue, PgQueueListener};
+pub use dipper_pgmq::{JobBuilder, JobGuard, JobId, JobPriority, PgQueue, PgQueueListener};
 use sqlx::PgPool;
 
 /// A message queue.
@@ -10,8 +10,8 @@ pub trait Queue<M>
 where
     M: serde::Serialize + serde::de::DeserializeOwned,
 {
-    /// Pushes a message to the queue for immediate processing
-    async fn push(&self, msg: M) -> anyhow::Result<JobId>;
+    /// Pushes a message to the queue for immediate processing at `priority`.
+    async fn push(&self, msg: M, priority: JobPriority) -> anyhow::Result<JobId>;
 
     /// Pulls a job from the queue
     async fn pop(&self) -> anyhow::Result<Option<JobGuard<'_, M>>>;
@@ -38,8 +38,10 @@ impl<M> Queue<M> for QueueImpl
 where
     M: serde::Serialize + serde::de::DeserializeOwned + Send + Unpin + 'static,
 {
-    async fn push(&self, msg: M) -> anyhow::Result<JobId> {
-        self.inner.push(msg).await
+    async fn push(&self, msg: M, priority: JobPriority) -> anyhow::Result<JobId> {
+        self.inner
+            .push(JobBuilder::new(msg).priority(priority))
+            .await
     }
 
     async fn pop(&self) -> anyhow::Result<Option<JobGuard<'_, M>>> {

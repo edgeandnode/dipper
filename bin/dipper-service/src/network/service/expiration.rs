@@ -11,7 +11,7 @@ use crate::{
     config::ExpirationConfig,
     network::service::chain_listener::ChainListenerStateRegistry,
     registry::{AgreementRegistry, IndexingRequestRegistry, PendingCancellationRegistry},
-    worker::service::WorkerQueue,
+    worker::service::{JobPriority, WorkerQueue},
 };
 
 /// Handle for controlling the expiration service lifecycle
@@ -252,6 +252,8 @@ where
                         agreement.terms.metadata.subgraph_deployment_id,
                         agreement.terms.metadata.chain_id,
                         request.num_candidates,
+                        // Background: expiration remediation yields to interactive work.
+                        JobPriority::Background,
                     ),
                 )
                 .await;
@@ -622,6 +624,7 @@ mod tests {
             _indexing_request_id: IndexingRequestId,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
@@ -631,12 +634,14 @@ mod tests {
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
             _num_candidates: usize,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             Ok(JobId::default())
         }
         async fn cancel_rejected_agreement_on_chain(
             &self,
             _agreement_id: IndexingAgreementId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
@@ -647,6 +652,7 @@ mod tests {
             _indexer_url: Url,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }

@@ -5,7 +5,6 @@ use dipper_iisa::CandidateSelection;
 use time::OffsetDateTime;
 use tokio::{sync::watch, task::JoinSet};
 
-pub use super::service_queue::{WorkerQueue, WorkerQueueHandle};
 use super::{
     context::{Ctx, InnerCtx},
     handlers::{
@@ -15,6 +14,10 @@ use super::{
     messages::Message,
     queue::Queue,
     result::{JobError, JobResult, calculate_backoff_delay},
+};
+pub use super::{
+    queue::JobPriority,
+    service_queue::{WorkerQueue, WorkerQueueHandle},
 };
 use crate::{
     chain_client::ChainClient,
