@@ -822,7 +822,8 @@ mod cap_tests {
         // while idx(2) with 0 in-flight is admitted.
         let mut in_flight = HashMap::new();
         in_flight.insert(idx(1), 5u64);
-        let (allowed, withheld) = plan_capped_additions(vec![idx(1), idx(2)], &in_flight, 5, Some(5), None);
+        let (allowed, withheld) =
+            plan_capped_additions(vec![idx(1), idx(2)], &in_flight, 5, Some(5), None);
         assert_eq!(allowed, vec![idx(2)]);
         assert_eq!(withheld, 1);
     }
@@ -848,8 +849,13 @@ mod cap_tests {
         in_flight.insert(idx(1), 5u64);
         // idx(1) is at the per-indexer cap; idx(2) takes the single remaining
         // global slot (9 of 10); idx(3) is then withheld by the global cap.
-        let (allowed, withheld) =
-            plan_capped_additions(vec![idx(3), idx(1), idx(2)], &in_flight, 9, Some(5), Some(10));
+        let (allowed, withheld) = plan_capped_additions(
+            vec![idx(3), idx(1), idx(2)],
+            &in_flight,
+            9,
+            Some(5),
+            Some(10),
+        );
         assert_eq!(allowed, vec![idx(2)]);
         assert_eq!(withheld, 2, "one per-indexer withhold plus one global");
     }
@@ -889,7 +895,8 @@ mod cap_tests {
 
     #[test]
     fn empty_candidates_admit_nothing() {
-        let (allowed, withheld) = plan_capped_additions(vec![], &HashMap::new(), 0, Some(5), Some(100));
+        let (allowed, withheld) =
+            plan_capped_additions(vec![], &HashMap::new(), 0, Some(5), Some(100));
         assert!(allowed.is_empty());
         assert_eq!(withheld, 0);
     }
