@@ -65,7 +65,7 @@ fn filter_map_with_logging<T, E: std::fmt::Display>(
 /// A service for interacting with the registry.
 ///
 /// This service provides a set of methods for interacting with the registry,
-/// including registering new indexing requests, indexing agreements, and indexing receipts.
+/// including registering new indexing requests and indexing agreements.
 #[derive(Clone)]
 pub struct RegistryProvider {
     inner: PgRegistry,

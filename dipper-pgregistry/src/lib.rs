@@ -6,7 +6,6 @@ use sqlx::{
 };
 
 mod indexing_agreement;
-mod indexing_receipt;
 mod indexing_request;
 mod postgres;
 mod result;
@@ -16,7 +15,6 @@ pub use indexing_agreement::{
     Terms as IndexingAgreementTerms, TermsMetadata as IndexingAgreementTermsMetadata,
     rejection_reason,
 };
-pub use indexing_receipt::{IndexingReceipt, ReportedWork as IndexingReceiptReportedWork};
 pub use indexing_request::{
     IndexingRequest, SetTargetOutcome as IndexingRequestSetTargetOutcome,
     Status as IndexingRequestStatus,

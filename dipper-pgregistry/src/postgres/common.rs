@@ -4,39 +4,7 @@ use sqlx::{
     error::BoxDynError,
     postgres::{PgArgumentBuffer, PgHasArrayType, PgTypeInfo, PgValueRef},
 };
-use thegraph_core::{
-    AllocationId, DeploymentId, IndexerId, ProofOfIndexing,
-    alloy::primitives::{Address, B256, U256},
-};
-
-/// Wrapper type for `u32` to implement `sqlx::Type` for `Postgres`.
-///
-/// This _new-type_ pattern maps the `u32` type to a `i64` which corresponds
-/// to a Postgres `bigint` type.
-#[repr(transparent)]
-pub struct PgU32(pub u32);
-
-impl sqlx::Type<Postgres> for PgU32 {
-    fn type_info() -> PgTypeInfo {
-        <i64 as sqlx::Type<Postgres>>::type_info()
-    }
-}
-
-impl sqlx::Encode<'_, Postgres> for PgU32 {
-    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
-        <i64 as sqlx::Encode<Postgres>>::encode(i64::from(self.0), buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, Postgres> for PgU32 {
-    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
-        let value: i64 = sqlx::Decode::<Postgres>::decode(value)?;
-        let value: u32 = value
-            .try_into()
-            .map_err(|_| sqlx::Error::Decode("value out of u32 bounds".into()))?;
-        Ok(Self(value))
-    }
-}
+use thegraph_core::{DeploymentId, IndexerId, alloy::primitives::Address};
 
 /// Wrapper type for `u64` to implement `sqlx::Type` for `Postgres`.
 ///
@@ -61,32 +29,6 @@ impl<'r> sqlx::Decode<'r, Postgres> for PgU64 {
     fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
         let bytes: [u8; 8] = sqlx::Decode::<Postgres>::decode(value)?;
         Ok(Self(u64::from_be_bytes(bytes)))
-    }
-}
-
-/// Wrapper type for `U256` to implement `sqlx::Type` for `Postgres`.
-///
-/// This _new-type_ pattern maps the `U256` type to a `[u8; 32]` array
-/// which corresponds to a Postgres `bytea` type.
-#[repr(transparent)]
-pub struct PgU256(pub U256);
-
-impl sqlx::Type<Postgres> for PgU256 {
-    fn type_info() -> PgTypeInfo {
-        <[u8; 32]>::type_info()
-    }
-}
-
-impl sqlx::Encode<'_, Postgres> for PgU256 {
-    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
-        <[u8; 32]>::encode(self.0.to_be_bytes(), buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, Postgres> for PgU256 {
-    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
-        let bytes = <[u8; 32]>::decode(value)?;
-        Ok(Self(U256::from_be_bytes(bytes)))
     }
 }
 
@@ -178,32 +120,6 @@ impl PgHasArrayType for PgIndexerId {
     }
 }
 
-/// Wrapper type for `AllocationId` to implement `sqlx::Type` for `Postgres`.
-///
-/// This _new-type_ pattern maps the `AllocationId` type to a `[u8; 20]` array
-/// which corresponds to a Postgres `bytea` type.
-#[repr(transparent)]
-pub struct PgAllocationId(pub AllocationId);
-
-impl sqlx::Type<Postgres> for PgAllocationId {
-    fn type_info() -> PgTypeInfo {
-        PgAddress::type_info()
-    }
-}
-
-impl sqlx::Encode<'_, Postgres> for PgAllocationId {
-    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
-        PgAddress(self.0.into_inner()).encode(buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, Postgres> for PgAllocationId {
-    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
-        let PgAddress(address) = sqlx::Decode::<Postgres>::decode(value)?;
-        Ok(Self(AllocationId::new(address)))
-    }
-}
-
 /// Wrapper type for `DeploymentId` to implement `sqlx::Type` for `Postgres`.
 ///
 /// This _new-type_ pattern maps the `DeploymentId` type to a `&str` which corresponds
@@ -230,31 +146,5 @@ impl<'r> sqlx::Decode<'r, Postgres> for PgDeploymentId {
             .parse()
             .map_err(|err| sqlx::Error::Decode(Box::new(err)))?;
         Ok(Self(deployment_id))
-    }
-}
-
-/// Wrapper type for `ProofOfIndexing` to implement `sqlx::Type` for `Postgres`.
-///
-/// This _new-type_ pattern maps the `ProofOfIndexing` type to a `[u8; 32]` array
-/// which corresponds to a Postgres `bytea` type.
-#[repr(transparent)]
-pub struct PgProofOfIndexing(pub ProofOfIndexing);
-
-impl sqlx::Type<Postgres> for PgProofOfIndexing {
-    fn type_info() -> PgTypeInfo {
-        <[u8; 32]>::type_info()
-    }
-}
-
-impl sqlx::Encode<'_, Postgres> for PgProofOfIndexing {
-    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
-        <[u8; 32]>::encode(**self.0, buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, Postgres> for PgProofOfIndexing {
-    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
-        let bytes = <[u8; 32]>::decode(value)?;
-        Ok(Self(ProofOfIndexing::new(B256::new(bytes))))
     }
 }
