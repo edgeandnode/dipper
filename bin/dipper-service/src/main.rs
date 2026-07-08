@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf, sync::Arc, time::Duration};
+use std::{env, path::PathBuf, sync::Arc};
 
 use async_signal::{Signal, Signals};
 use dipper_iisa::{self as iisa};
@@ -394,8 +394,6 @@ pub async fn main() -> anyhow::Result<()> {
                 worker_queue: worker_handle.queue().clone(),
                 config: expiration_conf.clone(),
                 chain_id: conf.chain_listener.as_ref().map(|c| c.chain_id),
-                subgraph_indexing_agreements_events_emitter:
-                    subgraph_indexing_agreements_events_emitter.clone(),
             };
             let (handle, service) = network::service::expiration::new(ctx);
             Some((handle, service))
@@ -454,8 +452,6 @@ pub async fn main() -> anyhow::Result<()> {
                 network: network_provider.clone(),
                 agreement_conf: liveness_agreement_conf.clone(),
                 config: lc_conf.clone(),
-                subgraph_indexing_agreements_events_emitter:
-                    subgraph_indexing_agreements_events_emitter.clone(),
             };
             let (handle, service) = network::service::liveness_checker::new(ctx);
             Some((handle, service))
@@ -494,7 +490,8 @@ pub async fn main() -> anyhow::Result<()> {
             max_candidates: DEFAULT_MAX_CANDIDATES,
             registry: registry.clone(),
             worker: worker_handle.queue().clone(),
-            subgraph_indexing_agreements_events_emitter,
+            subgraph_indexing_agreements_events_emitter:
+                subgraph_indexing_agreements_events_emitter.clone(),
         };
 
         admin_rpc_server::service::new(config, ctx)
@@ -625,6 +622,12 @@ pub async fn main() -> anyhow::Result<()> {
         network_topology_handle.stop().await;
         tracing::trace!("stopped Graph network service");
 
+        // All event producers have stopped; flush buffered diagnostic events to
+        // the broker before exit (bounded by an internal timeout).
+        tracing::trace!("flushing lifecycle event stream");
+        subgraph_indexing_agreements_events_emitter.flush().await;
+        tracing::trace!("flushed lifecycle event stream");
+
         tracing::trace!("shutting down DB connection pool");
         db_conn.close().await;
         tracing::trace!("shut down DB connection pool");
@@ -707,27 +710,13 @@ async fn create_subgraph_indexing_agreements_events_emitter(
         return Arc::new(SubgraphIndexingAgreementsEventsEmitter::disabled());
     };
 
-    let producer = match tokio::time::timeout(
-        Duration::from_secs(30),
-        dipper_producer::kafka::KafkaProducer::new(kafka_config),
-    )
-    .await
-    {
-        Ok(Ok(producer)) => producer,
-        Ok(Err(err)) => {
-            tracing::warn!(error = %err, "Failed to create the Kafka Producer instance, events disabled");
-            return Arc::new(SubgraphIndexingAgreementsEventsEmitter::disabled());
-        }
-        Err(elapsed) => {
-            tracing::error!(error = %elapsed, "Failed to create the Kafka Producer instance, events disabled");
-            return Arc::new(SubgraphIndexingAgreementsEventsEmitter::disabled());
-        }
-    };
-
+    // The broker is connected in the background (retrying if unreachable at
+    // startup), so a transient boot-time outage no longer disables events for the
+    // whole run, and startup is never blocked on broker availability.
     tracing::info!("Subgraph Indexing Agreements Event streaming enabled");
 
     Arc::new(SubgraphIndexingAgreementsEventsEmitter::enabled(
-        Arc::new(producer),
+        kafka_config.clone(),
         event_streaming_conf.event_queue_capacity.get(),
     ))
 }

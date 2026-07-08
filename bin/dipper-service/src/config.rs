@@ -273,6 +273,20 @@ pub struct ExpirationConfig {
     /// Maximum agreements to process per cycle (default: 100)
     #[serde(default = "default_expiration_batch_size")]
     pub batch_size: i64,
+
+    /// Grace period (chain seconds) held back past the deadline before an
+    /// agreement is marked `Expired` (default: 300s).
+    ///
+    /// The local `Created` row lags the chain, so an indexer's on-chain accept
+    /// within the deadline may not be reflected locally the instant the deadline
+    /// passes. Waiting this margin past the deadline lets the chain_listener sync
+    /// a within-deadline accept (flipping the row to `AcceptedOnChain`) before we
+    /// consider it expired -- preventing a premature `expired` event that would
+    /// contradict a subsequent `accepted`. Set to cover the worst-case subgraph
+    /// sync lag.
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    #[serde(default = "default_expiration_grace")]
+    pub grace: Duration,
 }
 
 fn default_expiration_enabled() -> bool {
@@ -287,12 +301,17 @@ fn default_expiration_batch_size() -> i64 {
     100
 }
 
+fn default_expiration_grace() -> Duration {
+    Duration::from_secs(300)
+}
+
 impl Default for ExpirationConfig {
     fn default() -> Self {
         Self {
             enabled: default_expiration_enabled(),
             interval: default_expiration_interval(),
             batch_size: default_expiration_batch_size(),
+            grace: default_expiration_grace(),
         }
     }
 }

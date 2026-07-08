@@ -6,7 +6,7 @@ use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_pgregistry::{
     CancelKind, Error, IndexingAgreementStatus, IndexingAgreementTerms,
     IndexingReceiptReportedWork, IndexingRequestStatus, NewAgreementParams, PgRegistry,
-    ReconciliationItem,
+    ReconciliationAudit, ReconciliationItem,
 };
 use fake::{Fake, Faker};
 use pgtemp::PgTempDB;
@@ -2606,24 +2606,28 @@ async fn apply_reconciliation_batch_handles_all_four_item_shapes() {
             agreement_id: accept_only_id,
             apply_accept: true,
             cancel: None,
+            audit: ReconciliationAudit::default(),
         },
         // cancel-only by indexer: AcceptedOnChain -> CanceledByIndexer
         ReconciliationItem {
             agreement_id: cancel_by_indexer_id,
             apply_accept: false,
             cancel: Some(CancelKind::ByIndexer),
+            audit: ReconciliationAudit::default(),
         },
         // paired accept+cancel-by-requester: Created -> AcceptedOnChain -> CanceledByRequester
         ReconciliationItem {
             agreement_id: paired_id,
             apply_accept: true,
             cancel: Some(CancelKind::ByRequester),
+            audit: ReconciliationAudit::default(),
         },
         // accept-only recovery from Expired
         ReconciliationItem {
             agreement_id: recover_expired_id,
             apply_accept: true,
             cancel: None,
+            audit: ReconciliationAudit::default(),
         },
     ];
 
@@ -2695,6 +2699,98 @@ async fn apply_reconciliation_batch_handles_all_four_item_shapes() {
 }
 
 #[tokio::test]
+async fn pending_emission_queries_cover_the_paired_accept_then_cancel() {
+    // Regression guard: an agreement accepted and then cancelled in a single
+    // snapshot (paired accept+cancel -- dipper was behind) ends up terminal, but
+    // must still surface for BOTH the accepted and terminated emission sweeps. The
+    // accepted event must not be lost just because the row is no longer
+    // AcceptedOnChain.
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    let paired_id =
+        IndexingAgreementId::from_bytes([0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+
+    // Paired accept+cancel with the on-chain audit populated, as the chain_listener
+    // does from the observed snapshot.
+    let items = vec![ReconciliationItem {
+        agreement_id: paired_id,
+        apply_accept: true,
+        cancel: Some(CancelKind::ByRequester),
+        audit: ReconciliationAudit {
+            accepted_at: Some(1_700_000_001),
+            accepted_tx: Some("0xacc".to_string()),
+            canceled_at: Some(1_700_000_002),
+            canceled_by: Some("0xcxl".to_string()),
+            canceled_tx: Some("0xcxltx".to_string()),
+        },
+    }];
+    let outcomes = registry
+        .apply_reconciliation_batch(&items)
+        .await
+        .expect("batch should succeed");
+    let paired = outcomes.get(&paired_id).copied().unwrap_or_default();
+    assert!(
+        paired.did_accept && paired.did_cancel,
+        "paired accept+cancel applied"
+    );
+
+    // The row is now CanceledByRequester, yet it must appear in BOTH pending sets.
+    let pending_accepted = registry
+        .get_agreements_pending_accepted_emission(100)
+        .await
+        .expect("accepted query");
+    assert!(
+        pending_accepted.iter().any(|p| p.agreement_id == paired_id),
+        "accepted event must NOT be lost for an accepted-then-cancelled agreement"
+    );
+    let pending_terminated = registry
+        .get_agreements_pending_terminated_emission(100)
+        .await
+        .expect("terminated query");
+    assert!(
+        pending_terminated
+            .iter()
+            .any(|p| p.agreement_id == paired_id),
+        "terminated event must surface for the cancelled agreement"
+    );
+
+    // After stamping each marker, neither query returns the row again (emit-once).
+    registry
+        .mark_accepted_event_emitted(&paired_id)
+        .await
+        .expect("mark accepted");
+    registry
+        .mark_terminated_event_emitted(&paired_id)
+        .await
+        .expect("mark terminated");
+    assert!(
+        !registry
+            .get_agreements_pending_accepted_emission(100)
+            .await
+            .expect("accepted query")
+            .iter()
+            .any(|p| p.agreement_id == paired_id),
+        "accepted marker prevents re-emit"
+    );
+    assert!(
+        !registry
+            .get_agreements_pending_terminated_emission(100)
+            .await
+            .expect("terminated query")
+            .iter()
+            .any(|p| p.agreement_id == paired_id),
+        "terminated marker prevents re-emit"
+    );
+}
+
+#[tokio::test]
 async fn apply_reconciliation_batch_no_op_cas_miss_present_with_default_outcome() {
     // Documents the contract the chain_listener relies on to distinguish
     // "row CAS-guard didn't match" (default outcome present) from "whole
@@ -2720,6 +2816,7 @@ async fn apply_reconciliation_batch_no_op_cas_miss_present_with_default_outcome(
         agreement_id: already_canceled_id,
         apply_accept: false,
         cancel: Some(CancelKind::ByIndexer),
+        audit: ReconciliationAudit::default(),
     }];
 
     //* When
@@ -2777,6 +2874,7 @@ async fn apply_reconciliation_batch_paired_rolls_back_on_unmatched_cancel() {
         agreement_id: created_id,
         apply_accept: true,
         cancel: Some(CancelKind::ByIndexer),
+        audit: ReconciliationAudit::default(),
     }];
 
     //* When

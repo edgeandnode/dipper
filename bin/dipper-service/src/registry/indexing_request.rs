@@ -60,6 +60,23 @@ pub trait IndexingRequestRegistry {
         min_age_seconds: i64,
         batch_size: i64,
     ) -> RegistryResult<Vec<IndexingRequest>>;
+
+    /// Atomically set the request's coverage-shortfall latch, returning whether
+    /// the value actually changed (a single guarded UPDATE, so the transition is
+    /// race-free).
+    ///
+    /// Drives the `n_indexers_unavailable` signal: reassessment fires it once on
+    /// the transition INTO shortfall (`Ok(true)` with `active == true`) and clears
+    /// the latch on recovery (`Ok(true)` with `active == false`), rather than
+    /// re-emitting on every recurring reassessment of a persistently short request.
+    /// Default `Ok(false)` (never transitions) so mocks need not override.
+    async fn set_indexing_request_shortfall_active(
+        &self,
+        _id: &IndexingRequestId,
+        _active: bool,
+    ) -> RegistryResult<bool> {
+        Ok(false)
+    }
 }
 
 /// What `set_indexing_target_candidates` actually did.

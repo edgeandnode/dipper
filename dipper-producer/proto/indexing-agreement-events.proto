@@ -96,6 +96,11 @@ message SubgraphIndexingAgreementProposed {
 //
 // Event type: subgraph.indexing.agreement.accepted
 message SubgraphIndexingAgreementAccepted {
+    // 0x hex of the on-chain agreement id (bytes16) that was accepted.
+    // Stable, unique per agreement -- consumers dedup on (agreement_id, event_type)
+    // since emission is at-least-once (an accepted event may be redelivered).
+    string agreement_id = 6;
+
     // 0x address of the Indexer who accepted the indexing agreement
     string indexer = 1;
 
@@ -116,6 +121,11 @@ message SubgraphIndexingAgreementAccepted {
 //
 // Event type: subgraph.indexing.agreement.request.expired
 message SubgraphIndexingAgreementRequestExpired {
+    // 0x hex of the on-chain agreement id (bytes16) that expired.
+    // Stable, unique per agreement -- consumers dedup on (agreement_id, event_type)
+    // since emission is at-least-once (an expired event may be redelivered).
+    string agreement_id = 4;
+
     // 0x address of the Indexer who failed to accept the agreement within the given time limit
     string indexer = 1;
 
@@ -141,6 +151,11 @@ message SubgraphIndexingAgreementNIndexersUnavailable {
 //
 // Event type: subgraph.indexing.agreement.terminated
 message SubgraphIndexingAgreementTerminated {
+    // 0x hex of the on-chain agreement id (bytes16) that was terminated.
+    // Stable, unique per agreement -- consumers dedup on (agreement_id, event_type)
+    // since emission is at-least-once (a terminated event may be redelivered).
+    string agreement_id = 6;
+
     // 0x address of the Indexer that had the accepted agreement that was terminated
     string indexer = 1;
 

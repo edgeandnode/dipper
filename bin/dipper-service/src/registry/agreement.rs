@@ -51,11 +51,69 @@ pub struct ReconciliationOutcome {
 }
 
 /// One row's reconciliation request inside a batched apply.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ReconciliationItem {
     pub agreement_id: IndexingAgreementId,
     pub apply_accept: bool,
     pub cancel: Option<CancelKind>,
+    /// On-chain payload observed for this transition, persisted alongside the
+    /// status change so a later emission sweep can rebuild the lifecycle event
+    /// from the row alone. Only the fields relevant to the applied transition
+    /// are populated.
+    pub audit: ReconciliationAudit,
+}
+
+/// Audit payload captured at reconcile time for later event emission.
+///
+/// Timestamps are chain seconds; tx hashes and `canceled_by` are the 0x hex
+/// string form matching the event wire representation.
+#[derive(Debug, Clone, Default)]
+pub struct ReconciliationAudit {
+    pub accepted_at: Option<u64>,
+    pub accepted_tx: Option<String>,
+    pub canceled_at: Option<u64>,
+    pub canceled_by: Option<String>,
+    pub canceled_tx: Option<String>,
+}
+
+/// A row that needs a `terminated` lifecycle event emitted, rebuilt from the
+/// agreement row alone by the emission sweep.
+#[derive(Debug, Clone)]
+pub struct PendingTerminatedEvent {
+    pub agreement_id: IndexingAgreementId,
+    pub indexer_id: IndexerId,
+    pub deployment_id: DeploymentId,
+    pub protocol_network: ChainId,
+    pub canceled_at: Option<u64>,
+    pub canceled_by: Option<String>,
+    pub canceled_tx: Option<String>,
+    pub updated_at: OffsetDateTime,
+}
+
+/// A row that needs an `accepted` lifecycle event emitted, rebuilt from the
+/// agreement row alone by the emission sweep.
+#[derive(Debug, Clone)]
+pub struct PendingAcceptedEvent {
+    pub agreement_id: IndexingAgreementId,
+    pub indexer_id: IndexerId,
+    pub deployment_id: DeploymentId,
+    pub protocol_network: ChainId,
+    pub accepted_at: u64,
+    pub accepted_tx: String,
+    pub ends_at: u64,
+    pub payer: Address,
+}
+
+/// A row that needs a `request.expired` lifecycle event emitted, rebuilt from
+/// the agreement row alone by the emission sweep.
+#[derive(Debug, Clone)]
+pub struct PendingExpiredEvent {
+    pub agreement_id: IndexingAgreementId,
+    pub indexer_id: IndexerId,
+    pub deployment_id: DeploymentId,
+    pub protocol_network: ChainId,
+    pub request_proposed_at: u64,
+    pub request_expired_at: u64,
 }
 
 #[async_trait]
@@ -242,6 +300,88 @@ pub trait AgreementRegistry {
             outcomes.insert(item.agreement_id, outcome);
         }
         Ok(outcomes)
+    }
+
+    /// Fetch agreements awaiting a `terminated` event: terminal-cancel status,
+    /// genuinely accepted on-chain, marker unset. Default returns empty so mocks
+    /// need not override; the production registry runs the real query.
+    async fn get_agreements_pending_terminated_emission(
+        &self,
+        _limit: i64,
+    ) -> RegistryResult<Vec<PendingTerminatedEvent>> {
+        Ok(Vec::new())
+    }
+
+    /// Stamp the `terminated` emission marker after a confirmed broker send.
+    /// Default no-op so mocks need not override.
+    async fn mark_terminated_event_emitted(
+        &self,
+        _agreement_id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        Ok(())
+    }
+
+    /// Fetch agreements awaiting an `accepted` event: `AcceptedOnChain`, accept
+    /// observed by the new reconcile path, marker unset. Default returns empty so
+    /// mocks need not override; the production registry runs the real query.
+    async fn get_agreements_pending_accepted_emission(
+        &self,
+        _limit: i64,
+    ) -> RegistryResult<Vec<PendingAcceptedEvent>> {
+        Ok(Vec::new())
+    }
+
+    /// Stamp the `accepted` emission marker after a confirmed broker send.
+    /// Default no-op so mocks need not override.
+    async fn mark_accepted_event_emitted(
+        &self,
+        _agreement_id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        Ok(())
+    }
+
+    /// Fetch agreements awaiting a `request.expired` event: `Expired`, marker
+    /// unset. Default returns empty so mocks need not override; the production
+    /// registry runs the real query.
+    async fn get_agreements_pending_expired_emission(
+        &self,
+        _limit: i64,
+    ) -> RegistryResult<Vec<PendingExpiredEvent>> {
+        Ok(Vec::new())
+    }
+
+    /// Stamp the `request.expired` emission marker after a confirmed broker send.
+    /// Default no-op so mocks need not override.
+    async fn mark_expired_event_emitted(
+        &self,
+        _agreement_id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        Ok(())
+    }
+
+    /// Record the accepted audit payload out-of-band (rejected-then-accepted
+    /// anomaly), marking the row as genuinely accepted so its eventual
+    /// `terminated` is sweep-eligible. Default no-op so mocks need not override.
+    async fn record_accepted_audit(
+        &self,
+        _agreement_id: &IndexingAgreementId,
+        _accepted_at: u64,
+        _accepted_tx: &str,
+    ) -> RegistryResult<()> {
+        Ok(())
+    }
+
+    /// Record the cancel audit payload for a dipper-initiated cancel so the
+    /// emission sweep can populate the `terminated` event fields. Default no-op
+    /// so mocks need not override.
+    async fn record_cancel_audit(
+        &self,
+        _agreement_id: &IndexingAgreementId,
+        _canceled_at: u64,
+        _canceled_by: &str,
+        _canceled_tx: Option<&str>,
+    ) -> RegistryResult<()> {
+        Ok(())
     }
 
     /// Get `Created` agreements whose deadline has passed (by block timestamp).

@@ -99,6 +99,11 @@ pub struct SubgraphIndexingAgreementProposed {
 /// Event type: subgraph.indexing.agreement.accepted
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SubgraphIndexingAgreementAccepted {
+    /// 0x hex of the on-chain agreement id (bytes16) that was accepted.
+    /// Stable, unique per agreement -- consumers dedup on (agreement_id, event_type)
+    /// since emission is at-least-once (an accepted event may be redelivered).
+    #[prost(string, tag = "6")]
+    pub agreement_id: ::prost::alloc::string::String,
     /// 0x address of the Indexer who accepted the indexing agreement
     #[prost(string, tag = "1")]
     pub indexer: ::prost::alloc::string::String,
@@ -120,6 +125,11 @@ pub struct SubgraphIndexingAgreementAccepted {
 /// Event type: subgraph.indexing.agreement.request.expired
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SubgraphIndexingAgreementRequestExpired {
+    /// 0x hex of the on-chain agreement id (bytes16) that expired.
+    /// Stable, unique per agreement -- consumers dedup on (agreement_id, event_type)
+    /// since emission is at-least-once (an expired event may be redelivered).
+    #[prost(string, tag = "4")]
+    pub agreement_id: ::prost::alloc::string::String,
     /// 0x address of the Indexer who failed to accept the agreement within the given time limit
     #[prost(string, tag = "1")]
     pub indexer: ::prost::alloc::string::String,
@@ -147,6 +157,11 @@ pub struct SubgraphIndexingAgreementNIndexersUnavailable {
 /// Event type: subgraph.indexing.agreement.terminated
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SubgraphIndexingAgreementTerminated {
+    /// 0x hex of the on-chain agreement id (bytes16) that was terminated.
+    /// Stable, unique per agreement -- consumers dedup on (agreement_id, event_type)
+    /// since emission is at-least-once (a terminated event may be redelivered).
+    #[prost(string, tag = "6")]
+    pub agreement_id: ::prost::alloc::string::String,
     /// 0x address of the Indexer that had the accepted agreement that was terminated
     #[prost(string, tag = "1")]
     pub indexer: ::prost::alloc::string::String,

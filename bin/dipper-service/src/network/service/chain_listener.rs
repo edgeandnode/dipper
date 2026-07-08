@@ -301,7 +301,6 @@ where
                 &event_source,
                 &mut rx_stop,
                 &agreement_conf,
-                subgraph_indexing_agreements_events_emitter.as_ref(),
             )
             .await
             {
@@ -342,17 +341,24 @@ where
 
             polls_since_sweep += 1;
             if polls_since_sweep >= SWEEP_POLLS {
-                sweep_executable_pending_cancellations(
+                sweep_executable_pending_cancellations(&registry, &chain_client, &agreement_conf)
+                    .await;
+                sweep_orphan_canceled_agreements(&registry, &chain_client, &agreement_conf).await;
+                // Accepted BEFORE terminated: an agreement accepted-then-cancelled
+                // in one snapshot must announce `accepted` before `terminated`.
+                sweep_pending_accepted_events(
                     &registry,
-                    &chain_client,
+                    subgraph_indexing_agreements_events_emitter.as_ref(),
+                )
+                .await;
+                sweep_pending_terminated_events(
+                    &registry,
                     &agreement_conf,
                     subgraph_indexing_agreements_events_emitter.as_ref(),
                 )
                 .await;
-                sweep_orphan_canceled_agreements(
+                sweep_pending_expired_events(
                     &registry,
-                    &chain_client,
-                    &agreement_conf,
                     subgraph_indexing_agreements_events_emitter.as_ref(),
                 )
                 .await;
@@ -404,7 +410,6 @@ async fn drain_once<R, W, E, T>(
     event_source: &E,
     rx_stop: &mut mpsc::Receiver<()>,
     config: &crate::config::IndexingAgreementConfig,
-    events_emitter: &dyn SubgraphIndexingAgreementEventsProducer,
 ) -> Result<DrainOutcome, ()>
 where
     R: AgreementRegistry + ChainListenerStateRegistry + PendingCancellationRegistry + Send + Sync,
@@ -551,7 +556,15 @@ where
             }
 
             let agreement = agreements_by_id.remove(&snapshot.agreement_id);
-            match prepare_reconciliation(&snapshot, agreement, worker_queue, signer_address).await {
+            match prepare_reconciliation(
+                &snapshot,
+                agreement,
+                registry,
+                worker_queue,
+                signer_address,
+            )
+            .await
+            {
                 Ok(Some(prep)) => prepared.push(prep),
                 Ok(None) => {}
                 Err(err) => {
@@ -570,7 +583,7 @@ where
         // pre-fills every input id in `outcomes` (with `default()`
         // for rows whose CAS guard didn't match), so a missing id
         // is an unambiguous signal that the whole batch failed.
-        let items: Vec<ReconciliationItem> = prepared.iter().map(|p| p.item).collect();
+        let items: Vec<ReconciliationItem> = prepared.iter().map(|p| p.item.clone()).collect();
         let outcomes = if items.is_empty() {
             std::collections::HashMap::new()
         } else {
@@ -595,16 +608,7 @@ where
             let Some(outcome) = outcomes.get(&prep.agreement.id).copied() else {
                 continue;
             };
-            match finalize_reconciliation(
-                &prep,
-                outcome,
-                registry,
-                chain_client,
-                config,
-                events_emitter,
-            )
-            .await
-            {
+            match finalize_reconciliation(&prep, outcome, registry, chain_client, config).await {
                 Ok(()) => drain_processed += 1,
                 Err(err) => {
                     tracing::warn!(
@@ -731,19 +735,10 @@ where
 struct PreparedReconciliation {
     item: ReconciliationItem,
     agreement: IndexingAgreement,
+    /// Address that appears in the cancel log line. The accept/cancel audit is
+    /// carried on `item.audit` and persisted with the transition; the `accepted`
+    /// and `terminated` events are emitted later by their sweeps.
     indexer: Address,
-    /// Address that initiated the on-chain cancel (`Address::ZERO` when not a
-    /// cancel). Used as `terminated_by` on the `terminated` lifecycle event.
-    canceled_by: Address,
-    /// On-chain accept timestamp + tx hash and the agreement end timestamp,
-    /// sourced from the subgraph snapshot. Used by the `accepted` event.
-    accepted_at: u64,
-    accepted_tx: String,
-    ends_at: u64,
-    /// On-chain cancel timestamp + tx hash, sourced from the subgraph snapshot.
-    /// Used by the `terminated` event (chain-observed cancels).
-    canceled_at: u64,
-    canceled_tx: String,
 }
 
 /// Cap the per-poll ratchet on the persisted chain timestamp. The cap
@@ -785,13 +780,15 @@ fn apply_chain_ts_drift_cap(
 /// no DB write is needed. Caller pre-fetches the agreement (in batch for
 /// the chain_listener loop, single-row for tests) and passes `None`
 /// when the snapshot is for an agreement we don't track locally.
-async fn prepare_reconciliation<W>(
+async fn prepare_reconciliation<R, W>(
     snapshot: &AgreementStateSnapshot,
     agreement: Option<IndexingAgreement>,
+    registry: &R,
     worker_queue: &W,
     signer_address: Address,
 ) -> anyhow::Result<Option<PreparedReconciliation>>
 where
+    R: AgreementRegistry + Sync,
     W: WorkerQueue,
 {
     tracing::debug!(
@@ -833,6 +830,22 @@ where
         worker_queue
             .cancel_rejected_agreement_on_chain(agreement.id)
             .await?;
+
+        // This row goes Rejected -> Canceled without ever transiting
+        // AcceptedOnChain, so `apply_reconciliation` never records the accept.
+        // Persist it from the snapshot so the eventual `terminated` (emitted by
+        // the sweep after the cancel) is eligible (`accepted_at IS NOT NULL`) and
+        // carries accurate accept data.
+        if let Err(err) = registry
+            .record_accepted_audit(&agreement.id, snapshot.accepted_at, &snapshot.accepted_tx)
+            .await
+        {
+            tracing::warn!(
+                agreement_id = %agreement.id,
+                error = %err,
+                "failed to record accepted audit for rejected-then-accepted agreement"
+            );
+        }
     }
 
     // Both transitions are applied atomically downstream so the
@@ -863,15 +876,19 @@ where
                 agreement_id: agreement.id,
                 apply_accept,
                 cancel: cancel_kind,
+                // Capture the observed on-chain payload for the transition(s)
+                // this item applies, so it is persisted with the status change
+                // and a later emission sweep can rebuild the event from the row.
+                audit: crate::registry::ReconciliationAudit {
+                    accepted_at: apply_accept.then_some(snapshot.accepted_at),
+                    accepted_tx: apply_accept.then(|| snapshot.accepted_tx.clone()),
+                    canceled_at: cancel_kind.map(|_| snapshot.canceled_at),
+                    canceled_by: cancel_kind.map(|_| snapshot.canceled_by.to_string()),
+                    canceled_tx: cancel_kind.map(|_| snapshot.canceled_tx.clone()),
+                },
             },
             agreement,
             indexer: snapshot.indexer,
-            canceled_by: snapshot.canceled_by,
-            accepted_at: snapshot.accepted_at,
-            accepted_tx: snapshot.accepted_tx.clone(),
-            ends_at: snapshot.ends_at,
-            canceled_at: snapshot.canceled_at,
-            canceled_tx: snapshot.canceled_tx.clone(),
         }))
     } else {
         if already_terminal_cancel && snapshot.state.is_canceled() {
@@ -893,10 +910,9 @@ async fn finalize_reconciliation<R, T>(
     registry: &R,
     chain_client: &T,
     config: &crate::config::IndexingAgreementConfig,
-    events_emitter: &dyn SubgraphIndexingAgreementEventsProducer,
 ) -> anyhow::Result<()>
 where
-    R: AgreementRegistry + PendingCancellationRegistry,
+    R: AgreementRegistry + PendingCancellationRegistry + Sync,
     T: ChainClient,
 {
     if outcome.did_accept {
@@ -913,20 +929,10 @@ where
             "agreement state transition"
         );
 
-        // An indexer accepted the agreement on-chain: emit the `accepted` event.
-        // `accepted_at`/`accepted_tx`/`ends_at` come from the subgraph snapshot
-        // (the on-chain accept), with the payer from the local agreement terms.
-        events_emitter.produce_subgraph_indexing_agreement_accepted(
-            prep.agreement.terms.metadata.subgraph_deployment_id,
-            prep.agreement.terms.metadata.protocol_network,
-            proto::SubgraphIndexingAgreementAccepted {
-                indexer: prep.indexer.to_string(),
-                accepted_at: prep.accepted_at,
-                accepted_tx: prep.accepted_tx.clone(),
-                ends_at: prep.ends_at,
-                payer: prep.agreement.terms.payer.to_string(),
-            },
-        );
+        // The `accepted` event is NOT emitted here. `apply_reconciliation`
+        // persisted the accept audit (accepted_at/tx) in the same transaction as
+        // this transition; `sweep_pending_accepted_events` is the single
+        // authoritative emitter and will announce it durably.
     }
 
     if outcome.did_cancel {
@@ -943,46 +949,17 @@ where
             None => {}
         }
 
-        // Emit `terminated` for on-chain cancels observed here. dipper-initiated
-        // cancels pre-mark the row `CanceledByRequester` (already-terminal → this
-        // path isn't reached) or `Abandoned` (liveness, which already emitted —
-        // skip it here to avoid a duplicate). What remains is indexer-initiated and
-        // external-requester cancels. `terminated_at`/`terminated_tx` come from the
-        // subgraph snapshot (the on-chain cancel).
-        if prep.agreement.status != IndexingAgreementStatus::AbandonedByIndexer {
-            // Count runs after the cancel was applied (in `apply_reconciliation_batch`
-            // above), so it excludes this just-cancelled agreement.
-            let remaining = crate::registry::remaining_accepted_indexing_agreements(
-                registry,
-                &prep.agreement.terms.metadata.subgraph_deployment_id,
-            )
-            .await;
-            events_emitter.produce_subgraph_indexing_agreement_terminated(
-                prep.agreement.terms.metadata.subgraph_deployment_id,
-                prep.agreement.terms.metadata.protocol_network,
-                proto::SubgraphIndexingAgreementTerminated {
-                    indexer: prep.indexer.to_string(),
-                    terminated_at: prep.canceled_at,
-                    terminated_by: prep.canceled_by.to_string(),
-                    terminated_tx: prep.canceled_tx.clone(),
-                    remaining_accepted_indexing_agreements: remaining,
-                },
-            );
-        }
+        // The `terminated` event is NOT emitted here. `apply_reconciliation`
+        // persisted the cancel audit (canceled_at/by/tx) in the same transaction
+        // as this transition; `sweep_pending_terminated_events` is the single
+        // authoritative emitter and will announce it durably.
     }
 
     // Gated on `did_accept` so it only fires on a fresh AcceptedOnChain
     // write — repeating it on a CAS no-op would re-enqueue work that
     // already ran in a prior poll.
     if outcome.did_accept {
-        execute_pending_cancellations(
-            &prep.agreement.id,
-            registry,
-            chain_client,
-            config,
-            events_emitter,
-        )
-        .await?;
+        execute_pending_cancellations(&prep.agreement.id, registry, chain_client, config).await?;
     }
 
     Ok(())
@@ -1001,10 +978,9 @@ async fn reconcile_agreement<R, W, T>(
     chain_client: &T,
     signer_address: Address,
     config: &crate::config::IndexingAgreementConfig,
-    events_emitter: &dyn SubgraphIndexingAgreementEventsProducer,
 ) -> anyhow::Result<()>
 where
-    R: AgreementRegistry + PendingCancellationRegistry,
+    R: AgreementRegistry + PendingCancellationRegistry + Sync,
     W: WorkerQueue,
     T: ChainClient,
 {
@@ -1012,7 +988,7 @@ where
         .get_indexing_agreement_by_id(&snapshot.agreement_id)
         .await?;
     let Some(prep) =
-        prepare_reconciliation(snapshot, agreement, worker_queue, signer_address).await?
+        prepare_reconciliation(snapshot, agreement, registry, worker_queue, signer_address).await?
     else {
         return Ok(());
     };
@@ -1021,15 +997,7 @@ where
         .apply_reconciliation(&prep.agreement.id, prep.item.apply_accept, prep.item.cancel)
         .await?;
 
-    finalize_reconciliation(
-        &prep,
-        outcome,
-        registry,
-        chain_client,
-        config,
-        events_emitter,
-    )
-    .await
+    finalize_reconciliation(&prep, outcome, registry, chain_client, config).await
 }
 
 /// Execute pending cancellations linked to a newly-accepted agreement.
@@ -1045,10 +1013,9 @@ async fn execute_pending_cancellations<R, T>(
     registry: &R,
     chain_client: &T,
     config: &crate::config::IndexingAgreementConfig,
-    events_emitter: &dyn SubgraphIndexingAgreementEventsProducer,
 ) -> anyhow::Result<()>
 where
-    R: AgreementRegistry + PendingCancellationRegistry,
+    R: AgreementRegistry + PendingCancellationRegistry + Sync,
     T: ChainClient,
 {
     let pending = registry
@@ -1150,25 +1117,27 @@ where
             "Canceled old agreement on-chain and in dipper DB after replacement confirmed"
         );
 
-        // The replaced (previously accepted) agreement was canceled on-chain by
-        // dipper: emit `terminated`. Pre-marked `CanceledByRequester` above, so the
-        // chain_listener's observe path won't re-emit, and the count excludes it.
-        let remaining = crate::registry::remaining_accepted_indexing_agreements(
-            registry,
-            &old_agreement.terms.metadata.subgraph_deployment_id,
-        )
-        .await;
-        events_emitter.produce_subgraph_indexing_agreement_terminated(
-            old_agreement.terms.metadata.subgraph_deployment_id,
-            old_agreement.terms.metadata.protocol_network,
-            proto::SubgraphIndexingAgreementTerminated {
-                indexer: old_agreement.indexer.id.to_string(),
-                terminated_at: dipper_core::time::now_secs(),
-                terminated_by: config.recurring_agreement_manager().to_string(),
-                terminated_tx: on_chain_cancel_tx.unwrap_or_default(),
-                remaining_accepted_indexing_agreements: remaining,
-            },
-        );
+        // Record the cancel audit so `sweep_pending_terminated_events` can emit
+        // the `terminated` durably. Crucially, the sweep only emits for rows that
+        // were genuinely accepted on-chain (`accepted_at IS NOT NULL`): a
+        // proposed-but-never-accepted replacement records audit here but is never
+        // swept, so it produces no spurious `terminated`.
+        let manager = config.recurring_agreement_manager().to_string();
+        if let Err(err) = registry
+            .record_cancel_audit(
+                &cancellation.old_agreement_id,
+                dipper_core::time::now_secs(),
+                &manager,
+                on_chain_cancel_tx.as_deref(),
+            )
+            .await
+        {
+            tracing::warn!(
+                old_agreement_id = %cancellation.old_agreement_id,
+                error = %err,
+                "failed to record cancel audit; terminated event may emit with fallback fields"
+            );
+        }
     }
 
     if transient_failures > 0 {
@@ -1200,9 +1169,8 @@ async fn sweep_orphan_canceled_agreements<R, T>(
     registry: &R,
     chain_client: &T,
     config: &crate::config::IndexingAgreementConfig,
-    events_emitter: &dyn SubgraphIndexingAgreementEventsProducer,
 ) where
-    R: AgreementRegistry,
+    R: AgreementRegistry + Sync,
     T: ChainClient,
 {
     let orphans = match registry
@@ -1269,25 +1237,262 @@ async fn sweep_orphan_canceled_agreements<R, T>(
             continue;
         }
 
-        // Orphan (previously accepted) agreement canceled on-chain by dipper during
-        // crash-recovery sweep: emit `terminated`. Row is marked `CanceledByRequester`
-        // above, so the observe path won't re-emit, and the count excludes it.
-        let remaining = crate::registry::remaining_accepted_indexing_agreements(
-            registry,
-            &agreement.terms.metadata.subgraph_deployment_id,
-        )
-        .await;
-        events_emitter.produce_subgraph_indexing_agreement_terminated(
-            agreement.terms.metadata.subgraph_deployment_id,
-            agreement.terms.metadata.protocol_network,
-            proto::SubgraphIndexingAgreementTerminated {
-                indexer: agreement.indexer.id.to_string(),
-                terminated_at: dipper_core::time::now_secs(),
-                terminated_by: config.recurring_agreement_manager().to_string(),
-                terminated_tx: on_chain_cancel_tx.unwrap_or_default(),
-                remaining_accepted_indexing_agreements: remaining,
-            },
-        );
+        // Orphan (previously accepted) agreement canceled on-chain by dipper.
+        // Record the cancel audit; `sweep_pending_terminated_events` emits the
+        // `terminated` durably (the row is `AcceptedOnChain` -> terminal, so it is
+        // sweep-eligible).
+        let manager = config.recurring_agreement_manager().to_string();
+        if let Err(err) = registry
+            .record_cancel_audit(
+                &agreement.id,
+                dipper_core::time::now_secs(),
+                &manager,
+                on_chain_cancel_tx.as_deref(),
+            )
+            .await
+        {
+            tracing::warn!(
+                agreement_id = %agreement.id,
+                error = %err,
+                "failed to record cancel audit; terminated event may emit with fallback fields"
+            );
+        }
+    }
+}
+
+/// Emit `terminated` events durably for agreements that have reached a terminal
+/// cancel state but not yet been announced.
+///
+/// This is the single authoritative emitter for `terminated`: every cancel path
+/// (indexer-observed on-chain, or dipper-initiated) marks the row terminal and
+/// leaves `terminated_event_emitted_at` NULL; this sweep re-derives the event
+/// from the row, sends it synchronously, and stamps the marker only after the
+/// broker confirms. If the send fails or the process crashes first, the marker
+/// stays NULL and the next sweep retries -- self-healing, at-least-once.
+///
+/// Eligibility (`get_agreements_pending_terminated_emission`) requires
+/// `accepted_at IS NOT NULL`, so a never-accepted agreement that was only ever
+/// cancelled locally never produces a `terminated` -- there was nothing live
+/// on-chain to terminate.
+async fn sweep_pending_terminated_events<R>(
+    registry: &R,
+    config: &crate::config::IndexingAgreementConfig,
+    events_emitter: &dyn SubgraphIndexingAgreementEventsProducer,
+) where
+    R: AgreementRegistry + Sync,
+{
+    let pending = match registry
+        .get_agreements_pending_terminated_emission(SWEEP_BATCH_SIZE)
+        .await
+    {
+        Ok(pending) => pending,
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to query agreements pending terminated emission");
+            return;
+        }
+    };
+
+    if pending.is_empty() {
+        return;
+    }
+
+    tracing::debug!(count = pending.len(), "emitting pending terminated events");
+
+    for p in pending {
+        // Count runs after the row is already terminal, so it excludes this one.
+        let remaining =
+            crate::registry::remaining_accepted_indexing_agreements(registry, &p.deployment_id)
+                .await;
+
+        // Fall back to the row's terminal-transition time and the manager address
+        // when the on-chain cancel audit was never recorded.
+        let terminated_at = p
+            .canceled_at
+            .unwrap_or_else(|| p.updated_at.unix_timestamp().max(0) as u64);
+        let terminated_by = p
+            .canceled_by
+            .clone()
+            .unwrap_or_else(|| config.recurring_agreement_manager().to_string());
+
+        let event = proto::SubgraphIndexingAgreementTerminated {
+            agreement_id: p.agreement_id.to_string(),
+            indexer: p.indexer_id.to_string(),
+            terminated_at,
+            terminated_by,
+            terminated_tx: p.canceled_tx.clone().unwrap_or_default(),
+            remaining_accepted_indexing_agreements: remaining,
+        };
+
+        match events_emitter
+            .emit_subgraph_indexing_agreement_terminated(p.deployment_id, p.protocol_network, event)
+            .await
+        {
+            Ok(()) => {
+                if let Err(err) = registry
+                    .mark_terminated_event_emitted(&p.agreement_id)
+                    .await
+                {
+                    // Sent but not stamped: the next sweep re-sends (deduped by
+                    // consumers on agreement_id). Better than dropping.
+                    tracing::warn!(
+                        agreement_id = %p.agreement_id,
+                        error = %err,
+                        "emitted terminated event but failed to stamp marker; may re-emit"
+                    );
+                }
+            }
+            Err(err) => {
+                // A send failure almost always means the broker is unreachable,
+                // so the rest of this batch would fail too. Stop now and retry the
+                // whole batch next sweep -- avoids a burst of failed sends and log
+                // spam during an outage. Nothing is lost (markers stay unset).
+                tracing::warn!(
+                    agreement_id = %p.agreement_id,
+                    error = %err,
+                    "failed to emit terminated event; pausing batch, will retry next sweep"
+                );
+                break;
+            }
+        }
+    }
+}
+
+/// Emit `accepted` events durably for agreements that reached accepted on-chain
+/// but haven't been announced. Mirror of [`sweep_pending_terminated_events`]:
+/// re-derive from the row, send synchronously, stamp the marker only on a
+/// confirmed send.
+///
+/// Eligibility (`get_agreements_pending_accepted_emission`) requires
+/// `accepted_at IS NOT NULL` (so pre-feature rows are never backfilled) but is
+/// NOT gated on current status: an agreement accepted and then cancelled in a
+/// single snapshot is already terminal yet must still emit its `accepted` (which
+/// is why this sweep runs before the terminated sweep).
+async fn sweep_pending_accepted_events<R>(
+    registry: &R,
+    events_emitter: &dyn SubgraphIndexingAgreementEventsProducer,
+) where
+    R: AgreementRegistry + Sync,
+{
+    let pending = match registry
+        .get_agreements_pending_accepted_emission(SWEEP_BATCH_SIZE)
+        .await
+    {
+        Ok(pending) => pending,
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to query agreements pending accepted emission");
+            return;
+        }
+    };
+
+    if pending.is_empty() {
+        return;
+    }
+
+    tracing::debug!(count = pending.len(), "emitting pending accepted events");
+
+    for p in pending {
+        let event = proto::SubgraphIndexingAgreementAccepted {
+            agreement_id: p.agreement_id.to_string(),
+            indexer: p.indexer_id.to_string(),
+            accepted_at: p.accepted_at,
+            accepted_tx: p.accepted_tx.clone(),
+            ends_at: p.ends_at,
+            payer: p.payer.to_string(),
+        };
+
+        match events_emitter
+            .emit_subgraph_indexing_agreement_accepted(p.deployment_id, p.protocol_network, event)
+            .await
+        {
+            Ok(()) => {
+                if let Err(err) = registry.mark_accepted_event_emitted(&p.agreement_id).await {
+                    tracing::warn!(
+                        agreement_id = %p.agreement_id,
+                        error = %err,
+                        "emitted accepted event but failed to stamp marker; may re-emit"
+                    );
+                }
+            }
+            Err(err) => {
+                // Broker likely unreachable; the rest of the batch would fail too.
+                // Stop and retry next sweep (markers stay unset -> nothing lost).
+                tracing::warn!(
+                    agreement_id = %p.agreement_id,
+                    error = %err,
+                    "failed to emit accepted event; pausing batch, will retry next sweep"
+                );
+                break;
+            }
+        }
+    }
+}
+
+/// Emit `request.expired` events durably for agreements marked `Expired` but not
+/// yet announced. Mirror of the accepted/terminated sweeps.
+///
+/// Running here (after the drain, which recovers `Expired -> AcceptedOnChain` on
+/// a late on-chain accept) means a row that was prematurely marked `Expired` is
+/// no longer selected once recovered -- so a premature `expired` never
+/// contradicts a subsequent `accepted`.
+async fn sweep_pending_expired_events<R>(
+    registry: &R,
+    events_emitter: &dyn SubgraphIndexingAgreementEventsProducer,
+) where
+    R: AgreementRegistry + Sync,
+{
+    let pending = match registry
+        .get_agreements_pending_expired_emission(SWEEP_BATCH_SIZE)
+        .await
+    {
+        Ok(pending) => pending,
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to query agreements pending expired emission");
+            return;
+        }
+    };
+
+    if pending.is_empty() {
+        return;
+    }
+
+    tracing::debug!(count = pending.len(), "emitting pending expired events");
+
+    for p in pending {
+        let event = proto::SubgraphIndexingAgreementRequestExpired {
+            agreement_id: p.agreement_id.to_string(),
+            indexer: p.indexer_id.to_string(),
+            request_proposed_at: p.request_proposed_at,
+            request_expired_at: p.request_expired_at,
+        };
+
+        match events_emitter
+            .emit_subgraph_indexing_agreement_request_expired(
+                p.deployment_id,
+                p.protocol_network,
+                event,
+            )
+            .await
+        {
+            Ok(()) => {
+                if let Err(err) = registry.mark_expired_event_emitted(&p.agreement_id).await {
+                    tracing::warn!(
+                        agreement_id = %p.agreement_id,
+                        error = %err,
+                        "emitted expired event but failed to stamp marker; may re-emit"
+                    );
+                }
+            }
+            Err(err) => {
+                // Broker likely unreachable; the rest of the batch would fail too.
+                // Stop and retry next sweep (markers stay unset -> nothing lost).
+                tracing::warn!(
+                    agreement_id = %p.agreement_id,
+                    error = %err,
+                    "failed to emit expired event; pausing batch, will retry next sweep"
+                );
+                break;
+            }
+        }
     }
 }
 
@@ -1309,9 +1514,8 @@ async fn sweep_executable_pending_cancellations<R, T>(
     registry: &R,
     chain_client: &T,
     config: &crate::config::IndexingAgreementConfig,
-    events_emitter: &dyn SubgraphIndexingAgreementEventsProducer,
 ) where
-    R: AgreementRegistry + PendingCancellationRegistry,
+    R: AgreementRegistry + PendingCancellationRegistry + Sync,
     T: ChainClient,
 {
     let targets = match registry
@@ -1338,14 +1542,8 @@ async fn sweep_executable_pending_cancellations<R, T>(
     );
 
     for new_agreement_id in targets {
-        if let Err(err) = execute_pending_cancellations(
-            &new_agreement_id,
-            registry,
-            chain_client,
-            config,
-            events_emitter,
-        )
-        .await
+        if let Err(err) =
+            execute_pending_cancellations(&new_agreement_id, registry, chain_client, config).await
         {
             tracing::warn!(
                 error = %err,
@@ -1438,7 +1636,6 @@ mod tests {
     const TEST_ACCEPTED_AT: u64 = 1_700_000_001;
     const TEST_ACCEPTED_TX: &str =
         "0x1111111111111111111111111111111111111111111111111111111111111111";
-    const TEST_ENDS_AT: u64 = 1_700_000_999;
     const TEST_CANCELED_AT: u64 = 1_700_000_002;
     const TEST_CANCELED_TX: &str =
         "0x2222222222222222222222222222222222222222222222222222222222222222";
@@ -1458,7 +1655,6 @@ mod tests {
             last_state_change_block: 100,
             accepted_at: TEST_ACCEPTED_AT,
             accepted_tx: TEST_ACCEPTED_TX.to_string(),
-            ends_at: TEST_ENDS_AT,
             canceled_at: TEST_CANCELED_AT,
             canceled_tx: TEST_CANCELED_TX.to_string(),
         }
@@ -1483,6 +1679,9 @@ mod tests {
         marked_accepted_on_chain: Vec<IndexingAgreementId>,
         marked_canceled_by_requester: Vec<IndexingAgreementId>,
         marked_canceled_by_indexer: Vec<IndexingAgreementId>,
+        /// Ids passed to `record_cancel_audit` -- the signal a cancel path drives
+        /// the terminated event (the sweep emits from this audit).
+        recorded_cancel_audit: Vec<IndexingAgreementId>,
         pending_cancellations: std::collections::HashMap<
             IndexingAgreementId,
             Vec<crate::registry::PendingCancellation>,
@@ -1579,6 +1778,14 @@ mod tests {
                 .lock()
                 .unwrap()
                 .marked_canceled_by_indexer
+                .contains(id)
+        }
+
+        fn was_cancel_audit_recorded(&self, id: &IndexingAgreementId) -> bool {
+            self.state
+                .lock()
+                .unwrap()
+                .recorded_cancel_audit
                 .contains(id)
         }
 
@@ -1715,6 +1922,21 @@ mod tests {
                 ));
             }
             state.marked_canceled_by_requester.push(*id);
+            Ok(())
+        }
+
+        async fn record_cancel_audit(
+            &self,
+            agreement_id: &IndexingAgreementId,
+            _canceled_at: u64,
+            _canceled_by: &str,
+            _canceled_tx: Option<&str>,
+        ) -> RegistryResult<()> {
+            self.state
+                .lock()
+                .unwrap()
+                .recorded_cancel_audit
+                .push(*agreement_id);
             Ok(())
         }
 
@@ -2120,7 +2342,6 @@ mod tests {
             &chain_client,
             Address::ZERO,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2130,8 +2351,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_accept_emits_accepted_event() {
-        use crate::test_support::{CapturedEvent, CapturingEventsProducer};
+    async fn reconcile_accept_marks_accepted_without_emitting() {
+        use crate::test_support::CapturingEventsProducer;
 
         let registry = MockRegistry::new();
         let chain_client = MockChainClient::default();
@@ -2148,38 +2369,23 @@ mod tests {
             &chain_client,
             Address::ZERO,
             test_agreement_conf().as_ref(),
-            &events,
         )
         .await
         .expect("reconcile ok");
 
-        let captured = events.events();
-        assert_eq!(captured.len(), 1, "exactly one accepted event");
-        match &captured[0] {
-            CapturedEvent::Accepted {
-                deployment,
-                chain_id,
-                event,
-            } => {
-                assert_eq!(
-                    deployment.to_string(),
-                    "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
-                );
-                assert_eq!(*chain_id, 42161);
-                assert_eq!(event.indexer, snapshot.indexer.to_string());
-                assert_eq!(event.payer, Address::ZERO.to_string());
-                // Enriched from the subgraph snapshot (Phase 4).
-                assert_eq!(event.accepted_at, TEST_ACCEPTED_AT);
-                assert_eq!(event.accepted_tx, TEST_ACCEPTED_TX);
-                assert_eq!(event.ends_at, TEST_ENDS_AT);
-            }
-            other => panic!("expected Accepted, got {other:?}"),
-        }
+        // reconcile flips the row to AcceptedOnChain (and, in production, persists
+        // the accept audit in the same transaction). It no longer emits
+        // `accepted` -- `sweep_pending_accepted_events` is the sole emitter.
+        assert!(registry.was_marked_accepted_on_chain(&agreement_id));
+        assert!(
+            events.events().is_empty(),
+            "reconcile emits no accepted event; the sweep does"
+        );
     }
 
     #[tokio::test]
-    async fn reconcile_indexer_cancel_emits_terminated_event() {
-        use crate::test_support::{CapturedEvent, CapturingEventsProducer};
+    async fn reconcile_indexer_cancel_marks_canceled_without_emitting() {
+        use crate::test_support::CapturingEventsProducer;
 
         let registry = MockRegistry::new();
         let chain_client = MockChainClient::default();
@@ -2204,33 +2410,18 @@ mod tests {
             &chain_client,
             Address::ZERO,
             test_agreement_conf().as_ref(),
-            &events,
         )
         .await
         .expect("reconcile ok");
 
-        let captured = events.events();
-        assert_eq!(captured.len(), 1, "exactly one terminated event");
-        match &captured[0] {
-            CapturedEvent::Terminated {
-                deployment,
-                chain_id,
-                event,
-            } => {
-                assert_eq!(
-                    deployment.to_string(),
-                    "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
-                );
-                assert_eq!(*chain_id, 42161);
-                assert_eq!(event.indexer, indexer.to_string());
-                assert_eq!(event.terminated_by, indexer.to_string());
-                // Enriched from the subgraph snapshot (Phase 4).
-                assert_eq!(event.terminated_at, TEST_CANCELED_AT);
-                assert_eq!(event.terminated_tx, TEST_CANCELED_TX);
-                assert_eq!(event.remaining_accepted_indexing_agreements, 0);
-            }
-            other => panic!("expected Terminated, got {other:?}"),
-        }
+        // reconcile flips the row to CanceledByIndexer (and, in production,
+        // persists the cancel audit in the same transaction). It no longer emits
+        // `terminated` -- `sweep_pending_terminated_events` is the sole emitter.
+        assert!(registry.was_marked_canceled_by_indexer(&agreement_id));
+        assert!(
+            events.events().is_empty(),
+            "reconcile emits no terminated event; the sweep does"
+        );
     }
 
     #[tokio::test]
@@ -2250,7 +2441,6 @@ mod tests {
             &chain_client,
             Address::ZERO,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2288,7 +2478,6 @@ mod tests {
             &chain_client,
             signer_address,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2314,7 +2503,6 @@ mod tests {
             &chain_client,
             Address::ZERO,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2343,7 +2531,6 @@ mod tests {
             &chain_client,
             Address::ZERO,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2380,7 +2567,6 @@ mod tests {
             &chain_client,
             signer_address,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2413,7 +2599,6 @@ mod tests {
             &chain_client,
             signer_address,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2446,7 +2631,6 @@ mod tests {
             &chain_client,
             signer_address,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2488,7 +2672,6 @@ mod tests {
             &chain_client,
             signer_address,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2529,7 +2712,6 @@ mod tests {
             &chain_client,
             signer_address,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2563,7 +2745,6 @@ mod tests {
             &registry,
             &chain_client,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2580,12 +2761,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_pending_cancellations_emits_terminated_event() {
-        use crate::test_support::{CapturedEvent, CapturingEventsProducer};
-
+    async fn test_pending_cancellations_records_cancel_audit() {
+        // execute_pending no longer emits `terminated` directly; it records the
+        // cancel audit and the chain_listener sweep announces it durably.
         let registry = MockRegistry::new();
         let chain_client = MockChainClient::default();
-        let events = CapturingEventsProducer::new();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         let old_id = IndexingAgreementId::from_bytes(rand::random());
 
@@ -2598,43 +2778,21 @@ mod tests {
             &registry,
             &chain_client,
             test_agreement_conf().as_ref(),
-            &events,
         )
         .await;
 
         assert!(result.is_ok());
-        // The old agreement was canceled on-chain by dipper -> exactly one
-        // `terminated`, attributed to the recurring-agreement manager.
         assert!(registry.was_marked_canceled_by_requester(&old_id));
-
-        let captured = events.events();
-        assert_eq!(captured.len(), 1, "exactly one terminated event");
-        match &captured[0] {
-            CapturedEvent::Terminated {
-                deployment,
-                chain_id,
-                event,
-            } => {
-                assert_eq!(
-                    deployment.to_string(),
-                    "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
-                );
-                assert_eq!(*chain_id, 42161);
-                // Manager-initiated cancel: terminated_by == manager (ZERO).
-                assert_eq!(event.terminated_by, Address::ZERO.to_string());
-                assert_eq!(event.remaining_accepted_indexing_agreements, 0);
-            }
-            other => panic!("expected Terminated, got {other:?}"),
-        }
+        assert!(
+            registry.was_cancel_audit_recorded(&old_id),
+            "cancel audit recorded so the sweep can emit `terminated`"
+        );
     }
 
     #[tokio::test]
-    async fn test_pending_cancellations_failed_cancel_emits_no_terminated_event() {
-        use crate::test_support::CapturingEventsProducer;
-
+    async fn test_pending_cancellations_failed_cancel_records_no_audit() {
         let registry = MockRegistry::new();
         let chain_client = MockChainClient::default();
-        let events = CapturingEventsProducer::new();
         let new_id = IndexingAgreementId::from_bytes(rand::random());
         let old_fail = IndexingAgreementId::from_bytes(rand::random());
 
@@ -2648,18 +2806,14 @@ mod tests {
             &registry,
             &chain_client,
             test_agreement_conf().as_ref(),
-            &events,
         )
         .await;
 
-        // The chain cancel failed, the row is NOT marked canceled, and no
-        // `terminated` is emitted.
+        // The chain cancel failed, the row is NOT marked canceled, and no cancel
+        // audit is recorded (so the sweep emits nothing).
         assert!(result.is_err());
         assert!(!registry.was_marked_canceled_by_requester(&old_fail));
-        assert!(
-            events.events().is_empty(),
-            "no terminated event when the on-chain cancel fails"
-        );
+        assert!(!registry.was_cancel_audit_recorded(&old_fail));
     }
 
     #[tokio::test]
@@ -2682,7 +2836,6 @@ mod tests {
             &registry,
             &chain_client,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2724,7 +2877,6 @@ mod tests {
             &registry,
             &chain_client,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2745,7 +2897,6 @@ mod tests {
             &registry,
             &chain_client,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2776,7 +2927,6 @@ mod tests {
             &registry,
             &chain_client,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2808,7 +2958,6 @@ mod tests {
             &registry,
             &chain_client,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2843,7 +2992,6 @@ mod tests {
             &registry,
             &chain_client,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2870,7 +3018,6 @@ mod tests {
             &registry,
             &chain_client,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
 
@@ -2887,7 +3034,6 @@ mod tests {
             &registry,
             &chain_client,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await;
     }
@@ -3053,7 +3199,6 @@ mod tests {
                 last_state_change_block: ((i + 1) as u64) * 10,
                 accepted_at: 0,
                 accepted_tx: String::new(),
-                ends_at: 0,
                 canceled_at: 0,
                 canceled_tx: String::new(),
             }]);
@@ -3136,7 +3281,6 @@ mod tests {
                 last_state_change_block: 50,
                 accepted_at: 0,
                 accepted_tx: String::new(),
-                ends_at: 0,
                 canceled_at: 0,
                 canceled_tx: String::new(),
             }]);
@@ -3219,7 +3363,6 @@ mod tests {
                 last_state_change_block: ((i + 1) as u64) * 10,
                 accepted_at: 0,
                 accepted_tx: String::new(),
-                ends_at: 0,
                 canceled_at: 0,
                 canceled_tx: String::new(),
             }]);
@@ -3251,7 +3394,6 @@ mod tests {
             &event_source,
             &mut rx_stop,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await
         .expect("subgraph fetch itself succeeded; only the batch apply failed");
@@ -3318,7 +3460,6 @@ mod tests {
             &event_source,
             &mut rx_stop,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await
         .expect("first poll must succeed");
@@ -3348,7 +3489,6 @@ mod tests {
             &event_source,
             &mut rx_stop,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await
         .expect("second poll must succeed");
@@ -3454,7 +3594,6 @@ mod tests {
             &event_source,
             &mut rx_stop,
             test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
         )
         .await
         .expect("post-restart poll must succeed");
@@ -3539,13 +3678,8 @@ mod tests {
         registry.set_agreement_request_id(agreement_id, request_id);
         registry.mark_request_canceled(request_id);
 
-        sweep_orphan_canceled_agreements(
-            &registry,
-            &chain_client,
-            test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
-        )
-        .await;
+        sweep_orphan_canceled_agreements(&registry, &chain_client, test_agreement_conf().as_ref())
+            .await;
 
         assert!(
             chain_client.was_on_chain_cancel_attempted(&agreement_id),
@@ -3558,12 +3692,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_orphan_sweep_emits_terminated_event() {
-        use crate::test_support::{CapturedEvent, CapturingEventsProducer};
-
+    async fn test_orphan_sweep_records_cancel_audit() {
+        // The orphan sweep no longer emits `terminated` directly; it records the
+        // cancel audit and `sweep_pending_terminated_events` announces it.
         let registry = MockRegistry::new();
         let chain_client = MockChainClient::default();
-        let events = CapturingEventsProducer::new();
         let agreement_id = IndexingAgreementId::from_bytes(rand::random());
         let request_id = IndexingRequestId::new();
 
@@ -3571,37 +3704,14 @@ mod tests {
         registry.set_agreement_request_id(agreement_id, request_id);
         registry.mark_request_canceled(request_id);
 
-        sweep_orphan_canceled_agreements(
-            &registry,
-            &chain_client,
-            test_agreement_conf().as_ref(),
-            &events,
-        )
-        .await;
+        sweep_orphan_canceled_agreements(&registry, &chain_client, test_agreement_conf().as_ref())
+            .await;
 
-        // The orphan was canceled on-chain by dipper during the crash-recovery
-        // sweep -> exactly one `terminated`, attributed to the manager.
         assert!(registry.was_marked_canceled_by_requester(&agreement_id));
-
-        let captured = events.events();
-        assert_eq!(captured.len(), 1, "exactly one terminated event");
-        match &captured[0] {
-            CapturedEvent::Terminated {
-                deployment,
-                chain_id,
-                event,
-            } => {
-                assert_eq!(
-                    deployment.to_string(),
-                    "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
-                );
-                assert_eq!(*chain_id, 42161);
-                // Manager-initiated cancel: terminated_by == manager (ZERO).
-                assert_eq!(event.terminated_by, Address::ZERO.to_string());
-                assert_eq!(event.remaining_accepted_indexing_agreements, 0);
-            }
-            other => panic!("expected Terminated, got {other:?}"),
-        }
+        assert!(
+            registry.was_cancel_audit_recorded(&agreement_id),
+            "cancel audit recorded so the sweep can emit `terminated`"
+        );
     }
 
     #[tokio::test]
@@ -3618,13 +3728,8 @@ mod tests {
         registry.mark_request_canceled(request_id);
         chain_client.mark_already_canceled_on_chain(&agreement_id);
 
-        sweep_orphan_canceled_agreements(
-            &registry,
-            &chain_client,
-            test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
-        )
-        .await;
+        sweep_orphan_canceled_agreements(&registry, &chain_client, test_agreement_conf().as_ref())
+            .await;
 
         assert!(chain_client.was_on_chain_cancel_attempted(&agreement_id));
         assert!(registry.was_marked_canceled_by_requester(&agreement_id));
@@ -3644,13 +3749,8 @@ mod tests {
         registry.set_agreement_request_id(agreement_id, request_id);
         // Note: request_id NOT marked canceled.
 
-        sweep_orphan_canceled_agreements(
-            &registry,
-            &chain_client,
-            test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
-        )
-        .await;
+        sweep_orphan_canceled_agreements(&registry, &chain_client, test_agreement_conf().as_ref())
+            .await;
 
         assert!(
             !chain_client.was_on_chain_cancel_attempted(&agreement_id),
@@ -3665,13 +3765,8 @@ mod tests {
         let registry = MockRegistry::new();
         let chain_client = MockChainClient::default();
 
-        sweep_orphan_canceled_agreements(
-            &registry,
-            &chain_client,
-            test_agreement_conf().as_ref(),
-            &SubgraphIndexingAgreementsEventsEmitter::disabled(),
-        )
-        .await;
+        sweep_orphan_canceled_agreements(&registry, &chain_client, test_agreement_conf().as_ref())
+            .await;
 
         // Nothing observable to assert beyond "didn't panic"; chain_client's
         // cancels list stays empty by definition because no agreement IDs

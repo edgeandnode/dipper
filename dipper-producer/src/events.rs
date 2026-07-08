@@ -64,5 +64,6 @@
 mod subgraph_indexing_agreements_events_emitter;
 
 pub use subgraph_indexing_agreements_events_emitter::{
-    Caip2ChainId, SubgraphIndexingAgreementEventsProducer, SubgraphIndexingAgreementsEventsEmitter,
+    Caip2ChainId, EmitError, SubgraphIndexingAgreementEventsProducer,
+    SubgraphIndexingAgreementsEventsEmitter,
 };

@@ -7,7 +7,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use dipper_producer::{events::SubgraphIndexingAgreementEventsProducer, proto};
+use async_trait::async_trait;
+use dipper_producer::{
+    events::{EmitError, SubgraphIndexingAgreementEventsProducer},
+    proto,
+};
 use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 
 /// One captured lifecycle event: the routing metadata plus the typed payload.
@@ -70,6 +74,7 @@ impl CapturingEventsProducer {
     }
 }
 
+#[async_trait]
 impl SubgraphIndexingAgreementEventsProducer for CapturingEventsProducer {
     fn produce_subgraph_indexing_agreement_request_received(
         &self,
@@ -97,30 +102,32 @@ impl SubgraphIndexingAgreementEventsProducer for CapturingEventsProducer {
         });
     }
 
-    fn produce_subgraph_indexing_agreement_accepted(
+    async fn emit_subgraph_indexing_agreement_accepted(
         &self,
         deployment: DeploymentId,
         chain_id: ChainId,
         event: proto::SubgraphIndexingAgreementAccepted,
-    ) {
+    ) -> Result<(), EmitError> {
         self.push(CapturedEvent::Accepted {
             deployment,
             chain_id,
             event,
         });
+        Ok(())
     }
 
-    fn produce_subgraph_indexing_agreement_request_expired(
+    async fn emit_subgraph_indexing_agreement_request_expired(
         &self,
         deployment: DeploymentId,
         chain_id: ChainId,
         event: proto::SubgraphIndexingAgreementRequestExpired,
-    ) {
+    ) -> Result<(), EmitError> {
         self.push(CapturedEvent::RequestExpired {
             deployment,
             chain_id,
             event,
         });
+        Ok(())
     }
 
     fn produce_subgraph_indexing_agreement_n_indexers_unavailable(
@@ -136,16 +143,17 @@ impl SubgraphIndexingAgreementEventsProducer for CapturingEventsProducer {
         });
     }
 
-    fn produce_subgraph_indexing_agreement_terminated(
+    async fn emit_subgraph_indexing_agreement_terminated(
         &self,
         deployment: DeploymentId,
         chain_id: ChainId,
         event: proto::SubgraphIndexingAgreementTerminated,
-    ) {
+    ) -> Result<(), EmitError> {
         self.push(CapturedEvent::Terminated {
             deployment,
             chain_id,
             event,
         });
+        Ok(())
     }
 }

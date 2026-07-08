@@ -123,7 +123,8 @@ where
         + AgreementRegistry
         + IndexerDenylistRegistry
         + PendingCancellationRegistry
-        + ChainListenerStateRegistry,
+        + ChainListenerStateRegistry
+        + Sync,
     W: WorkerQueue,
     I: CandidateSelection,
     T: ChainClient,
@@ -241,6 +242,40 @@ where
         "reassessment diff computed"
     );
 
+    // Coverage-shortfall signal (transition-based). IISA returning fewer
+    // candidates than requested means the request cannot be fully covered. We
+    // fire `n_indexers_unavailable` ONCE, on the transition INTO shortfall, and
+    // clear the latch on recovery -- so it covers the zero-available and
+    // coverage-drop cases (which produce an empty diff and would otherwise be
+    // silent) without re-emitting on every recurring reassessment of a
+    // persistently short request. The atomic latch update makes this retry-safe:
+    // a re-run after a later failure sees the latch already set and does not
+    // re-emit.
+    let in_shortfall = target_selected.len() < *num_candidates;
+    let shortfall_changed = ctx
+        .registry
+        .set_indexing_request_shortfall_active(indexing_request_id, in_shortfall)
+        .await
+        .unwrap_or_else(|err| {
+            tracing::warn!(
+                indexing_request_id=%indexing_request_id,
+                error=%err,
+                "failed to update shortfall latch; skipping shortfall signal this cycle"
+            );
+            false
+        });
+    if in_shortfall && shortfall_changed {
+        ctx.subgraph_indexing_agreements_events_emitter
+            .produce_subgraph_indexing_agreement_n_indexers_unavailable(
+                *deployment_id,
+                ctx.signer.chain_id(),
+                proto::SubgraphIndexingAgreementNIndexersUnavailable {
+                    agreements_requested: *num_candidates as i32,
+                    candidates_returned: target_selected.len() as i32,
+                },
+            );
+    }
+
     if to_cancel.is_empty() && to_add.is_empty() {
         tracing::debug!(
             indexing_request_id=%indexing_request_id,
@@ -270,29 +305,6 @@ where
         &ctx.registry,
     )
     .await?;
-
-    // IISA returned fewer candidates than requested: emit the lifecycle event so
-    // downstream consumers see the shortfall (typically declined/denylisted indexers).
-    //
-    // Gate on `!to_add.is_empty()` so this only fires when the reassessment is
-    // actually trying to fill slots and comes up short -- not on every recurring
-    // reassessment of an already-synced request. Reassessment runs periodically and
-    // is re-triggered from several lifecycle paths; emitting purely on the standing
-    // `selected < requested` supply condition would re-fire the event forever.
-    //
-    // Kept below `resolve_deadline_clock` -- the only fallible step under it -- so a
-    // failed bypass-path read retries the job before this emits, not after.
-    if !to_add.is_empty() && target_selected.len() < *num_candidates {
-        ctx.subgraph_indexing_agreements_events_emitter
-            .produce_subgraph_indexing_agreement_n_indexers_unavailable(
-                *deployment_id,
-                ctx.signer.chain_id(),
-                proto::SubgraphIndexingAgreementNIndexersUnavailable {
-                    agreements_requested: *num_candidates as i32,
-                    candidates_returned: target_selected.len() as i32,
-                },
-            );
-    }
 
     // Pre-compute old agreements to cancel so we can pair replacements
     // atomically during registration.
@@ -603,31 +615,29 @@ where
             "agreement state transition"
         );
 
-        // Emit `terminated` only for agreements that were accepted on-chain: those
-        // are the genuine on-chain terminations (dipper just submitted the cancel
-        // tx above). Never-accepted agreements (`!needs_on_chain_cancel`) were never
-        // on-chain, so there is nothing to "terminate". The chain_listener won't
-        // emit for this cancel because we pre-mark the row terminal here, so this is
-        // the only emit for dipper-initiated reassessment cancels of accepted
-        // agreements. Count is read after the local cancel is persisted.
+        // Record the cancel audit for the accepted-on-chain agreements dipper just
+        // cancelled, so the chain_listener's `terminated` sweep announces them
+        // durably. Never-accepted agreements (`!needs_on_chain_cancel`) were never
+        // live on-chain: they are not sweep-eligible (`accepted_at IS NULL`) and
+        // correctly emit nothing.
         if needs_on_chain_cancel {
-            let remaining = crate::registry::remaining_accepted_indexing_agreements(
-                &ctx.registry,
-                deployment_id,
-            )
-            .await;
-            ctx.subgraph_indexing_agreements_events_emitter
-                .produce_subgraph_indexing_agreement_terminated(
-                    *deployment_id,
-                    ctx.signer.chain_id(),
-                    proto::SubgraphIndexingAgreementTerminated {
-                        indexer: old_agreement.indexer.id.to_string(),
-                        terminated_at: now_secs(),
-                        terminated_by: ctx.agreement_conf.recurring_agreement_manager().to_string(),
-                        terminated_tx: on_chain_cancel_tx.unwrap_or_default(),
-                        remaining_accepted_indexing_agreements: remaining,
-                    },
+            let manager = ctx.agreement_conf.recurring_agreement_manager().to_string();
+            if let Err(err) = ctx
+                .registry
+                .record_cancel_audit(
+                    &old_agreement.id,
+                    now_secs(),
+                    &manager,
+                    on_chain_cancel_tx.as_deref(),
+                )
+                .await
+            {
+                tracing::warn!(
+                    agreement_id = %old_agreement.id,
+                    error = %err,
+                    "failed to record cancel audit; terminated event may emit with fallback fields"
                 );
+            }
         }
 
         directly_cancelled += 1;
@@ -955,6 +965,10 @@ mod lifecycle_event_tests {
         /// When true, `get_chain_listener_state` errors, driving `resolve_deadline_clock`
         /// onto its retry path -- used to assert the shortfall event isn't emitted first.
         chain_state_lookup_fails: bool,
+        /// Coverage-shortfall latch, mirroring the DB column (starts `false`).
+        /// `set_indexing_request_shortfall_active` flips it and reports whether it
+        /// changed, so tests can exercise the transition-based emit.
+        shortfall_active: std::sync::Mutex<bool>,
     }
 
     #[async_trait]
@@ -989,6 +1003,16 @@ mod lifecycle_event_tests {
             _batch_size: i64,
         ) -> RegistryResult<Vec<IndexingRequest>> {
             unimplemented!()
+        }
+        async fn set_indexing_request_shortfall_active(
+            &self,
+            _id: &IndexingRequestId,
+            active: bool,
+        ) -> RegistryResult<bool> {
+            let mut latch = self.shortfall_active.lock().unwrap();
+            let changed = *latch != active;
+            *latch = active;
+            Ok(changed)
         }
     }
 
@@ -1410,13 +1434,14 @@ mod lifecycle_event_tests {
         assert_eq!(event.candidates_returned, 1);
     }
 
-    // ---- Scenario 1b: regression -- standing shortfall on a synced request --
+    // ---- Scenario 1b: shortfall transition semantics ------------------------
 
     #[tokio::test]
-    async fn no_n_indexers_unavailable_when_deadline_clock_read_fails() {
-        // The shortfall event is emitted only after `resolve_deadline_clock`. Under
-        // bypass, a failed chain_listener-state read errors out before the emit, so a
-        // retried job doesn't re-fire the event for the same round.
+    async fn shortfall_fires_up_front_even_if_deadline_clock_read_fails() {
+        // The shortfall signal is evaluated up front (before the diff is applied
+        // and before `resolve_deadline_clock`), so entering shortfall fires the
+        // event even if a later step -- here the bypass-path deadline-clock read --
+        // fails the job. The latch makes the subsequent retry idempotent.
         let new_idx = indexer_id(0x21);
         let mut snapshot = topology::Snapshot::new();
         snapshot.insert_indexer_for_test(new_idx, indexer_url());
@@ -1438,33 +1463,39 @@ mod lifecycle_event_tests {
         ctx.bypass_chain_clock_defenses = true;
         ctx.chain_listener_chain_id = Some(1337);
 
-        // Request 3, IISA returns 1: a real add plus a shortfall, so the event WOULD
-        // fire if the handler reached it -- but the clock read fails first.
+        // Request 3, IISA returns 1: enters shortfall. The clock read then fails.
         let result = handle(ctx, &test_message(3)).await;
 
         assert!(
             result.is_err(),
             "a failed deadline-clock read must fail the job"
         );
-        assert!(
-            events.events().is_empty(),
-            "no shortfall event may be emitted before the clock resolves: {:?}",
+        let shortfall_count = events
+            .events()
+            .iter()
+            .filter(|e| matches!(e, CapturedEvent::NIndexersUnavailable { .. }))
+            .count();
+        assert_eq!(
+            shortfall_count,
+            1,
+            "shortfall fires up front, before the fallible clock read: {:?}",
             events.events()
         );
     }
 
     #[tokio::test]
-    async fn no_n_indexers_unavailable_on_synced_request_with_standing_shortfall() {
-        // Reviewer's case: a request whose target is already fully synced
-        // (current == target) while IISA keeps returning fewer than requested.
-        // The diff is empty (no adds, no cancels), so reassessment is a no-op
-        // and MUST NOT re-emit n_indexers_unavailable on every recurring cycle.
+    async fn no_re_emit_when_already_in_shortfall() {
+        // A request already in shortfall (latch set) that stays short MUST NOT
+        // re-emit on a recurring reassessment -- the signal fires only on the
+        // transition INTO shortfall.
         let idx = indexer_id(0x11);
         let events = CapturingEventsProducer::new();
         let registry = MockRegistry {
             active_agreements: vec![agreement(idx, IndexingAgreementStatus::AcceptedOnChain)],
             accepted_count: 1,
             chain_state_lookup_fails: false,
+            // Already in shortfall.
+            shortfall_active: std::sync::Mutex::new(true),
         };
         let ctx = build_ctx(
             registry,
@@ -1477,13 +1508,13 @@ mod lifecycle_event_tests {
             topology::Snapshot::new(),
         );
 
-        // Requested 3, but the only available indexer is already accepted:
-        // to_add and to_cancel are both empty -> standing shortfall, no event.
+        // Request 3, IISA returns 1: still short, synced (empty diff). The latch is
+        // already set, so no re-emit.
         handle(ctx, &test_message(3)).await.expect("handler ok");
 
         assert!(
             events.events().is_empty(),
-            "synced request with standing shortfall must not re-emit: {:?}",
+            "must not re-emit while already in shortfall: {:?}",
             events.events()
         );
     }
@@ -1500,6 +1531,7 @@ mod lifecycle_event_tests {
             active_agreements: vec![agreement(idx, IndexingAgreementStatus::AcceptedOnChain)],
             accepted_count: 1,
             chain_state_lookup_fails: false,
+            shortfall_active: std::sync::Mutex::new(false),
         };
         let ctx = build_ctx(
             registry,
@@ -1521,16 +1553,89 @@ mod lifecycle_event_tests {
         );
     }
 
-    // ---- Scenario 3: proposed + terminated ----------------------------------
+    #[tokio::test]
+    async fn emits_shortfall_when_zero_indexers_available() {
+        // Item 3: a brand-new request for which IISA returns ZERO candidates -- the
+        // worst-case shortage. The diff is empty (nothing to add or cancel), which
+        // the old `!to_add` gate left silent. The transition model fires on
+        // entering shortfall regardless of the empty diff.
+        let events = CapturingEventsProducer::new();
+        let ctx = build_ctx(
+            MockRegistry::default(),       // no current agreements, latch false
+            MockIisa { selected: vec![] }, // zero available
+            MockQueue::default(),
+            MockChainClient,
+            events.clone(),
+            topology::Snapshot::new(),
+        );
+
+        handle(ctx, &test_message(3)).await.expect("handler ok");
+
+        let captured = events.events();
+        let unavailable: Vec<_> = captured
+            .iter()
+            .filter_map(|e| match e {
+                CapturedEvent::NIndexersUnavailable { event, .. } => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            unavailable.len(),
+            1,
+            "zero-available must emit exactly one shortfall: {captured:?}"
+        );
+        assert_eq!(unavailable[0].agreements_requested, 3);
+        assert_eq!(unavailable[0].candidates_returned, 0);
+    }
 
     #[tokio::test]
-    async fn emits_proposed_and_terminated_on_add_and_accepted_cancel() {
+    async fn emits_shortfall_when_coverage_drops_below_target() {
+        // Item 9: an indexer leaves the target group and IISA can't replace it, so
+        // coverage falls below the requested count. The diff is cancel-only
+        // (to_add empty), which the old gate left silent for a proposed-only
+        // leaver. The transition model fires the shortfall.
+        let leaving = indexer_id(0x11);
+        let events = CapturingEventsProducer::new();
+        let registry = MockRegistry {
+            // A proposed-but-not-yet-accepted indexer that is leaving the group.
+            active_agreements: vec![agreement(leaving, IndexingAgreementStatus::Created)],
+            accepted_count: 0,
+            chain_state_lookup_fails: false,
+            shortfall_active: std::sync::Mutex::new(false),
+        };
+        let ctx = build_ctx(
+            registry,
+            MockIisa { selected: vec![] }, // IISA returns nothing -> coverage drops
+            MockQueue::default(),
+            MockChainClient,
+            events.clone(),
+            topology::Snapshot::new(),
+        );
+
+        handle(ctx, &test_message(3)).await.expect("handler ok");
+
+        let unavailable = events
+            .events()
+            .into_iter()
+            .filter(|e| matches!(e, CapturedEvent::NIndexersUnavailable { .. }))
+            .count();
+        assert_eq!(
+            unavailable, 1,
+            "coverage drop below target must emit exactly one shortfall"
+        );
+    }
+
+    // ---- Scenario 3: proposed on add; terminated is NOT emitted here --------
+
+    #[tokio::test]
+    async fn emits_proposed_on_add_and_does_not_emit_terminated_for_accepted_cancel() {
         // Target = {new}, current = {old_paired, old_unpaired} (both
         // AcceptedOnChain). With one add and two cancels, the add loop pairs the
-        // new agreement with the FIRST old agreement (atomic replacement, no
-        // `terminated`), and the second, unpaired old agreement reaches the
-        // cancel loop. Because it was AcceptedOnChain it emits `terminated`.
-        // Net: exactly one `proposed` + one `terminated`.
+        // new agreement with the FIRST old agreement (atomic replacement), and the
+        // second, unpaired old agreement reaches the cancel loop. It was
+        // AcceptedOnChain, so reassess records its cancel audit -- but does NOT
+        // emit `terminated` (the chain_listener sweep is the sole emitter now).
+        // Net: exactly one `proposed`, zero `terminated`.
         let new_idx = indexer_id(0x22);
         let old_paired = indexer_id(0x33);
         let old_unpaired = indexer_id(0x34);
@@ -1549,6 +1654,7 @@ mod lifecycle_event_tests {
             ],
             accepted_count: 0,
             chain_state_lookup_fails: false,
+            shortfall_active: std::sync::Mutex::new(false),
         };
         let ctx = build_ctx(
             registry,
@@ -1565,12 +1671,6 @@ mod lifecycle_event_tests {
         handle(ctx, &test_message(1)).await.expect("handler ok");
 
         let captured = events.events();
-        assert_eq!(
-            captured.len(),
-            2,
-            "exactly proposed + terminated: {captured:?}"
-        );
-
         let proposed: Vec<_> = captured
             .iter()
             .filter_map(|e| match e {
@@ -1578,25 +1678,18 @@ mod lifecycle_event_tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(proposed.len(), 1, "exactly one Proposed");
+        assert_eq!(proposed.len(), 1, "exactly one Proposed: {captured:?}");
         assert_eq!(
             proposed[0].candidates,
             vec![new_idx.to_string()],
             "proposed candidate is the new indexer"
         );
 
-        let terminated: Vec<_> = captured
-            .iter()
-            .filter_map(|e| match e {
-                CapturedEvent::Terminated { event, .. } => Some(event),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(terminated.len(), 1, "exactly one Terminated");
-        assert_eq!(
-            terminated[0].indexer,
-            old_unpaired.to_string(),
-            "terminated is the unpaired AcceptedOnChain agreement"
+        assert!(
+            !captured
+                .iter()
+                .any(|e| matches!(e, CapturedEvent::Terminated { .. })),
+            "reassess must not emit terminated; the chain_listener sweep does: {captured:?}"
         );
 
         // The proposal was actually queued to the new indexer's URL.
@@ -1625,6 +1718,7 @@ mod lifecycle_event_tests {
             ],
             accepted_count: 0,
             chain_state_lookup_fails: false,
+            shortfall_active: std::sync::Mutex::new(false),
         };
         let ctx = build_ctx(
             registry,

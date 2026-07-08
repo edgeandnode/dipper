@@ -211,7 +211,6 @@ impl_from_state!(CancelRejectedAgreementOnChainCtx<R, T> {
     registry,
     chain_client,
     agreement_conf,
-    subgraph_indexing_agreements_events_emitter,
 });
 
 impl_from_state!(SubmitOfferCtx<R, T> {

@@ -3,13 +3,8 @@
 //! Compares deadlines against the chain_listener's block timestamp, not wall
 //! clock time. Stays dormant when no chain time is available.
 
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{future::Future, time::Duration};
 
-// The concrete emitter is only constructed in tests (`disabled()`); the runtime
-// paths depend on the `dyn` trait, so keep this import test-gated.
-#[cfg(test)]
-use dipper_producer::events::SubgraphIndexingAgreementsEventsEmitter;
-use dipper_producer::{events::SubgraphIndexingAgreementEventsProducer, proto};
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::{
@@ -47,9 +42,6 @@ pub struct Ctx<R, W> {
     pub config: ExpirationConfig,
     /// Chain ID for reading block timestamps. `None` = stay dormant.
     pub chain_id: Option<u64>,
-    /// Emits the `request.expired` lifecycle event when an agreement expires.
-    pub subgraph_indexing_agreements_events_emitter:
-        Arc<dyn SubgraphIndexingAgreementEventsProducer>,
 }
 
 /// Create a new expiration service
@@ -74,7 +66,6 @@ where
         worker_queue,
         config,
         chain_id,
-        subgraph_indexing_agreements_events_emitter,
     } = ctx;
 
     let service = async move {
@@ -130,10 +121,19 @@ where
 
             dormant_cycles = 0;
 
+            // Hold expiration back by the configured grace period: only agreements
+            // whose deadline is at least `grace` seconds behind chain time are
+            // considered expired. This lets the chain_listener sync a
+            // within-deadline on-chain accept (flipping the row to
+            // `AcceptedOnChain`) before we mark it `Expired`, so a lagging local
+            // row can't produce a premature `expired` that contradicts a later
+            // `accepted`.
+            let expiry_threshold = chain_ts.saturating_sub(config.grace.as_secs());
+
             // Query expired agreements using chain time (with timeout)
             let query_result = tokio::time::timeout(
                 DB_QUERY_TIMEOUT,
-                registry.get_expired_created_agreements(config.batch_size, chain_ts),
+                registry.get_expired_created_agreements(config.batch_size, expiry_threshold),
             )
             .await;
 
@@ -188,26 +188,11 @@ where
                             "agreement state transition"
                         );
 
-                        // Prefer the chain-time proposal stamp so both event timestamps
-                        // share a clock; pre-existing rows lack it (0) -> use created_at.
-                        let request_proposed_at = match agreement.terms.metadata.proposed_at {
-                            0 => agreement.created_at.unix_timestamp() as u64,
-                            ts => ts,
-                        };
-
-                        // The indexer failed to accept within the deadline: emit the
-                        // `request.expired` lifecycle event. `request_expired_at` is the
-                        // chain-time clock the deadline was compared against.
-                        subgraph_indexing_agreements_events_emitter
-                            .produce_subgraph_indexing_agreement_request_expired(
-                                agreement.terms.metadata.subgraph_deployment_id,
-                                agreement.terms.metadata.protocol_network,
-                                proto::SubgraphIndexingAgreementRequestExpired {
-                                    indexer: agreement.indexer.id.to_string(),
-                                    request_proposed_at,
-                                    request_expired_at: chain_ts,
-                                },
-                            );
+                        // The `request.expired` event is NOT emitted here. The row
+                        // is now `Expired`; `sweep_pending_expired_events` on the
+                        // chain_listener tick announces it durably -- and skips any
+                        // row recovered to `AcceptedOnChain` in the meantime, so a
+                        // premature expiry never contradicts a later `accepted`.
 
                         // Clean up pending cancellations: the replacement expired
                         // before on-chain acceptance, so old agreements stay active.
@@ -348,7 +333,6 @@ mod tests {
             IndexingAgreementTerms, IndexingAgreementTermsMetadata, IndexingRequest,
             IndexingRequestStatus, PendingCancellation, Result as RegistryResult,
         },
-        test_support::{CapturedEvent, CapturingEventsProducer},
         worker::{queue::JobId, service::WorkerQueue},
     };
 
@@ -408,7 +392,6 @@ mod tests {
             self.state.lock().unwrap().get_expired_calls.clone()
         }
 
-        #[allow(dead_code)] // available for future test assertions
         fn marked_expired(&self) -> Vec<IndexingAgreementId> {
             self.state.lock().unwrap().marked_expired.clone()
         }
@@ -754,7 +737,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_emits_request_expired_event_once_per_expired_agreement() {
+    async fn test_marks_expired_agreement_once() {
+        // The expiration service marks the agreement `Expired`; the chain_listener
+        // sweep emits `request.expired` from the row. Assert the mark happened
+        // exactly once. (The `request_proposed_at`/`request_expired_at` derivation
+        // moved to `PendingExpiredEvent::from_row` and is covered there.)
         const CHAIN_TS: u64 = 1_700_000_000;
         let deployment: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
             .parse()
@@ -772,13 +759,12 @@ mod tests {
         }));
         let agreement =
             make_expired_agreement(deployment, protocol_network, indexer_id, created_at);
+        let agr_id = agreement.id;
         registry.set_indexing_request(make_indexing_request(
             agreement.indexing_request_id,
             deployment,
         ));
         registry.set_expired_agreements(vec![agreement]);
-
-        let events = CapturingEventsProducer::new();
 
         let ctx = Ctx {
             registry: registry.clone(),
@@ -787,62 +773,34 @@ mod tests {
                 enabled: true,
                 interval: Duration::from_millis(10),
                 batch_size: 100,
+                grace: Duration::from_secs(0),
             },
             chain_id: Some(1337),
-            subgraph_indexing_agreements_events_emitter: Arc::new(events.clone()),
         };
 
         let (handle, service) = new(ctx);
         let svc = tokio::spawn(service);
 
         // Wait until the cycle has run (the agreement is drained exactly once),
-        // then stop. Subsequent cycles see an empty expired set, so no extra
-        // events can be produced.
+        // then stop. Subsequent cycles see an empty expired set.
         tokio::time::sleep(Duration::from_millis(50)).await;
         handle.stop().await;
         svc.await.unwrap().unwrap();
 
-        // Invariant 1: exactly one event, and it is the RequestExpired variant.
-        let captured = events.events();
         assert_eq!(
-            captured.len(),
-            1,
-            "expected exactly one emitted event, got {captured:?}"
+            registry.marked_expired(),
+            vec![agr_id],
+            "exactly one agreement marked Expired"
         );
-
-        // Invariant 2: the routing metadata and payload match the expired agreement.
-        match &captured[0] {
-            CapturedEvent::RequestExpired {
-                deployment: ev_deployment,
-                chain_id: ev_chain_id,
-                event,
-            } => {
-                assert_eq!(*ev_deployment, deployment);
-                assert_eq!(*ev_chain_id, protocol_network);
-                assert_eq!(event.indexer, indexer_id.to_string());
-                assert_eq!(event.request_expired_at, CHAIN_TS);
-                assert_eq!(
-                    event.request_proposed_at,
-                    created_at.unix_timestamp() as u64
-                );
-            }
-            other => panic!("expected RequestExpired event, got {other:?}"),
-        }
     }
 
     #[tokio::test]
-    async fn test_request_expired_prefers_stored_proposed_at() {
-        // With a chain-time proposal stamp present, the expiry event reports it
-        // rather than the wall-clock created_at, so both timestamps share a clock.
-        // (The 0/fallback-to-created_at path is covered by the sibling test above.)
+    async fn test_grace_holds_back_expiry_below_the_margin() {
+        // Item 8 guard: with a grace margin, agreements whose deadline is within
+        // `grace` of chain time are NOT yet queried as expired -- the effective
+        // threshold passed to the registry is `chain_ts - grace`.
         const CHAIN_TS: u64 = 1_700_000_000;
-        const PROPOSED_AT: u64 = 1_699_999_400;
-        let deployment: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
-            .parse()
-            .unwrap();
-        let protocol_network: ChainId = 42161;
-        let indexer_id = IndexerId::from(Address::from([0x11u8; 20]));
-        let created_at = OffsetDateTime::from_unix_timestamp(1_699_000_000).unwrap();
+        const GRACE: u64 = 300;
 
         let registry = MockExpirationRegistry::new();
         registry.set_chain_state(Some(ChainListenerState {
@@ -851,16 +809,7 @@ mod tests {
             last_processed_id: None,
             last_processed_block_timestamp: Some(CHAIN_TS),
         }));
-        let mut agreement =
-            make_expired_agreement(deployment, protocol_network, indexer_id, created_at);
-        agreement.terms.metadata.proposed_at = PROPOSED_AT;
-        registry.set_indexing_request(make_indexing_request(
-            agreement.indexing_request_id,
-            deployment,
-        ));
-        registry.set_expired_agreements(vec![agreement]);
 
-        let events = CapturingEventsProducer::new();
         let ctx = Ctx {
             registry: registry.clone(),
             worker_queue: MockWorkerQueue,
@@ -868,9 +817,9 @@ mod tests {
                 enabled: true,
                 interval: Duration::from_millis(10),
                 batch_size: 100,
+                grace: Duration::from_secs(GRACE),
             },
             chain_id: Some(1337),
-            subgraph_indexing_agreements_events_emitter: Arc::new(events.clone()),
         };
 
         let (handle, service) = new(ctx);
@@ -879,22 +828,16 @@ mod tests {
         handle.stop().await;
         svc.await.unwrap().unwrap();
 
-        let captured = events.events();
-        assert_eq!(captured.len(), 1, "expected one event, got {captured:?}");
-        match &captured[0] {
-            CapturedEvent::RequestExpired { event, .. } => {
-                assert_eq!(
-                    event.request_proposed_at, PROPOSED_AT,
-                    "expiry event should carry the stored chain-time proposal, not created_at"
-                );
-                assert_eq!(event.request_expired_at, CHAIN_TS);
-            }
-            other => panic!("expected RequestExpired event, got {other:?}"),
-        }
+        // The registry was queried with the grace-adjusted threshold, not raw chain time.
+        assert!(
+            registry.get_expired_calls().contains(&(CHAIN_TS - GRACE)),
+            "expiry threshold must be chain_ts - grace; calls: {:?}",
+            registry.get_expired_calls()
+        );
     }
 
     #[tokio::test]
-    async fn test_emits_no_event_when_nothing_expires() {
+    async fn test_marks_nothing_when_nothing_expires() {
         let registry = MockExpirationRegistry::new();
         // Chain time is available (so the service is active), but no agreement
         // is configured as expired: get_expired_created_agreements returns empty.
@@ -905,8 +848,6 @@ mod tests {
             last_processed_block_timestamp: Some(1_700_000_000),
         }));
 
-        let events = CapturingEventsProducer::new();
-
         let ctx = Ctx {
             registry: registry.clone(),
             worker_queue: MockWorkerQueue,
@@ -914,9 +855,9 @@ mod tests {
                 enabled: true,
                 interval: Duration::from_millis(10),
                 batch_size: 100,
+                grace: Duration::from_secs(0),
             },
             chain_id: Some(1337),
-            subgraph_indexing_agreements_events_emitter: Arc::new(events.clone()),
         };
 
         let (handle, service) = new(ctx);
@@ -926,13 +867,11 @@ mod tests {
         handle.stop().await;
         svc.await.unwrap().unwrap();
 
-        // The query ran (service was active), but nothing expired.
+        // The query ran (service was active), but nothing was marked expired.
         assert!(!registry.get_expired_calls().is_empty());
-        // Invariant 3: the producer was never called.
         assert!(
-            events.events().is_empty(),
-            "expected no events when nothing expires, got {:?}",
-            events.events()
+            registry.marked_expired().is_empty(),
+            "nothing should be marked expired when the expired set is empty"
         );
     }
 
@@ -947,11 +886,9 @@ mod tests {
                 enabled: true,
                 interval: Duration::from_millis(10),
                 batch_size: 100,
+                grace: Duration::from_secs(0),
             },
             chain_id: None,
-            subgraph_indexing_agreements_events_emitter: Arc::new(
-                SubgraphIndexingAgreementsEventsEmitter::disabled(),
-            ),
         };
 
         let (handle, service) = new(ctx);
@@ -977,11 +914,9 @@ mod tests {
                 enabled: true,
                 interval: Duration::from_millis(10),
                 batch_size: 100,
+                grace: Duration::from_secs(0),
             },
             chain_id: Some(1337),
-            subgraph_indexing_agreements_events_emitter: Arc::new(
-                SubgraphIndexingAgreementsEventsEmitter::disabled(),
-            ),
         };
 
         let (handle, service) = new(ctx);
@@ -1014,11 +949,9 @@ mod tests {
                 enabled: true,
                 interval: Duration::from_millis(10),
                 batch_size: 100,
+                grace: Duration::from_secs(0),
             },
             chain_id: Some(1337),
-            subgraph_indexing_agreements_events_emitter: Arc::new(
-                SubgraphIndexingAgreementsEventsEmitter::disabled(),
-            ),
         };
 
         let (handle, service) = new(ctx);
@@ -1049,11 +982,9 @@ mod tests {
                 enabled: true,
                 interval: Duration::from_millis(10),
                 batch_size: 100,
+                grace: Duration::from_secs(0),
             },
             chain_id: Some(1337),
-            subgraph_indexing_agreements_events_emitter: Arc::new(
-                SubgraphIndexingAgreementsEventsEmitter::disabled(),
-            ),
         };
 
         let (handle, service) = new(ctx);

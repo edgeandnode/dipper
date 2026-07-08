@@ -20,8 +20,9 @@ use self::result::Result as RegistryResult;
 pub use self::{
     agreement::{
         AgreementFeeRate, AgreementRegistry, CancelKind, IndexingAgreement, NewAgreementParams,
-        ReconciliationItem, ReconciliationOutcome, Status as IndexingAgreementStatus,
-        Terms as IndexingAgreementTerms, TermsMetadata as IndexingAgreementTermsMetadata,
+        ReconciliationAudit, ReconciliationItem, ReconciliationOutcome,
+        Status as IndexingAgreementStatus, Terms as IndexingAgreementTerms,
+        TermsMetadata as IndexingAgreementTermsMetadata,
     },
     indexer_denylist::IndexerDenylistRegistry,
     indexing_request::{
@@ -185,6 +186,17 @@ impl IndexingRequestRegistry for RegistryProvider {
             .map(IndexingRequest::try_from)
             .filter_map(filter_map_with_logging)
             .collect())
+    }
+
+    async fn set_indexing_request_shortfall_active(
+        &self,
+        id: &IndexingRequestId,
+        active: bool,
+    ) -> RegistryResult<bool> {
+        Ok(self
+            .inner
+            .set_indexing_request_shortfall_active(id, active)
+            .await?)
     }
 }
 
@@ -400,6 +412,13 @@ impl AgreementRegistry for RegistryProvider {
                     }
                     agreement::CancelKind::ByIndexer => dipper_pgregistry::CancelKind::ByIndexer,
                 }),
+                audit: dipper_pgregistry::ReconciliationAudit {
+                    accepted_at: item.audit.accepted_at,
+                    accepted_tx: item.audit.accepted_tx.clone(),
+                    canceled_at: item.audit.canceled_at,
+                    canceled_by: item.audit.canceled_by.clone(),
+                    canceled_tx: item.audit.canceled_tx.clone(),
+                },
             })
             .collect();
         let outcomes = self.inner.apply_reconciliation_batch(&pg_items).await?;
@@ -415,6 +434,121 @@ impl AgreementRegistry for RegistryProvider {
                 )
             })
             .collect())
+    }
+
+    async fn get_agreements_pending_terminated_emission(
+        &self,
+        limit: i64,
+    ) -> RegistryResult<Vec<agreement::PendingTerminatedEvent>> {
+        Ok(self
+            .inner
+            .get_agreements_pending_terminated_emission(limit)
+            .await?
+            .into_iter()
+            .map(|p| agreement::PendingTerminatedEvent {
+                agreement_id: p.agreement_id,
+                indexer_id: p.indexer_id,
+                deployment_id: p.deployment_id,
+                protocol_network: p.protocol_network,
+                canceled_at: p.canceled_at,
+                canceled_by: p.canceled_by,
+                canceled_tx: p.canceled_tx,
+                updated_at: p.updated_at,
+            })
+            .collect())
+    }
+
+    async fn mark_terminated_event_emitted(
+        &self,
+        agreement_id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        self.inner
+            .mark_terminated_event_emitted(agreement_id)
+            .await?;
+        Ok(())
+    }
+
+    async fn get_agreements_pending_accepted_emission(
+        &self,
+        limit: i64,
+    ) -> RegistryResult<Vec<agreement::PendingAcceptedEvent>> {
+        Ok(self
+            .inner
+            .get_agreements_pending_accepted_emission(limit)
+            .await?
+            .into_iter()
+            .map(|p| agreement::PendingAcceptedEvent {
+                agreement_id: p.agreement_id,
+                indexer_id: p.indexer_id,
+                deployment_id: p.deployment_id,
+                protocol_network: p.protocol_network,
+                accepted_at: p.accepted_at,
+                accepted_tx: p.accepted_tx,
+                ends_at: p.ends_at,
+                payer: p.payer,
+            })
+            .collect())
+    }
+
+    async fn mark_accepted_event_emitted(
+        &self,
+        agreement_id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        self.inner.mark_accepted_event_emitted(agreement_id).await?;
+        Ok(())
+    }
+
+    async fn get_agreements_pending_expired_emission(
+        &self,
+        limit: i64,
+    ) -> RegistryResult<Vec<agreement::PendingExpiredEvent>> {
+        Ok(self
+            .inner
+            .get_agreements_pending_expired_emission(limit)
+            .await?
+            .into_iter()
+            .map(|p| agreement::PendingExpiredEvent {
+                agreement_id: p.agreement_id,
+                indexer_id: p.indexer_id,
+                deployment_id: p.deployment_id,
+                protocol_network: p.protocol_network,
+                request_proposed_at: p.request_proposed_at,
+                request_expired_at: p.request_expired_at,
+            })
+            .collect())
+    }
+
+    async fn mark_expired_event_emitted(
+        &self,
+        agreement_id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        self.inner.mark_expired_event_emitted(agreement_id).await?;
+        Ok(())
+    }
+
+    async fn record_accepted_audit(
+        &self,
+        agreement_id: &IndexingAgreementId,
+        accepted_at: u64,
+        accepted_tx: &str,
+    ) -> RegistryResult<()> {
+        self.inner
+            .record_accepted_audit(agreement_id, accepted_at, accepted_tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn record_cancel_audit(
+        &self,
+        agreement_id: &IndexingAgreementId,
+        canceled_at: u64,
+        canceled_by: &str,
+        canceled_tx: Option<&str>,
+    ) -> RegistryResult<()> {
+        self.inner
+            .record_cancel_audit(agreement_id, canceled_at, canceled_by, canceled_tx)
+            .await?;
+        Ok(())
     }
 
     async fn get_expired_created_agreements(

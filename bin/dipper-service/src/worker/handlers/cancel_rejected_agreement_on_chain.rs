@@ -7,7 +7,6 @@
 use std::{sync::Arc, time::Duration};
 
 use dipper_core::ids::IndexingAgreementId;
-use dipper_producer::{events::SubgraphIndexingAgreementEventsProducer, proto};
 
 use crate::{
     cancel_dispatch::cancel_agreement_on_chain,
@@ -21,8 +20,6 @@ pub struct Ctx<R, T> {
     pub registry: R,
     pub chain_client: T,
     pub agreement_conf: Arc<IndexingAgreementConfig>,
-    pub subgraph_indexing_agreements_events_emitter:
-        Arc<dyn SubgraphIndexingAgreementEventsProducer>,
 }
 
 /// Cancel a rejected agreement on-chain.
@@ -38,7 +35,7 @@ pub struct Message {
 /// ensure the indexer doesn't receive payment for work we didn't want.
 pub async fn handle<R, T>(ctx: Ctx<R, T>, Message { agreement_id }: &Message) -> JobResult<()>
 where
-    R: AgreementRegistry,
+    R: AgreementRegistry + Sync,
     T: ChainClient,
 {
     // Look up the agreement
@@ -115,28 +112,30 @@ where
             }
         };
 
-    // Emit `terminated` only when the local row was actually flipped to terminal.
-    // If the mark failed, the row stays `Rejected` and the chain_listener will emit
-    // `terminated` when it observes the on-chain cancel — emitting here too would
-    // duplicate. Count is read after the cancel is persisted (excludes this one).
+    // When the row was actually flipped to terminal, record the cancel audit so
+    // the chain_listener's `terminated` sweep announces it durably. The accept
+    // was recorded when the rejected-then-accepted anomaly was first detected, so
+    // the row is sweep-eligible. If the mark failed, the row stays `Rejected` and
+    // the chain_listener observes the on-chain cancel and flips it itself, then
+    // the same sweep emits -- so nothing is lost either way.
     if mark_cancellation_complete(&ctx.registry, agreement_id).await {
-        let remaining = crate::registry::remaining_accepted_indexing_agreements(
-            &ctx.registry,
-            &agreement.terms.metadata.subgraph_deployment_id,
-        )
-        .await;
-        ctx.subgraph_indexing_agreements_events_emitter
-            .produce_subgraph_indexing_agreement_terminated(
-                agreement.terms.metadata.subgraph_deployment_id,
-                agreement.terms.metadata.protocol_network,
-                proto::SubgraphIndexingAgreementTerminated {
-                    indexer: agreement.indexer.id.to_string(),
-                    terminated_at: dipper_core::time::now_secs(),
-                    terminated_by: ctx.agreement_conf.recurring_agreement_manager().to_string(),
-                    terminated_tx: on_chain_cancel_tx.unwrap_or_default(),
-                    remaining_accepted_indexing_agreements: remaining,
-                },
+        let manager = ctx.agreement_conf.recurring_agreement_manager().to_string();
+        if let Err(err) = ctx
+            .registry
+            .record_cancel_audit(
+                agreement_id,
+                dipper_core::time::now_secs(),
+                &manager,
+                on_chain_cancel_tx.as_deref(),
+            )
+            .await
+        {
+            tracing::warn!(
+                agreement_id = %agreement_id,
+                error = %err,
+                "failed to record cancel audit; terminated event may emit with fallback fields"
             );
+        }
     }
 
     Ok(())
@@ -154,7 +153,7 @@ where
 /// cancel and emit `terminated` itself — emitting here too would duplicate.
 async fn mark_cancellation_complete<R>(registry: &R, agreement_id: &IndexingAgreementId) -> bool
 where
-    R: AgreementRegistry,
+    R: AgreementRegistry + Sync,
 {
     match registry
         .mark_indexing_agreement_as_canceled_by_requester(agreement_id)
@@ -190,7 +189,7 @@ mod tests {
     use dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement;
     use thegraph_core::{
         DeploymentId, IndexerId,
-        alloy::primitives::{Address, B256, ChainId, U256},
+        alloy::primitives::{Address, B256, U256},
     };
     use time::OffsetDateTime;
     use url::Url;
@@ -202,7 +201,6 @@ mod tests {
             IndexingAgreement, IndexingAgreementStatus, IndexingAgreementTerms,
             IndexingAgreementTermsMetadata,
         },
-        test_support::{CapturedEvent, CapturingEventsProducer},
     };
 
     // =========================================================================
@@ -210,36 +208,33 @@ mod tests {
     // =========================================================================
 
     /// Registry that returns a single configurable agreement and records the
-    /// terminal-cancel transitions the handler drives.
+    /// terminal-cancel transition + cancel-audit calls the handler drives.
+    /// `Clone` shares the tracked state (Arc), so a test can clone one into the
+    /// `Ctx` and still assert on the original after `handle` consumes the ctx.
+    #[derive(Clone)]
     struct MockRegistry {
-        agreement: Mutex<Option<IndexingAgreement>>,
-        marked_canceled: Mutex<Vec<IndexingAgreementId>>,
+        agreement: Arc<Mutex<Option<IndexingAgreement>>>,
+        marked_canceled: Arc<Mutex<Vec<IndexingAgreementId>>>,
+        /// Ids passed to `record_cancel_audit` -- the signal the handler drives
+        /// the terminated event (the chain_listener sweep emits from this audit).
+        recorded_cancel_audit: Arc<Mutex<Vec<IndexingAgreementId>>>,
         /// When true, `mark_indexing_agreement_as_canceled_by_requester` errors.
         fail_mark: bool,
-        /// When true, `count_accepted_agreements_by_deployment` errors.
-        fail_count: bool,
     }
 
     impl MockRegistry {
         fn new(agreement: IndexingAgreement) -> Self {
             Self {
-                agreement: Mutex::new(Some(agreement)),
-                marked_canceled: Mutex::new(Vec::new()),
+                agreement: Arc::new(Mutex::new(Some(agreement))),
+                marked_canceled: Arc::new(Mutex::new(Vec::new())),
+                recorded_cancel_audit: Arc::new(Mutex::new(Vec::new())),
                 fail_mark: false,
-                fail_count: false,
             }
         }
 
         fn with_mark_failure(agreement: IndexingAgreement) -> Self {
             Self {
                 fail_mark: true,
-                ..Self::new(agreement)
-            }
-        }
-
-        fn with_count_failure(agreement: IndexingAgreement) -> Self {
-            Self {
-                fail_count: true,
                 ..Self::new(agreement)
             }
         }
@@ -305,10 +300,21 @@ mod tests {
             &self,
             _deployment_id: &DeploymentId,
         ) -> crate::registry::Result<i64> {
-            if self.fail_count {
-                return Err(crate::registry::Error::NoRecordsUpdated);
-            }
             Ok(0)
+        }
+
+        async fn record_cancel_audit(
+            &self,
+            agreement_id: &IndexingAgreementId,
+            _canceled_at: u64,
+            _canceled_by: &str,
+            _canceled_tx: Option<&str>,
+        ) -> crate::registry::Result<()> {
+            self.recorded_cancel_audit
+                .lock()
+                .unwrap()
+                .push(*agreement_id);
+            Ok(())
         }
 
         async fn register_new_indexing_agreement(
@@ -540,119 +546,59 @@ mod tests {
     // Tests
     // =========================================================================
 
-    #[tokio::test]
-    async fn rejected_agreement_emits_single_terminated_event() {
-        let agreement = make_agreement(IndexingAgreementStatus::Rejected);
-        let agreement_id = agreement.id;
-        let events = CapturingEventsProducer::new();
-
-        let ctx = Ctx {
-            registry: MockRegistry::new(agreement),
+    fn ctx_for(registry: MockRegistry) -> Ctx<MockRegistry, MockChainClient> {
+        Ctx {
+            registry,
             chain_client: MockChainClient,
             agreement_conf: test_agreement_conf(),
-            subgraph_indexing_agreements_events_emitter: Arc::new(events.clone()),
-        };
-
-        let result = handle(ctx, &Message { agreement_id }).await;
-        assert!(result.is_ok(), "handle should succeed: {result:?}");
-
-        let captured = events.events();
-        assert_eq!(captured.len(), 1, "exactly one event expected");
-
-        match &captured[0] {
-            CapturedEvent::Terminated {
-                deployment,
-                chain_id,
-                event,
-            } => {
-                assert_eq!(*deployment, test_deployment_id());
-                assert_eq!(*chain_id, 1 as ChainId);
-                // terminated_by is the manager address from the config.
-                assert_eq!(event.terminated_by, Address::ZERO.to_string());
-                assert_eq!(event.remaining_accepted_indexing_agreements, 0);
-                assert!(
-                    !event.terminated_tx.is_empty(),
-                    "terminated_tx should carry the on-chain cancel tx hash"
-                );
-            }
-            other => panic!("expected Terminated event, got {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn failed_local_mark_emits_nothing() {
-        // On-chain cancel succeeds but the local DB mark fails, leaving the row
-        // non-terminal. The chain_listener will observe the on-chain cancel and emit
-        // `terminated`, so emitting here too would duplicate — we must NOT emit.
+    async fn rejected_agreement_records_cancel_audit_once() {
+        // The handler no longer emits `terminated` directly: it records the cancel
+        // audit, and the chain_listener sweep announces it durably. Assert exactly
+        // one audit was recorded for the agreement.
         let agreement = make_agreement(IndexingAgreementStatus::Rejected);
         let agreement_id = agreement.id;
-        let events = CapturingEventsProducer::new();
+        let registry = MockRegistry::new(agreement);
 
-        let ctx = Ctx {
-            registry: MockRegistry::with_mark_failure(agreement),
-            chain_client: MockChainClient,
-            agreement_conf: test_agreement_conf(),
-            subgraph_indexing_agreements_events_emitter: Arc::new(events.clone()),
-        };
+        let result = handle(ctx_for(registry.clone()), &Message { agreement_id }).await;
+        assert!(result.is_ok(), "handle should succeed: {result:?}");
 
-        let result = handle(ctx, &Message { agreement_id }).await;
+        let recorded = registry.recorded_cancel_audit.lock().unwrap().clone();
+        assert_eq!(recorded, vec![agreement_id], "exactly one cancel audit");
+    }
+
+    #[tokio::test]
+    async fn failed_local_mark_records_no_cancel_audit() {
+        // On-chain cancel succeeds but the local DB mark fails, leaving the row
+        // non-terminal. The handler must NOT record cancel audit -- the
+        // chain_listener will observe the on-chain cancel, flip the row, and the
+        // sweep emits from there.
+        let agreement = make_agreement(IndexingAgreementStatus::Rejected);
+        let agreement_id = agreement.id;
+        let registry = MockRegistry::with_mark_failure(agreement);
+
+        let result = handle(ctx_for(registry.clone()), &Message { agreement_id }).await;
         assert!(result.is_ok(), "handle should still return Ok: {result:?}");
         assert!(
-            events.events().is_empty(),
-            "no terminated event when the local mark failed (chain_listener will emit)"
+            registry.recorded_cancel_audit.lock().unwrap().is_empty(),
+            "no cancel audit recorded when the local mark failed"
         );
     }
 
     #[tokio::test]
-    async fn count_error_emits_terminated_with_unknown_sentinel() {
-        // The cancel + mark succeed but the remaining-count query errors. We still
-        // emit `terminated` (the cancel happened), but the count must be the `-1`
-        // unknown sentinel rather than a misleading `0`.
-        let agreement = make_agreement(IndexingAgreementStatus::Rejected);
-        let agreement_id = agreement.id;
-        let events = CapturingEventsProducer::new();
-
-        let ctx = Ctx {
-            registry: MockRegistry::with_count_failure(agreement),
-            chain_client: MockChainClient,
-            agreement_conf: test_agreement_conf(),
-            subgraph_indexing_agreements_events_emitter: Arc::new(events.clone()),
-        };
-
-        let result = handle(ctx, &Message { agreement_id }).await;
-        assert!(result.is_ok(), "handle should succeed: {result:?}");
-
-        let captured = events.events();
-        assert_eq!(captured.len(), 1, "exactly one terminated event");
-        match &captured[0] {
-            CapturedEvent::Terminated { event, .. } => {
-                assert_eq!(
-                    event.remaining_accepted_indexing_agreements, -1,
-                    "count error must surface as -1 (unknown), not 0"
-                );
-            }
-            other => panic!("expected Terminated event, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn non_rejected_agreement_emits_nothing() {
+    async fn non_rejected_agreement_records_nothing() {
         let agreement = make_agreement(IndexingAgreementStatus::Created);
         let agreement_id = agreement.id;
-        let events = CapturingEventsProducer::new();
+        let registry = MockRegistry::new(agreement);
 
-        let ctx = Ctx {
-            registry: MockRegistry::new(agreement),
-            chain_client: MockChainClient,
-            agreement_conf: test_agreement_conf(),
-            subgraph_indexing_agreements_events_emitter: Arc::new(events.clone()),
-        };
-
-        let result = handle(ctx, &Message { agreement_id }).await;
+        let result = handle(ctx_for(registry.clone()), &Message { agreement_id }).await;
         assert!(result.is_ok(), "handle should return Ok: {result:?}");
         assert!(
-            events.events().is_empty(),
-            "no events should be emitted for a non-Rejected agreement"
+            registry.recorded_cancel_audit.lock().unwrap().is_empty(),
+            "no cancel audit recorded for a non-Rejected agreement"
         );
     }
 }

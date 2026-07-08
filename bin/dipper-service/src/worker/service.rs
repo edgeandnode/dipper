@@ -167,7 +167,8 @@ where
         + AgreementRegistry
         + IndexerDenylistRegistry
         + PendingCancellationRegistry
-        + crate::network::service::chain_listener::ChainListenerStateRegistry,
+        + crate::network::service::chain_listener::ChainListenerStateRegistry
+        + Sync,
     W: WorkerQueue,
     C: IndexerClient,
     I: CandidateSelection,
