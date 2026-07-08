@@ -4,9 +4,8 @@ use std::collections::HashSet;
 
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_pgregistry::{
-    CancelKind, Error, IndexingAgreementStatus, IndexingAgreementTerms,
-    IndexingReceiptReportedWork, IndexingRequestStatus, NewAgreementParams, PgRegistry,
-    ReconciliationItem,
+    CancelKind, Error, IndexingAgreementStatus, IndexingAgreementTerms, IndexingRequestStatus,
+    NewAgreementParams, PgRegistry, ReconciliationItem,
 };
 use fake::{Fake, Faker};
 use pgtemp::PgTempDB;
@@ -514,95 +513,6 @@ async fn get_indexing_agreements_by_indexing_request_id() {
         }),
         "Expected all agreements to be in CREATED or ACCEPTED_ON_CHAIN state"
     );
-}
-
-#[tokio::test]
-async fn register_new_indexing_receipt_no_indexing_agreement() {
-    //* Given
-    // Indexing agreement
-    let indexing_agreement_id = Faker.fake::<IndexingAgreementId>();
-    let indexer_id = Faker.fake::<IndexerId>();
-    let indexer_operator_id = FakeAlloy.fake();
-    let reported_work = Faker.fake::<IndexingReceiptReportedWork>();
-    let amount = FakeAlloy.fake();
-
-    let (db, _temp_db) = temp_registry_db().await;
-    let registry = PgRegistry::new(db);
-
-    //* When
-    let res = registry
-        .register_new_indexing_receipt(
-            indexing_agreement_id,
-            indexer_id,
-            indexer_operator_id,
-            reported_work,
-            amount,
-        )
-        .await;
-
-    //* Then
-    let _error = res.expect_err("Expected error when registering receipt");
-}
-
-#[tokio::test]
-async fn register_new_indexing_receipt() {
-    //* Given
-    // Indexing request
-    let requested_by = address!("8f8c426f956876325b1e037c6eae9b189952994c");
-    let deployment_id = deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv");
-    let deployment_chain_id = 42161; // arbitrum-one (0xa4b1)
-
-    // Indexing agreement
-    let indexer_id = indexer_id!("3c584ee1d89f43c6ccee17e886a001de2bb4d8a9");
-    let indexer_url = "http://localhost:8020".parse().expect("Invalid URL");
-    let agreement_terms = Faker.fake::<IndexingAgreementTerms>();
-
-    // Indexing receipt
-    let indexer_operator_id = address!("f027cfe07afa186afec8144eb20e53715d7f33b2");
-    let reported_work = Faker.fake::<IndexingReceiptReportedWork>();
-    let amount = FakeAlloy.fake();
-
-    let (db, _temp_db) = temp_registry_db().await;
-    let registry = PgRegistry::new(db);
-
-    // Register a new indexing request
-    let indexing_request_id = match registry
-        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 3)
-        .await
-        .expect("Failed to set indexing target candidates")
-    {
-        dipper_pgregistry::IndexingRequestSetTargetOutcome::Inserted { id } => id,
-        other => panic!("seed insert did not produce an Inserted outcome: {other:?}"),
-    };
-
-    // Register a new indexing agreement
-    let indexing_agreement_id = registry
-        .register_new_indexing_agreement(NewAgreementParams {
-            agreement_id: Faker.fake::<IndexingAgreementId>(),
-            nonce_uuid: uuid::Uuid::now_v7(),
-            request_id: indexing_request_id,
-            deployment_id,
-            indexer_id,
-            indexer_url,
-            terms: agreement_terms,
-            terms_version_hash: None,
-        })
-        .await
-        .expect("Failed to register new indexing agreement");
-
-    //* When
-    let res = registry
-        .register_new_indexing_receipt(
-            indexing_agreement_id,
-            indexer_id,
-            indexer_operator_id,
-            reported_work,
-            amount,
-        )
-        .await;
-
-    //* Then
-    let _indexing_receipt_id = res.expect("Failed to register new indexing receipt");
 }
 
 #[tokio::test]

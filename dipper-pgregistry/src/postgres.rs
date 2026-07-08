@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 
-use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
+use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use sqlx::{Pool, Postgres, types::Json};
 use thegraph_core::{
     DeploymentId, IndexerId,
-    alloy::primitives::{Address, ChainId, U256},
+    alloy::primitives::{Address, ChainId},
 };
 use url::Url;
 
@@ -22,14 +22,9 @@ pub struct NewAgreementParams {
     pub terms_version_hash: Option<Vec<u8>>,
 }
 
-use self::common::{
-    PgAddress, PgAllocationId, PgDeploymentId, PgIndexerId, PgProofOfIndexing, PgU32, PgU64,
-    PgU256, PgUrl,
-};
+use self::common::{PgAddress, PgDeploymentId, PgIndexerId, PgU64, PgUrl};
 use super::{
-    IndexingReceiptReportedWork,
     indexing_agreement::{IndexingAgreement, Status as IndexingAgreementStatus},
-    indexing_receipt::IndexingReceipt,
     indexing_request::{
         IndexingRequest, SetTargetOutcome as IndexingRequestSetTargetOutcome,
         Status as IndexingRequestStatus,
@@ -39,7 +34,6 @@ use super::{
 
 pub(crate) mod common;
 mod indexing_agreement;
-mod indexing_receipt;
 mod indexing_request;
 
 /// Chain listener state row from the database.
@@ -83,7 +77,7 @@ pub struct ReconciliationItem {
     pub cancel: Option<CancelKind>,
 }
 
-/// A registry that stores indexing requests, agreements, and receipts in a PostgreSQL database.
+/// A registry that stores indexing requests and agreements in a PostgreSQL database.
 #[derive(Clone)]
 pub struct PgRegistry {
     pool: Pool<Postgres>,
@@ -964,109 +958,6 @@ impl PgRegistry {
         tx.commit().await?;
 
         Ok(outcomes)
-    }
-
-    pub async fn register_new_indexing_receipt(
-        &self,
-        agreement_id: IndexingAgreementId,
-        indexer_id: IndexerId,
-        indexer_operator_id: Address,
-        reported_work: IndexingReceiptReportedWork,
-        amount: U256,
-    ) -> Result<IndexingReceiptId, Error> {
-        sqlx::query_as(
-            r#"
-            INSERT INTO dipper_reg_indexing_receipts (
-                id,
-                created_at,
-                updated_at,
-                indexing_agreement_id,
-                indexer_id,
-                indexer_operator_id,
-                reported_work_epoch,
-                reported_work_allocation_id,
-                reported_work_entity_count,
-                reported_work_poi,
-                amount
-            )
-            VALUES (
-                $1, timezone('UTC', now()), timezone('UTC', now()),
-                $2, $3, $4, $5, $6, $7, $8, $9
-            )
-            RETURNING id
-            "#,
-        )
-        .bind(IndexingReceiptId::new())
-        .bind(agreement_id)
-        .bind(PgIndexerId(indexer_id))
-        .bind(PgAddress(indexer_operator_id))
-        .bind(PgU32(reported_work.epoch))
-        .bind(PgAllocationId(reported_work.allocation_id))
-        .bind(PgU64(reported_work.entity_count))
-        .bind(PgProofOfIndexing(reported_work.poi))
-        .bind(PgU256(amount))
-        .fetch_one(&self.pool)
-        .await
-        .map(|(id,)| id)
-        .map_err(Into::into)
-    }
-
-    pub async fn get_all_indexing_receipts_by_indexing_agreement_id(
-        &self,
-        agreement_id: &IndexingAgreementId,
-    ) -> Result<Vec<IndexingReceipt>, Error> {
-        sqlx::query_as(
-            r#"
-            SELECT
-                id,
-                created_at,
-                updated_at,
-                indexing_agreement_id,
-                indexer_id,
-                indexer_operator_id,
-                reported_work_epoch,
-                reported_work_allocation_id,
-                reported_work_entity_count,
-                reported_work_poi,
-                amount
-            FROM dipper_reg_indexing_receipts
-            WHERE indexing_agreement_id = $1
-            "#,
-        )
-        .bind(agreement_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(Into::into)
-    }
-
-    pub async fn get_last_receipt_for_agreement_id(
-        &self,
-        agreement_id: &IndexingAgreementId,
-    ) -> Result<Option<IndexingReceipt>, Error> {
-        sqlx::query_as(
-            r#"
-            SELECT
-                id,
-                created_at,
-                updated_at,
-                indexing_agreement_id,
-                indexer_id,
-                indexer_operator_id,
-                reported_work_epoch,
-                reported_work_allocation_id,
-                reported_work_entity_count,
-                reported_work_poi,
-                amount
-            FROM dipper_reg_indexing_receipts
-            WHERE indexing_agreement_id = $1
-            ORDER BY created_at DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(agreement_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(Into::into)
     }
 
     // =========================================================================
