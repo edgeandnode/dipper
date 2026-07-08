@@ -23,6 +23,7 @@ mod rpc_provider;
 
 use std::sync::Arc;
 
+pub(crate) use abi::decode_revert_reason;
 use async_trait::async_trait;
 pub use client::AlloyChainClient;
 use dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement;

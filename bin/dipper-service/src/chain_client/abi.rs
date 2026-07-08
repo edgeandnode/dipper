@@ -1,11 +1,12 @@
 //! Contract ABI definitions for on-chain interactions.
 
-use thegraph_core::alloy::sol;
+use thegraph_core::alloy::{sol, sol_types::SolInterface};
 
 sol! {
     /// RecurringCollector contract interface (the EIP-712 domain read dipper
     /// needs). Full contract: `RecurringCollector.sol` in `graphprotocol/contracts`.
     #[allow(missing_docs)]
+    #[derive(Debug)]
     interface IRecurringCollector {
         /// Agreement details returned from `offer()`.
         ///
@@ -64,6 +65,38 @@ sol! {
                 bytes32 salt,
                 uint256[] memory extensions
             );
+
+        // Custom errors copied from IRecurringCollector.sol so revert payloads
+        // decode to names. Solidity enum params are declared uint8 here: the
+        // ABI canonicalizes enums to uint8, so computed selectors still match.
+        error RecurringCollectorAgreementIdZero();
+        error RecurringCollectorDataServiceNotAuthorized(bytes16 agreementId, address unauthorizedDataService);
+        error RecurringCollectorUnauthorizedDataService(address dataService);
+        error RecurringCollectorAgreementDeadlineElapsed(uint256 currentTimestamp, uint64 deadline);
+        error RecurringCollectorInvalidSigner();
+        error RecurringCollectorUnauthorizedCaller(address unauthorizedCaller, address dataService);
+        error RecurringCollectorInvalidCollectData(bytes invalidData);
+        error RecurringCollectorInvalidOfferType(uint8 offerType);
+        error RecurringCollectorAgreementIncorrectState(bytes16 agreementId, uint8 incorrectState);
+        error RecurringCollectorAgreementNotCollectable(bytes16 agreementId, uint8 reason);
+        error RecurringCollectorAgreementAddressNotSet();
+        error RecurringCollectorAgreementEndsBeforeDeadline(uint64 deadline, uint64 endsAt);
+        error RecurringCollectorAgreementInvalidCollectionWindow(
+            uint32 allowedMinCollectionWindow,
+            uint32 minSecondsPerCollection,
+            uint32 maxSecondsPerCollection
+        );
+        error RecurringCollectorAgreementInvalidDuration(uint32 requiredMinDuration, uint256 invalidDuration);
+        error RecurringCollectorCollectionTooSoon(bytes16 agreementId, uint32 secondsSinceLast, uint32 minSeconds);
+        error RecurringCollectorInvalidUpdateNonce(bytes16 agreementId, uint32 expected, uint32 provided);
+        error RecurringCollectorExcessiveSlippage(uint256 requested, uint256 actual, uint256 maxSlippage);
+        error RecurringCollectorCollectionNotEligible(bytes16 agreementId, address serviceProvider);
+        error RecurringCollectorPayerDoesNotSupportInterface(address payer, bytes4 interfaceId);
+        error RecurringCollectorInsufficientCallbackGas();
+        error RecurringCollectorNotGovernor(address account);
+        error RecurringCollectorNotPauseGuardian(address account);
+        error RecurringCollectorPauseGuardianNoChange(address account, bool allowed);
+        error RecurringCollectorOfferCancelled(address signer, bytes32 hash);
     }
 
     /// RecurringAgreementManager (RAM) contract interface (minimal subset). In
@@ -108,5 +141,67 @@ sol! {
 
         /// Emitted when the manager cancels an agreement.
         event AgreementRemoved(bytes16 indexed agreementId);
+    }
+}
+
+/// Render a revert payload as the RecurringCollector error it decodes to, or
+/// the raw 4-byte selector for a payload dipper does not recognize.
+pub(crate) fn decode_revert_reason(selector: [u8; 4], data: &[u8]) -> String {
+    match IRecurringCollector::IRecurringCollectorErrors::abi_decode(data) {
+        Ok(err) => format!("{err:?}"),
+        Err(_) => format!(
+            "unrecognized revert selector 0x{:02x}{:02x}{:02x}{:02x}",
+            selector[0], selector[1], selector[2], selector[3]
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use thegraph_core::alloy::sol_types::SolError;
+
+    use super::*;
+
+    #[test]
+    fn decodes_the_observed_collection_window_revert() {
+        //* Arrange - the revert produced by the 60/240 misconfiguration
+        let err = IRecurringCollector::RecurringCollectorAgreementInvalidCollectionWindow {
+            allowedMinCollectionWindow: 600,
+            minSecondsPerCollection: 60,
+            maxSecondsPerCollection: 240,
+        };
+        let data = err.abi_encode();
+        let mut selector = [0u8; 4];
+        selector.copy_from_slice(&data[..4]);
+
+        //* Act
+        let reason = decode_revert_reason(selector, &data);
+
+        //* Assert - selector pinned to the value observed on-chain
+        assert_eq!(
+            selector,
+            [0xe4, 0x57, 0x63, 0x96],
+            "declared error signature drifted from the contract"
+        );
+        assert!(
+            reason.contains("RecurringCollectorAgreementInvalidCollectionWindow"),
+            "reason should name the error: {reason}"
+        );
+        assert!(
+            reason.contains("240"),
+            "reason should carry the field values: {reason}"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_raw_selector_for_unknown_errors() {
+        //* Arrange - a selector no declared error matches
+        let data = [0xde, 0xad, 0xbe, 0xef, 0x00, 0x00];
+
+        //* Act
+        let reason = decode_revert_reason([0xde, 0xad, 0xbe, 0xef], &data);
+
+        //* Assert
+        assert!(reason.contains("0xdeadbeef"), "reason: {reason}");
     }
 }
