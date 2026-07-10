@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.1.5](https://github.com/edgeandnode/dipper/compare/v0.1.4...v0.1.5) (2026-07-10)
+
+
+### Added
+
+* pace agreement offers to match indexer capacity ([#661](https://github.com/edgeandnode/dipper/issues/661)) ([861d5b1](https://github.com/edgeandnode/dipper/commit/861d5b1f2d2fc4d367081e27f86fc813c7bcc849))
+* **worker:** serve interactive requests before background sweeps ([#662](https://github.com/edgeandnode/dipper/issues/662)) ([cb89726](https://github.com/edgeandnode/dipper/commit/cb8972602b5293cfc529bf4041f71d8e0fd52cc3))
+
+
+### Fixed
+
+* attribute agreement cancellations to the correct party ([#659](https://github.com/edgeandnode/dipper/issues/659)) ([67a48d5](https://github.com/edgeandnode/dipper/commit/67a48d589bdc038808d4eedc4de6ab6923c5850a))
+* **dips:** stamp agreement deadlines from live chain time ([#657](https://github.com/edgeandnode/dipper/issues/657)) ([7f8a887](https://github.com/edgeandnode/dipper/commit/7f8a88717b0acde1318407cfafbe2735e7ef8a11))
+* refuse to start with agreement terms the contract rejects ([#664](https://github.com/edgeandnode/dipper/issues/664)) ([78a8a1a](https://github.com/edgeandnode/dipper/commit/78a8a1a93fc8598640acb7bebd61297c64a9e2ed))
+* stop endlessly retrying payment offers that always fail ([#665](https://github.com/edgeandnode/dipper/issues/665)) ([564407b](https://github.com/edgeandnode/dipper/commit/564407ba2f0608f89a0bc7f446089b1e4c447822))
+
+
+### Changed
+
+* **pgregistry:** drop unused voucher-era indexing receipts code ([#663](https://github.com/edgeandnode/dipper/issues/663)) ([fb6d64d](https://github.com/edgeandnode/dipper/commit/fb6d64ded7ef33609f85a1c6369a2919943514d7))
+* sync manifest to 0.1.4 (was 0.1.3) ([#653](https://github.com/edgeandnode/dipper/issues/653)) ([b2e0640](https://github.com/edgeandnode/dipper/commit/b2e0640f9560c62353ad697bd8e539eb5f4feb50))
+
+
+### Performance
+
+* **worker:** raise default job concurrency to 8 with matching pool ([#655](https://github.com/edgeandnode/dipper/issues/655)) ([86ef9dd](https://github.com/edgeandnode/dipper/commit/86ef9dd3d545f99e70eea53285e6650e01615ad9))
+
+
+### Tests
+
+* share one panic-by-default registry stub across mocks ([#666](https://github.com/edgeandnode/dipper/issues/666)) ([bcdb8d0](https://github.com/edgeandnode/dipper/commit/bcdb8d0eef6072b7b0f2a671f80f545de2ac5ca4))
+
+
+### CI/CD
+
+* **release:** sign manifest-sync bot commits via the GitHub API ([#652](https://github.com/edgeandnode/dipper/issues/652)) ([3381333](https://github.com/edgeandnode/dipper/commit/338133366a01848fcf81259f718ddd7d63f11301))
+
 ## [0.1.3](https://github.com/edgeandnode/dipper/compare/v0.1.2...v0.1.3) (2026-06-11)
 
 
