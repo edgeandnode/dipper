@@ -1,4 +1,6 @@
 mod agreement;
+#[cfg(test)]
+mod agreement_stub;
 mod indexer_denylist;
 mod indexing_request;
 mod pending_cancellation;
@@ -16,6 +18,8 @@ use thegraph_core::{
 // Re-export for tests only
 #[cfg(test)]
 pub use self::agreement::Indexer;
+#[cfg(test)]
+pub use self::agreement_stub::StubAgreementRegistry;
 use self::result::Result as RegistryResult;
 pub use self::{
     agreement::{
@@ -46,10 +50,8 @@ impl From<NewAgreementParams> for dipper_pgregistry::NewAgreementParams {
     }
 }
 
-/// Filter and log conversion errors instead of silently dropping them.
-///
-/// This is a replacement for `.filter_map(filter_map_with_logging)` that logs warnings
-/// when conversions fail, making debugging easier.
+/// Filter and log conversion errors instead of silently dropping them: use as
+/// `.filter_map(filter_map_with_logging)` so failed conversions leave a warning.
 fn filter_map_with_logging<T, E: std::fmt::Display>(
     result: std::result::Result<T, E>,
 ) -> Option<T> {
@@ -62,10 +64,8 @@ fn filter_map_with_logging<T, E: std::fmt::Display>(
     }
 }
 
-/// A service for interacting with the registry.
-///
-/// This service provides a set of methods for interacting with the registry,
-/// including registering new indexing requests and indexing agreements.
+/// A service for interacting with the registry, including registering new
+/// indexing requests and indexing agreements.
 #[derive(Clone)]
 pub struct RegistryProvider {
     inner: PgRegistry,
