@@ -89,11 +89,9 @@ where
         Some(a) => a,
     };
 
-    // Rebuild the on-chain RCA struct from the agreement's stored terms.
-    // This mirrors what send_indexing_agreement_proposal will do when it
-    // ABI-encodes the proposal for gRPC dispatch -- the RCA bytes must be
-    // byte-for-byte identical so the on-chain offerHash matches what the
-    // indexer computes locally.
+    // Rebuild the on-chain RCA struct from the stored terms. The bytes must be
+    // identical to what send_indexing_agreement_proposal encoded for gRPC, so
+    // the on-chain offerHash matches what the indexer computed locally.
     let (rca, derived_id) = into_sol_rca(agreement.nonce_uuid, agreement.terms.clone());
 
     // Sanity check: the derived on-chain ID must match the agreement ID we
@@ -158,9 +156,9 @@ where
             return Err(JobError::Retryable(err.into(), Duration::from_secs(5)));
         }
         Err(ChainClientError::ContractRevert { selector, data }) => {
-            // A gas-estimation revert is deterministic for fixed calldata: a
-            // retry re-sends the same bytes and reverts identically. Fail the
-            // job; the expiration service expires and reassigns at the deadline.
+            // A gas-estimation revert won't clear on a quick retry: bad terms
+            // revert forever, state-dependent causes (pause, escrow) outlast the
+            // backoff. Fail the job; the expiration sweep reassigns at deadline.
             let reason = decode_revert_reason(selector, &data);
             tracing::error!(
                 agreement_id = %agreement_id,
@@ -168,7 +166,7 @@ where
                 "Offer reverted on-chain, dropping the submission job"
             );
             return Err(JobError::Fatal(anyhow::anyhow!(
-                "offer revert is deterministic, not retrying: {reason}"
+                "offer revert will not clear on retry: {reason}"
             )));
         }
         Err(err) => {
@@ -184,10 +182,9 @@ where
         }
     }
 
-    // Offer is confirmed on-chain (or was already there). The indexer-agent
-    // will pick up the pending_rca_proposals row and call
-    // acceptIndexingAgreement — the contract checks rcaOffers at that point.
-    // No further enqueue needed; chain_listener detects the acceptance event.
+    // Offer is confirmed on-chain (or was already there). The indexer-agent will
+    // pick up the pending_rca_proposals row and call acceptIndexingAgreement. No
+    // further enqueue needed; chain_listener detects the acceptance event.
     Ok(())
 }
 

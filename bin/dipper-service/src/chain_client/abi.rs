@@ -8,13 +8,9 @@ sol! {
     #[allow(missing_docs)]
     #[derive(Debug)]
     interface IRecurringCollector {
-        /// Agreement details returned from `offer()`.
-        ///
-        /// `state` is a bitmask of flags defined in `IAgreementCollector.sol`
-        /// (REGISTERED=1, ACCEPTED=2, NOTICE_GIVEN=4, SETTLED=8, BY_PAYER=16,
-        /// BY_PROVIDER=32, UPDATE=128); it is `uint16` on-chain because the
-        /// flag values exceed `uint8`. Dipper does not currently decode this
-        /// return value, but the layout must match for future use.
+        /// Agreement details returned from `offer()`. `state` is a bitmask of the
+        /// flags in `IAgreementCollector.sol` (REGISTERED=1 through UPDATE=128;
+        /// `uint16` as values exceed `uint8`). Undecoded; the layout must match.
         struct AgreementDetails {
             bytes16 agreementId;
             address payer;
@@ -24,12 +20,9 @@ sol! {
             uint16 state;
         }
 
-        /// Store a new or updated RCA offer on-chain.
-        ///
-        /// `offerType` = 1 for OFFER_TYPE_NEW, 2 for OFFER_TYPE_UPDATE
-        /// (0 = OFFER_TYPE_NONE, reserved sentinel — submitting 0 reverts).
-        /// `data` is the ABI-encoded `RecurringCollectionAgreement` struct.
-        /// `options` is a reserved parameter, pass 0.
+        /// Store a new or updated RCA offer on-chain. `offerType`: 1 = OFFER_TYPE_NEW,
+        /// 2 = OFFER_TYPE_UPDATE (0 is a reserved sentinel that reverts). `data` is the
+        /// ABI-encoded `RecurringCollectionAgreement`; `options` is reserved, pass 0.
         function offer(uint8 offerType, bytes calldata data, uint16 options)
             external
             returns (AgreementDetails memory details);
@@ -103,6 +96,7 @@ sol! {
     /// protocol-managed mode the manager is the RCA payer; dipper drives it as an
     /// unsigned operator while the manager funds escrow.
     #[allow(missing_docs)]
+    #[derive(Debug)]
     interface IRecurringAgreementManager {
         /// Offer an agreement through the manager. `offerType` mirrors
         /// `RecurringCollector` (1 = OFFER_TYPE_NEW); `offerData` is the
@@ -141,19 +135,39 @@ sol! {
 
         /// Emitted when the manager cancels an agreement.
         event AgreementRemoved(bytes16 indexed agreementId);
+
+        // Custom errors copied from IRecurringAgreementManagement.sol and the
+        // RecurringAgreementManager contract, plus the OpenZeppelin Pausable and
+        // AccessControl errors its BaseUpgradeable inherits.
+        error AgreementIdZero();
+        error ServiceProviderZeroAddress();
+        error UnauthorizedDataService(address dataService);
+        error UnauthorizedCollector(address collector);
+        error PayerMismatch(address payer);
+        error InvalidIssuanceAllocator(address allocator);
+        error CannotRevokeGovernorRole();
+        error EnforcedPause();
+        error ExpectedPause();
+        error AccessControlUnauthorizedAccount(address account, bytes32 neededRole);
+        error AccessControlBadConfirmation();
     }
 }
 
-/// Render a revert payload as the RecurringCollector error it decodes to, or
-/// the raw 4-byte selector for a payload dipper does not recognize.
+/// Render a revert payload as the RecurringCollector or RecurringAgreementManager
+/// error it decodes to, or the raw 4-byte selector for a payload dipper does not
+/// recognize.
 pub(crate) fn decode_revert_reason(selector: [u8; 4], data: &[u8]) -> String {
-    match IRecurringCollector::IRecurringCollectorErrors::abi_decode(data) {
-        Ok(err) => format!("{err:?}"),
-        Err(_) => format!(
-            "unrecognized revert selector 0x{:02x}{:02x}{:02x}{:02x}",
-            selector[0], selector[1], selector[2], selector[3]
-        ),
+    if let Ok(err) = IRecurringCollector::IRecurringCollectorErrors::abi_decode(data) {
+        return format!("{err:?}");
     }
+    if let Ok(err) = IRecurringAgreementManager::IRecurringAgreementManagerErrors::abi_decode(data)
+    {
+        return format!("{err:?}");
+    }
+    format!(
+        "unrecognized revert selector 0x{:02x}{:02x}{:02x}{:02x}",
+        selector[0], selector[1], selector[2], selector[3]
+    )
 }
 
 #[cfg(test)]
@@ -190,6 +204,26 @@ mod tests {
         assert!(
             reason.contains("240"),
             "reason should carry the field values: {reason}"
+        );
+    }
+
+    #[test]
+    fn decodes_a_manager_side_revert() {
+        //* Arrange - the manager rejects a collector without COLLECTOR_ROLE
+        let err = IRecurringAgreementManager::UnauthorizedCollector {
+            collector: thegraph_core::alloy::primitives::Address::ZERO,
+        };
+        let data = err.abi_encode();
+        let mut selector = [0u8; 4];
+        selector.copy_from_slice(&data[..4]);
+
+        //* Act
+        let reason = decode_revert_reason(selector, &data);
+
+        //* Assert
+        assert!(
+            reason.contains("UnauthorizedCollector"),
+            "reason should name the manager error: {reason}"
         );
     }
 
