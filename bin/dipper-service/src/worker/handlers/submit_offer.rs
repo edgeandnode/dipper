@@ -28,7 +28,7 @@ use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
 use url::Url;
 
 use crate::{
-    chain_client::{ChainClient, ChainClientError},
+    chain_client::{ChainClient, ChainClientError, decode_revert_reason},
     indexer_rpc_client::into_sol_rca,
     registry::{AgreementRegistry, IndexingAgreementStatus},
     worker::result::{JobError, JobResult},
@@ -89,11 +89,9 @@ where
         Some(a) => a,
     };
 
-    // Rebuild the on-chain RCA struct from the agreement's stored terms.
-    // This mirrors what send_indexing_agreement_proposal will do when it
-    // ABI-encodes the proposal for gRPC dispatch -- the RCA bytes must be
-    // byte-for-byte identical so the on-chain offerHash matches what the
-    // indexer computes locally.
+    // Rebuild the on-chain RCA struct from the stored terms. The bytes must be
+    // identical to what send_indexing_agreement_proposal encoded for gRPC, so
+    // the on-chain offerHash matches what the indexer computed locally.
     let (rca, derived_id) = into_sol_rca(agreement.nonce_uuid, agreement.terms.clone());
 
     // Sanity check: the derived on-chain ID must match the agreement ID we
@@ -157,11 +155,24 @@ where
             );
             return Err(JobError::Retryable(err.into(), Duration::from_secs(5)));
         }
+        Err(ChainClientError::ContractRevert { selector, data }) => {
+            // A gas-estimation revert won't clear on a quick retry: bad terms
+            // revert forever, state-dependent causes (pause, escrow) outlast the
+            // backoff. Fail the job; the expiration sweep reassigns at deadline.
+            let reason = decode_revert_reason(selector, &data);
+            tracing::error!(
+                agreement_id = %agreement_id,
+                reason = %reason,
+                "Offer reverted on-chain, dropping the submission job"
+            );
+            return Err(JobError::Fatal(anyhow::anyhow!(
+                "offer revert will not clear on retry: {reason}"
+            )));
+        }
         Err(err) => {
-            // Other submission failures (RPC, gas, nonce, on-chain revert).
-            // Retry with backoff -- the build_and_send_call path already has
-            // bounded nonce retries, so returning Retryable here escalates
-            // to the worker-level backoff.
+            // Other transient submission failures (RPC, gas, nonce). Retry with
+            // backoff -- build_and_send_call already has bounded nonce retries,
+            // so returning Retryable here escalates to the worker-level backoff.
             tracing::warn!(
                 agreement_id = %agreement_id,
                 error = %err,
@@ -171,9 +182,345 @@ where
         }
     }
 
-    // Offer is confirmed on-chain (or was already there). The indexer-agent
-    // will pick up the pending_rca_proposals row and call
-    // acceptIndexingAgreement — the contract checks rcaOffers at that point.
-    // No further enqueue needed; chain_listener detects the acceptance event.
+    // Offer is confirmed on-chain (or was already there). The indexer-agent will
+    // pick up the pending_rca_proposals row and call acceptIndexingAgreement. No
+    // further enqueue needed; chain_listener detects the acceptance event.
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use thegraph_core::{
+        IndexerId,
+        alloy::primitives::{Address, B256, Bytes, U256},
+        deployment_id, indexer_id,
+    };
+
+    use super::*;
+    use crate::{
+        indexer_rpc_client::compute_on_chain_id,
+        registry::{
+            AgreementFeeRate, IndexingAgreement, IndexingAgreementTerms,
+            IndexingAgreementTermsMetadata,
+        },
+    };
+
+    struct MockRegistry {
+        agreement: Option<IndexingAgreement>,
+    }
+
+    #[async_trait]
+    impl AgreementRegistry for MockRegistry {
+        async fn get_indexing_agreement_by_id(
+            &self,
+            _id: &IndexingAgreementId,
+        ) -> crate::registry::Result<Option<IndexingAgreement>> {
+            Ok(self.agreement.clone())
+        }
+        async fn get_indexing_agreements_by_deployment_id(
+            &self,
+            _deployment_id: &DeploymentId,
+        ) -> crate::registry::Result<Vec<IndexingAgreement>> {
+            unimplemented!()
+        }
+        async fn get_indexing_agreements_by_indexer_id(
+            &self,
+            _indexer_id: &IndexerId,
+        ) -> crate::registry::Result<Vec<IndexingAgreement>> {
+            unimplemented!()
+        }
+        async fn get_pending_agreement_indexers_by_deployment(
+            &self,
+            _indexer_ids: &[IndexerId],
+        ) -> crate::registry::Result<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>
+        {
+            unimplemented!()
+        }
+        async fn get_declined_indexers_by_deployment(
+            &self,
+            _default_lookback_days: i32,
+            _price_lookback_days: i32,
+            _transient_lookback_minutes: i32,
+            _uncertain_lookback_days: i32,
+        ) -> crate::registry::Result<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>
+        {
+            unimplemented!()
+        }
+        async fn get_unresponsive_indexers(
+            &self,
+            _lookback_days: i32,
+            _chain_id: ChainId,
+        ) -> crate::registry::Result<Vec<IndexerId>> {
+            unimplemented!()
+        }
+        async fn get_indexing_agreements_by_indexing_request_id(
+            &self,
+            _request_id: &IndexingRequestId,
+        ) -> crate::registry::Result<Vec<IndexingAgreement>> {
+            unimplemented!()
+        }
+        async fn get_active_indexing_agreements_by_indexing_request_id(
+            &self,
+            _request_id: &IndexingRequestId,
+        ) -> crate::registry::Result<Vec<IndexingAgreement>> {
+            unimplemented!()
+        }
+        async fn register_new_indexing_agreement(
+            &self,
+            _params: crate::registry::NewAgreementParams,
+        ) -> crate::registry::Result<IndexingAgreementId> {
+            unimplemented!()
+        }
+        async fn register_agreement_with_pending_cancellation(
+            &self,
+            _params: crate::registry::NewAgreementParams,
+            _old_agreement_id: IndexingAgreementId,
+        ) -> crate::registry::Result<IndexingAgreementId> {
+            unimplemented!()
+        }
+        async fn mark_indexing_agreement_as_unresponsive(
+            &self,
+            _id: &IndexingAgreementId,
+        ) -> crate::registry::Result<()> {
+            unimplemented!()
+        }
+        async fn update_offer_tx_hash(
+            &self,
+            _id: &IndexingAgreementId,
+            _tx_hash: &[u8; 32],
+        ) -> crate::registry::Result<()> {
+            Ok(())
+        }
+        async fn mark_indexing_agreement_as_canceled_by_requester(
+            &self,
+            _id: &IndexingAgreementId,
+        ) -> crate::registry::Result<()> {
+            unimplemented!()
+        }
+        async fn apply_reconciliation(
+            &self,
+            _id: &IndexingAgreementId,
+            _apply_accept: bool,
+            _cancel: Option<crate::registry::CancelKind>,
+        ) -> crate::registry::Result<crate::registry::ReconciliationOutcome> {
+            unimplemented!()
+        }
+        async fn get_expired_created_agreements(
+            &self,
+            _batch_size: i64,
+            _chain_timestamp: u64,
+        ) -> crate::registry::Result<Vec<IndexingAgreement>> {
+            unimplemented!()
+        }
+        async fn mark_indexing_agreement_as_expired(
+            &self,
+            _id: &IndexingAgreementId,
+        ) -> crate::registry::Result<()> {
+            unimplemented!()
+        }
+        async fn mark_indexing_agreement_as_rejected(
+            &self,
+            _id: &IndexingAgreementId,
+            _rejection_reason: Option<&str>,
+        ) -> crate::registry::Result<()> {
+            unimplemented!()
+        }
+        async fn get_accepted_on_chain_agreements(
+            &self,
+            _batch_size: i64,
+        ) -> crate::registry::Result<Vec<IndexingAgreement>> {
+            unimplemented!()
+        }
+        async fn get_agreements_pending_chain_cancel(
+            &self,
+            _batch_size: i64,
+        ) -> crate::registry::Result<Vec<IndexingAgreement>> {
+            unimplemented!()
+        }
+        async fn update_agreement_sync_progress(
+            &self,
+            _id: &IndexingAgreementId,
+            _block_height: u64,
+            _progress_at: time::OffsetDateTime,
+        ) -> crate::registry::Result<()> {
+            unimplemented!()
+        }
+        async fn count_active_agreements_by_deployment(
+            &self,
+        ) -> crate::registry::Result<std::collections::HashMap<DeploymentId, usize>> {
+            unimplemented!()
+        }
+        async fn count_created_agreements_by_indexer(
+            &self,
+        ) -> crate::registry::Result<(std::collections::HashMap<IndexerId, u64>, u64)> {
+            unimplemented!()
+        }
+        async fn mark_indexing_agreement_as_abandoned(
+            &self,
+            _id: &IndexingAgreementId,
+        ) -> crate::registry::Result<IndexingAgreement> {
+            unimplemented!()
+        }
+        async fn get_agreement_fee_rates(&self) -> crate::registry::Result<Vec<AgreementFeeRate>> {
+            unimplemented!()
+        }
+    }
+
+    /// Yields the configured result once; a second call means the handler
+    /// retried inside one run, which must never happen.
+    struct MockChainClient {
+        offer_result: Mutex<Option<Result<Option<B256>, ChainClientError>>>,
+    }
+
+    #[async_trait]
+    impl ChainClient for MockChainClient {
+        async fn offer_via_manager(
+            &self,
+            _rca: &dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement,
+        ) -> Result<Option<B256>, ChainClientError> {
+            self.offer_result
+                .lock()
+                .unwrap()
+                .take()
+                .expect("offer_via_manager called more than once")
+        }
+        async fn cancel_via_manager(
+            &self,
+            _collector: Address,
+            _agreement_id: &[u8; 16],
+            _version_hash: B256,
+            _options: u16,
+        ) -> Result<Option<B256>, ChainClientError> {
+            unimplemented!()
+        }
+        async fn reconcile_provider(
+            &self,
+            _collector: Address,
+            _provider: Address,
+        ) -> Result<Option<B256>, ChainClientError> {
+            unimplemented!()
+        }
+        async fn agreement_still_active(
+            &self,
+            _agreement_id: &[u8; 16],
+        ) -> Result<bool, ChainClientError> {
+            unimplemented!()
+        }
+        async fn latest_block_timestamp(&self) -> Result<u64, ChainClientError> {
+            unimplemented!()
+        }
+    }
+
+    fn make_test_agreement() -> IndexingAgreement {
+        use time::OffsetDateTime;
+
+        let terms = IndexingAgreementTerms {
+            payer: Address::ZERO,
+            service_provider: Address::ZERO,
+            data_service: Address::ZERO,
+            deadline: 0,
+            ends_at: 0,
+            max_initial_tokens: U256::ZERO,
+            max_ongoing_tokens_per_second: U256::ZERO,
+            min_seconds_per_collection: 60,
+            max_seconds_per_collection: 240,
+            conditions: 0,
+            metadata: IndexingAgreementTermsMetadata {
+                tokens_per_second: U256::ZERO,
+                tokens_per_entity_per_second: U256::ZERO,
+                subgraph_deployment_id: deployment_id!(
+                    "QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv"
+                ),
+                protocol_network: 1,
+                chain_id: 1,
+            },
+        };
+        let nonce_uuid = uuid::Uuid::now_v7();
+        // The handler recomputes the on-chain ID from the terms and bails on
+        // a mismatch, so the fixture ID must be derived rather than random.
+        let id = compute_on_chain_id(nonce_uuid, &terms);
+        IndexingAgreement {
+            id,
+            nonce_uuid,
+            created_at: OffsetDateTime::now_utc(),
+            updated_at: OffsetDateTime::now_utc(),
+            status: IndexingAgreementStatus::Created,
+            indexing_request_id: IndexingRequestId::new(),
+            indexer: crate::registry::Indexer {
+                id: indexer_id!("1111111111111111111111111111111111111111"),
+                url: "https://indexer.example.com".parse().unwrap(),
+            },
+            terms,
+            last_block_height: None,
+            last_progress_at: None,
+            rejection_reason: None,
+            terms_version_hash: None,
+        }
+    }
+
+    fn make_message(agreement_id: IndexingAgreementId) -> Message {
+        Message {
+            agreement_id,
+            indexing_request_id: IndexingRequestId::new(),
+            indexer_url: "https://indexer.example.com".parse().unwrap(),
+            deployment_id: deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv"),
+            deployment_chain_id: 1,
+        }
+    }
+
+    fn ctx_with_offer_result(
+        agreement: IndexingAgreement,
+        offer_result: Result<Option<B256>, ChainClientError>,
+    ) -> Ctx<MockRegistry, MockChainClient> {
+        Ctx {
+            registry: MockRegistry {
+                agreement: Some(agreement),
+            },
+            chain_client: MockChainClient {
+                offer_result: Mutex::new(Some(offer_result)),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn contract_revert_fails_the_job_instead_of_retrying() {
+        //* Arrange - the offer reverts with the observed window selector
+        let agreement = make_test_agreement();
+        let message = make_message(agreement.id);
+        let revert = ChainClientError::ContractRevert {
+            selector: [0xe4, 0x57, 0x63, 0x96],
+            data: Bytes::copy_from_slice(&[0xe4, 0x57, 0x63, 0x96]),
+        };
+        let ctx = ctx_with_offer_result(agreement, Err(revert));
+
+        //* Act
+        let result = handle(ctx, &message).await;
+
+        //* Assert - Fatal removes the job from the queue; Retryable would loop
+        assert!(
+            matches!(result, Err(JobError::Fatal(_))),
+            "a deterministic revert must fail the job, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_rpc_error_stays_retryable() {
+        //* Arrange - the offer fails with a transient RPC error
+        let agreement = make_test_agreement();
+        let message = make_message(agreement.id);
+        let rpc_error = ChainClientError::RpcError(anyhow::anyhow!("rpc unreachable"));
+        let ctx = ctx_with_offer_result(agreement, Err(rpc_error));
+
+        //* Act
+        let result = handle(ctx, &message).await;
+
+        //* Assert
+        assert!(
+            matches!(result, Err(JobError::Retryable(_, _))),
+            "a transient failure must stay retryable, got {result:?}"
+        );
+    }
 }
