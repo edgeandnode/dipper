@@ -760,10 +760,15 @@ pub struct DipsAgreementConfig {
     pub max_in_flight_offers_total: Option<u32>,
 }
 
+/// Mirrors MIN_SECONDS_COLLECTION_WINDOW in RecurringCollector.sol, which has no
+/// getter, so re-check it when bumping the contracts pin. Drift stays loud at
+/// runtime: offers revert with the contract's live bound in the decoded reason.
+const MIN_SECONDS_COLLECTION_WINDOW: u64 = 600;
+
 impl DipsAgreementConfig {
-    /// Reject a configuration the protocol-managed path cannot run with. Dipper
-    /// routes every offer and cancel through the RecurringAgreementManager, so a
-    /// zero manager address means dipper has nothing to call.
+    /// Reject a configuration the protocol-managed path cannot run with: dipper
+    /// drives everything through the RecurringAgreementManager, so a zero manager
+    /// address means nothing to call. Any future config reload must revalidate too.
     pub fn validate(&self) -> Result<(), String> {
         if self.recurring_agreement_manager == Address::ZERO {
             return Err(
@@ -788,6 +793,36 @@ impl DipsAgreementConfig {
             return Err(format!(
                 "max_in_flight_offers_per_indexer ({per_indexer}) must not exceed max_in_flight_offers_total ({total})"
             ));
+        }
+        // The RecurringCollector refuses terms that break its collection window
+        // rules, so every offer built from such a config reverts at gas
+        // estimation and no agreement can ever form; refuse to start instead.
+        let min = u64::from(self.min_seconds_per_collection);
+        let max = u64::from(self.max_seconds_per_collection);
+        if max <= min || max - min < MIN_SECONDS_COLLECTION_WINDOW {
+            return Err(format!(
+                "max_seconds_per_collection ({max}) must exceed min_seconds_per_collection \
+                 ({min}) by at least the RecurringCollector minimum collection window of \
+                 {MIN_SECONDS_COLLECTION_WINDOW} seconds"
+            ));
+        }
+        if let Some(duration) = self.duration_seconds {
+            if duration <= self.deadline_seconds {
+                return Err(format!(
+                    "duration_seconds ({duration}) must exceed deadline_seconds ({}): the \
+                     agreement would end before its acceptance deadline",
+                    self.deadline_seconds
+                ));
+            }
+            if duration - self.deadline_seconds < min + MIN_SECONDS_COLLECTION_WINDOW {
+                return Err(format!(
+                    "duration_seconds ({duration}) minus deadline_seconds ({}) must be at \
+                     least min_seconds_per_collection ({min}) plus the \
+                     {MIN_SECONDS_COLLECTION_WINDOW}-second minimum collection window, so one \
+                     collection fits even when acceptance lands at the deadline",
+                    self.deadline_seconds
+                ));
+            }
         }
         Ok(())
     }
@@ -1324,6 +1359,86 @@ mod tests {
                 .validate()
                 .is_ok(),
             "a non-zero manager address is valid"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_collection_window_the_contract_would_refuse() {
+        // The RecurringCollector requires max - min >= 600; an offer built from
+        // a narrower window reverts at gas estimation on every attempt, so the
+        // config must be refused at startup instead.
+        fn conf(min: u32, max: u32) -> DipsAgreementConfig {
+            let json = format!(
+                r#"{{
+                    "data_service": "0x1111111111111111111111111111111111111111",
+                    "recurring_collector": "0x2222222222222222222222222222222222222222",
+                    "recurring_agreement_manager": "0x3333333333333333333333333333333333333333",
+                    "min_seconds_per_collection": {min},
+                    "max_seconds_per_collection": {max},
+                    "pricing_table": {{}}
+                }}"#
+            );
+            serde_json::from_str(&json).expect("deserialization")
+        }
+
+        assert!(
+            conf(60, 240).validate().is_err(),
+            "a window narrower than 600 seconds must be rejected"
+        );
+        assert!(
+            conf(240, 60).validate().is_err(),
+            "an inverted window must be rejected"
+        );
+        assert!(
+            conf(60, 659).validate().is_err(),
+            "a window 1 second under the bound must be rejected"
+        );
+        assert!(
+            conf(60, 660).validate().is_ok(),
+            "a window exactly at the bound is valid"
+        );
+        assert!(
+            conf(60, 3600).validate().is_ok(),
+            "a comfortably wide window is valid"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_duration_too_short_for_its_deadline() {
+        // With a bounded duration the agreement must outlive the acceptance
+        // deadline by min_seconds_per_collection + 600, so a collection fits
+        // even when acceptance lands exactly at the deadline.
+        fn conf(duration: &str, deadline: u64) -> DipsAgreementConfig {
+            let json = format!(
+                r#"{{
+                    "data_service": "0x1111111111111111111111111111111111111111",
+                    "recurring_collector": "0x2222222222222222222222222222222222222222",
+                    "recurring_agreement_manager": "0x3333333333333333333333333333333333333333",
+                    "min_seconds_per_collection": 60,
+                    "max_seconds_per_collection": 3600,
+                    "duration_seconds": {duration},
+                    "deadline_seconds": {deadline},
+                    "pricing_table": {{}}
+                }}"#
+            );
+            serde_json::from_str(&json).expect("deserialization")
+        }
+
+        assert!(
+            conf("null", 600).validate().is_ok(),
+            "an unbounded duration passes the duration checks"
+        );
+        assert!(
+            conf("600", 600).validate().is_err(),
+            "an agreement ending at its deadline must be rejected"
+        );
+        assert!(
+            conf("1259", 600).validate().is_err(),
+            "1 second short of a full collection window must be rejected"
+        );
+        assert!(
+            conf("1260", 600).validate().is_ok(),
+            "exactly one collection window past the deadline is valid"
         );
     }
 
