@@ -760,15 +760,15 @@ pub struct DipsAgreementConfig {
     pub max_in_flight_offers_total: Option<u32>,
 }
 
-/// Mirrors MIN_SECONDS_COLLECTION_WINDOW in RecurringCollector.sol. The contract
-/// declares it `internal constant` with no getter, so it cannot be read live;
-/// re-check it against the contract source when bumping the contracts pin.
+/// Mirrors MIN_SECONDS_COLLECTION_WINDOW in RecurringCollector.sol, which has no
+/// getter, so re-check it when bumping the contracts pin. Drift stays loud at
+/// runtime: offers revert with the contract's live bound in the decoded reason.
 const MIN_SECONDS_COLLECTION_WINDOW: u64 = 600;
 
 impl DipsAgreementConfig {
-    /// Reject a configuration the protocol-managed path cannot run with. Dipper
-    /// routes every offer and cancel through the RecurringAgreementManager, so a
-    /// zero manager address means dipper has nothing to call.
+    /// Reject a configuration the protocol-managed path cannot run with: dipper
+    /// drives everything through the RecurringAgreementManager, so a zero manager
+    /// address means nothing to call. Any future config reload must revalidate too.
     pub fn validate(&self) -> Result<(), String> {
         if self.recurring_agreement_manager == Address::ZERO {
             return Err(
