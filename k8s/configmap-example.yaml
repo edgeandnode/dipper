@@ -10,28 +10,29 @@ data:
       "dips": {
         "data_service": "0x0000000000000000000000000000000000000000",
         "recurring_collector": "0x0000000000000000000000000000000000000000",
-        "max_seconds_per_collection": 86400,
-        "min_seconds_per_collection": 3600,
+        "recurring_agreement_manager": "0x0000000000000000000000000000000000000000",
+        "max_seconds_per_collection": 2419200,
+        "min_seconds_per_collection": 86400,
         "duration_seconds": null,
         "deadline_seconds": 600,
         "pricing_table": {},
         "max_agreement_grt_per_30_days": 20000,
         "max_grt_per_30_days": {
           "arbitrum-one": 4500,
+          "matic": 3000,
+          "avalanche": 2250,
+          "bsc": 2000,
+          "base": 800,
           "mainnet": 450,
-          "base": 2000,
-          "optimism": 1500,
-          "matic": 3000
+          "optimism": 300,
+          "base-sepolia": 150,
+          "sepolia": 50
         },
         "max_grt_per_billion_entities_per_30_days": 2000
       },
       "admin_rpc": {
         "listen_addr": "0.0.0.0:8545",
         "gateway_operator_allowlist": []
-      },
-      "indexer_rpc": {
-        "listen_addr": "0.0.0.0:50051",
-        "allowlist": []
       },
       "db": {
         "url": "postgres://localhost:5432/dipper",
@@ -48,11 +49,6 @@ data:
       "signer": {
         "secret_key": "REPLACE_ME",
         "chain_id": 42161
-      },
-      "tap_signer": {
-        "secret_key": "REPLACE_ME",
-        "chain_id": 42161,
-        "verifier": "0x0000000000000000000000000000000000000000"
       },
       "iisa": {
         "endpoint": "http://iisa:8080",
@@ -93,7 +89,7 @@ data:
         "batch_size": 500
       },
       "chain_client": {
-        "enabled": false,
+        "enabled": true,
         "providers": [
           "https://arb1.arbitrum.io/rpc",
           "https://arbitrum-one.publicnode.com"
