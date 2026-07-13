@@ -13,24 +13,23 @@ pub struct Indexer {
 
 #[derive(Clone)]
 pub struct NetworkProviderService {
-    /// The network provider topology service handler
-    topology: service::topology::Handle,
+    /// The indexer URLs service handle
+    indexer_urls: service::indexer_urls::Handle,
 }
 
 impl NetworkProviderService {
     /// Creates a new network provider service instance.
-    pub fn new(topology: service::topology::Handle) -> Self {
-        Self { topology }
+    pub fn new(indexer_urls: service::indexer_urls::Handle) -> Self {
+        Self { indexer_urls }
     }
 
     /// Get an indexer by its ID.
     pub fn get_indexer_by_id(&self, indexer_id: &IndexerId) -> Option<Indexer> {
-        self.topology
-            .snapshot()
-            .get_indexer(indexer_id)
-            .map(|indexer| Indexer {
-                id: indexer.id,
-                url: indexer.url.clone(),
+        self.indexer_urls
+            .get_indexer_url(indexer_id)
+            .map(|url| Indexer {
+                id: *indexer_id,
+                url,
             })
     }
 }

@@ -3,6 +3,6 @@ pub mod chain_listener;
 pub mod entity_count_cache;
 pub mod escrow_reconciler;
 pub mod expiration;
+pub mod indexer_urls;
 pub mod liveness_checker;
 pub mod reassignment;
-pub mod topology;

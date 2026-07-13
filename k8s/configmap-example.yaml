@@ -41,9 +41,8 @@ data:
         "max_connections": 10
       },
       "network": {
-        "gateway_url": "https://gateway.thegraph.com",
+        "subgraph_endpoint": "https://gateway.thegraph.com/api/deployments/id/REPLACE_ME",
         "api_key": "REPLACE_ME",
-        "deployment_id": "REPLACE_ME",
         "update_interval": 60
       },
       "signer": {
