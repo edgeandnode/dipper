@@ -339,29 +339,36 @@ where
                 }
             }
 
+            // These sweeps are the sole emitter for accepted / terminated /
+            // expired, so run them every poll: an announcement then trails its
+            // state change by one poll, not up to SWEEP_POLLS polls.
+            sweep_pending_accepted_events(
+                &registry,
+                subgraph_indexing_agreements_events_emitter.as_ref(),
+            )
+            .await;
+            // Terminated after accepted: a single snapshot can both accept and
+            // cancel an agreement, and `accepted` must be announced first.
+            sweep_pending_terminated_events(
+                &registry,
+                &agreement_conf,
+                subgraph_indexing_agreements_events_emitter.as_ref(),
+            )
+            .await;
+            sweep_pending_expired_events(
+                &registry,
+                subgraph_indexing_agreements_events_emitter.as_ref(),
+            )
+            .await;
+
+            // The cancellation crash-recovery sweeps stay on the slower cadence:
+            // the steady-state fan-out fires from finalize on a fresh accept, so
+            // running these every poll is wasted DB work.
             polls_since_sweep += 1;
             if polls_since_sweep >= SWEEP_POLLS {
                 sweep_executable_pending_cancellations(&registry, &chain_client, &agreement_conf)
                     .await;
                 sweep_orphan_canceled_agreements(&registry, &chain_client, &agreement_conf).await;
-                // Accepted BEFORE terminated: an agreement accepted-then-cancelled
-                // in one snapshot must announce `accepted` before `terminated`.
-                sweep_pending_accepted_events(
-                    &registry,
-                    subgraph_indexing_agreements_events_emitter.as_ref(),
-                )
-                .await;
-                sweep_pending_terminated_events(
-                    &registry,
-                    &agreement_conf,
-                    subgraph_indexing_agreements_events_emitter.as_ref(),
-                )
-                .await;
-                sweep_pending_expired_events(
-                    &registry,
-                    subgraph_indexing_agreements_events_emitter.as_ref(),
-                )
-                .await;
                 polls_since_sweep = 0;
             }
         }
