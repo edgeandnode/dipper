@@ -195,6 +195,13 @@ pub async fn main() -> anyhow::Result<()> {
                 .await
                 {
                     Ok(s) if !s.is_empty() => break s,
+                    Ok(s) if conf.network.allow_empty_at_startup => {
+                        tracing::warn!(
+                            "subgraph reports 0 registered indexers; starting with an empty \
+                             snapshot (network.allow_empty_at_startup)"
+                        );
+                        break s;
+                    }
                     // An empty snapshot is useless at startup (no offer can be
                     // sent) and usually means a wrong endpoint: retry like an
                     // error. The refresh loop tolerates empties separately.

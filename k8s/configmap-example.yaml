@@ -43,7 +43,8 @@ data:
       "network": {
         "subgraph_endpoint": "https://gateway.thegraph.com/api/deployments/id/REPLACE_ME",
         "api_key": "REPLACE_ME",
-        "update_interval": 60
+        "update_interval": 60,
+        "allow_empty_at_startup": false
       },
       "signer": {
         "secret_key": "REPLACE_ME",

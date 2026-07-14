@@ -1000,6 +1000,12 @@ pub struct NetworkConfig {
     /// The update interval for the indexer URL lookup service
     #[serde_as(as = "serde_with::DurationSeconds")]
     pub update_interval: Duration,
+
+    /// Boot even if the subgraph reports 0 registered indexers, instead of
+    /// exiting after the startup retries. For environments that come up before
+    /// any indexer has registered (e.g. local networks); leave off elsewhere.
+    #[serde(default)]
+    pub allow_empty_at_startup: bool,
 }
 
 /// The configuration for the signer
