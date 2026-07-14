@@ -8,9 +8,9 @@ data:
   config.json: |
     {
       "dips": {
-        "data_service": "0x0000000000000000000000000000000000000000",
-        "recurring_collector": "0x0000000000000000000000000000000000000000",
-        "recurring_agreement_manager": "0x0000000000000000000000000000000000000000",
+        "data_service": "0xb2Bb92d0DE618878E438b55D5846cfecD9301105",
+        "recurring_collector": "NOT_YET_DEPLOYED_ON_ARBITRUM_ONE",
+        "recurring_agreement_manager": "NOT_YET_DEPLOYED_ON_ARBITRUM_ONE",
         "max_seconds_per_collection": 2419200,
         "min_seconds_per_collection": 86400,
         "duration_seconds": null,
