@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.6](https://github.com/edgeandnode/dipper/compare/v0.1.5...v0.1.6) (2026-07-14)
+
+
+### Changed
+
+* get indexer URLs from the indexing-payments subgraph ([#669](https://github.com/edgeandnode/dipper/issues/669)) ([a2217f3](https://github.com/edgeandnode/dipper/commit/a2217f317fafa3954c7793658eb57e6699e49581))
+* **k8s:** sync the example configmap with the current config schema ([#667](https://github.com/edgeandnode/dipper/issues/667)) ([2593557](https://github.com/edgeandnode/dipper/commit/2593557936270f8bc7f0815357f6333a4db2f885))
+
 ## [0.1.5](https://github.com/edgeandnode/dipper/compare/v0.1.4...v0.1.5) (2026-07-10)
 
 
