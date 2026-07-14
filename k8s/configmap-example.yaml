@@ -41,8 +41,8 @@ data:
         "max_connections": 10
       },
       "network": {
-        "subgraph_endpoint": "https://gateway.thegraph.com/api/deployments/id/REPLACE_ME",
-        "api_key": "REPLACE_ME",
+        "subgraph_endpoint": "REPLACE_ME_INDEXING_PAYMENTS_SUBGRAPH_URL",
+        "api_key": "REPLACE_ME_OR_REMOVE_IF_ENDPOINT_NEEDS_NO_AUTH",
         "update_interval": 60,
         "allow_empty_at_startup": false
       },
@@ -75,7 +75,7 @@ data:
       },
       "chain_listener": {
         "enabled": true,
-        "subgraph_endpoint": "REPLACE_ME",
+        "subgraph_endpoint": "REPLACE_ME_INDEXING_PAYMENTS_SUBGRAPH_URL",
         "chain_id": 42161,
         "poll_interval": 30,
         "request_timeout": 30,
