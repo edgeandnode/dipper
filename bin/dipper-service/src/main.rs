@@ -194,22 +194,33 @@ pub async fn main() -> anyhow::Result<()> {
                 )
                 .await
                 {
-                    Ok(s) => break s,
-                    Err(err) if attempt < INDEXER_URLS_FETCH_MAX_RETRIES => {
-                        attempt += 1;
-                        let delay = std::time::Duration::from_secs(2u64.pow(attempt.min(5)));
-                        tracing::warn!(
-                            attempt,
-                            delay_secs = delay.as_secs(),
-                            error = %err,
-                            "initial indexer URLs fetch failed, retrying"
-                        );
-                        tokio::time::sleep(delay).await;
+                    Ok(s) if !s.is_empty() => break s,
+                    // An empty snapshot is useless at startup (no offer can be
+                    // sent) and usually means a wrong endpoint: retry like an
+                    // error. The refresh loop tolerates empties separately.
+                    result => {
+                        let err = match result {
+                            Ok(_) => anyhow::anyhow!("subgraph returned 0 registered indexers"),
+                            Err(err) => err,
+                        };
+                        if attempt < INDEXER_URLS_FETCH_MAX_RETRIES {
+                            attempt += 1;
+                            let delay = std::time::Duration::from_secs(2u64.pow(attempt.min(5)));
+                            tracing::warn!(
+                                attempt,
+                                delay_secs = delay.as_secs(),
+                                error = %err,
+                                "initial indexer URLs fetch failed, retrying"
+                            );
+                            tokio::time::sleep(delay).await;
+                        } else {
+                            anyhow::bail!(
+                                "failed to fetch a non-empty initial indexer URL snapshot \
+                                 after {} attempts: {err}",
+                                INDEXER_URLS_FETCH_MAX_RETRIES + 1
+                            )
+                        }
                     }
-                    Err(err) => anyhow::bail!(
-                        "failed to fetch the initial indexer URL snapshot after {} attempts: {err}",
-                        INDEXER_URLS_FETCH_MAX_RETRIES + 1
-                    ),
                 }
             }
         };
