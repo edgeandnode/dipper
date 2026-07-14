@@ -46,8 +46,8 @@ pub struct Config {
     pub admin_rpc: AdminRpcConfig,
     /// The database configuration
     pub db: DbConfig,
-    /// The network service configuration
-    pub network: NetworkConfig,
+    /// The indexer URLs service configuration
+    pub indexer_urls: IndexerUrlsConfig,
     /// The signer configuration
     pub signer: SignerConfig,
     /// The IISA (Indexing Indexer Selection Algorithm) service configuration
@@ -982,10 +982,10 @@ pub struct DbConfig {
     pub max_connections: Option<u32>,
 }
 
-/// The network service configuration
+/// The indexer URLs service configuration
 #[serde_as]
 #[derive(custom_debug::CustomDebug, serde::Deserialize)]
-pub struct NetworkConfig {
+pub struct IndexerUrlsConfig {
     /// The indexing-payments subgraph query endpoint used to look up
     /// registered indexer URLs. Same form as `chain_listener.subgraph_endpoint`:
     /// a full query URL, gateway-served or self-hosted.

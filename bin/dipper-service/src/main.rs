@@ -175,8 +175,8 @@ pub async fn main() -> anyhow::Result<()> {
 
     //- The network services
     let (indexer_urls_handle, indexer_urls_service) = {
-        let subgraph_endpoint = conf.network.subgraph_endpoint;
-        let api_key = conf.network.api_key.map(|key| key.into_inner());
+        let subgraph_endpoint = conf.indexer_urls.subgraph_endpoint;
+        let api_key = conf.indexer_urls.api_key.map(|key| key.into_inner());
 
         // Fetch the initial snapshot with bounded exponential-backoff retries.
         // The subgraph may be temporarily unavailable (e.g. during a chain halt).
@@ -195,7 +195,7 @@ pub async fn main() -> anyhow::Result<()> {
                 .await
                 {
                     Ok(s) if !s.is_empty() => break s,
-                    Ok(s) if conf.network.allow_empty_at_startup => {
+                    Ok(s) if conf.indexer_urls.allow_empty_at_startup => {
                         tracing::warn!(
                             "subgraph reports 0 registered indexers; starting with an empty \
                              snapshot (network.allow_empty_at_startup)"
@@ -236,7 +236,7 @@ pub async fn main() -> anyhow::Result<()> {
             network::service::indexer_urls::Ctx {
                 endpoint: subgraph_endpoint,
                 api_key,
-                update_interval: conf.network.update_interval,
+                update_interval: conf.indexer_urls.update_interval,
             },
             init_snapshot,
         )
