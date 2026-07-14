@@ -15,7 +15,7 @@ use thegraph_core::{
 
 // Re-export for tests only
 #[cfg(test)]
-pub use self::agreement::Indexer;
+pub use self::agreement::{Indexer, PendingAcceptedEvent};
 use self::result::Result as RegistryResult;
 pub use self::{
     agreement::{

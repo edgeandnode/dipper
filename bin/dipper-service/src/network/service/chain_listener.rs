@@ -29,7 +29,11 @@
 //! signer to distinguish self-initiated cancels from indexer-initiated
 //! cancels.
 
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use dipper_core::ids::IndexingAgreementId;
 // The concrete emitter is only constructed in tests (`disabled()`); the runtime
@@ -222,6 +226,10 @@ where
         // Starts at SWEEP_POLLS so the first poll runs the sweep,
         // recovering any pre-startup orphans.
         let mut polls_since_sweep: u64 = SWEEP_POLLS;
+        // Pause the event sweeps after a Kafka send failure, backing off from one
+        // poll interval up to the idle interval, so a hung broker cannot stall the
+        // poll loop on every iteration.
+        let mut broker_cooldown = BrokerCooldown::new(fast_interval, slow_interval);
         // Wall-clock instant of the last successful chain-timestamp
         // persist. Used to bound how fast the persisted timestamp can
         // advance: a hostile response that stays just under the skew
@@ -339,27 +347,37 @@ where
                 }
             }
 
-            // These sweeps are the sole emitter for accepted / terminated /
-            // expired, so run them every poll: an announcement then trails its
-            // state change by one poll, not up to SWEEP_POLLS polls.
-            sweep_pending_accepted_events(
-                &registry,
-                subgraph_indexing_agreements_events_emitter.as_ref(),
-            )
-            .await;
-            // Terminated after accepted: a single snapshot can both accept and
-            // cancel an agreement, and `accepted` must be announced first.
-            sweep_pending_terminated_events(
-                &registry,
-                &agreement_conf,
-                subgraph_indexing_agreements_events_emitter.as_ref(),
-            )
-            .await;
-            sweep_pending_expired_events(
-                &registry,
-                subgraph_indexing_agreements_events_emitter.as_ref(),
-            )
-            .await;
+            // Announce accepted / terminated / expired every poll, but pause the
+            // sweeps during a broker outage: each sweep makes one blocking send
+            // that can hang, so unchecked they would stall polling every iteration.
+            let now = Instant::now();
+            if broker_cooldown.is_paused(now) {
+                tracing::debug!(
+                    backoff_secs = broker_cooldown.backoff().as_secs(),
+                    "event broker in cooldown; skipping event sweeps this poll"
+                );
+            } else {
+                let health = run_event_sweeps(
+                    &registry,
+                    &agreement_conf,
+                    subgraph_indexing_agreements_events_emitter.as_ref(),
+                )
+                .await;
+                match broker_cooldown.record(health, now) {
+                    CooldownTransition::Entered => tracing::warn!(
+                        backoff_secs = broker_cooldown.backoff().as_secs(),
+                        "event broker send failed; pausing event sweeps until backoff elapses"
+                    ),
+                    CooldownTransition::Extended => tracing::warn!(
+                        backoff_secs = broker_cooldown.backoff().as_secs(),
+                        "event broker still unreachable; extending event sweep pause"
+                    ),
+                    CooldownTransition::Recovered => {
+                        tracing::info!("event broker recovered; resuming event sweeps")
+                    }
+                    CooldownTransition::Unchanged => {}
+                }
+            }
 
             // The cancellation crash-recovery sweeps stay on the slower cadence:
             // the steady-state fan-out fires from finalize on a fresh accept, so
@@ -1267,6 +1285,127 @@ async fn sweep_orphan_canceled_agreements<R, T>(
     }
 }
 
+/// Health of a durable event sweep, reported to the poll loop so it can pause
+/// the sweeps during a Kafka outage instead of blocking on every poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SweepHealth {
+    /// At least one event was sent and the broker accepted it.
+    Sent,
+    /// A send failed; the broker is likely unreachable.
+    Failed,
+    /// Nothing was pending, so the broker's reachability is unknown.
+    Idle,
+}
+
+impl SweepHealth {
+    /// Combine two outcomes: a failure dominates, then a send, then idle.
+    fn merge(self, other: SweepHealth) -> SweepHealth {
+        match (self, other) {
+            (SweepHealth::Failed, _) | (_, SweepHealth::Failed) => SweepHealth::Failed,
+            (SweepHealth::Sent, _) | (_, SweepHealth::Sent) => SweepHealth::Sent,
+            _ => SweepHealth::Idle,
+        }
+    }
+}
+
+/// The cooldown change worth logging after folding in a sweep round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CooldownTransition {
+    /// Broker went from healthy to paused.
+    Entered,
+    /// A retry failed again, so the backoff grew.
+    Extended,
+    /// First successful send after a pause.
+    Recovered,
+    /// Nothing worth logging.
+    Unchanged,
+}
+
+/// Backoff clock that pauses the durable event sweeps after a Kafka send
+/// failure. Each sweep makes one blocking send that can hang for the produce
+/// timeout, so an outage would otherwise stall the chain poll loop every poll.
+struct BrokerCooldown {
+    /// Initial backoff and the value reset to on recovery: one poll interval.
+    base: Duration,
+    /// Backoff ceiling, so a down broker is retried at least this often.
+    ceiling: Duration,
+    /// When the current pause began, or `None` while the broker is healthy.
+    down_since: Option<Instant>,
+    /// Current backoff length.
+    backoff: Duration,
+}
+
+impl BrokerCooldown {
+    fn new(base: Duration, ceiling: Duration) -> Self {
+        Self {
+            base,
+            ceiling,
+            down_since: None,
+            backoff: base,
+        }
+    }
+
+    /// Whether the event sweeps should be skipped at `now`.
+    fn is_paused(&self, now: Instant) -> bool {
+        matches!(self.down_since, Some(since) if now.duration_since(since) < self.backoff)
+    }
+
+    fn backoff(&self) -> Duration {
+        self.backoff
+    }
+
+    /// Fold a sweep round's health into the clock, returning what to log. A send
+    /// clears the pause and resets the backoff; a failure enters or extends it
+    /// (doubling up to the ceiling); an idle round leaves the state untouched.
+    fn record(&mut self, health: SweepHealth, now: Instant) -> CooldownTransition {
+        match health {
+            SweepHealth::Sent => {
+                let recovered = self.down_since.take().is_some();
+                self.backoff = self.base;
+                if recovered {
+                    CooldownTransition::Recovered
+                } else {
+                    CooldownTransition::Unchanged
+                }
+            }
+            SweepHealth::Failed if self.down_since.is_some() => {
+                self.backoff = self.backoff.saturating_mul(2).min(self.ceiling);
+                self.down_since = Some(now);
+                CooldownTransition::Extended
+            }
+            SweepHealth::Failed => {
+                self.backoff = self.base;
+                self.down_since = Some(now);
+                CooldownTransition::Entered
+            }
+            SweepHealth::Idle => CooldownTransition::Unchanged,
+        }
+    }
+}
+
+/// Run the three durable event sweeps in order, stopping early if one reports a
+/// broker send failure so the rest are not attempted this poll. Accepted before
+/// terminated: one snapshot can accept then cancel, and `accepted` must lead.
+async fn run_event_sweeps<R>(
+    registry: &R,
+    config: &crate::config::IndexingAgreementConfig,
+    events_emitter: &dyn SubgraphIndexingAgreementEventsProducer,
+) -> SweepHealth
+where
+    R: AgreementRegistry + Sync,
+{
+    let accepted = sweep_pending_accepted_events(registry, events_emitter).await;
+    if accepted == SweepHealth::Failed {
+        return accepted;
+    }
+    let health =
+        accepted.merge(sweep_pending_terminated_events(registry, config, events_emitter).await);
+    if health == SweepHealth::Failed {
+        return health;
+    }
+    health.merge(sweep_pending_expired_events(registry, events_emitter).await)
+}
+
 /// Emit `terminated` events durably for agreements that have reached a terminal
 /// cancel state but not yet been announced.
 ///
@@ -1285,7 +1424,8 @@ async fn sweep_pending_terminated_events<R>(
     registry: &R,
     config: &crate::config::IndexingAgreementConfig,
     events_emitter: &dyn SubgraphIndexingAgreementEventsProducer,
-) where
+) -> SweepHealth
+where
     R: AgreementRegistry + Sync,
 {
     let pending = match registry
@@ -1295,12 +1435,12 @@ async fn sweep_pending_terminated_events<R>(
         Ok(pending) => pending,
         Err(err) => {
             tracing::warn!(error = %err, "failed to query agreements pending terminated emission");
-            return;
+            return SweepHealth::Idle;
         }
     };
 
     if pending.is_empty() {
-        return;
+        return SweepHealth::Idle;
     }
 
     tracing::debug!(count = pending.len(), "emitting pending terminated events");
@@ -1358,10 +1498,11 @@ async fn sweep_pending_terminated_events<R>(
                     error = %err,
                     "failed to emit terminated event; pausing batch, will retry next sweep"
                 );
-                break;
+                return SweepHealth::Failed;
             }
         }
     }
+    SweepHealth::Sent
 }
 
 /// Emit `accepted` events durably for agreements that reached accepted on-chain
@@ -1377,7 +1518,8 @@ async fn sweep_pending_terminated_events<R>(
 async fn sweep_pending_accepted_events<R>(
     registry: &R,
     events_emitter: &dyn SubgraphIndexingAgreementEventsProducer,
-) where
+) -> SweepHealth
+where
     R: AgreementRegistry + Sync,
 {
     let pending = match registry
@@ -1387,12 +1529,12 @@ async fn sweep_pending_accepted_events<R>(
         Ok(pending) => pending,
         Err(err) => {
             tracing::warn!(error = %err, "failed to query agreements pending accepted emission");
-            return;
+            return SweepHealth::Idle;
         }
     };
 
     if pending.is_empty() {
-        return;
+        return SweepHealth::Idle;
     }
 
     tracing::debug!(count = pending.len(), "emitting pending accepted events");
@@ -1428,10 +1570,11 @@ async fn sweep_pending_accepted_events<R>(
                     error = %err,
                     "failed to emit accepted event; pausing batch, will retry next sweep"
                 );
-                break;
+                return SweepHealth::Failed;
             }
         }
     }
+    SweepHealth::Sent
 }
 
 /// Emit `request.expired` events durably for agreements marked `Expired` but not
@@ -1444,7 +1587,8 @@ async fn sweep_pending_accepted_events<R>(
 async fn sweep_pending_expired_events<R>(
     registry: &R,
     events_emitter: &dyn SubgraphIndexingAgreementEventsProducer,
-) where
+) -> SweepHealth
+where
     R: AgreementRegistry + Sync,
 {
     let pending = match registry
@@ -1454,12 +1598,12 @@ async fn sweep_pending_expired_events<R>(
         Ok(pending) => pending,
         Err(err) => {
             tracing::warn!(error = %err, "failed to query agreements pending expired emission");
-            return;
+            return SweepHealth::Idle;
         }
     };
 
     if pending.is_empty() {
-        return;
+        return SweepHealth::Idle;
     }
 
     tracing::debug!(count = pending.len(), "emitting pending expired events");
@@ -1497,10 +1641,11 @@ async fn sweep_pending_expired_events<R>(
                     error = %err,
                     "failed to emit expired event; pausing batch, will retry next sweep"
                 );
-                break;
+                return SweepHealth::Failed;
             }
         }
     }
+    SweepHealth::Sent
 }
 
 /// Recover stranded pending cancellations from a partial-progress crash.
@@ -1699,6 +1844,7 @@ mod tests {
         chain_listener_state_updates: Vec<(Cursor, Option<u64>)>,
         initial_last_processed_block: u64,
         fail_batch: bool,
+        pending_accepted: Vec<crate::registry::PendingAcceptedEvent>,
     }
 
     impl MockRegistry {
@@ -1822,6 +1968,10 @@ mod tests {
 
         fn set_fail_batch(&self, fail: bool) {
             self.state.lock().unwrap().fail_batch = fail;
+        }
+
+        fn seed_pending_accepted(&self, event: crate::registry::PendingAcceptedEvent) {
+            self.state.lock().unwrap().pending_accepted.push(event);
         }
     }
 
@@ -2134,6 +2284,13 @@ mod tests {
 
         async fn get_agreement_fee_rates(&self) -> RegistryResult<Vec<AgreementFeeRate>> {
             Ok(vec![])
+        }
+
+        async fn get_agreements_pending_accepted_emission(
+            &self,
+            _limit: i64,
+        ) -> RegistryResult<Vec<crate::registry::PendingAcceptedEvent>> {
+            Ok(self.state.lock().unwrap().pending_accepted.clone())
         }
     }
 
@@ -3779,5 +3936,231 @@ mod tests {
         // cancels list stays empty by definition because no agreement IDs
         // were registered.
         assert!(chain_client.cancels.lock().unwrap().is_empty());
+    }
+
+    // -- broker cooldown and sweep-health tests --
+
+    /// An emitter whose durable sends always fail, standing in for a hung or
+    /// unreachable Kafka broker so a sweep reports `SweepHealth::Failed`.
+    struct FailingEmitter;
+
+    #[async_trait::async_trait]
+    impl SubgraphIndexingAgreementEventsProducer for FailingEmitter {
+        fn produce_subgraph_indexing_agreement_request_received(
+            &self,
+            _: DeploymentId,
+            _: ChainId,
+            _: proto::SubgraphIndexingAgreementRequestReceived,
+        ) {
+        }
+        fn produce_subgraph_indexing_agreement_proposed(
+            &self,
+            _: DeploymentId,
+            _: ChainId,
+            _: proto::SubgraphIndexingAgreementProposed,
+        ) {
+        }
+        fn produce_subgraph_indexing_agreement_n_indexers_unavailable(
+            &self,
+            _: DeploymentId,
+            _: ChainId,
+            _: proto::SubgraphIndexingAgreementNIndexersUnavailable,
+        ) {
+        }
+        async fn emit_subgraph_indexing_agreement_accepted(
+            &self,
+            _: DeploymentId,
+            _: ChainId,
+            _: proto::SubgraphIndexingAgreementAccepted,
+        ) -> Result<(), dipper_producer::events::EmitError> {
+            Err(dipper_producer::events::EmitError::Send(
+                "broker down".to_string(),
+            ))
+        }
+        async fn emit_subgraph_indexing_agreement_request_expired(
+            &self,
+            _: DeploymentId,
+            _: ChainId,
+            _: proto::SubgraphIndexingAgreementRequestExpired,
+        ) -> Result<(), dipper_producer::events::EmitError> {
+            Err(dipper_producer::events::EmitError::Send(
+                "broker down".to_string(),
+            ))
+        }
+        async fn emit_subgraph_indexing_agreement_terminated(
+            &self,
+            _: DeploymentId,
+            _: ChainId,
+            _: proto::SubgraphIndexingAgreementTerminated,
+        ) -> Result<(), dipper_producer::events::EmitError> {
+            Err(dipper_producer::events::EmitError::Send(
+                "broker down".to_string(),
+            ))
+        }
+    }
+
+    fn sample_pending_accepted() -> crate::registry::PendingAcceptedEvent {
+        crate::registry::PendingAcceptedEvent {
+            agreement_id: IndexingAgreementId::from_bytes(rand::random()),
+            indexer_id: "0x1234567890123456789012345678901234567890"
+                .parse()
+                .unwrap(),
+            deployment_id: "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+                .parse()
+                .unwrap(),
+            protocol_network: ChainId::from(42161u64),
+            accepted_at: 100,
+            accepted_tx: "0xabc".to_string(),
+            ends_at: 200,
+            payer: Address::ZERO,
+        }
+    }
+
+    #[test]
+    fn broker_cooldown_healthy_broker_never_pauses() {
+        let base = Duration::from_secs(30);
+        let mut cd = BrokerCooldown::new(base, Duration::from_secs(300));
+        let now = Instant::now();
+        assert!(!cd.is_paused(now));
+        assert_eq!(
+            cd.record(SweepHealth::Idle, now),
+            CooldownTransition::Unchanged
+        );
+        assert_eq!(
+            cd.record(SweepHealth::Sent, now),
+            CooldownTransition::Unchanged
+        );
+        assert!(!cd.is_paused(now));
+    }
+
+    #[test]
+    fn broker_cooldown_enters_and_pauses_for_one_interval() {
+        let base = Duration::from_secs(30);
+        let mut cd = BrokerCooldown::new(base, Duration::from_secs(300));
+        let t0 = Instant::now();
+        assert_eq!(
+            cd.record(SweepHealth::Failed, t0),
+            CooldownTransition::Entered
+        );
+        assert_eq!(cd.backoff(), base);
+        assert!(cd.is_paused(t0));
+        assert!(cd.is_paused(t0 + base - Duration::from_millis(1)));
+        // At exactly one interval the pause is over and the sweeps retry.
+        assert!(!cd.is_paused(t0 + base));
+    }
+
+    #[test]
+    fn broker_cooldown_doubles_backoff_up_to_ceiling() {
+        let base = Duration::from_secs(30);
+        let ceiling = Duration::from_secs(300);
+        let mut cd = BrokerCooldown::new(base, ceiling);
+        let mut t = Instant::now();
+        assert_eq!(
+            cd.record(SweepHealth::Failed, t),
+            CooldownTransition::Entered
+        );
+        for secs in [60u64, 120, 240, 300, 300] {
+            t += Duration::from_secs(1);
+            assert_eq!(
+                cd.record(SweepHealth::Failed, t),
+                CooldownTransition::Extended
+            );
+            assert_eq!(cd.backoff(), Duration::from_secs(secs));
+        }
+    }
+
+    #[test]
+    fn broker_cooldown_recovers_and_resets_backoff() {
+        let base = Duration::from_secs(30);
+        let mut cd = BrokerCooldown::new(base, Duration::from_secs(300));
+        let t0 = Instant::now();
+        cd.record(SweepHealth::Failed, t0);
+        cd.record(SweepHealth::Failed, t0 + Duration::from_secs(1));
+        assert_eq!(cd.backoff(), Duration::from_secs(60));
+        let t1 = t0 + Duration::from_secs(120);
+        assert_eq!(
+            cd.record(SweepHealth::Sent, t1),
+            CooldownTransition::Recovered
+        );
+        assert!(!cd.is_paused(t1));
+        assert_eq!(cd.backoff(), base, "recovery resets the backoff");
+        assert_eq!(
+            cd.record(SweepHealth::Sent, t1),
+            CooldownTransition::Unchanged,
+            "a later healthy sweep is not another recovery"
+        );
+    }
+
+    #[test]
+    fn broker_cooldown_idle_round_leaves_pause_intact() {
+        let base = Duration::from_secs(30);
+        let mut cd = BrokerCooldown::new(base, Duration::from_secs(300));
+        let t0 = Instant::now();
+        cd.record(SweepHealth::Failed, t0);
+        assert_eq!(
+            cd.record(SweepHealth::Idle, t0 + base),
+            CooldownTransition::Unchanged
+        );
+        assert_eq!(cd.backoff(), base);
+        assert_eq!(
+            cd.record(SweepHealth::Failed, t0 + base),
+            CooldownTransition::Extended,
+            "still down, so a fresh failure extends rather than re-enters"
+        );
+    }
+
+    #[test]
+    fn sweep_health_merge_prefers_failure_then_sent() {
+        use SweepHealth::{Failed, Idle, Sent};
+        assert_eq!(Failed.merge(Sent), Failed);
+        assert_eq!(Sent.merge(Failed), Failed);
+        assert_eq!(Idle.merge(Failed), Failed);
+        assert_eq!(Sent.merge(Idle), Sent);
+        assert_eq!(Idle.merge(Sent), Sent);
+        assert_eq!(Idle.merge(Idle), Idle);
+    }
+
+    #[tokio::test]
+    async fn accepted_sweep_reports_sent_when_broker_accepts() {
+        let registry = MockRegistry::new();
+        registry.seed_pending_accepted(sample_pending_accepted());
+        let events = crate::test_support::CapturingEventsProducer::new();
+
+        let health = sweep_pending_accepted_events(&registry, &events).await;
+
+        assert_eq!(health, SweepHealth::Sent);
+        assert_eq!(
+            events.events().len(),
+            1,
+            "the pending accepted row is announced"
+        );
+    }
+
+    #[tokio::test]
+    async fn accepted_sweep_reports_failed_when_broker_rejects() {
+        let registry = MockRegistry::new();
+        registry.seed_pending_accepted(sample_pending_accepted());
+
+        let health = sweep_pending_accepted_events(&registry, &FailingEmitter).await;
+
+        assert_eq!(
+            health,
+            SweepHealth::Failed,
+            "a failed send must trip the cooldown"
+        );
+    }
+
+    #[tokio::test]
+    async fn event_sweeps_report_idle_when_nothing_pending() {
+        let registry = MockRegistry::new();
+        let events = crate::test_support::CapturingEventsProducer::new();
+
+        let health = run_event_sweeps(&registry, test_agreement_conf().as_ref(), &events).await;
+
+        assert_eq!(health, SweepHealth::Idle);
+        assert!(
+            events.events().is_empty(),
+            "nothing pending means nothing announced"
+        );
     }
 }
