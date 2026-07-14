@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use dipper_core::{ids::IndexingRequestId, state::FromState};
+use dipper_producer::events::SubgraphIndexingAgreementEventsProducer;
 use graph_networks_registry::NetworksRegistry;
 use thegraph_core::alloy::primitives::ChainId;
 use tokio::sync::{Mutex, Notify};
@@ -113,6 +114,10 @@ pub struct Ctx<Q, R, C, I, T> {
 
     /// Per-request reassess locks (see `ReassessLocks`).
     pub reassess_locks: ReassessLocks,
+
+    /// Subgraph Indexing Agreements Event emitter for sending indexing agreement events downstream
+    pub subgraph_indexing_agreements_events_emitter:
+        Arc<dyn SubgraphIndexingAgreementEventsProducer>,
 }
 
 /// The inner worker context.
@@ -170,6 +175,10 @@ pub(super) struct InnerCtx<R, W, C, I, T> {
 
     /// See `Ctx::reassess_locks`.
     pub reassess_locks: ReassessLocks,
+
+    /// See: `Ctx::subgraph_indexing_agreements_events_emitter`
+    pub subgraph_indexing_agreements_events_emitter:
+        Arc<dyn SubgraphIndexingAgreementEventsProducer>,
 }
 
 impl_from_state!(ReassessIndexingRequestCtx<R, W, I, T> {
@@ -189,6 +198,7 @@ impl_from_state!(ReassessIndexingRequestCtx<R, W, I, T> {
     bypass_chain_clock_defenses,
     chain_listener_chain_id,
     reassess_locks,
+    subgraph_indexing_agreements_events_emitter
 });
 
 impl_from_state!(SendIndexingAgreementProposalCtx<R, W, C> {

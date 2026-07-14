@@ -53,8 +53,8 @@
 //! ));
 //!
 //! emitter.produce_subgraph_indexing_agreement_request_received(
-//!     "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9".to_string(),
-//!     "arbitrum".to_string(),
+//!     "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9".parse().unwrap(),
+//!     42161, // protocol network chain id; rendered to "eip155:42161" on the wire
 //!     proto::SubgraphIndexingAgreementRequestReceived {
 //!         agreements_requested: 2
 //!     }
@@ -63,4 +63,7 @@
 
 mod subgraph_indexing_agreements_events_emitter;
 
-pub use subgraph_indexing_agreements_events_emitter::SubgraphIndexingAgreementsEventsEmitter;
+pub use subgraph_indexing_agreements_events_emitter::{
+    Caip2ChainId, EmitError, SubgraphIndexingAgreementEventsProducer,
+    SubgraphIndexingAgreementsEventsEmitter,
+};

@@ -460,6 +460,13 @@ mod tests {
             Ok(vec![])
         }
 
+        async fn count_accepted_agreements_by_deployment(
+            &self,
+            _deployment_id: &DeploymentId,
+        ) -> crate::registry::Result<i64> {
+            Ok(0)
+        }
+
         async fn register_new_indexing_agreement(
             &self,
             _params: crate::registry::NewAgreementParams,
@@ -856,6 +863,7 @@ mod tests {
                 ),
                 protocol_network: 1,
                 chain_id: 1,
+                proposed_at: 0,
             },
         };
         IndexingAgreement {

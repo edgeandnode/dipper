@@ -65,6 +65,7 @@ where
         bypass_chain_clock_defenses,
         chain_listener_chain_id,
         reassess_locks,
+        subgraph_indexing_agreements_events_emitter,
     } = state.into();
 
     let (tx_stop, rx_stop) = mpsc::channel(1);
@@ -92,6 +93,7 @@ where
             bypass_chain_clock_defenses,
             chain_listener_chain_id,
             reassess_locks,
+            subgraph_indexing_agreements_events_emitter,
         };
 
         let mut stop_rx = rx_stop;
@@ -165,7 +167,8 @@ where
         + AgreementRegistry
         + IndexerDenylistRegistry
         + PendingCancellationRegistry
-        + crate::network::service::chain_listener::ChainListenerStateRegistry,
+        + crate::network::service::chain_listener::ChainListenerStateRegistry
+        + Sync,
     W: WorkerQueue,
     C: IndexerClient,
     I: CandidateSelection,

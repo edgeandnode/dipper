@@ -7,7 +7,7 @@
 ///   - event_version -> versioning for schema evolution awareness to the consumer
 ///   - timestamp -> when the event occurred, useful for ordering/debugging
 ///   - subgraph_deployment_qm_hash -> Qm hash of the Subgraph deployment
-///   - the_graph_network -> graph network identifier the Subgraph Deployment is published to
+///   - the_graph_network -> CAIP-2 chain id of The Graph protocol network the Subgraph Deployment is published to (e.g. eip155:42161)
 ///   - payload -> the event payload, determined by the event_type
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SubgraphIndexingAgreementEvent {
@@ -32,8 +32,8 @@ pub struct SubgraphIndexingAgreementEvent {
     /// Qm hash of the Subgraph deployment with a submitted indexing agreement event.
     #[prost(string, tag = "5")]
     pub subgraph_deployment_qm_hash: ::prost::alloc::string::String,
-    /// The Graph network identifier for the network where the Subgraph was published to.
-    /// Values: "arbitrum-sepolia", "arbitrum"
+    /// CAIP-2 chain id of The Graph protocol network where the Subgraph was published to.
+    /// Format: "eip155:{chain_id}". Examples: "eip155:42161" (arbitrum), "eip155:421614" (arbitrum-sepolia)
     #[prost(string, tag = "6")]
     pub the_graph_network: ::prost::alloc::string::String,
     /// Event payload - exactly one of the specific event types.
@@ -86,7 +86,8 @@ pub struct SubgraphIndexingAgreementRequestReceived {
 /// Event type: subgraph.indexing.agreement.proposed
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SubgraphIndexingAgreementProposed {
-    /// The Indexer candidates received from the IISA
+    /// 0x addresses of the Indexer candidates dipper sent agreement offers to in
+    /// this proposal round (the IISA-selected indexers newly proposed this cycle).
     #[prost(string, repeated, tag = "1")]
     pub candidates: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Timestamp of when the request expires
@@ -98,6 +99,11 @@ pub struct SubgraphIndexingAgreementProposed {
 /// Event type: subgraph.indexing.agreement.accepted
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SubgraphIndexingAgreementAccepted {
+    /// 0x hex of the on-chain agreement id (bytes16) that was accepted.
+    /// Stable, unique per agreement -- consumers dedup on (agreement_id, event_type)
+    /// since emission is at-least-once (an accepted event may be redelivered).
+    #[prost(string, tag = "6")]
+    pub agreement_id: ::prost::alloc::string::String,
     /// 0x address of the Indexer who accepted the indexing agreement
     #[prost(string, tag = "1")]
     pub indexer: ::prost::alloc::string::String,
@@ -119,6 +125,11 @@ pub struct SubgraphIndexingAgreementAccepted {
 /// Event type: subgraph.indexing.agreement.request.expired
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SubgraphIndexingAgreementRequestExpired {
+    /// 0x hex of the on-chain agreement id (bytes16) that expired.
+    /// Stable, unique per agreement -- consumers dedup on (agreement_id, event_type)
+    /// since emission is at-least-once (an expired event may be redelivered).
+    #[prost(string, tag = "4")]
+    pub agreement_id: ::prost::alloc::string::String,
     /// 0x address of the Indexer who failed to accept the agreement within the given time limit
     #[prost(string, tag = "1")]
     pub indexer: ::prost::alloc::string::String,
@@ -146,6 +157,11 @@ pub struct SubgraphIndexingAgreementNIndexersUnavailable {
 /// Event type: subgraph.indexing.agreement.terminated
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SubgraphIndexingAgreementTerminated {
+    /// 0x hex of the on-chain agreement id (bytes16) that was terminated.
+    /// Stable, unique per agreement -- consumers dedup on (agreement_id, event_type)
+    /// since emission is at-least-once (a terminated event may be redelivered).
+    #[prost(string, tag = "6")]
+    pub agreement_id: ::prost::alloc::string::String,
     /// 0x address of the Indexer that had the accepted agreement that was terminated
     #[prost(string, tag = "1")]
     pub indexer: ::prost::alloc::string::String,
@@ -158,8 +174,11 @@ pub struct SubgraphIndexingAgreementTerminated {
     /// 0x hex of the onchain transaction of the agreement cancellation
     #[prost(string, tag = "4")]
     pub terminated_tx: ::prost::alloc::string::String,
-    /// Count of remaining active agreements on the Subgraph.
-    /// If 0, the Subgraph no longer has any active, accepted indexing agreements.
+    /// Count of remaining active (accepted) agreements on the Subgraph, excluding
+    /// the one just terminated.
+    /// 0  -> the Subgraph no longer has any active, accepted indexing agreements.
+    /// -1 -> the count was unavailable when the event was emitted (e.g. a transient
+    ///       datastore error); treat as unknown, not as zero.
     #[prost(int32, tag = "5")]
     pub remaining_accepted_indexing_agreements: i32,
 }

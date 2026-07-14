@@ -2,6 +2,9 @@ use std::{env, path::PathBuf, sync::Arc};
 
 use async_signal::{Signal, Signals};
 use dipper_iisa::{self as iisa};
+use dipper_producer::events::{
+    SubgraphIndexingAgreementEventsProducer, SubgraphIndexingAgreementsEventsEmitter,
+};
 use futures_lite::StreamExt;
 use thegraph_core::alloy::signers::local::PrivateKeySigner;
 use tokio::task::JoinSet;
@@ -11,6 +14,7 @@ use self::{
     config::DEFAULT_MAX_CANDIDATES, registry::RegistryProvider, signing::eip712::Eip712Signer,
     worker::queue::QueueImpl,
 };
+use crate::config::EventStreamingConfig;
 
 mod admin_rpc_server;
 mod cancel_dispatch;
@@ -21,6 +25,8 @@ mod indexer_rpc_client;
 mod network;
 mod registry;
 mod signing;
+#[cfg(test)]
+mod test_support;
 mod worker;
 
 #[global_allocator]
@@ -324,6 +330,11 @@ pub async fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
+    // - The Subgraph Indexing Agreements Events emitter
+    // Optional, enabled by the config
+    let subgraph_indexing_agreements_events_emitter =
+        create_subgraph_indexing_agreements_events_emitter(&conf.event_streaming_config).await;
+
     // Shared notify: worker signals the chain_listener when proposals are
     // dispatched so it switches from 300s idle polling to 5s immediately.
     let chain_listener_notify = Arc::new(tokio::sync::Notify::new());
@@ -354,6 +365,8 @@ pub async fn main() -> anyhow::Result<()> {
                 .unwrap_or(false),
             chain_listener_chain_id: conf.chain_listener.as_ref().map(|c| c.chain_id),
             reassess_locks,
+            subgraph_indexing_agreements_events_emitter:
+                subgraph_indexing_agreements_events_emitter.clone(),
         };
         worker::service::new(ctx)
     };
@@ -419,6 +432,8 @@ pub async fn main() -> anyhow::Result<()> {
                 config: chain_listener_conf.clone(),
                 signer_address: signer.address(),
                 chain_listener_notify: chain_listener_notify.clone(),
+                subgraph_indexing_agreements_events_emitter:
+                    subgraph_indexing_agreements_events_emitter.clone(),
             };
             let (handle, service) = network::service::chain_listener::new(ctx);
             Some((handle, service))
@@ -475,6 +490,8 @@ pub async fn main() -> anyhow::Result<()> {
             max_candidates: DEFAULT_MAX_CANDIDATES,
             registry: registry.clone(),
             worker: worker_handle.queue().clone(),
+            subgraph_indexing_agreements_events_emitter:
+                subgraph_indexing_agreements_events_emitter.clone(),
         };
 
         admin_rpc_server::service::new(config, ctx)
@@ -605,6 +622,12 @@ pub async fn main() -> anyhow::Result<()> {
         network_topology_handle.stop().await;
         tracing::trace!("stopped Graph network service");
 
+        // All event producers have stopped; flush buffered diagnostic events to
+        // the broker before exit (bounded by an internal timeout).
+        tracing::trace!("flushing lifecycle event stream");
+        subgraph_indexing_agreements_events_emitter.flush().await;
+        tracing::trace!("flushed lifecycle event stream");
+
         tracing::trace!("shutting down DB connection pool");
         db_conn.close().await;
         tracing::trace!("shut down DB connection pool");
@@ -643,6 +666,8 @@ enum SignalHandlerError {
     RegistrationFailed(std::io::Error),
 }
 
+// -------- Private app helpers --------
+
 /// Signal handler for the application
 async fn signal_task() -> Result<AppSignal, SignalHandlerError> {
     let mut signals = Signals::new([Signal::Term, Signal::Int, Signal::Quit, Signal::Abort])
@@ -662,4 +687,36 @@ async fn signal_task() -> Result<AppSignal, SignalHandlerError> {
 
     // Fallthrough
     Ok(AppSignal::Shutdown)
+}
+
+/// Initializes a SubgraphIndexingAgreementsEventsEmitter instance based on the config, if enabled.
+///
+/// Always returns a SubgraphIndexingAgreementsEventsEmitter instance
+/// - if no kafka config, returns as disabled
+/// - if enabled is false, returns as disabled
+/// - if initialization fails, returns as disabled
+async fn create_subgraph_indexing_agreements_events_emitter(
+    config: &Option<EventStreamingConfig>,
+) -> Arc<dyn SubgraphIndexingAgreementEventsProducer> {
+    let Some(event_streaming_conf) = &config else {
+        return Arc::new(SubgraphIndexingAgreementsEventsEmitter::disabled());
+    };
+    if !event_streaming_conf.enabled {
+        return Arc::new(SubgraphIndexingAgreementsEventsEmitter::disabled());
+    }
+
+    let Some(kafka_config) = &event_streaming_conf.kafka else {
+        tracing::warn!("Events enabled, but no Kafka config provided. Returning disabled");
+        return Arc::new(SubgraphIndexingAgreementsEventsEmitter::disabled());
+    };
+
+    // The broker is connected in the background (retrying if unreachable at
+    // startup), so a transient boot-time outage no longer disables events for the
+    // whole run, and startup is never blocked on broker availability.
+    tracing::info!("Subgraph Indexing Agreements Event streaming enabled");
+
+    Arc::new(SubgraphIndexingAgreementsEventsEmitter::enabled(
+        kafka_config.clone(),
+        event_streaming_conf.event_queue_capacity.get(),
+    ))
 }

@@ -18,24 +18,41 @@ use rustls::ClientConfig;
 static RUSTLS_CRYPTO_PROVIDER: Once = Once::new();
 
 /// Kafka producer configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct KafkaConfig {
     /// Kafka broker addresses.
     pub brokers: Vec<String>,
     /// Kafka topic name.
+    #[serde(default = "default_kafka_topic")]
     pub topic: String,
     /// Number of partitions used for key-based partition hashing.
+    #[serde(default = "default_kafka_partitions")]
     pub partitions: u32,
     /// SASL authentication mechanism (e.g., "PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512").
+    #[serde(default)]
     pub sasl_mechanism: Option<String>,
     /// SASL username.
+    #[serde(default)]
     pub sasl_username: Option<String>,
     /// SASL password.
+    #[serde(default)]
     pub sasl_password: Option<String>,
     /// Enable TLS encryption.
+    #[serde(default)]
     pub tls_enabled: bool,
     /// Path to a PEM-encoded CA certificate file for TLS verification.
+    #[serde(default)]
     pub tls_ca_cert_path: Option<PathBuf>,
+}
+
+/// Default Kafka topic for subgraph indexing agreement events.
+pub fn default_kafka_topic() -> String {
+    "dipper.subgraph.indexing.agreement.events".to_string()
+}
+
+/// Default number of Kafka partitions used for key-based partition hashing.
+pub fn default_kafka_partitions() -> u32 {
+    16
 }
 
 /// Kafka producer for sending worker events.

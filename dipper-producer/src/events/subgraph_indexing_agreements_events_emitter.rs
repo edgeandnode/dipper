@@ -1,152 +1,485 @@
 //! Subgraph Indexing Agreement event emitter to Kafka topic utilities
 
-use std::sync::Arc;
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
+use async_trait::async_trait;
 use prost::Message;
-use tokio::sync::mpsc;
+use thegraph_core::{DeploymentId, alloy::primitives::ChainId};
+use tokio::{
+    sync::{Notify, mpsc},
+    task::JoinHandle,
+};
 
-use crate::{kafka::KafkaProducer, proto};
+use crate::{
+    kafka::{KafkaConfig, KafkaProducer},
+    proto,
+};
 
-/// Kafka producer wrapper for Subgraph Indexing agreements lifecycle events
+/// Failure of a durable-tier emit (see [`SubgraphIndexingAgreementEventsProducer`]).
 ///
-/// When the queue is `None`, Kafka production is disabled and all produce methods return immediately.
+/// The caller must treat this as "not yet emitted" and leave its DB marker
+/// unset so the event is retried on the next sweep.
+#[derive(Debug, thiserror::Error)]
+pub enum EmitError {
+    #[error("failed to send lifecycle event to broker: {0}")]
+    Send(String),
+}
+
+/// CAIP-2 identifier for an EVM (`eip155`) chain.
+///
+/// Wraps a numeric [`ChainId`] and renders to its CAIP-2 string form
+/// `eip155:{chain_id}` (e.g. `eip155:42161`) when written to the wire. Construct
+/// one from a chain id via [`From`] / `ChainId::into`, so call sites pass the raw
+/// chain id without repeating the `eip155:` formatting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Caip2ChainId(ChainId);
+
+impl From<ChainId> for Caip2ChainId {
+    fn from(chain_id: ChainId) -> Self {
+        Self(chain_id)
+    }
+}
+
+impl std::fmt::Display for Caip2ChainId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "eip155:{}", self.0)
+    }
+}
+
+/// Produces Subgraph Indexing Agreement lifecycle events.
+///
+/// Abstracts [`SubgraphIndexingAgreementsEventsEmitter`] so callers can depend on
+/// the behavior rather than the concrete Kafka emitter, and tests can substitute a
+/// capturing double. `the_graph_network` is the protocol network's numeric
+/// [`ChainId`]; implementors render it to its CAIP-2 form (`eip155:{id}`) on the wire.
+///
+/// # Two delivery tiers
+///
+/// - **Diagnostic** (`request.received`, `proposed`, `n_indexers_unavailable`):
+///   the `produce_*` methods enqueue onto a bounded in-memory channel and return
+///   immediately. Best-effort; dropped on a full/closed queue.
+/// - **Durable** (`terminated`, and later `accepted` / `expired`): the `emit_*`
+///   methods send synchronously and report success, so the caller persists a DB
+///   emission marker only after the broker confirms the send. A failure leaves
+///   the marker unset and the event is re-derived and retried on the next sweep.
+#[async_trait]
+pub trait SubgraphIndexingAgreementEventsProducer: Send + Sync {
+    /// Produces a subgraph.indexing.agreement.request.received event
+    fn produce_subgraph_indexing_agreement_request_received(
+        &self,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
+        event: proto::SubgraphIndexingAgreementRequestReceived,
+    );
+
+    /// Produces a subgraph.indexing.agreement.proposed event
+    fn produce_subgraph_indexing_agreement_proposed(
+        &self,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
+        event: proto::SubgraphIndexingAgreementProposed,
+    );
+
+    /// Emits a subgraph.indexing.agreement.accepted event durably.
+    ///
+    /// Same durability contract as
+    /// [`emit_subgraph_indexing_agreement_terminated`](Self::emit_subgraph_indexing_agreement_terminated):
+    /// synchronous send, `Ok(())` lets the caller stamp its
+    /// `accepted_event_emitted_at` marker, `Err(_)` leaves it unset for the next
+    /// sweep. At-least-once; consumers dedup on `event.agreement_id`.
+    async fn emit_subgraph_indexing_agreement_accepted(
+        &self,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
+        event: proto::SubgraphIndexingAgreementAccepted,
+    ) -> Result<(), EmitError>;
+
+    /// Emits a subgraph.indexing.agreement.request.expired event durably.
+    ///
+    /// Same durability contract as the other `emit_*` methods: synchronous send,
+    /// `Ok(())` lets the caller stamp its `expired_event_emitted_at` marker,
+    /// `Err(_)` leaves it unset for the next sweep. At-least-once; consumers dedup
+    /// on `event.agreement_id`.
+    async fn emit_subgraph_indexing_agreement_request_expired(
+        &self,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
+        event: proto::SubgraphIndexingAgreementRequestExpired,
+    ) -> Result<(), EmitError>;
+
+    /// Produces a subgraph.indexing.agreement.n_indexers_unavailable event
+    fn produce_subgraph_indexing_agreement_n_indexers_unavailable(
+        &self,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
+        event: proto::SubgraphIndexingAgreementNIndexersUnavailable,
+    );
+
+    /// Emits a subgraph.indexing.agreement.terminated event durably.
+    ///
+    /// Sends synchronously and reports the outcome. `Ok(())` means the broker
+    /// accepted the event (or emission is disabled, a no-op the caller can treat
+    /// as success); the caller may then stamp its `terminated_event_emitted_at`
+    /// marker. `Err(_)` means the send failed and the marker must stay unset so
+    /// the next sweep re-derives and retries. Delivery is at-least-once;
+    /// consumers dedup on `event.agreement_id`.
+    async fn emit_subgraph_indexing_agreement_terminated(
+        &self,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
+        event: proto::SubgraphIndexingAgreementTerminated,
+    ) -> Result<(), EmitError>;
+
+    /// Flush buffered diagnostic events on shutdown. Best-effort and bounded; the
+    /// default is a no-op for implementations with nothing to flush.
+    async fn flush(&self) {}
+}
+
+/// A broker handle that may be absent while (re)connecting.
+type SharedProducer = Arc<Mutex<Option<Arc<KafkaProducer>>>>;
+
+/// Kafka producer wrapper for Subgraph Indexing agreements lifecycle events.
+///
+/// `streaming == None` means emission is disabled by configuration -- durable
+/// `emit_*` calls are a successful no-op so the caller stamps its marker, and
+/// diagnostic `produce_*` calls are dropped. `streaming == Some` means emission
+/// is on; the inner producer may still be `None` while the broker is being
+/// (re)connected, in which case durable emits return `Err` (so markers are not
+/// stamped) and diagnostic events are dropped.
 pub struct SubgraphIndexingAgreementsEventsEmitter {
-    queue: Option<mpsc::Sender<QueuedSubgraphIndexingAgreementEvent>>,
+    streaming: Option<Streaming>,
+}
+
+/// State for an emitter with event streaming enabled.
+struct Streaming {
+    /// Current broker handle. `None` while (re)connecting.
+    producer: SharedProducer,
+    /// Bounded channel for the best-effort diagnostic tier.
+    queue: mpsc::Sender<QueuedSubgraphIndexingAgreementEvent>,
+    /// Cumulative diagnostic events dropped (queue full, or the broker was
+    /// disconnected). Surfaced in the warn logs since there is no metrics stack.
+    dropped: Arc<AtomicU64>,
+    /// Signals the drain task to flush what is buffered and exit (used by `flush`
+    /// on shutdown). `notify_one` stores a permit, so the signal is not lost if
+    /// the drain task is mid-send when it fires.
+    shutdown: Arc<Notify>,
+    /// The drain task handle, awaited by `flush`.
+    drain_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl SubgraphIndexingAgreementsEventsEmitter {
-    /// Creates a disabled producer.
+    /// Creates a disabled producer (emission off by configuration).
     pub fn disabled() -> Self {
-        Self { queue: None }
+        Self { streaming: None }
     }
 
-    /// Creates a producer backed by a KafkaProducer instance for sending Subgraph Indexing agreement lifecycle events.
-    pub fn enabled(client: Arc<KafkaProducer>, capacity: usize) -> Self {
+    /// Creates a streaming producer. The broker is connected in the background
+    /// (retrying if unreachable at startup), so this never blocks and never comes
+    /// up permanently disabled on a transient broker outage.
+    pub fn enabled(config: KafkaConfig, capacity: usize) -> Self {
+        let producer: SharedProducer = Arc::new(Mutex::new(None));
+        let dropped = Arc::new(AtomicU64::new(0));
+        let shutdown = Arc::new(Notify::new());
         let (tx, mut rx) = mpsc::channel::<QueuedSubgraphIndexingAgreementEvent>(capacity);
 
-        tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                let (event_type, key, envelope) = Self::prepare_event(event);
-                // `send_event` already bounds the produce attempt via `KafkaProducer`'s
-                // internal produce timeout, so no additional timeout is layered here.
-                Self::send_event(&client, event_type, &key, envelope).await;
-            }
-        });
+        // Connect (retrying) and swap the handle in. rskafka reconnects internally
+        // once connected, so this task only bridges an unreachable-at-startup
+        // broker, then exits.
+        Self::spawn_connect_task(config, producer.clone());
 
-        Self { queue: Some(tx) }
+        // Drain diagnostic events through the current producer, dropping (with a
+        // counter) while disconnected. On shutdown, flush what is buffered.
+        let drain_handle = {
+            let producer = producer.clone();
+            let dropped = dropped.clone();
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        maybe = rx.recv() => match maybe {
+                            Some(event) => Self::drain_one(&producer, &dropped, event).await,
+                            None => break,
+                        },
+                        _ = shutdown.notified() => {
+                            while let Ok(event) = rx.try_recv() {
+                                Self::drain_one(&producer, &dropped, event).await;
+                            }
+                            break;
+                        }
+                    }
+                }
+            })
+        };
+
+        Self {
+            streaming: Some(Streaming {
+                producer,
+                queue: tx,
+                dropped,
+                shutdown,
+                drain_handle: Mutex::new(Some(drain_handle)),
+            }),
+        }
     }
 
-    /// Produces a subgraph.indexing.agreement.request.received event
-    pub fn produce_subgraph_indexing_agreement_request_received(
+    /// Retry `KafkaProducer::new` with capped backoff until it connects, then swap
+    /// the handle in and exit. Logs the first failure and then periodically so an
+    /// operator without dashboards still sees that emission is off.
+    fn spawn_connect_task(config: KafkaConfig, producer: SharedProducer) {
+        tokio::spawn(async move {
+            const MAX_BACKOFF_SECS: u64 = 30;
+            const WARN_EVERY: u32 = 5;
+            let mut attempt: u32 = 0;
+            loop {
+                match KafkaProducer::new(&config).await {
+                    Ok(client) => {
+                        // Recover from poisoning rather than panic: the guarded
+                        // handle is always valid, so a prior panic elsewhere must
+                        // not take down the connect task.
+                        *producer.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(Arc::new(client));
+                        tracing::info!("Subgraph Indexing Agreement event broker connected");
+                        return;
+                    }
+                    Err(err) => {
+                        attempt = attempt.saturating_add(1);
+                        if attempt == 1 || attempt.is_multiple_of(WARN_EVERY) {
+                            tracing::warn!(
+                                attempt,
+                                error = %err,
+                                "event broker unreachable; lifecycle events are NOT being sent -- retrying"
+                            );
+                        }
+                        let backoff = MAX_BACKOFF_SECS.min(2u64.saturating_pow(attempt.min(5)));
+                        tokio::time::sleep(Duration::from_secs(backoff)).await;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Read the current broker handle, recovering from a poisoned lock rather
+    /// than panicking (the guarded `Option` is always valid).
+    fn current_producer(
+        producer: &Mutex<Option<Arc<KafkaProducer>>>,
+    ) -> Option<Arc<KafkaProducer>> {
+        producer.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Send one diagnostic event through the current producer, or drop it (with a
+    /// counter) if the broker is not connected yet.
+    async fn drain_one(
+        producer: &Mutex<Option<Arc<KafkaProducer>>>,
+        dropped: &AtomicU64,
+        event: QueuedSubgraphIndexingAgreementEvent,
+    ) {
+        let Some(handle) = Self::current_producer(producer) else {
+            let total = dropped.fetch_add(1, Ordering::Relaxed) + 1;
+            tracing::warn!(
+                dropped_total = total,
+                "event broker not connected; dropping diagnostic event"
+            );
+            return;
+        };
+        let (event_type, key, envelope) = Self::prepare_event(event);
+        // `send_event` already bounds the produce attempt via `KafkaProducer`'s
+        // internal produce timeout, so no additional timeout is layered here.
+        Self::send_event(&handle, event_type, &key, envelope).await;
+    }
+}
+
+#[async_trait]
+impl SubgraphIndexingAgreementEventsProducer for SubgraphIndexingAgreementsEventsEmitter {
+    fn produce_subgraph_indexing_agreement_request_received(
         &self,
-        subgraph_deployment_qm_hash: &str,
-        the_graph_network: &str,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
         event: proto::SubgraphIndexingAgreementRequestReceived,
     ) {
         self.enqueue(
             subgraph_deployment_qm_hash,
-            the_graph_network,
+            the_graph_network.into(),
             EventPayload::RequestReceived(event),
         );
     }
 
-    /// Produces a subgraph.indexing.agreement.proposed event
-    pub fn produce_subgraph_indexing_agreement_proposed(
+    fn produce_subgraph_indexing_agreement_proposed(
         &self,
-        subgraph_deployment_qm_hash: &str,
-        the_graph_network: &str,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
         event: proto::SubgraphIndexingAgreementProposed,
     ) {
         self.enqueue(
             subgraph_deployment_qm_hash,
-            the_graph_network,
+            the_graph_network.into(),
             EventPayload::Proposed(event),
         );
     }
 
-    /// Produces a subgraph.indexing.agreement.accepted event
-    pub fn produce_subgraph_indexing_agreement_accepted(
+    async fn emit_subgraph_indexing_agreement_accepted(
         &self,
-        subgraph_deployment_qm_hash: &str,
-        the_graph_network: &str,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
         event: proto::SubgraphIndexingAgreementAccepted,
-    ) {
-        self.enqueue(
+    ) -> Result<(), EmitError> {
+        self.send_durable(
             subgraph_deployment_qm_hash,
-            the_graph_network,
+            the_graph_network.into(),
+            SubgraphIndexingAgreementEventType::Accepted,
             EventPayload::Accepted(event),
-        );
+        )
+        .await
     }
 
-    /// Produces a subgraph.indexing.agreement.request.expired event
-    pub fn produce_subgraph_indexing_agreement_request_expired(
+    async fn emit_subgraph_indexing_agreement_request_expired(
         &self,
-        subgraph_deployment_qm_hash: &str,
-        the_graph_network: &str,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
         event: proto::SubgraphIndexingAgreementRequestExpired,
-    ) {
-        self.enqueue(
+    ) -> Result<(), EmitError> {
+        self.send_durable(
             subgraph_deployment_qm_hash,
-            the_graph_network,
+            the_graph_network.into(),
+            SubgraphIndexingAgreementEventType::RequestExpired,
             EventPayload::RequestExpired(event),
-        );
+        )
+        .await
     }
 
-    /// Produces a subgraph.indexing.agreement.n_indexers_unavailable event
-    pub fn produce_subgraph_indexing_agreement_n_indexers_unavailable(
+    fn produce_subgraph_indexing_agreement_n_indexers_unavailable(
         &self,
-        subgraph_deployment_qm_hash: &str,
-        the_graph_network: &str,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
         event: proto::SubgraphIndexingAgreementNIndexersUnavailable,
     ) {
         self.enqueue(
             subgraph_deployment_qm_hash,
-            the_graph_network,
+            the_graph_network.into(),
             EventPayload::NIndexersUnavailable(event),
         );
     }
 
-    /// Produces a subgraph.indexing.agreement.terminated event
-    pub fn produce_subgraph_indexing_agreement_terminated(
+    async fn emit_subgraph_indexing_agreement_terminated(
         &self,
-        subgraph_deployment_qm_hash: &str,
-        the_graph_network: &str,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: ChainId,
         event: proto::SubgraphIndexingAgreementTerminated,
-    ) {
-        self.enqueue(
+    ) -> Result<(), EmitError> {
+        self.send_durable(
+            subgraph_deployment_qm_hash,
+            the_graph_network.into(),
+            SubgraphIndexingAgreementEventType::Terminated,
+            EventPayload::Terminated(event),
+        )
+        .await
+    }
+
+    async fn flush(&self) {
+        self.flush_diagnostics().await;
+    }
+}
+
+impl SubgraphIndexingAgreementsEventsEmitter {
+    /// Send a durable-tier event synchronously and report the outcome. Shared by
+    /// the `emit_*` methods.
+    ///
+    /// - Disabled by config: a successful no-op so the caller stamps its marker.
+    /// - Streaming but not yet connected: `Err`, so the caller does NOT stamp its
+    ///   marker and the event is retried on the next sweep once the broker is up.
+    /// - Connected: send synchronously and report the broker's outcome.
+    async fn send_durable(
+        &self,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: Caip2ChainId,
+        event_type: SubgraphIndexingAgreementEventType,
+        payload: EventPayload,
+    ) -> Result<(), EmitError> {
+        let Some(streaming) = &self.streaming else {
+            return Ok(());
+        };
+        let Some(producer) = Self::current_producer(&streaming.producer) else {
+            return Err(EmitError::Send(
+                "event broker not connected; will retry".to_string(),
+            ));
+        };
+
+        let metadata = EventMetadata {
             subgraph_deployment_qm_hash,
             the_graph_network,
-            EventPayload::Terminated(event),
-        );
+        };
+        let key = metadata.partition_key();
+        let envelope = Self::create_event_envelope(event_type, &metadata, payload.into_proto());
+
+        let mut buf = Vec::with_capacity(envelope.encoded_len());
+        envelope
+            .encode(&mut buf)
+            .map_err(|e| EmitError::Send(format!("encode failed: {e}")))?;
+
+        producer
+            .send(&key, &buf)
+            .await
+            .map_err(|e| EmitError::Send(e.to_string()))?;
+        Ok(())
     }
 
     fn enqueue(
         &self,
-        subgraph_deployment_qm_hash: &str,
-        the_graph_network: &str,
+        subgraph_deployment_qm_hash: DeploymentId,
+        the_graph_network: Caip2ChainId,
         payload: EventPayload,
     ) {
-        let Some(queue) = &self.queue else {
+        let Some(streaming) = &self.streaming else {
             return;
         };
 
         let event = QueuedSubgraphIndexingAgreementEvent {
             metadata: EventMetadata {
-                subgraph_deployment_qm_hash: subgraph_deployment_qm_hash.to_string(),
-                the_graph_network: the_graph_network.to_string(),
+                subgraph_deployment_qm_hash,
+                the_graph_network,
             },
             payload,
         };
 
         let event_type = event.payload.event_type();
-        if let Err(err) = queue.try_send(event) {
-            match err {
-                mpsc::error::TrySendError::Full(_) => {
-                    tracing::warn!(event_type = %event_type, "event queue full; dropping event");
-                }
-                mpsc::error::TrySendError::Closed(_) => {
-                    tracing::warn!(event_type = %event_type, "event queue closed; dropping event");
-                }
+        if let Err(err) = streaming.queue.try_send(event) {
+            let total = streaming.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+            let reason = match err {
+                mpsc::error::TrySendError::Full(_) => "event queue full",
+                mpsc::error::TrySendError::Closed(_) => "event queue closed",
+            };
+            tracing::warn!(
+                event_type = %event_type,
+                dropped_total = total,
+                "{reason}; dropping diagnostic event"
+            );
+        }
+    }
+
+    /// Flush buffered diagnostic events and stop the drain task. Called once on
+    /// shutdown. Bounded by a timeout so a slow/unreachable broker can't hang
+    /// shutdown. Idempotent: the drain handle is taken, so a second call is a
+    /// no-op.
+    async fn flush_diagnostics(&self) {
+        let Some(streaming) = &self.streaming else {
+            return;
+        };
+        // Wake the drain task (permit is stored if it is mid-send).
+        streaming.shutdown.notify_one();
+        let handle = streaming
+            .drain_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(handle) = handle {
+            const FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+            if tokio::time::timeout(FLUSH_TIMEOUT, handle).await.is_err() {
+                tracing::warn!("timed out flushing buffered lifecycle events on shutdown");
             }
         }
     }
@@ -206,8 +539,8 @@ impl SubgraphIndexingAgreementsEventsEmitter {
             event_type: event_type.to_string(),
             event_version: "1.0".to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
-            subgraph_deployment_qm_hash: metadata.subgraph_deployment_qm_hash.clone(),
-            the_graph_network: metadata.the_graph_network.clone(),
+            subgraph_deployment_qm_hash: metadata.subgraph_deployment_qm_hash.to_string(),
+            the_graph_network: metadata.the_graph_network.to_string(),
             payload: Some(payload),
         }
     }
@@ -221,14 +554,19 @@ struct QueuedSubgraphIndexingAgreementEvent {
 
 /// Routing metadata common to every Subgraph Indexing Agreement event.
 struct EventMetadata {
-    subgraph_deployment_qm_hash: String,
-    the_graph_network: String,
+    /// The Subgraph deployment. Rendered to its `Qm...` hash representation
+    /// when building the envelope and partition key.
+    subgraph_deployment_qm_hash: DeploymentId,
+    /// The Graph protocol network. Rendered to its CAIP-2 form
+    /// (e.g. `eip155:42161`) when building the envelope and partition key.
+    the_graph_network: Caip2ChainId,
 }
 
 impl EventMetadata {
     /// Creates the partition key for the Subgraph Indexing Agreement events
     ///
     /// Format: `{the_graph_network}/{subgraph_deployment_qm_hash}`
+    /// e.g. `eip155:42161/QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9`
     fn partition_key(&self) -> String {
         format!(
             "{}/{}",
@@ -308,12 +646,86 @@ mod tests {
     use super::*;
 
     const HASH: &str = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9";
-    const NETWORK: &str = "arbitrum";
+    const CHAIN_ID: ChainId = 42161;
+    const NETWORK: &str = "eip155:42161";
+
+    fn deployment_id() -> DeploymentId {
+        HASH.parse().expect("HASH is a valid deployment id")
+    }
+
+    /// A config whose producer can never connect (`partitions == 0` fails
+    /// `KafkaProducer::new` fast, before any network), so the emitter stays in the
+    /// disconnected state for the test.
+    fn never_connects_config() -> KafkaConfig {
+        KafkaConfig {
+            brokers: vec![],
+            topic: "test".to_string(),
+            partitions: 0,
+            sasl_mechanism: None,
+            sasl_username: None,
+            sasl_password: None,
+            tls_enabled: false,
+            tls_ca_cert_path: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn disabled_emitter_durable_emit_is_ok_noop() {
+        // Disabled by config: durable emit is a successful no-op, so the caller
+        // stamps its marker (events are intentionally off). Diagnostic produce is
+        // a no-op too (must not panic).
+        let emitter = SubgraphIndexingAgreementsEventsEmitter::disabled();
+
+        let res = emitter
+            .emit_subgraph_indexing_agreement_terminated(
+                deployment_id(),
+                CHAIN_ID,
+                proto::SubgraphIndexingAgreementTerminated::default(),
+            )
+            .await;
+        assert!(res.is_ok(), "disabled durable emit must be Ok (no-op)");
+
+        emitter.produce_subgraph_indexing_agreement_n_indexers_unavailable(
+            deployment_id(),
+            CHAIN_ID,
+            proto::SubgraphIndexingAgreementNIndexersUnavailable::default(),
+        );
+        emitter.flush().await;
+    }
+
+    #[tokio::test]
+    async fn streaming_but_disconnected_durable_emit_errors() {
+        // Enabled but the broker never connects: durable emit must return Err so
+        // the caller does NOT stamp its marker and the event is retried on the next
+        // sweep. This is what prevents a broker-down-at-startup from silently
+        // losing durable events.
+        let emitter = SubgraphIndexingAgreementsEventsEmitter::enabled(never_connects_config(), 8);
+
+        let res = emitter
+            .emit_subgraph_indexing_agreement_terminated(
+                deployment_id(),
+                CHAIN_ID,
+                proto::SubgraphIndexingAgreementTerminated::default(),
+            )
+            .await;
+        assert!(
+            res.is_err(),
+            "disconnected durable emit must be Err so the sweep retries"
+        );
+
+        // Diagnostic produce + flush must not panic while disconnected.
+        emitter.produce_subgraph_indexing_agreement_n_indexers_unavailable(
+            deployment_id(),
+            CHAIN_ID,
+            proto::SubgraphIndexingAgreementNIndexersUnavailable::default(),
+        );
+        emitter.flush().await;
+    }
 
     fn metadata() -> EventMetadata {
         EventMetadata {
-            subgraph_deployment_qm_hash: HASH.to_string(),
-            the_graph_network: NETWORK.to_string(),
+            subgraph_deployment_qm_hash: deployment_id(),
+            the_graph_network: CHAIN_ID.into(),
         }
     }
 
@@ -347,6 +759,13 @@ mod tests {
                 "subgraph.indexing.agreement.terminated",
             ),
         ]
+    }
+
+    #[test]
+    fn caip2_chain_id_from_chain_id_renders_eip155() {
+        let network: Caip2ChainId = CHAIN_ID.into();
+        assert_eq!(network.to_string(), NETWORK);
+        assert_eq!(network.to_string(), "eip155:42161");
     }
 
     #[test]
@@ -418,6 +837,33 @@ mod tests {
         assert_eq!(id.get_version_num(), 7, "event_id should be a UUIDv7");
         chrono::DateTime::parse_from_rfc3339(&envelope.timestamp)
             .expect("timestamp is valid rfc3339");
+    }
+
+    #[test]
+    fn deployment_id_renders_to_qm_hash_in_envelope_and_partition_key() {
+        // The emitter takes a strongly-typed DeploymentId and is responsible for
+        // rendering it to its Qm-hash string on the wire. Assert that rendering is
+        // the canonical Qm hash (round-trips back to the same DeploymentId) and that
+        // the partition key uses the same rendering.
+        let dep = deployment_id();
+        let envelope = SubgraphIndexingAgreementsEventsEmitter::create_event_envelope(
+            SubgraphIndexingAgreementEventType::RequestReceived,
+            &metadata(),
+            EventPayload::RequestReceived(Default::default()).into_proto(),
+        );
+
+        assert_eq!(envelope.subgraph_deployment_qm_hash, HASH);
+        let parsed: DeploymentId = envelope
+            .subgraph_deployment_qm_hash
+            .parse()
+            .expect("envelope qm hash parses back into a DeploymentId");
+        assert_eq!(parsed, dep, "qm-hash rendering must be lossless");
+
+        assert_eq!(
+            metadata().partition_key(),
+            format!("eip155:42161/{dep}"),
+            "partition key must use the caip2 network and the Qm-hash rendering"
+        );
     }
 
     #[test]
