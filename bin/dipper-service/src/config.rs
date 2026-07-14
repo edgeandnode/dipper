@@ -9,12 +9,9 @@ use std::{
 
 use dipper_core::config::{Hidden, HiddenSecretKeyAsHexStr};
 use serde_with::serde_as;
-use thegraph_core::{
-    DeploymentId,
-    alloy::{
-        primitives::{Address, ChainId, U256},
-        signers::k256::SecretKey,
-    },
+use thegraph_core::alloy::{
+    primitives::{Address, ChainId, U256},
+    signers::k256::SecretKey,
 };
 use url::Url;
 
@@ -989,21 +986,26 @@ pub struct DbConfig {
 #[serde_as]
 #[derive(custom_debug::CustomDebug, serde::Deserialize)]
 pub struct NetworkConfig {
-    /// The graph network gateway URL
+    /// The indexing-payments subgraph query endpoint used to look up
+    /// registered indexer URLs. Same form as `chain_listener.subgraph_endpoint`:
+    /// a full query URL, gateway-served or self-hosted.
     #[debug(with = std::fmt::Display::fmt)]
     #[serde_as(as = "serde_with::DisplayFromStr")]
-    pub gateway_url: Url,
+    pub subgraph_endpoint: Url,
 
-    /// The graph network API key
-    pub api_key: Hidden<String>,
+    /// Bearer token for the endpoint (needed for gateway-served subgraphs)
+    #[serde(default)]
+    pub api_key: Option<Hidden<String>>,
 
-    /// The graph network subgraph deployment ID
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    pub deployment_id: DeploymentId,
-
-    /// The update interval for the network service
+    /// The update interval for the indexer URL lookup service
     #[serde_as(as = "serde_with::DurationSeconds")]
     pub update_interval: Duration,
+
+    /// Boot even if the subgraph reports 0 registered indexers, instead of
+    /// exiting after the startup retries. For environments that come up before
+    /// any indexer has registered (e.g. local networks); leave off elsewhere.
+    #[serde(default)]
+    pub allow_empty_at_startup: bool,
 }
 
 /// The configuration for the signer
