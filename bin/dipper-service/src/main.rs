@@ -31,6 +31,11 @@ static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
 /// over across every configured provider with its own backoff.
 const RCA_DOMAIN_FETCH_MAX_RETRIES: u32 = 5;
 
+/// Extra attempts to fetch the initial indexer URL snapshot after the first. The fetch runs
+/// before the admin RPC port (the readiness probe's target) opens, so retrying forever on a
+/// stalled subgraph would leave the pod hanging unready with no restart; exit visibly instead.
+const INDEXER_URLS_FETCH_MAX_RETRIES: u32 = 5;
+
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {
     // Set up logging
@@ -173,7 +178,7 @@ pub async fn main() -> anyhow::Result<()> {
         let subgraph_endpoint = conf.network.subgraph_endpoint;
         let api_key = conf.network.api_key.map(|key| key.into_inner());
 
-        // Fetch the initial snapshot, retrying with exponential backoff.
+        // Fetch the initial snapshot with bounded exponential-backoff retries.
         // The subgraph may be temporarily unavailable (e.g. during a chain halt).
         let init_snapshot = {
             let client = reqwest::Client::builder()
@@ -190,10 +195,10 @@ pub async fn main() -> anyhow::Result<()> {
                 .await
                 {
                     Ok(s) => break s,
-                    Err(err) => {
+                    Err(err) if attempt < INDEXER_URLS_FETCH_MAX_RETRIES => {
                         attempt += 1;
                         let delay = std::time::Duration::from_secs(2u64.pow(attempt.min(5)));
-                        tracing::info!(
+                        tracing::warn!(
                             attempt,
                             delay_secs = delay.as_secs(),
                             error = %err,
@@ -201,6 +206,10 @@ pub async fn main() -> anyhow::Result<()> {
                         );
                         tokio::time::sleep(delay).await;
                     }
+                    Err(err) => anyhow::bail!(
+                        "failed to fetch the initial indexer URL snapshot after {} attempts: {err}",
+                        INDEXER_URLS_FETCH_MAX_RETRIES + 1
+                    ),
                 }
             }
         };
