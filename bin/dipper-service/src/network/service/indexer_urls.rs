@@ -21,7 +21,7 @@ pub type Snapshot = BTreeMap<IndexerId, Url>;
 /// HTTP(S) scheme, and has a host component; `None` otherwise.
 fn parse_indexer_url(raw: &str) -> Option<Url> {
     let url = raw.parse::<Url>().ok()?;
-    (url.scheme().starts_with("http") && url.has_host()).then_some(url)
+    (matches!(url.scheme(), "http" | "https") && url.has_host()).then_some(url)
 }
 
 /// Handle for interacting with the indexer URLs service.
@@ -286,6 +286,8 @@ mod tests {
         assert!(parse_indexer_entry(&entry(INDEXER, "not a url")).is_none());
         // Non-HTTP scheme
         assert!(parse_indexer_entry(&entry(INDEXER, "ftp://indexer.example.com")).is_none());
+        // Scheme merely prefixed with "http" is not http(s)
+        assert!(parse_indexer_entry(&entry(INDEXER, "httpsx://indexer.example.com")).is_none());
         // No host
         assert!(parse_indexer_entry(&entry(INDEXER, "http://")).is_none());
     }
