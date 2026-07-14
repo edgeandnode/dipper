@@ -83,6 +83,7 @@ pub async fn fetch_snapshot(
             "query": PAGINATED_QUERY,
             "variables": {
                 "lastId": last_id,
+                "first": PAGE_SIZE,
             },
         });
 
@@ -221,9 +222,9 @@ const PAGE_SIZE: usize = 1000;
 const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 
 const PAGINATED_QUERY: &str = r#"
-    query RegisteredIndexers($lastId: Bytes!) {
+    query RegisteredIndexers($lastId: Bytes!, $first: Int!) {
         indexers(
-            first: 1000
+            first: $first
             where: { id_gt: $lastId }
             orderBy: id
             orderDirection: asc
