@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/edgeandnode/dipper/compare/v0.1.6...v0.1.7) (2026-07-14)
+
+
+### Documentation
+
+* point example subgraph placeholders at indexing-payments ([#672](https://github.com/edgeandnode/dipper/issues/672)) ([aa55181](https://github.com/edgeandnode/dipper/commit/aa551812ef5eaa5a31ac65d038d6826280a1c97d))
+
 ## [0.1.6](https://github.com/edgeandnode/dipper/compare/v0.1.5...v0.1.6) (2026-07-14)
 
 
