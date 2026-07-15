@@ -1,12 +1,12 @@
 use sqlx::{Pool, Postgres};
 use time::OffsetDateTime;
 
-pub use super::listener::PgQueueListener;
 use super::{
     id::JobId,
     job::{JobGuard, JobInner},
     postgres,
 };
+pub use super::{listener::PgQueueListener, postgres::JobPriority};
 
 /// The default maximum number of attempts before a job is considered as failed.
 const DEFAULT_MAX_ATTEMPTS: i32 = 3;
@@ -57,6 +57,7 @@ impl PgQueue {
             desc,
             max_attempts,
             scheduled_for,
+            priority,
         } = job.into();
 
         let max_attempts = max_attempts.unwrap_or(self.max_attempts);
@@ -64,14 +65,15 @@ impl PgQueue {
             None => {
                 // Push the job and send the notification in a single transaction
                 let mut tx = self.pool.begin().await?;
-                let id = postgres::push(&mut *tx, desc, max_attempts).await?;
+                let id = postgres::push(&mut *tx, desc, max_attempts, priority).await?;
                 postgres::send_job_available_notification(&mut *tx, &id).await?;
                 tx.commit().await?;
                 Ok(id)
             }
 
             Some(scheduled_for) => {
-                postgres::push_scheduled(&self.pool, desc, max_attempts, scheduled_for).await
+                postgres::push_scheduled(&self.pool, desc, max_attempts, scheduled_for, priority)
+                    .await
             }
         }
     }
@@ -115,6 +117,8 @@ pub struct JobBuilder<T> {
     max_attempts: Option<i32>,
     /// The scheduled time for the job
     scheduled_for: Option<OffsetDateTime>,
+    /// The scheduling priority; defaults to `Background`.
+    priority: JobPriority,
 }
 
 impl<T> JobBuilder<T> {
@@ -124,7 +128,14 @@ impl<T> JobBuilder<T> {
             desc,
             max_attempts: None,
             scheduled_for: None,
+            priority: JobPriority::default(),
         }
+    }
+
+    /// Sets the scheduling priority; `pop()` serves higher priority first.
+    pub fn priority(mut self, priority: JobPriority) -> Self {
+        self.priority = priority;
+        self
     }
 
     /// Sets the maximum number of retries before a job is considered failed.

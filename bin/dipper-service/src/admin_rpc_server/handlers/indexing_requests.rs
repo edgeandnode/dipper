@@ -20,7 +20,7 @@ use crate::{
         IndexingRequestStatus as IndexingRequestRecordStatus, SetTargetOutcome,
     },
     signing::eip712::Eip712Signer,
-    worker::service::WorkerQueue,
+    worker::service::{JobPriority, WorkerQueue},
 };
 
 /// The substate for the [`IndexingRequestsRpc`] handler
@@ -201,7 +201,14 @@ where
         if let (Some(id), Some(count)) = (id_opt, reassess_count)
             && let Err(err) = self
                 .worker
-                .reassess_indexing_request(id, deployment_id, chain_id, count)
+                .reassess_indexing_request(
+                    id,
+                    deployment_id,
+                    chain_id,
+                    count,
+                    // Interactive: a caller is waiting on this set-target result.
+                    JobPriority::Interactive,
+                )
                 .await
         {
             tracing::error!(
@@ -335,6 +342,7 @@ mod tests {
             _indexing_request_id: IndexingRequestId,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
+            _priority: crate::worker::queue::JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
@@ -345,6 +353,7 @@ mod tests {
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
             _num_candidates: usize,
+            _priority: crate::worker::queue::JobPriority,
         ) -> anyhow::Result<JobId> {
             Ok(JobId::default())
         }
@@ -352,6 +361,7 @@ mod tests {
         async fn cancel_rejected_agreement_on_chain(
             &self,
             _agreement_id: IndexingAgreementId,
+            _priority: crate::worker::queue::JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
@@ -363,6 +373,7 @@ mod tests {
             _indexer_url: Url,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
+            _priority: crate::worker::queue::JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
@@ -402,7 +413,7 @@ mod tests {
         let domain = dipper_rpc::admin::eip712_domain();
         // The signer's own address is irrelevant to recovery here (the handler
         // recovers the *message* signer), so any address works.
-        let signer = Eip712Signer::new(Address::ZERO, SIGNER_CHAIN_ID, domain);
+        let signer = Eip712Signer::new(SIGNER_CHAIN_ID, domain);
 
         let events = CapturingEventsProducer::new();
 

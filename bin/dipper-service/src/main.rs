@@ -37,6 +37,11 @@ static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
 /// over across every configured provider with its own backoff.
 const RCA_DOMAIN_FETCH_MAX_RETRIES: u32 = 5;
 
+/// Extra attempts to fetch the initial indexer URL snapshot after the first. The fetch runs
+/// before the admin RPC port (the readiness probe's target) opens, so retrying forever on a
+/// stalled subgraph would leave the pod hanging unready with no restart; exit visibly instead.
+const INDEXER_URLS_FETCH_MAX_RETRIES: u32 = 5;
+
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {
     // Set up logging
@@ -150,7 +155,7 @@ pub async fn main() -> anyhow::Result<()> {
 
     let signer = {
         let domain = dipper_rpc::admin::eip712_domain();
-        Arc::new(Eip712Signer::new(wallet_signer.address(), chain_id, domain))
+        Arc::new(Eip712Signer::new(chain_id, domain))
     };
 
     //- DB connect and run migrations
@@ -175,55 +180,78 @@ pub async fn main() -> anyhow::Result<()> {
     );
 
     //- The network services
-    let (network_topology_handle, network_topology_service) = {
-        let network_subgraph_url = conf
-            .network
-            .gateway_url
-            .join(&format!(
-                "/api/deployments/id/{}",
-                conf.network.deployment_id
-            ))
-            .expect("invalid network subgraph URL");
+    let (indexer_urls_handle, indexer_urls_service) = {
+        let subgraph_endpoint = conf.indexer_urls.subgraph_endpoint;
+        let api_key = conf.indexer_urls.api_key.map(|key| key.into_inner());
 
-        let network_subgraph_client = network::fetch::Client::new(
-            reqwest::Client::new(),
-            network_subgraph_url,
-            conf.network.api_key.into_inner(),
-        );
-
-        // Fetch the initial topology snapshot, retrying with exponential backoff.
-        // The gateway may be temporarily unavailable (e.g. during a chain halt).
-        let topology_init_snapshot = {
+        // Fetch the initial snapshot with bounded exponential-backoff retries.
+        // The subgraph may be temporarily unavailable (e.g. during a chain halt).
+        let init_snapshot = {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("failed to build HTTP client");
             let mut attempt: u32 = 0;
             loop {
-                match network::service::topology::fetch_snapshot(&network_subgraph_client).await {
-                    Ok(s) => break s,
-                    Err(err) => {
-                        attempt += 1;
-                        let delay = std::time::Duration::from_secs(2u64.pow(attempt.min(5)));
-                        tracing::info!(
-                            attempt,
-                            delay_secs = delay.as_secs(),
-                            error = %err,
-                            "initial topology fetch failed, retrying"
+                match network::service::indexer_urls::fetch_snapshot(
+                    &client,
+                    &subgraph_endpoint,
+                    api_key.as_deref(),
+                )
+                .await
+                {
+                    Ok(s) if !s.is_empty() => break s,
+                    Ok(s) if conf.indexer_urls.allow_empty_at_startup => {
+                        tracing::warn!(
+                            "subgraph reports 0 registered indexers; starting with an empty \
+                             snapshot (network.allow_empty_at_startup)"
                         );
-                        tokio::time::sleep(delay).await;
+                        break s;
+                    }
+                    // An empty snapshot is useless at startup (no offer can be
+                    // sent) and usually means a wrong endpoint: retry like an
+                    // error. The refresh loop tolerates empties separately.
+                    result => {
+                        let err = match result {
+                            Ok(_) => anyhow::anyhow!("subgraph returned 0 registered indexers"),
+                            Err(err) => err,
+                        };
+                        if attempt < INDEXER_URLS_FETCH_MAX_RETRIES {
+                            attempt += 1;
+                            let delay = std::time::Duration::from_secs(2u64.pow(attempt.min(5)));
+                            tracing::warn!(
+                                attempt,
+                                delay_secs = delay.as_secs(),
+                                error = %err,
+                                "initial indexer URLs fetch failed, retrying"
+                            );
+                            tokio::time::sleep(delay).await;
+                        } else {
+                            anyhow::bail!(
+                                "failed to fetch a non-empty initial indexer URL snapshot \
+                                 after {} attempts: {err}",
+                                INDEXER_URLS_FETCH_MAX_RETRIES + 1
+                            )
+                        }
                     }
                 }
             }
         };
 
-        network::service::topology::new(
-            network_subgraph_client,
-            conf.network.update_interval,
-            topology_init_snapshot,
+        network::service::indexer_urls::new(
+            network::service::indexer_urls::Ctx {
+                endpoint: subgraph_endpoint,
+                api_key,
+                update_interval: conf.indexer_urls.update_interval,
+            },
+            init_snapshot,
         )
     };
-    tracing::info!("initialized Graph network service");
+    tracing::info!("initialized indexer URLs service");
 
     //- The network provider component
     let network_provider =
-        network::provider::NetworkProviderService::new(network_topology_handle.clone());
+        network::provider::NetworkProviderService::new(indexer_urls_handle.clone());
 
     //- The IISA HTTP client
     // Verify IISA is reachable before accepting traffic (deployment ordering)
@@ -232,6 +260,7 @@ pub async fn main() -> anyhow::Result<()> {
         request_timeout: conf.iisa.request_timeout,
         connect_timeout: conf.iisa.connect_timeout,
         max_retries: conf.iisa.max_retries,
+        push_token: conf.iisa.push_token.as_ref().map(|t| t.0.clone()),
     };
     let iisa_client =
         iisa::HttpIisaClient::with_config(conf.iisa.endpoint.to_string(), iisa_config);
@@ -341,8 +370,45 @@ pub async fn main() -> anyhow::Result<()> {
 
     //- The worker service
     let (worker_handle, worker_service) = {
-        // Per-request reassess locks, shared across all worker tasks.
-        let reassess_locks = Arc::new(dashmap::DashMap::new());
+        // Each loop can hold up to three pooled connections at once and shares
+        // the pool with the registry and background reconcilers. Refuse to start
+        // when the loops would crowd it, rather than deadlocking under load.
+        const CONNECTIONS_PER_LOOP: usize = 3;
+        const SHARED_SERVICES_HEADROOM: usize = 2;
+        if conf.worker_concurrency == 0 {
+            anyhow::bail!("worker_concurrency must be at least 1");
+        }
+        let max_conns = conf
+            .db
+            .max_connections
+            .unwrap_or(db::DEFAULT_MAX_CONNECTIONS) as usize;
+        // Saturating so an absurd configured value can't overflow and slip past
+        // the check below (the very check meant to catch oversized sizing).
+        let required_conns = conf
+            .worker_concurrency
+            .saturating_mul(CONNECTIONS_PER_LOOP)
+            .saturating_add(SHARED_SERVICES_HEADROOM);
+        if required_conns > max_conns {
+            anyhow::bail!(
+                "worker_concurrency ({}) needs at least {} db connections (each loop may hold {} \
+                 for its listener, open job transaction and a registry query, plus {} reserved for \
+                 the registry and background services), but db.max_connections is {}; raise \
+                 db.max_connections to at least {} or lower worker_concurrency",
+                conf.worker_concurrency,
+                required_conns,
+                CONNECTIONS_PER_LOOP,
+                SHARED_SERVICES_HEADROOM,
+                max_conns,
+                required_conns,
+            );
+        }
+
+        // A single global reassess lock, shared across all worker loops.
+        let reassess_lock = Arc::new(tokio::sync::Mutex::new(()));
+        let unresponsive_breaker = Arc::new(worker::UnresponsiveBreaker::new());
+        let dips_accepting_cache = worker::DipsAcceptingCache::new(std::time::Duration::from_secs(
+            agreement_conf.dips_accepting_cache_ttl_seconds(),
+        ));
         let ctx = worker::Ctx {
             queue,
             signer: signer.clone(),
@@ -364,7 +430,10 @@ pub async fn main() -> anyhow::Result<()> {
                 .map(|c| c.bypass_chain_clock_defenses)
                 .unwrap_or(false),
             chain_listener_chain_id: conf.chain_listener.as_ref().map(|c| c.chain_id),
-            reassess_locks,
+            reassess_lock,
+            unresponsive_breaker,
+            dips_accepting_cache,
+            concurrency: conf.worker_concurrency,
             subgraph_indexing_agreements_events_emitter:
                 subgraph_indexing_agreements_events_emitter.clone(),
         };
@@ -430,7 +499,6 @@ pub async fn main() -> anyhow::Result<()> {
                 chain_client: chain_client.clone(),
                 agreement_conf: chain_listener_agreement_conf.clone(),
                 config: chain_listener_conf.clone(),
-                signer_address: signer.address(),
                 chain_listener_notify: chain_listener_notify.clone(),
                 subgraph_indexing_agreements_events_emitter:
                     subgraph_indexing_agreements_events_emitter.clone(),
@@ -501,8 +569,8 @@ pub async fn main() -> anyhow::Result<()> {
     // Construct the task tree
     let mut task_tree = JoinSet::new();
 
-    let network_topology_task_handle = task_tree.spawn(network_topology_service);
-    tracing::debug!(task_id=%network_topology_task_handle.id(), "Graph network topology service started");
+    let indexer_urls_task_handle = task_tree.spawn(indexer_urls_service);
+    tracing::debug!(task_id=%indexer_urls_task_handle.id(), "Indexer URLs service started");
 
     let worker_task_handle = task_tree.spawn(worker_service);
     tracing::debug!(task_id=%worker_task_handle.id(), "Worker service started");
@@ -618,9 +686,9 @@ pub async fn main() -> anyhow::Result<()> {
         worker_handle.stop().await;
         tracing::trace!("stopped Worker service");
 
-        tracing::trace!("stopping Graph network service");
-        network_topology_handle.stop().await;
-        tracing::trace!("stopped Graph network service");
+        tracing::trace!("stopping indexer URLs service");
+        indexer_urls_handle.stop().await;
+        tracing::trace!("stopped indexer URLs service");
 
         // All event producers have stopped; flush buffered diagnostic events to
         // the broker before exit (bounded by an internal timeout).

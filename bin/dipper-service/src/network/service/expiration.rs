@@ -11,7 +11,7 @@ use crate::{
     config::ExpirationConfig,
     network::service::chain_listener::ChainListenerStateRegistry,
     registry::{AgreementRegistry, IndexingRequestRegistry, PendingCancellationRegistry},
-    worker::service::WorkerQueue,
+    worker::service::{JobPriority, WorkerQueue},
 };
 
 /// Handle for controlling the expiration service lifecycle
@@ -44,11 +44,9 @@ pub struct Ctx<R, W> {
     pub chain_id: Option<u64>,
 }
 
-/// Create a new expiration service
-///
-/// Returns a handle for controlling the service and a future that must be spawned
-/// on a runtime. The service periodically queries for `Created` agreements past
-/// their deadline, marks them as `Expired`, and queues reassessment jobs.
+/// Create a new expiration service: a control handle plus a future to spawn
+/// that periodically queries for `Created` agreements past their deadline,
+/// marks them `Expired`, and queues reassessment jobs.
 pub fn new<R, W>(ctx: Ctx<R, W>) -> (Handle, impl Future<Output = anyhow::Result<()>>)
 where
     R: AgreementRegistry
@@ -268,6 +266,8 @@ where
                         agreement.terms.metadata.subgraph_deployment_id,
                         agreement.terms.metadata.chain_id,
                         request.num_candidates,
+                        // Background: expiration remediation yields to interactive work.
+                        JobPriority::Background,
                     ),
                 )
                 .await;
@@ -329,9 +329,9 @@ mod tests {
     use crate::{
         network::service::chain_listener::ChainListenerState,
         registry::{
-            AgreementFeeRate, Indexer, IndexingAgreement, IndexingAgreementStatus,
-            IndexingAgreementTerms, IndexingAgreementTermsMetadata, IndexingRequest,
-            IndexingRequestStatus, PendingCancellation, Result as RegistryResult,
+            Indexer, IndexingAgreement, IndexingAgreementStatus, IndexingAgreementTerms,
+            IndexingAgreementTermsMetadata, IndexingRequest, IndexingRequestStatus,
+            PendingCancellation, Result as RegistryResult, StubAgreementRegistry,
         },
         worker::{queue::JobId, service::WorkerQueue},
     };
@@ -392,6 +392,7 @@ mod tests {
             self.state.lock().unwrap().get_expired_calls.clone()
         }
 
+        #[allow(dead_code)] // available for future test assertions
         fn marked_expired(&self) -> Vec<IndexingAgreementId> {
             self.state.lock().unwrap().marked_expired.clone()
         }
@@ -417,97 +418,13 @@ mod tests {
     }
 
     #[async_trait]
-    impl AgreementRegistry for MockExpirationRegistry {
-        async fn get_indexing_agreement_by_id(
+    impl StubAgreementRegistry for MockExpirationRegistry {
+        async fn get_unresponsive_indexers(
             &self,
-            _id: &IndexingAgreementId,
-        ) -> RegistryResult<Option<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_indexing_agreements_by_deployment_id(
-            &self,
-            _deployment_id: &DeploymentId,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_indexing_agreements_by_indexer_id(
-            &self,
-            _indexer_id: &IndexerId,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_pending_agreement_indexers_by_deployment(
-            &self,
-            _indexer_ids: &[IndexerId],
-        ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>> {
-            unimplemented!()
-        }
-        async fn get_declined_indexers_by_deployment(
-            &self,
-            _default_lookback_days: i32,
-            _price_lookback_days: i32,
-            _transient_lookback_minutes: i32,
-            _uncertain_lookback_days: i32,
-        ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>> {
-            unimplemented!()
-        }
-        async fn get_indexing_agreements_by_indexing_request_id(
-            &self,
-            _request_id: &IndexingRequestId,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_active_indexing_agreements_by_indexing_request_id(
-            &self,
-            _request_id: &IndexingRequestId,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn count_accepted_agreements_by_deployment(
-            &self,
-            _deployment_id: &DeploymentId,
-        ) -> RegistryResult<i64> {
-            Ok(0)
-        }
-        async fn register_new_indexing_agreement(
-            &self,
-            _params: crate::registry::NewAgreementParams,
-        ) -> RegistryResult<IndexingAgreementId> {
-            unimplemented!()
-        }
-        async fn register_agreement_with_pending_cancellation(
-            &self,
-            _params: crate::registry::NewAgreementParams,
-            _old_agreement_id: IndexingAgreementId,
-        ) -> RegistryResult<IndexingAgreementId> {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_delivery_failed(
-            &self,
-            _id: &IndexingAgreementId,
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
-        async fn update_offer_tx_hash(
-            &self,
-            _id: &IndexingAgreementId,
-            _tx_hash: &[u8; 32],
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_canceled_by_requester(
-            &self,
-            _id: &IndexingAgreementId,
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
-        async fn apply_reconciliation(
-            &self,
-            _id: &IndexingAgreementId,
-            _apply_accept: bool,
-            _cancel: Option<crate::registry::CancelKind>,
-        ) -> RegistryResult<crate::registry::ReconciliationOutcome> {
-            unimplemented!()
+            _lookback_days: i32,
+            _chain_id: ChainId,
+        ) -> RegistryResult<Vec<IndexerId>> {
+            Ok(vec![])
         }
         async fn get_expired_created_agreements(
             &self,
@@ -524,47 +441,6 @@ mod tests {
         ) -> RegistryResult<()> {
             self.state.lock().unwrap().marked_expired.push(*id);
             Ok(())
-        }
-        async fn mark_indexing_agreement_as_rejected(
-            &self,
-            _id: &IndexingAgreementId,
-            _rejection_reason: Option<&str>,
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
-        async fn get_accepted_on_chain_agreements(
-            &self,
-            _batch_size: i64,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_agreements_pending_chain_cancel(
-            &self,
-            _batch_size: i64,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn update_agreement_sync_progress(
-            &self,
-            _id: &IndexingAgreementId,
-            _block_height: u64,
-            _progress_at: time::OffsetDateTime,
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
-        async fn count_active_agreements_by_deployment(
-            &self,
-        ) -> RegistryResult<std::collections::HashMap<DeploymentId, usize>> {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_abandoned(
-            &self,
-            _id: &IndexingAgreementId,
-        ) -> RegistryResult<IndexingAgreement> {
-            unimplemented!()
-        }
-        async fn get_agreement_fee_rates(&self) -> RegistryResult<Vec<AgreementFeeRate>> {
-            unimplemented!()
         }
     }
 
@@ -644,6 +520,7 @@ mod tests {
             _indexing_request_id: IndexingRequestId,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
@@ -653,12 +530,14 @@ mod tests {
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
             _num_candidates: usize,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             Ok(JobId::default())
         }
         async fn cancel_rejected_agreement_on_chain(
             &self,
             _agreement_id: IndexingAgreementId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
@@ -669,6 +548,7 @@ mod tests {
             _indexer_url: Url,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }

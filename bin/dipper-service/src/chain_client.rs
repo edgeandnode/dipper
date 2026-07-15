@@ -23,6 +23,7 @@ mod rpc_provider;
 
 use std::sync::Arc;
 
+pub(crate) use abi::decode_revert_reason;
 use async_trait::async_trait;
 pub use client::AlloyChainClient;
 use dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement;
@@ -117,6 +118,11 @@ pub trait ChainClient {
         &self,
         agreement_id: &[u8; 16],
     ) -> Result<bool, ChainClientError>;
+
+    /// Read the latest block's unix timestamp from the chain. Lets agreement
+    /// deadlines be stamped from live chain time when the chain-clock bypass is
+    /// on, instead of a cached listener timestamp that can lag a fast chain.
+    async fn latest_block_timestamp(&self) -> Result<u64, ChainClientError>;
 }
 
 /// Blanket impl for Arc-wrapped trait objects.
@@ -157,5 +163,9 @@ impl<T: ChainClient + Send + Sync + ?Sized> ChainClient for Arc<T> {
         agreement_id: &[u8; 16],
     ) -> Result<bool, ChainClientError> {
         (**self).agreement_still_active(agreement_id).await
+    }
+
+    async fn latest_block_timestamp(&self) -> Result<u64, ChainClientError> {
+        (**self).latest_block_timestamp().await
     }
 }

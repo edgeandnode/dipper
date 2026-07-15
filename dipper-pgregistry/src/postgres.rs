@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 
-use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
+use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use sqlx::{Pool, Postgres, types::Json};
 use thegraph_core::{
     DeploymentId, IndexerId,
-    alloy::primitives::{Address, ChainId, U256},
+    alloy::primitives::{Address, ChainId},
 };
 use url::Url;
 
@@ -22,14 +22,9 @@ pub struct NewAgreementParams {
     pub terms_version_hash: Option<Vec<u8>>,
 }
 
-use self::common::{
-    PgAddress, PgAllocationId, PgDeploymentId, PgIndexerId, PgProofOfIndexing, PgU32, PgU64,
-    PgU256, PgUrl,
-};
+use self::common::{PgAddress, PgDeploymentId, PgIndexerId, PgU64, PgUrl};
 use super::{
-    IndexingReceiptReportedWork,
     indexing_agreement::{IndexingAgreement, Status as IndexingAgreementStatus},
-    indexing_receipt::IndexingReceipt,
     indexing_request::{
         IndexingRequest, SetTargetOutcome as IndexingRequestSetTargetOutcome,
         Status as IndexingRequestStatus,
@@ -39,7 +34,6 @@ use super::{
 
 pub(crate) mod common;
 mod indexing_agreement;
-mod indexing_receipt;
 mod indexing_request;
 
 /// Chain listener state row from the database.
@@ -224,7 +218,7 @@ impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for PendingExpiredEvent {
     }
 }
 
-/// A registry that stores indexing requests, agreements, and receipts in a PostgreSQL database.
+/// A registry that stores indexing requests and agreements in a PostgreSQL database.
 #[derive(Clone)]
 pub struct PgRegistry {
     pool: Pool<Postgres>,
@@ -769,6 +763,33 @@ impl PgRegistry {
             .collect())
     }
 
+    /// Get indexers with a recent `Unresponsive` agreement on a given chain. Used
+    /// to skip an unresponsive indexer for that chain's deployments for
+    /// `lookback_days` after it last failed to respond there.
+    pub async fn get_unresponsive_indexers(
+        &self,
+        lookback_days: i32,
+        chain_id: ChainId,
+    ) -> Result<Vec<IndexerId>, Error> {
+        let rows: Vec<(PgIndexerId,)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT a.indexer_id
+            FROM dipper_reg_indexing_agreements a
+            JOIN dipper_reg_indexing_requests r ON a.indexing_request_id = r.id
+            WHERE a.status = $1
+              AND a.updated_at >= timezone('UTC', now()) - make_interval(days => $2)
+              AND r.deployment_chain_id = $3
+            "#,
+        )
+        .bind(IndexingAgreementStatus::Unresponsive)
+        .bind(lookback_days)
+        .bind(PgU64(chain_id))
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id.0).collect())
+    }
+
     pub async fn get_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
@@ -800,7 +821,7 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
-    pub async fn mark_indexing_agreement_as_delivery_failed(
+    pub async fn mark_indexing_agreement_as_unresponsive(
         &self,
         agreement_id: &IndexingAgreementId,
     ) -> Result<(), Error> {
@@ -814,7 +835,7 @@ impl PgRegistry {
             RETURNING id
             "#,
         )
-        .bind(IndexingAgreementStatus::DeliveryFailed)
+        .bind(IndexingAgreementStatus::Unresponsive)
         .bind(agreement_id)
         .bind(IndexingAgreementStatus::Created)
         .fetch_optional(&self.pool)
@@ -834,7 +855,7 @@ impl PgRegistry {
     ///
     /// Guarded on `status IN (Created, AcceptedOnChain)` so a delayed
     /// receipt-confirmation cannot stamp `offer_tx_hash` onto a row that
-    /// has since transitioned to `Expired`, `DeliveryFailed`, `Rejected`,
+    /// has since transitioned to `Expired`, `Unresponsive`, `Rejected`,
     /// or one of the cancel states. The caller treats any failure here
     /// as non-fatal and just logs; a no-match result is also non-fatal
     /// and silently skipped.
@@ -907,7 +928,7 @@ impl PgRegistry {
     /// follow-up cancel, which the Accept-then-Cancel-in-one-snapshot
     /// invariant forbids. When both writes find no matching row (caller
     /// passed `apply_accept = false` and the cancel filter rejected, e.g.
-    /// the row is in a terminal-but-not-cancel state like `DeliveryFailed`
+    /// the row is in a terminal-but-not-cancel state like `Unresponsive`
     /// that the chain_listener's Rust-side guard does not catch), commit
     /// the empty tx and return `Ok` with both flags false. The
     /// chain_listener treats that as a successful no-op rather than a
@@ -1311,109 +1332,6 @@ impl PgRegistry {
         Ok(())
     }
 
-    pub async fn register_new_indexing_receipt(
-        &self,
-        agreement_id: IndexingAgreementId,
-        indexer_id: IndexerId,
-        indexer_operator_id: Address,
-        reported_work: IndexingReceiptReportedWork,
-        amount: U256,
-    ) -> Result<IndexingReceiptId, Error> {
-        sqlx::query_as(
-            r#"
-            INSERT INTO dipper_reg_indexing_receipts (
-                id,
-                created_at,
-                updated_at,
-                indexing_agreement_id,
-                indexer_id,
-                indexer_operator_id,
-                reported_work_epoch,
-                reported_work_allocation_id,
-                reported_work_entity_count,
-                reported_work_poi,
-                amount
-            )
-            VALUES (
-                $1, timezone('UTC', now()), timezone('UTC', now()),
-                $2, $3, $4, $5, $6, $7, $8, $9
-            )
-            RETURNING id
-            "#,
-        )
-        .bind(IndexingReceiptId::new())
-        .bind(agreement_id)
-        .bind(PgIndexerId(indexer_id))
-        .bind(PgAddress(indexer_operator_id))
-        .bind(PgU32(reported_work.epoch))
-        .bind(PgAllocationId(reported_work.allocation_id))
-        .bind(PgU64(reported_work.entity_count))
-        .bind(PgProofOfIndexing(reported_work.poi))
-        .bind(PgU256(amount))
-        .fetch_one(&self.pool)
-        .await
-        .map(|(id,)| id)
-        .map_err(Into::into)
-    }
-
-    pub async fn get_all_indexing_receipts_by_indexing_agreement_id(
-        &self,
-        agreement_id: &IndexingAgreementId,
-    ) -> Result<Vec<IndexingReceipt>, Error> {
-        sqlx::query_as(
-            r#"
-            SELECT
-                id,
-                created_at,
-                updated_at,
-                indexing_agreement_id,
-                indexer_id,
-                indexer_operator_id,
-                reported_work_epoch,
-                reported_work_allocation_id,
-                reported_work_entity_count,
-                reported_work_poi,
-                amount
-            FROM dipper_reg_indexing_receipts
-            WHERE indexing_agreement_id = $1
-            "#,
-        )
-        .bind(agreement_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(Into::into)
-    }
-
-    pub async fn get_last_receipt_for_agreement_id(
-        &self,
-        agreement_id: &IndexingAgreementId,
-    ) -> Result<Option<IndexingReceipt>, Error> {
-        sqlx::query_as(
-            r#"
-            SELECT
-                id,
-                created_at,
-                updated_at,
-                indexing_agreement_id,
-                indexer_id,
-                indexer_operator_id,
-                reported_work_epoch,
-                reported_work_allocation_id,
-                reported_work_entity_count,
-                reported_work_poi,
-                amount
-            FROM dipper_reg_indexing_receipts
-            WHERE indexing_agreement_id = $1
-            ORDER BY created_at DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(agreement_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(Into::into)
-    }
-
     // =========================================================================
     // Reassignment operations
     // =========================================================================
@@ -1758,6 +1676,39 @@ impl PgRegistry {
             .into_iter()
             .map(|(deployment, count)| (deployment.0, count as usize))
             .collect())
+    }
+
+    /// Count `Created` (in-flight, not yet accepted) agreements per indexer,
+    /// returning the per-indexer map and global total in one round-trip. Offer
+    /// pacing reads both to gauge spare acceptance capacity before creating more.
+    pub async fn count_created_agreements_by_indexer(
+        &self,
+    ) -> Result<(HashMap<IndexerId, u64>, u64), Error> {
+        // GROUPING SETS emits one row per indexer plus a single ()-group row
+        // with a NULL indexer_id carrying the global total.
+        let rows: Vec<(Option<PgIndexerId>, i64)> = sqlx::query_as(
+            r#"
+            SELECT indexer_id, COUNT(*) as count
+            FROM dipper_reg_indexing_agreements
+            WHERE status = $1
+            GROUP BY GROUPING SETS ((indexer_id), ())
+            "#,
+        )
+        .bind(IndexingAgreementStatus::Created)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut per_indexer = HashMap::new();
+        let mut global = 0u64;
+        for (indexer, count) in rows {
+            match indexer {
+                Some(id) => {
+                    per_indexer.insert(id.0, count as u64);
+                }
+                None => global = count as u64,
+            }
+        }
+        Ok((per_indexer, global))
     }
 
     /// Whether any agreement is in `Created` or `AcceptedOnChain` status.

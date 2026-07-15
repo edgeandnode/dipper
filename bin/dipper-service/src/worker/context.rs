@@ -1,14 +1,17 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use dipper_core::{ids::IndexingRequestId, state::FromState};
+use dipper_core::state::FromState;
 use dipper_producer::events::SubgraphIndexingAgreementEventsProducer;
 use graph_networks_registry::NetworksRegistry;
 use thegraph_core::alloy::primitives::ChainId;
 use tokio::sync::{Mutex, Notify};
 
-use super::handlers::{
-    CancelRejectedAgreementOnChainCtx, ReassessIndexingRequestCtx,
-    SendIndexingAgreementProposalCtx, SubmitOfferCtx,
+use super::{
+    handlers::{
+        CancelRejectedAgreementOnChainCtx, ReassessIndexingRequestCtx,
+        SendIndexingAgreementProposalCtx, SubmitOfferCtx,
+    },
+    unresponsive_breaker::{DipsAcceptingCache, UnresponsiveBreaker},
 };
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
@@ -16,10 +19,10 @@ use crate::{
     signing::eip712::Eip712Signer,
 };
 
-/// One async mutex per indexing request id: serialises concurrent reassess jobs
-/// for the same request so they can't both create agreements. In-process only
-/// (dipper is single-replica); entries are kept so an id keeps its mutex.
-pub type ReassessLocks = Arc<dashmap::DashMap<IndexingRequestId, Arc<Mutex<()>>>>;
+/// A single process-wide async mutex. Only one reassessment runs at a time
+/// across every worker loop, so two loops can't diff the same baseline and both
+/// create agreements. In-process only (dipper is single-replica).
+pub type ReassessLock = Arc<Mutex<()>>;
 
 /// Generates a `FromState<InnerCtx<...>>` impl mapping InnerCtx fields onto a
 /// handler context type. Syntax: `impl_from_state!(Target<generics> { mappings })`,
@@ -112,8 +115,17 @@ pub struct Ctx<Q, R, C, I, T> {
     /// when the chain_listener is not configured.
     pub chain_listener_chain_id: Option<u64>,
 
-    /// Per-request reassess locks (see `ReassessLocks`).
-    pub reassess_locks: ReassessLocks,
+    /// Global reassess lock (see `ReassessLock`).
+    pub reassess_lock: ReassessLock,
+
+    /// Suppresses the network-wide unresponsive exclusion during a dipper-side outage.
+    pub unresponsive_breaker: Arc<UnresponsiveBreaker>,
+
+    /// Short-TTL cache of IISA's DIPs-accepting set (the breaker's denominator).
+    pub dips_accepting_cache: DipsAcceptingCache,
+
+    /// Number of concurrent worker loops to spawn (>=1). Defaults to 1.
+    pub concurrency: usize,
 
     /// Subgraph Indexing Agreements Event emitter for sending indexing agreement events downstream
     pub subgraph_indexing_agreements_events_emitter:
@@ -173,8 +185,14 @@ pub(super) struct InnerCtx<R, W, C, I, T> {
     /// See `Ctx::chain_listener_chain_id`.
     pub chain_listener_chain_id: Option<u64>,
 
-    /// See `Ctx::reassess_locks`.
-    pub reassess_locks: ReassessLocks,
+    /// See `Ctx::reassess_lock`.
+    pub reassess_lock: ReassessLock,
+
+    /// See `Ctx::unresponsive_breaker`.
+    pub unresponsive_breaker: Arc<UnresponsiveBreaker>,
+
+    /// See `Ctx::dips_accepting_cache`.
+    pub dips_accepting_cache: DipsAcceptingCache,
 
     /// See: `Ctx::subgraph_indexing_agreements_events_emitter`
     pub subgraph_indexing_agreements_events_emitter:
@@ -197,7 +215,9 @@ impl_from_state!(ReassessIndexingRequestCtx<R, W, I, T> {
     chain_listener_notify,
     bypass_chain_clock_defenses,
     chain_listener_chain_id,
-    reassess_locks,
+    reassess_lock,
+    unresponsive_breaker,
+    dips_accepting_cache,
     subgraph_indexing_agreements_events_emitter
 });
 

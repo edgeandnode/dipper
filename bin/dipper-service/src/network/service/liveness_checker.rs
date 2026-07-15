@@ -49,7 +49,7 @@ use crate::{
     registry::{
         AgreementRegistry, IndexingAgreement, IndexingRequestRegistry, PendingCancellationRegistry,
     },
-    worker::service::WorkerQueue,
+    worker::service::{JobPriority, WorkerQueue},
 };
 
 /// Handle for controlling the liveness checker service lifecycle.
@@ -638,6 +638,8 @@ async fn cancel_and_reassess<R, W, C>(
             abandoned.terms.metadata.subgraph_deployment_id,
             abandoned.terms.metadata.chain_id,
             request.num_candidates,
+            // Background: abandonment remediation yields to interactive work.
+            JobPriority::Background,
         ),
     )
     .await;
@@ -822,11 +824,11 @@ mod tests {
         chain_client::{ChainClient, ChainClientError},
         config::LivenessCheckerConfig,
         registry::{
-            AgreementFeeRate, AgreementRegistry, IndexingAgreement, IndexingAgreementStatus,
-            IndexingAgreementTerms, IndexingAgreementTermsMetadata, IndexingRequest,
-            IndexingRequestRegistry, PendingCancellationRegistry, Result as RegistryResult,
+            AgreementFeeRate, IndexingAgreement, IndexingAgreementStatus, IndexingAgreementTerms,
+            IndexingAgreementTermsMetadata, IndexingRequest, IndexingRequestRegistry,
+            PendingCancellationRegistry, Result as RegistryResult, StubAgreementRegistry,
         },
-        worker::service::WorkerQueue,
+        worker::service::{JobPriority, WorkerQueue},
     };
 
     // ---- Test helpers ----
@@ -937,129 +939,13 @@ mod tests {
     }
 
     #[async_trait]
-    impl AgreementRegistry for MockRegistry {
-        async fn get_indexing_agreement_by_id(
+    impl StubAgreementRegistry for MockRegistry {
+        async fn get_unresponsive_indexers(
             &self,
-            _id: &IndexingAgreementId,
-        ) -> RegistryResult<Option<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_indexing_agreements_by_deployment_id(
-            &self,
-            _id: &DeploymentId,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_indexing_agreements_by_indexer_id(
-            &self,
-            _id: &IndexerId,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_pending_agreement_indexers_by_deployment(
-            &self,
-            _ids: &[IndexerId],
-        ) -> RegistryResult<HashMap<DeploymentId, Vec<IndexerId>>> {
-            unimplemented!()
-        }
-        async fn get_declined_indexers_by_deployment(
-            &self,
-            _default_lookback_days: i32,
-            _price_lookback_days: i32,
-            _transient_lookback_minutes: i32,
-            _uncertain_lookback_days: i32,
-        ) -> RegistryResult<HashMap<DeploymentId, Vec<IndexerId>>> {
-            unimplemented!()
-        }
-        async fn get_indexing_agreements_by_indexing_request_id(
-            &self,
-            _id: &IndexingRequestId,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_active_indexing_agreements_by_indexing_request_id(
-            &self,
-            _id: &IndexingRequestId,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn count_accepted_agreements_by_deployment(
-            &self,
-            _deployment_id: &DeploymentId,
-        ) -> RegistryResult<i64> {
-            Ok(0)
-        }
-        async fn register_new_indexing_agreement(
-            &self,
-            _params: crate::registry::NewAgreementParams,
-        ) -> RegistryResult<IndexingAgreementId> {
-            unimplemented!()
-        }
-        async fn register_agreement_with_pending_cancellation(
-            &self,
-            _params: crate::registry::NewAgreementParams,
-            _old_agreement_id: IndexingAgreementId,
-        ) -> RegistryResult<IndexingAgreementId> {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_delivery_failed(
-            &self,
-            _id: &IndexingAgreementId,
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
-        async fn update_offer_tx_hash(
-            &self,
-            _id: &IndexingAgreementId,
-            _tx_hash: &[u8; 32],
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_canceled_by_requester(
-            &self,
-            _id: &IndexingAgreementId,
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
-        async fn apply_reconciliation(
-            &self,
-            _id: &IndexingAgreementId,
-            _apply_accept: bool,
-            _cancel: Option<crate::registry::CancelKind>,
-        ) -> RegistryResult<crate::registry::ReconciliationOutcome> {
-            unimplemented!()
-        }
-        async fn get_expired_created_agreements(
-            &self,
-            _limit: i64,
-            _chain_timestamp: u64,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_expired(
-            &self,
-            _id: &IndexingAgreementId,
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_rejected(
-            &self,
-            _id: &IndexingAgreementId,
-            _rejection_reason: Option<&str>,
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
-        async fn get_accepted_on_chain_agreements(
-            &self,
-            _limit: i64,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_agreements_pending_chain_cancel(
-            &self,
-            _batch_size: i64,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
+            _lookback_days: i32,
+            _chain_id: thegraph_core::alloy::primitives::ChainId,
+        ) -> RegistryResult<Vec<IndexerId>> {
+            Ok(vec![])
         }
         async fn update_agreement_sync_progress(
             &self,
@@ -1073,11 +959,6 @@ mod tests {
                 .unwrap()
                 .push((*id, block_height));
             Ok(())
-        }
-        async fn count_active_agreements_by_deployment(
-            &self,
-        ) -> RegistryResult<HashMap<DeploymentId, usize>> {
-            unimplemented!()
         }
         async fn mark_indexing_agreement_as_abandoned(
             &self,
@@ -1189,6 +1070,7 @@ mod tests {
             _req_id: IndexingRequestId,
             _dep: DeploymentId,
             _chain: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
@@ -1198,6 +1080,7 @@ mod tests {
             _dep: DeploymentId,
             _chain: ChainId,
             _n: usize,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             self.calls.reassessments.lock().unwrap().push(req_id);
             Ok(JobId::default())
@@ -1205,6 +1088,7 @@ mod tests {
         async fn cancel_rejected_agreement_on_chain(
             &self,
             _agr_id: IndexingAgreementId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
@@ -1215,6 +1099,7 @@ mod tests {
             _indexer_url: Url,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
@@ -1250,6 +1135,14 @@ mod tests {
 
     #[async_trait]
     impl ChainClient for MockChainClient {
+        async fn latest_block_timestamp(&self) -> Result<u64, ChainClientError> {
+            // Err by default so a test must mock this explicitly to take the
+            // live-chain-head path instead of silently reading timestamp 0.
+            Err(ChainClientError::RpcError(anyhow::anyhow!(
+                "latest_block_timestamp not mocked"
+            )))
+        }
+
         async fn offer_via_manager(
             &self,
             _rca: &dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement,
@@ -1318,6 +1211,13 @@ mod tests {
             price_rejection_lookback_days: 0,
             transient_rejection_lookback_minutes: 0,
             uncertain_rejection_lookback_days: 0,
+            unresponsive_indexer_lookback_days: 0,
+            mass_unresponsive_trip_fraction: 0.5,
+            mass_unresponsive_reset_fraction: 0.25,
+            dips_accepting_snapshot_max_age_hours: 48,
+            dips_accepting_cache_ttl_seconds: 300,
+            max_in_flight_offers_per_indexer: None,
+            max_in_flight_offers_total: None,
         }
     }
 

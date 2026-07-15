@@ -97,6 +97,14 @@ mod tests {
 
     #[async_trait]
     impl ChainClient for RecordingChainClient {
+        async fn latest_block_timestamp(&self) -> Result<u64, ChainClientError> {
+            // Err by default so a test must mock this explicitly to take the
+            // live-chain-head path instead of silently reading timestamp 0.
+            Err(ChainClientError::RpcError(anyhow::anyhow!(
+                "latest_block_timestamp not mocked"
+            )))
+        }
+
         async fn offer_via_manager(
             &self,
             _rca: &RecurringCollectionAgreement,
@@ -152,6 +160,13 @@ mod tests {
             price_rejection_lookback_days: 0,
             transient_rejection_lookback_minutes: 0,
             uncertain_rejection_lookback_days: 0,
+            unresponsive_indexer_lookback_days: 0,
+            mass_unresponsive_trip_fraction: 0.5,
+            mass_unresponsive_reset_fraction: 0.25,
+            dips_accepting_snapshot_max_age_hours: 48,
+            dips_accepting_cache_ttl_seconds: 300,
+            max_in_flight_offers_per_indexer: None,
+            max_in_flight_offers_total: None,
         }
     }
 

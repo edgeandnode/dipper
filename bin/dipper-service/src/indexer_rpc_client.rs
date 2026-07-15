@@ -159,7 +159,7 @@ fn is_retryable_status(status: &tonic::Status) -> bool {
         tonic::Code::Unavailable         // Service unavailable, connection issues
             | tonic::Code::ResourceExhausted // Rate limiting (backoff helps)
             | tonic::Code::Aborted           // Concurrency conflict
-            | tonic::Code::DeadlineExceeded // Timeout
+            | tonic::Code::DeadlineExceeded // Server-set gRPC deadline (our request timeout surfaces as Cancelled, not this)
     )
 }
 

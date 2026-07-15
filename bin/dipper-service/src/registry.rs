@@ -1,4 +1,6 @@
 mod agreement;
+#[cfg(test)]
+mod agreement_stub;
 mod indexer_denylist;
 mod indexing_request;
 mod pending_cancellation;
@@ -16,6 +18,8 @@ use thegraph_core::{
 // Re-export for tests only
 #[cfg(test)]
 pub use self::agreement::{Indexer, PendingAcceptedEvent};
+#[cfg(test)]
+pub use self::agreement_stub::StubAgreementRegistry;
 use self::result::Result as RegistryResult;
 pub use self::{
     agreement::{
@@ -81,10 +85,8 @@ where
     }
 }
 
-/// Filter and log conversion errors instead of silently dropping them.
-///
-/// This is a replacement for `.filter_map(filter_map_with_logging)` that logs warnings
-/// when conversions fail, making debugging easier.
+/// Filter and log conversion errors instead of silently dropping them: use as
+/// `.filter_map(filter_map_with_logging)` so failed conversions leave a warning.
 fn filter_map_with_logging<T, E: std::fmt::Display>(
     result: std::result::Result<T, E>,
 ) -> Option<T> {
@@ -97,10 +99,8 @@ fn filter_map_with_logging<T, E: std::fmt::Display>(
     }
 }
 
-/// A service for interacting with the registry.
-///
-/// This service provides a set of methods for interacting with the registry,
-/// including registering new indexing requests, indexing agreements, and indexing receipts.
+/// A service for interacting with the registry, including registering new
+/// indexing requests and indexing agreements.
 #[derive(Clone)]
 pub struct RegistryProvider {
     inner: PgRegistry,
@@ -288,6 +288,17 @@ impl AgreementRegistry for RegistryProvider {
             .await?)
     }
 
+    async fn get_unresponsive_indexers(
+        &self,
+        lookback_days: i32,
+        chain_id: ChainId,
+    ) -> RegistryResult<Vec<IndexerId>> {
+        Ok(self
+            .inner
+            .get_unresponsive_indexers(lookback_days, chain_id)
+            .await?)
+    }
+
     async fn get_indexing_agreements_by_indexing_request_id(
         &self,
         request_id: &IndexingRequestId,
@@ -344,12 +355,12 @@ impl AgreementRegistry for RegistryProvider {
             .map_err(Into::into)
     }
 
-    async fn mark_indexing_agreement_as_delivery_failed(
+    async fn mark_indexing_agreement_as_unresponsive(
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<()> {
         self.inner
-            .mark_indexing_agreement_as_delivery_failed(id)
+            .mark_indexing_agreement_as_unresponsive(id)
             .await
             .map_err(Into::into)
     }
@@ -642,6 +653,15 @@ impl AgreementRegistry for RegistryProvider {
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, usize>> {
         self.inner
             .count_active_agreements_by_deployment()
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn count_created_agreements_by_indexer(
+        &self,
+    ) -> RegistryResult<(std::collections::HashMap<IndexerId, u64>, u64)> {
+        self.inner
+            .count_created_agreements_by_indexer()
             .await
             .map_err(Into::into)
     }

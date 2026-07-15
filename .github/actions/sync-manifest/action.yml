@@ -78,24 +78,32 @@ runs:
           exit 0
         fi
 
-        # Update manifest
+        # Build the updated manifest content
         if ! jq --arg version "$VERSION" '.["."] = $version' .release-please-manifest.json > manifest.tmp 2>/dev/null; then
           echo "Warning: Could not update manifest, creating new one"
           echo "{\".\": \"$VERSION\"}" > manifest.tmp
         fi
-        mv manifest.tmp .release-please-manifest.json
 
-        # Configure git
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
+        # Commit through the GitHub API so it carries GitHub's verified signature:
+        # a local `git commit` on the runner is unsigned and the "require verified
+        # signatures" ruleset rejects it (GH013); API commits are signed by GitHub.
+        REPO="$GITHUB_REPOSITORY"
+        BASE_SHA=$(git rev-parse HEAD)
+        FILE_SHA=$(gh api "repos/$REPO/contents/.release-please-manifest.json?ref=$BASE_SHA" --jq '.sha')
+        CONTENT=$(base64 -w0 manifest.tmp)
+        rm -f manifest.tmp
 
-        # Create branch and commit
-        git checkout -b "$BRANCH"
-        git add .release-please-manifest.json
-        git commit -m "chore: sync manifest to $VERSION (was $OLD_VERSION)"
-        git push -u origin "$BRANCH"
+        # Branch off the current commit, then write the manifest onto it.
+        gh api --method POST "repos/$REPO/git/refs" \
+          -f "ref=refs/heads/$BRANCH" \
+          -f "sha=$BASE_SHA"
 
-        # Create PR
+        gh api --method PUT "repos/$REPO/contents/.release-please-manifest.json" \
+          -f "message=chore: sync manifest to $VERSION (was $OLD_VERSION)" \
+          -f "content=$CONTENT" \
+          -f "sha=$FILE_SHA" \
+          -f "branch=$BRANCH"
+
         # Body is built with printf so each line stays inside the YAML block
         # scalar's indent — bare column-0 lines would terminate the scalar and
         # break the workflow YAML parse.

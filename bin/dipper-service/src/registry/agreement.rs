@@ -183,6 +183,15 @@ pub trait AgreementRegistry {
         uncertain_lookback_days: i32,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>;
 
+    /// Get indexers with a recent `Unresponsive` agreement on `chain_id`. The
+    /// result is skipped for that chain's deployments for `lookback_days` after
+    /// the indexer last failed to respond there.
+    async fn get_unresponsive_indexers(
+        &self,
+        lookback_days: i32,
+        chain_id: ChainId,
+    ) -> RegistryResult<Vec<IndexerId>>;
+
     /// Get all agreements by associated indexing request ID.
     async fn get_indexing_agreements_by_indexing_request_id(
         &self,
@@ -228,11 +237,11 @@ pub trait AgreementRegistry {
         old_agreement_id: IndexingAgreementId,
     ) -> RegistryResult<IndexingAgreementId>;
 
-    /// Mark an indexing agreement as `DELIVERY_FAILED`.
+    /// Mark an indexing agreement as `UNRESPONSIVE`.
     ///
     /// If there is no indexing agreement with the given ID, or if the agreement is not in the
     /// `CREATED` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
-    async fn mark_indexing_agreement_as_delivery_failed(
+    async fn mark_indexing_agreement_as_unresponsive(
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;
@@ -473,6 +482,13 @@ pub trait AgreementRegistry {
         &self,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, usize>>;
 
+    /// Count `Created` (in-flight, not yet accepted) agreements per indexer,
+    /// plus the global total. Offer pacing reads both to decide whether an
+    /// indexer or the network has spare acceptance capacity.
+    async fn count_created_agreements_by_indexer(
+        &self,
+    ) -> RegistryResult<(std::collections::HashMap<IndexerId, u64>, u64)>;
+
     /// Whether any agreement is in `Created` or `AcceptedOnChain` status.
     ///
     /// Used by the chain listener's adaptive-interval check on every poll;
@@ -644,7 +660,7 @@ pub enum Status {
     /// The [`IndexingAgreement`] was registered, but the agreement request failed.
     ///
     /// This is a terminal state.
-    DeliveryFailed,
+    Unresponsive,
 
     /// The associated [`IndexingRequest`] got cancelled.
     ///
@@ -691,7 +707,7 @@ impl std::fmt::Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let status = match self {
             Status::Created => "CREATED",
-            Status::DeliveryFailed => "DELIVERY_FAILED",
+            Status::Unresponsive => "UNRESPONSIVE",
             Status::CanceledByRequester => "CANCELED_BY_REQUESTER",
             Status::CanceledByIndexer => "CANCELED_BY_INDEXER",
             Status::Expired => "EXPIRED",
@@ -714,9 +730,7 @@ impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
             updated_at: value.updated_at,
             status: match value.status {
                 dipper_pgregistry::IndexingAgreementStatus::Created => Status::Created,
-                dipper_pgregistry::IndexingAgreementStatus::DeliveryFailed => {
-                    Status::DeliveryFailed
-                }
+                dipper_pgregistry::IndexingAgreementStatus::Unresponsive => Status::Unresponsive,
                 dipper_pgregistry::IndexingAgreementStatus::CanceledByRequester => {
                     Status::CanceledByRequester
                 }

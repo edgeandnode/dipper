@@ -332,11 +332,25 @@ mod tests {
             Ok(IndexingAgreementId::from_bytes(rand::random()))
         }
 
-        async fn mark_indexing_agreement_as_delivery_failed(
+        async fn get_unresponsive_indexers(
+            &self,
+            _lookback_days: i32,
+            _chain_id: thegraph_core::alloy::primitives::ChainId,
+        ) -> crate::registry::Result<Vec<IndexerId>> {
+            unimplemented!()
+        }
+
+        async fn mark_indexing_agreement_as_unresponsive(
             &self,
             _id: &IndexingAgreementId,
         ) -> crate::registry::Result<()> {
-            Ok(())
+            unimplemented!()
+        }
+
+        async fn count_created_agreements_by_indexer(
+            &self,
+        ) -> crate::registry::Result<(std::collections::HashMap<IndexerId, u64>, u64)> {
+            unimplemented!()
         }
 
         async fn update_offer_tx_hash(
@@ -444,6 +458,12 @@ mod tests {
 
     #[async_trait]
     impl ChainClient for MockChainClient {
+        async fn latest_block_timestamp(&self) -> Result<u64, ChainClientError> {
+            Err(ChainClientError::RpcError(anyhow::anyhow!(
+                "latest_block_timestamp not mocked"
+            )))
+        }
+
         async fn offer_via_manager(
             &self,
             _rca: &RecurringCollectionAgreement,
@@ -493,6 +513,13 @@ mod tests {
             price_rejection_lookback_days: 0,
             transient_rejection_lookback_minutes: 0,
             uncertain_rejection_lookback_days: 0,
+            unresponsive_indexer_lookback_days: 0,
+            mass_unresponsive_trip_fraction: 0.5,
+            mass_unresponsive_reset_fraction: 0.25,
+            dips_accepting_snapshot_max_age_hours: 48,
+            dips_accepting_cache_ttl_seconds: 300,
+            max_in_flight_offers_per_indexer: None,
+            max_in_flight_offers_total: None,
         })
     }
 

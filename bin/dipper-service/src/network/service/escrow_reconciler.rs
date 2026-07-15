@@ -203,7 +203,7 @@ mod tests {
     use thegraph_core::alloy::primitives::B256;
 
     use super::*;
-    use crate::chain_client::ChainClientError;
+    use crate::{chain_client::ChainClientError, registry::StubAgreementRegistry};
 
     /// Records every `reconcile_provider` call so tests can assert the driver
     /// fired once per distinct provider.
@@ -214,6 +214,14 @@ mod tests {
 
     #[async_trait]
     impl ChainClient for RecordingChainClient {
+        async fn latest_block_timestamp(&self) -> Result<u64, ChainClientError> {
+            // Err by default so a test must mock this explicitly to take the
+            // live-chain-head path instead of silently reading timestamp 0.
+            Err(ChainClientError::RpcError(anyhow::anyhow!(
+                "latest_block_timestamp not mocked"
+            )))
+        }
+
         async fn offer_via_manager(
             &self,
             _rca: &dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement,
@@ -262,144 +270,13 @@ mod tests {
     }
 
     #[async_trait]
-    impl AgreementRegistry for MockRegistry {
-        async fn get_indexing_agreement_by_id(
+    impl StubAgreementRegistry for MockRegistry {
+        async fn get_unresponsive_indexers(
             &self,
-            _id: &dipper_core::ids::IndexingAgreementId,
-        ) -> crate::registry::Result<Option<crate::registry::IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_indexing_agreements_by_deployment_id(
-            &self,
-            _deployment_id: &thegraph_core::DeploymentId,
-        ) -> crate::registry::Result<Vec<crate::registry::IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_indexing_agreements_by_indexer_id(
-            &self,
-            _indexer_id: &thegraph_core::IndexerId,
-        ) -> crate::registry::Result<Vec<crate::registry::IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_pending_agreement_indexers_by_deployment(
-            &self,
-            _indexer_ids: &[thegraph_core::IndexerId],
-        ) -> crate::registry::Result<
-            std::collections::HashMap<thegraph_core::DeploymentId, Vec<thegraph_core::IndexerId>>,
-        > {
-            unimplemented!()
-        }
-        async fn get_declined_indexers_by_deployment(
-            &self,
-            _default_lookback_days: i32,
-            _price_lookback_days: i32,
-            _transient_lookback_minutes: i32,
-            _uncertain_lookback_days: i32,
-        ) -> crate::registry::Result<
-            std::collections::HashMap<thegraph_core::DeploymentId, Vec<thegraph_core::IndexerId>>,
-        > {
-            unimplemented!()
-        }
-        async fn get_indexing_agreements_by_indexing_request_id(
-            &self,
-            _request_id: &dipper_core::ids::IndexingRequestId,
-        ) -> crate::registry::Result<Vec<crate::registry::IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_active_indexing_agreements_by_indexing_request_id(
-            &self,
-            _request_id: &dipper_core::ids::IndexingRequestId,
-        ) -> crate::registry::Result<Vec<crate::registry::IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn count_accepted_agreements_by_deployment(
-            &self,
-            _deployment_id: &thegraph_core::DeploymentId,
-        ) -> crate::registry::Result<i64> {
-            Ok(0)
-        }
-        async fn register_new_indexing_agreement(
-            &self,
-            _params: crate::registry::NewAgreementParams,
-        ) -> crate::registry::Result<dipper_core::ids::IndexingAgreementId> {
-            unimplemented!()
-        }
-        async fn register_agreement_with_pending_cancellation(
-            &self,
-            _params: crate::registry::NewAgreementParams,
-            _old_agreement_id: dipper_core::ids::IndexingAgreementId,
-        ) -> crate::registry::Result<dipper_core::ids::IndexingAgreementId> {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_delivery_failed(
-            &self,
-            _id: &dipper_core::ids::IndexingAgreementId,
-        ) -> crate::registry::Result<()> {
-            unimplemented!()
-        }
-        async fn update_offer_tx_hash(
-            &self,
-            _id: &dipper_core::ids::IndexingAgreementId,
-            _tx_hash: &[u8; 32],
-        ) -> crate::registry::Result<()> {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_canceled_by_requester(
-            &self,
-            _id: &dipper_core::ids::IndexingAgreementId,
-        ) -> crate::registry::Result<()> {
-            unimplemented!()
-        }
-        async fn apply_reconciliation(
-            &self,
-            _id: &dipper_core::ids::IndexingAgreementId,
-            _apply_accept: bool,
-            _cancel: Option<crate::registry::CancelKind>,
-        ) -> crate::registry::Result<crate::registry::ReconciliationOutcome> {
-            unimplemented!()
-        }
-        async fn apply_reconciliation_batch(
-            &self,
-            _items: &[crate::registry::ReconciliationItem],
-        ) -> crate::registry::Result<
-            std::collections::HashMap<
-                dipper_core::ids::IndexingAgreementId,
-                crate::registry::ReconciliationOutcome,
-            >,
-        > {
-            unimplemented!()
-        }
-        async fn get_expired_created_agreements(
-            &self,
-            _batch_size: i64,
-            _chain_timestamp: u64,
-        ) -> crate::registry::Result<Vec<crate::registry::IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_expired(
-            &self,
-            _id: &dipper_core::ids::IndexingAgreementId,
-        ) -> crate::registry::Result<()> {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_rejected(
-            &self,
-            _id: &dipper_core::ids::IndexingAgreementId,
-            _rejection_reason: Option<&str>,
-        ) -> crate::registry::Result<()> {
-            unimplemented!()
-        }
-        async fn get_accepted_on_chain_agreements(
-            &self,
-            _batch_size: i64,
-        ) -> crate::registry::Result<Vec<crate::registry::IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_agreements_pending_chain_cancel(
-            &self,
-            _batch_size: i64,
-        ) -> crate::registry::Result<Vec<crate::registry::IndexingAgreement>> {
-            unimplemented!()
+            _lookback_days: i32,
+            _chain_id: thegraph_core::alloy::primitives::ChainId,
+        ) -> crate::registry::Result<Vec<thegraph_core::IndexerId>> {
+            Ok(vec![])
         }
         async fn get_providers_for_escrow_reconciliation(
             &self,
@@ -407,31 +284,6 @@ mod tests {
         ) -> crate::registry::Result<Vec<Address>> {
             self.calls.lock().unwrap().push(limit);
             Ok(self.providers.clone())
-        }
-        async fn update_agreement_sync_progress(
-            &self,
-            _id: &dipper_core::ids::IndexingAgreementId,
-            _block_height: u64,
-            _progress_at: time::OffsetDateTime,
-        ) -> crate::registry::Result<()> {
-            unimplemented!()
-        }
-        async fn count_active_agreements_by_deployment(
-            &self,
-        ) -> crate::registry::Result<std::collections::HashMap<thegraph_core::DeploymentId, usize>>
-        {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_abandoned(
-            &self,
-            _id: &dipper_core::ids::IndexingAgreementId,
-        ) -> crate::registry::Result<crate::registry::IndexingAgreement> {
-            unimplemented!()
-        }
-        async fn get_agreement_fee_rates(
-            &self,
-        ) -> crate::registry::Result<Vec<crate::registry::AgreementFeeRate>> {
-            unimplemented!()
         }
     }
 
@@ -459,6 +311,13 @@ mod tests {
             price_rejection_lookback_days: 0,
             transient_rejection_lookback_minutes: 0,
             uncertain_rejection_lookback_days: 0,
+            unresponsive_indexer_lookback_days: 0,
+            mass_unresponsive_trip_fraction: 0.5,
+            mass_unresponsive_reset_fraction: 0.25,
+            dips_accepting_snapshot_max_age_hours: 48,
+            dips_accepting_cache_ttl_seconds: 300,
+            max_in_flight_offers_per_indexer: None,
+            max_in_flight_offers_total: None,
         }
     }
 
