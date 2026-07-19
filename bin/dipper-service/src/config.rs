@@ -1265,6 +1265,21 @@ impl Default for EventStreamingConfig {
     }
 }
 
+impl EventStreamingConfig {
+    /// Reject a configuration that says events are on but gives the emitter no
+    /// broker to send to. A disabled-emitter fallback would stamp every emission
+    /// marker as sent (durable emits no-op Ok), permanently consuming the events.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.enabled && self.kafka.is_none() {
+            return Err(
+                "event_streaming_config.enabled is true but no kafka section is configured"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
 pub fn default_event_queue_capacity() -> NonZeroUsize {
     NonZeroUsize::new(1024).expect("default event queue capacity is non-zero")
 }
@@ -1830,6 +1845,33 @@ mod tests {
             kafka.tls_ca_cert_path.as_deref(),
             Some(std::path::Path::new("/etc/ssl/ca.pem")),
             "tls_ca_cert_path mismatch"
+        );
+    }
+
+    /// Enabled-without-kafka must fail validation: the fallback would be a
+    /// disabled emitter whose no-op durable emits stamp markers, losing events.
+    #[test]
+    fn event_streaming_validate_rejects_enabled_without_kafka() {
+        let config: EventStreamingConfig =
+            serde_json::from_str(r#"{ "enabled": true }"#).expect("deserialization failed");
+        assert!(
+            config.validate().is_err(),
+            "enabled without a kafka section must be rejected"
+        );
+
+        let disabled: EventStreamingConfig =
+            serde_json::from_str(r#"{ "enabled": false }"#).expect("deserialization failed");
+        assert!(
+            disabled.validate().is_ok(),
+            "disabled without a kafka section is fine"
+        );
+
+        let complete: EventStreamingConfig =
+            serde_json::from_str(r#"{ "enabled": true, "kafka": { "brokers": ["broker:9092"] } }"#)
+                .expect("deserialization failed");
+        assert!(
+            complete.validate().is_ok(),
+            "enabled with a kafka section must pass"
         );
     }
 

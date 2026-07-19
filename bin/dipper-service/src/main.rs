@@ -64,6 +64,11 @@ pub async fn main() -> anyhow::Result<()> {
     if let Err(err) = conf.dips.validate() {
         anyhow::bail!("invalid dips agreement config: {err}");
     }
+    if let Some(events_conf) = &conf.event_streaming_config
+        && let Err(err) = events_conf.validate()
+    {
+        anyhow::bail!("invalid event streaming config: {err}");
+    }
 
     // TODO: Decouple the config file format from the internal representation
     let (agreement_conf, pricing_table) = conf.dips.into();
@@ -757,12 +762,9 @@ async fn signal_task() -> Result<AppSignal, SignalHandlerError> {
     Ok(AppSignal::Shutdown)
 }
 
-/// Initializes a SubgraphIndexingAgreementsEventsEmitter instance based on the config, if enabled.
-///
-/// Always returns a SubgraphIndexingAgreementsEventsEmitter instance
-/// - if no kafka config, returns as disabled
-/// - if enabled is false, returns as disabled
-/// - if initialization fails, returns as disabled
+/// Builds the events emitter from the config: disabled unless event streaming is
+/// enabled with a kafka section. Enabled-without-kafka is rejected at startup by
+/// `EventStreamingConfig::validate`, so that guard below is a defensive fallback.
 async fn create_subgraph_indexing_agreements_events_emitter(
     config: &Option<EventStreamingConfig>,
 ) -> Arc<dyn SubgraphIndexingAgreementEventsProducer> {
