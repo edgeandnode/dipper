@@ -151,7 +151,7 @@ type SharedProducer = Arc<Mutex<Option<Arc<KafkaProducer>>>>;
 /// diagnostic `produce_*` calls are dropped. `streaming == Some` means emission
 /// is on; the inner producer may still be `None` while the broker is being
 /// (re)connected, in which case durable emits return `Err` (so markers are not
-/// stamped) and diagnostic events are dropped.
+/// stamped) and diagnostic events wait in the bounded queue until it connects.
 pub struct SubgraphIndexingAgreementsEventsEmitter {
     streaming: Option<Streaming>,
 }
@@ -193,8 +193,9 @@ impl SubgraphIndexingAgreementsEventsEmitter {
         // broker, then exits.
         Self::spawn_connect_task(config, producer.clone());
 
-        // Drain diagnostic events through the current producer, dropping (with a
-        // counter) while disconnected. On shutdown, flush what is buffered.
+        // Drain diagnostic events through the current producer, holding each one
+        // until the broker connects (the bounded queue is the backpressure). On
+        // shutdown, flush what is buffered.
         let drain_handle = {
             let producer = producer.clone();
             let dropped = dropped.clone();
@@ -203,7 +204,31 @@ impl SubgraphIndexingAgreementsEventsEmitter {
                 loop {
                     tokio::select! {
                         maybe = rx.recv() => match maybe {
-                            Some(event) => Self::drain_one(&producer, &dropped, event).await,
+                            Some(event) => {
+                                match Self::wait_for_producer(&producer, &shutdown).await {
+                                    Some(handle) => {
+                                        let (event_type, key, envelope) = Self::prepare_event(event);
+                                        Self::send_event(&handle, event_type, &key, envelope).await;
+                                    }
+                                    // Shutdown fired while still disconnected: drop the
+                                    // held event and the rest, keeping the counter honest.
+                                    None => {
+                                        let mut dropped_now: u64 = 1;
+                                        while rx.try_recv().is_ok() {
+                                            dropped_now += 1;
+                                        }
+                                        let total =
+                                            dropped.fetch_add(dropped_now, Ordering::Relaxed)
+                                                + dropped_now;
+                                        tracing::warn!(
+                                            dropped_now,
+                                            dropped_total = total,
+                                            "event broker never connected; dropping buffered diagnostic events on shutdown"
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
                             None => break,
                         },
                         _ = shutdown.notified() => {
@@ -272,8 +297,28 @@ impl SubgraphIndexingAgreementsEventsEmitter {
         producer.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Wait until the broker handle is available, checking every 250ms. Returns
+    /// `None` if shutdown is signalled first, so the caller can stop waiting on a
+    /// broker that may never come up.
+    async fn wait_for_producer(
+        producer: &Mutex<Option<Arc<KafkaProducer>>>,
+        shutdown: &Notify,
+    ) -> Option<Arc<KafkaProducer>> {
+        const POLL: Duration = Duration::from_millis(250);
+        loop {
+            if let Some(handle) = Self::current_producer(producer) {
+                return Some(handle);
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(POLL) => {}
+                _ = shutdown.notified() => return None,
+            }
+        }
+    }
+
     /// Send one diagnostic event through the current producer, or drop it (with a
-    /// counter) if the broker is not connected yet.
+    /// counter) if the broker is not connected. Only used by the shutdown flush,
+    /// which must not wait for a connect.
     async fn drain_one(
         producer: &Mutex<Option<Arc<KafkaProducer>>>,
         dropped: &AtomicU64,
@@ -720,6 +765,24 @@ mod tests {
             proto::SubgraphIndexingAgreementNIndexersUnavailable::default(),
         );
         emitter.flush().await;
+    }
+
+    #[tokio::test]
+    async fn flush_while_disconnected_exits_promptly() {
+        // Diagnostic events wait in the queue for the broker to connect, so the
+        // drain task can be mid-wait at shutdown. Flush must interrupt that wait
+        // (dropping what is buffered), not hang on a broker that never comes up.
+        let emitter = SubgraphIndexingAgreementsEventsEmitter::enabled(never_connects_config(), 8);
+
+        emitter.produce_subgraph_indexing_agreement_request_received(
+            deployment_id(),
+            CHAIN_ID,
+            proto::SubgraphIndexingAgreementRequestReceived::default(),
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), emitter.flush())
+            .await
+            .expect("flush must not wait for a broker that never connects");
     }
 
     fn metadata() -> EventMetadata {
