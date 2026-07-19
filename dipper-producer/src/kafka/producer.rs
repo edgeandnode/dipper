@@ -18,7 +18,7 @@ use rustls::ClientConfig;
 static RUSTLS_CRYPTO_PROVIDER: Once = Once::new();
 
 /// Kafka producer configuration.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 pub struct KafkaConfig {
     /// Kafka broker addresses.
     pub brokers: Vec<String>,
@@ -43,6 +43,26 @@ pub struct KafkaConfig {
     /// Path to a PEM-encoded CA certificate file for TLS verification.
     #[serde(default)]
     pub tls_ca_cert_path: Option<PathBuf>,
+}
+
+// Manual impl instead of derive: the service logs the whole config with Debug
+// formatting at startup, so the SASL password must never reach the output.
+impl std::fmt::Debug for KafkaConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KafkaConfig")
+            .field("brokers", &self.brokers)
+            .field("topic", &self.topic)
+            .field("partitions", &self.partitions)
+            .field("sasl_mechanism", &self.sasl_mechanism)
+            .field("sasl_username", &self.sasl_username)
+            .field(
+                "sasl_password",
+                &self.sasl_password.as_ref().map(|_| "<redacted>"),
+            )
+            .field("tls_enabled", &self.tls_enabled)
+            .field("tls_ca_cert_path", &self.tls_ca_cert_path)
+            .finish()
+    }
 }
 
 /// Default Kafka topic for subgraph indexing agreement events.
@@ -356,6 +376,20 @@ mod tests {
             KafkaProducer::build_sasl_config(SaslMechanism::Plain, &config),
             Err(Error::MissingSaslPassword)
         ));
+    }
+
+    #[test]
+    fn debug_output_redacts_the_sasl_password() {
+        let config = make_kafka_config(Some("PLAIN"), Some("user".into()), Some("hunter2".into()));
+        let rendered = format!("{config:?}");
+        assert!(
+            !rendered.contains("hunter2"),
+            "debug output must not contain the password: {rendered}"
+        );
+        assert!(
+            rendered.contains("<redacted>"),
+            "debug output should mark the password as redacted: {rendered}"
+        );
     }
 
     #[tokio::test]
