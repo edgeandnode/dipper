@@ -25,7 +25,9 @@ pub struct KafkaConfig {
     /// Kafka topic name.
     #[serde(default = "default_kafka_topic")]
     pub topic: String,
-    /// Number of partitions used for key-based partition hashing.
+    /// Number of partitions used for key-based partition hashing. Must match the
+    /// topic's real partition count (a mismatch makes connecting fail and retry
+    /// forever), and changing it re-shuffles keys, breaking per-key ordering.
     #[serde(default = "default_kafka_partitions")]
     pub partitions: u32,
     /// SASL authentication mechanism (e.g., "PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512").
