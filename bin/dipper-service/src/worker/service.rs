@@ -609,14 +609,15 @@ mod tests {
     }
 
     /// With no listener (already degraded), the poll-interval fallback drives
-    /// the loop so job processing continues.
-    #[tokio::test]
+    /// the loop so job processing continues. Runs on a paused clock so the
+    /// result comes from the interval elapsing, not from a real wait.
+    #[tokio::test(start_paused = true)]
     async fn poll_only_mode_ticks_on_interval() {
         let (_tx, mut rx) = watch::channel(false);
         let mut listener: Option<SilentNotifier> = None;
 
         let tick =
-            await_next_tick(&mut rx, &mut listener, std::time::Duration::from_millis(10)).await;
+            await_next_tick(&mut rx, &mut listener, std::time::Duration::from_secs(60)).await;
 
         assert_eq!(
             tick,
