@@ -41,6 +41,7 @@ pub enum Error {
 
 /// The configuration for the DIPs service
 #[derive(custom_debug::CustomDebug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// The DIPs agreement configuration
     pub dips: DipsAgreementConfig,
@@ -165,6 +166,7 @@ fn default_health_listen_addr() -> std::net::SocketAddr {
 /// The IISA (Indexing Indexer Selection Algorithm) service configuration
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IisaConfig {
     /// The IISA service endpoint URL (e.g., "http://iisa-service:8080")
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -208,6 +210,7 @@ fn default_max_retries() -> u32 {
 /// Indexer gRPC client configuration (for sending RCA proposals to indexers)
 #[serde_as]
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IndexerClientConfig {
     /// Request timeout in seconds (default: 240).
     ///
@@ -257,6 +260,7 @@ impl Default for IndexerClientConfig {
 /// Configuration for the periodic reassignment service
 #[serde_as]
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReassignmentConfig {
     /// Whether the reassignment service is enabled (default: true)
     #[serde(default = "default_reassignment_enabled")]
@@ -337,6 +341,7 @@ impl Default for ReassignmentConfig {
 /// replacement indexers.
 #[serde_as]
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExpirationConfig {
     /// Whether the expiration service is enabled (default: true)
     #[serde(default = "default_expiration_enabled")]
@@ -402,6 +407,7 @@ impl Default for ExpirationConfig {
 /// distinct providers with agreements needing escrow cleanup.
 #[serde_as]
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EscrowReconcilerConfig {
     /// Whether the escrow reconciler is enabled (default: true).
     #[serde(default = "default_escrow_reconciler_enabled")]
@@ -446,6 +452,7 @@ impl Default for EscrowReconcilerConfig {
 /// within the tolerance window are canceled as payer and reassigned.
 #[serde_as]
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LivenessCheckerConfig {
     /// Whether the liveness checker is enabled (default: false).
     ///
@@ -515,6 +522,7 @@ impl Default for LivenessCheckerConfig {
 /// is accepted on-chain, it triggers automatic cancellation via `cancelIndexingAgreementByPayer`.
 #[serde_as]
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChainListenerConfig {
     /// Whether the chain listener service is enabled (default: false)
     ///
@@ -1032,6 +1040,7 @@ fn default_max_in_flight_offers_total() -> Option<u32> {
 /// Per-chain pricing for indexing agreements.
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChainPrices {
     /// Tokens per second (base rate) in wei GRT.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -1044,6 +1053,7 @@ pub struct ChainPrices {
 /// Gateway operator API configuration. Authenticates via EIP-712 signatures.
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdminRpcConfig {
     /// The RPC server listen address.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -1057,6 +1067,7 @@ pub struct AdminRpcConfig {
 /// The database configuration
 #[serde_as]
 #[derive(custom_debug::CustomDebug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DbConfig {
     /// The PostgreSQL database URL
     ///
@@ -1079,6 +1090,7 @@ pub struct DbConfig {
 /// The indexer URLs service configuration
 #[serde_as]
 #[derive(custom_debug::CustomDebug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IndexerUrlsConfig {
     /// The indexing-payments subgraph query endpoint used to look up
     /// registered indexer URLs. Same form as `chain_listener.subgraph_endpoint`:
@@ -1105,6 +1117,7 @@ pub struct IndexerUrlsConfig {
 /// The configuration for the signer
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SignerConfig {
     /// The signing key to use for authentication
     #[serde_as(as = "HiddenSecretKeyAsHexStr")]
@@ -1311,6 +1324,7 @@ impl From<DipsAgreementConfig>
 
 /// Runtime configuration for the event streaming.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EventStreamingConfig {
     /// Enable/disable event emission
     #[serde(default)]
@@ -2019,6 +2033,40 @@ mod tests {
         assert!(
             err.to_string().contains("enable"),
             "the error should name the offending key, got: {err}"
+        );
+    }
+
+    /// Every config section rejects an unknown key instead of silently dropping it, so
+    /// an operator's typo surfaces at startup rather than reverting that setting to its
+    /// default with no trace. Covers the background-service sections tuned in production.
+    #[test]
+    fn config_sections_reject_unknown_keys() {
+        fn assert_rejects<T: serde::de::DeserializeOwned + std::fmt::Debug>(section: &str) {
+            let err = serde_json::from_str::<T>(r#"{"totally_not_a_field": true}"#)
+                .expect_err(&format!("{section} must reject an unknown key"));
+            assert!(
+                err.to_string().contains("totally_not_a_field"),
+                "{section} error should name the unknown key, got: {err}"
+            );
+        }
+
+        assert_rejects::<ReassignmentConfig>("reassignment");
+        assert_rejects::<ExpirationConfig>("expiration");
+        assert_rejects::<EscrowReconcilerConfig>("escrow_reconciler");
+        assert_rejects::<LivenessCheckerConfig>("liveness_checker");
+        assert_rejects::<IndexerClientConfig>("indexer_client");
+        assert_rejects::<EventStreamingConfig>("event_streaming_config");
+    }
+
+    /// A mistyped top-level section name (`expiraton` for `expiration`) is rejected
+    /// outright, so a whole block of settings can never silently fall back to defaults.
+    #[test]
+    fn top_level_config_rejects_an_unknown_section() {
+        let err = serde_json::from_str::<Config>(r#"{"expiraton": {}}"#)
+            .expect_err("an unknown top-level section must be rejected");
+        assert!(
+            err.to_string().contains("expiraton"),
+            "the error should name the unknown section, got: {err}"
         );
     }
 

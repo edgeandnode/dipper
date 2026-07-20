@@ -19,6 +19,7 @@ static RUSTLS_CRYPTO_PROVIDER: Once = Once::new();
 
 /// Kafka producer configuration.
 #[derive(Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KafkaConfig {
     /// Kafka broker addresses.
     pub brokers: Vec<String>,
