@@ -70,6 +70,9 @@ pub async fn main() -> anyhow::Result<()> {
     {
         anyhow::bail!("invalid event streaming config: {err}");
     }
+    if let Err(err) = conf.health.validate(conf.admin_rpc.listen_addr) {
+        anyhow::bail!("invalid health config: {err}");
+    }
 
     // TODO: Decouple the config file format from the internal representation
     let (agreement_conf, pricing_table) = conf.dips.into();

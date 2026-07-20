@@ -98,21 +98,12 @@ pub struct Config {
     pub health: HealthConfig,
 }
 
-/// Configuration for the HTTP health endpoint used by orchestrator liveness
-/// probes.
-///
-/// The defaults deliberately produce a working server (bound to 0.0.0.0:8546)
-/// even when the whole section is omitted. The k8s liveness probe points at
-/// this endpoint, so a pod whose config lacks the section must still answer the
-/// probe rather than crash-loop for want of one.
-///
-/// The flip side of being on by default is that startup now fails if the listen
-/// address is already taken (a second co-located instance, a port collision,
-/// host-network mode). Set `enabled` to false, or point `listen_addr` at a free
-/// port, in any deployment where 8546 is not guaranteed to be available.
+/// Configuration for the HTTP health endpoint used by orchestrator liveness probes. Omitting the
+/// section leaves a working server on 0.0.0.0:8546, so a pod that never configured one still
+/// answers the probe; set `enabled` to false or move `listen_addr` wherever 8546 is not free.
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HealthConfig {
     /// Whether to start the health server at all. On by default; set to false
     /// to disable the endpoint entirely.
@@ -126,6 +117,35 @@ pub struct HealthConfig {
     /// unhealthy. Defaults to [`crate::health::DEFAULT_HEALTH_THRESHOLD`].
     #[serde_as(as = "serde_with::DurationSeconds")]
     pub threshold: Duration,
+}
+
+impl HealthConfig {
+    /// Rejects a health listener that cannot serve the orchestrator's probe.
+    pub fn validate(&self, admin_rpc_listen_addr: std::net::SocketAddr) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        // Port 0 asks the OS for whatever is free, but the probe targets a fixed port, so every
+        // check would be refused and the pod would restart forever.
+        if self.listen_addr.port() == 0 {
+            return Err(
+                "health.listen_addr must name a fixed port: port 0 picks an arbitrary one that \
+                 the liveness probe cannot reach"
+                    .to_string(),
+            );
+        }
+        // The health listener binds first and wins the port; the admin RPC server then fails to
+        // bind, leaving a pod that reports healthy while serving no admin traffic at all. Ports
+        // are compared without the interface, since a wildcard bind takes the port everywhere.
+        if self.listen_addr.port() == admin_rpc_listen_addr.port() {
+            return Err(format!(
+                "health.listen_addr and admin_rpc.listen_addr both use port {}: give the health \
+                 endpoint a port of its own",
+                self.listen_addr.port()
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for HealthConfig {
@@ -1963,6 +1983,87 @@ mod tests {
         assert!(
             kafka.tls_ca_cert_path.is_none(),
             "tls_ca_cert_path should be None"
+        );
+    }
+
+    /// A config with no health section must still produce a working endpoint, since the liveness
+    /// probe targets it on every pod whether or not that pod configured one.
+    #[test]
+    fn health_config_defaults_when_the_section_is_absent() {
+        let health: HealthConfig = serde_json::from_str("{}").unwrap();
+
+        assert!(health.enabled, "the health endpoint defaults to on");
+        assert_eq!(health.listen_addr.port(), 8546);
+        assert_eq!(health.threshold, crate::health::DEFAULT_HEALTH_THRESHOLD);
+    }
+
+    #[test]
+    fn health_config_honours_an_explicit_opt_out() {
+        let health: HealthConfig = serde_json::from_str(r#"{"enabled": false}"#).unwrap();
+
+        assert!(!health.enabled, "enabled: false must turn the server off");
+        assert_eq!(
+            health.threshold,
+            crate::health::DEFAULT_HEALTH_THRESHOLD,
+            "the remaining fields keep their defaults"
+        );
+    }
+
+    /// A misspelled key would otherwise be dropped in silence, leaving an operator who meant to
+    /// change the endpoint with the defaults and no sign that the setting never took effect.
+    #[test]
+    fn health_config_rejects_an_unknown_key() {
+        let err = serde_json::from_str::<HealthConfig>(r#"{"enable": false}"#)
+            .expect_err("an unknown key must be rejected");
+
+        assert!(
+            err.to_string().contains("enable"),
+            "the error should name the offending key, got: {err}"
+        );
+    }
+
+    #[test]
+    fn health_validate_rejects_a_port_shared_with_the_admin_rpc() {
+        let health = HealthConfig {
+            listen_addr: "0.0.0.0:8545".parse().unwrap(),
+            ..HealthConfig::default()
+        };
+        let admin_rpc = "127.0.0.1:8545".parse().unwrap();
+
+        let err = health
+            .validate(admin_rpc)
+            .expect_err("a shared port must be rejected even across interfaces");
+        assert!(
+            err.contains("8545"),
+            "the error should name the port: {err}"
+        );
+
+        assert!(
+            HealthConfig::default().validate(admin_rpc).is_ok(),
+            "distinct ports are fine"
+        );
+    }
+
+    #[test]
+    fn health_validate_rejects_an_ephemeral_port() {
+        let health = HealthConfig {
+            listen_addr: "0.0.0.0:0".parse().unwrap(),
+            ..HealthConfig::default()
+        };
+        let admin_rpc = "0.0.0.0:8545".parse().unwrap();
+
+        assert!(
+            health.validate(admin_rpc).is_err(),
+            "port 0 must be rejected: the probe targets a fixed port"
+        );
+        assert!(
+            HealthConfig {
+                enabled: false,
+                ..health
+            }
+            .validate(admin_rpc)
+            .is_ok(),
+            "a disabled endpoint binds nothing, so its address does not matter"
         );
     }
 }
