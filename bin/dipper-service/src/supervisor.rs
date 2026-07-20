@@ -322,6 +322,75 @@ mod tests {
         );
     }
 
+    /// A task reporting an error on its way out is how a failed signal handler
+    /// registration reaches the exit code: without it the pod would run on unable
+    /// to receive a stop signal, so the error itself has to reach the caller.
+    #[tokio::test]
+    async fn a_task_error_before_shutdown_is_reported_by_name() {
+        let shutdown = Shutdown::new();
+        let mut task_tree: JoinSet<anyhow::Result<()>> = JoinSet::new();
+
+        // Stand-in for the stop-sequence task, so the drain can finish.
+        let coordinator = shutdown.clone();
+        task_tree.spawn(async move {
+            coordinator.requested_signal().await;
+            Ok(())
+        });
+
+        task_tree.spawn(async { Err(anyhow::anyhow!("signal registration failed")) });
+
+        let result = tokio::time::timeout(
+            SUPERVISE_TIMEOUT,
+            supervise(task_tree, &shutdown, TEST_TEARDOWN_GRACE),
+        )
+        .await
+        .expect("supervise did not request shutdown; coordinator never drained");
+
+        let err = result.expect_err("a task reporting an error must be fatal");
+        assert!(
+            err.to_string().contains("signal registration failed"),
+            "the exit error must carry what the task actually reported: {err}"
+        );
+        assert!(
+            shutdown.is_requested(),
+            "a task reporting an error must request shutdown"
+        );
+    }
+
+    /// The same error once shutdown is already underway. Tasks finishing here is
+    /// the normal path, which makes it tempting to treat everything that arrives
+    /// as clean; an error is still an error and must not be absorbed.
+    #[tokio::test]
+    async fn a_task_error_during_shutdown_is_still_fatal() {
+        let shutdown = Shutdown::new();
+        let mut task_tree: JoinSet<anyhow::Result<()>> = JoinSet::new();
+
+        let coordinator = shutdown.clone();
+        task_tree.spawn(async move {
+            coordinator.request();
+            Ok(())
+        });
+
+        let s = shutdown.clone();
+        task_tree.spawn(async move {
+            s.requested_signal().await;
+            Err(anyhow::anyhow!("the DB pool close failed"))
+        });
+
+        let result = tokio::time::timeout(
+            SUPERVISE_TIMEOUT,
+            supervise(task_tree, &shutdown, TEST_TEARDOWN_GRACE),
+        )
+        .await
+        .expect("supervise did not drain after a task error during shutdown");
+
+        let err = result.expect_err("an error during teardown must be fatal, not absorbed");
+        assert!(
+            err.to_string().contains("the DB pool close failed"),
+            "the exit error must name what failed: {err}"
+        );
+    }
+
     /// The grace period is a budget for the whole teardown, not one that restarts
     /// every time a task finishes. Stragglers that each land inside the grace but
     /// together run well past it must not be able to stretch the drain.
