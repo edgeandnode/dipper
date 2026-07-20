@@ -642,6 +642,11 @@ pub async fn main() -> anyhow::Result<()> {
 
     let shutdown_coordinator = shutdown.clone();
     let signal_handler_task_handle = task_tree.spawn(async move {
+        // Set when we could not register the OS signal handlers at all. We still
+        // shut down cleanly, but report it so the process exits non-zero rather
+        // than looking like a healthy stop.
+        let mut registration_error = None;
+
         // Wake on either an OS signal or an unexpected critical-task exit
         // (the supervisor requests shutdown in the latter case).
         tokio::select! {
@@ -651,6 +656,7 @@ pub async fn main() -> anyhow::Result<()> {
                 }
                 Err(err) => {
                     tracing::error!(error=?err, "signal handler registration failed. shutting down");
+                    registration_error = Some(err);
                 }
             },
             _ = shutdown_coordinator.requested_signal() => {
@@ -728,7 +734,11 @@ pub async fn main() -> anyhow::Result<()> {
         db_conn.close().await;
         tracing::trace!("shut down DB connection pool");
 
-        Ok(())
+        // Everything is stopped, so surface the registration failure now.
+        match registration_error {
+            Some(err) => Err(anyhow::Error::new(err)),
+            None => Ok(()),
+        }
     });
     tracing::debug!(task_id=%signal_handler_task_handle.id(), "signal handler registered");
 
