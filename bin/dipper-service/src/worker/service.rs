@@ -99,8 +99,12 @@ fn should_resubscribe(listener_present: bool, listener_failed_this_tick: bool) -
 }
 
 /// How many consecutive failed re-subscription attempts between warnings.
-/// Poll-only mode retries about once per poll period, so at the 1 second
-/// default this is roughly one warning a minute.
+///
+/// The cadence follows how fast attempts fail, not the clock. Against a
+/// database that refuses quickly, poll-only mode retries about once per poll
+/// period, so this is roughly one warning a minute. Against one that accepts
+/// but never answers, each attempt can burn the 30 second pool acquire timeout
+/// instead, stretching the gap to half an hour.
 const RESUBSCRIBE_WARN_EVERY: u32 = 60;
 
 /// Whether a failed re-subscription should be logged at warn rather than debug.
