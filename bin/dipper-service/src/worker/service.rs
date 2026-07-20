@@ -261,7 +261,22 @@ where
 {
     // `Some` while LISTEN/NOTIFY is healthy; `None` once it has degraded to
     // poll-only operation (see `await_next_tick`).
-    let mut listener = Some(queue.subscribe().await?);
+    //
+    // A subscribe failure here is no more fatal than one that happens later:
+    // the notification is only a latency optimisation over the poll interval,
+    // and returning an error would stop this loop, which stops every sibling
+    // loop with it. Start poll-only instead and let the loop's usual
+    // re-subscription path recover once the database is reachable.
+    let mut listener = match queue.subscribe().await {
+        Ok(l) => Some(l),
+        Err(err) => {
+            tracing::warn!(
+                error=?err,
+                "could not subscribe to job-available notifications at startup; starting in poll-only mode"
+            );
+            None
+        }
+    };
     loop {
         // Whether the listener was still healthy going into this tick. Lets us
         // tell a listener that just failed on this very tick apart from one that
