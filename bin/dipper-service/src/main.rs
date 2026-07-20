@@ -21,6 +21,7 @@ mod cancel_dispatch;
 mod chain_client;
 mod config;
 mod db;
+mod health;
 mod indexer_rpc_client;
 mod network;
 mod registry;
@@ -80,6 +81,9 @@ pub async fn main() -> anyhow::Result<()> {
     {
         anyhow::bail!("invalid event streaming config: {err}");
     }
+    if let Err(err) = conf.health.validate(conf.admin_rpc.listen_addr) {
+        anyhow::bail!("invalid health config: {err}");
+    }
 
     // TODO: Decouple the config file format from the internal representation
     let (agreement_conf, pricing_table) = conf.dips.into();
@@ -99,15 +103,16 @@ pub async fn main() -> anyhow::Result<()> {
     // The chain client is mandatory: dipper signs RCAs under the RecurringCollector's EIP-712
     // domain and settles offers on-chain, so a deployed contract and reachable RPC are required.
     // Fetch the domain (EIP-5267) with retries, then refuse to start rather than sign unverified.
+    let chain_client_conf = match &conf.chain_client {
+        Some(cfg) if cfg.enabled => cfg.clone(),
+        _ => anyhow::bail!(
+            "chain_client must be enabled with at least one RPC provider and a deployed \
+             recurring_collector: dipper fetches the RecurringCollector EIP-712 domain \
+             on-chain and cannot sign agreements without it"
+        ),
+    };
     let rca_domain = {
-        let cfg = match &conf.chain_client {
-            Some(cfg) if cfg.enabled => cfg,
-            _ => anyhow::bail!(
-                "chain_client must be enabled with at least one RPC provider and a deployed \
-                 recurring_collector: dipper fetches the RecurringCollector EIP-712 domain \
-                 on-chain and cannot sign agreements without it"
-            ),
-        };
+        let cfg = &chain_client_conf;
         let mut attempt: u32 = 0;
         loop {
             match chain_client::fetch_rca_eip712_domain(cfg, chain_id, recurring_collector).await {
@@ -138,43 +143,26 @@ pub async fn main() -> anyhow::Result<()> {
     let shutdown = supervisor::Shutdown::new();
 
     // Background refresh so a running dipper follows an in-place contract upgrade
-    // without a restart. Refresh failures keep the current domain and only warn.
-    // Spawned into the task tree below so its death is not silent.
-    let rca_domain_refresh_service = conf.chain_client.as_ref().filter(|cfg| cfg.enabled).map(
-        |cfg| {
+    // without a restart. Built here but spawned into the task tree below, with a
+    // stop handle, so it shares the shutdown of every other long-running task.
+    let (domain_refresh_handle, domain_refresh_service) = {
+        let cfg = chain_client_conf.clone();
+        let rca_domain = Arc::clone(&rca_domain);
+        let interval = cfg.domain_refresh_interval;
+        network::service::domain_refresh::new(interval, move || {
             let cfg = cfg.clone();
             let rca_domain = Arc::clone(&rca_domain);
-            // Nothing depends on this during teardown, so it needs no stop handle
-            // and no slot in the ordered sequence: it just leaves on the signal.
-            let shutdown = shutdown.clone();
             async move {
-                let mut ticker = tokio::time::interval(cfg.domain_refresh_interval);
-                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                ticker.tick().await; // the first tick fires immediately; skip it
-                loop {
-                    tokio::select! {
-                        _ = shutdown.requested_signal() => break,
-                        _ = ticker.tick() => {
-                            if let Err(err) = chain_client::refresh_rca_eip712_domain(
-                                &cfg,
-                                chain_id,
-                                recurring_collector,
-                                &rca_domain,
-                            )
-                            .await
-                            {
-                                tracing::warn!(
-                                    error = %err,
-                                    "RCA EIP-712 domain refresh failed; keeping the current domain"
-                                );
-                            }
-                        }
-                    }
-                }
-                Ok(())
+                chain_client::refresh_rca_eip712_domain(
+                    &cfg,
+                    chain_id,
+                    recurring_collector,
+                    &rca_domain,
+                )
+                .await
             }
-        },
-    );
+        })
+    };
 
     // Initialize the different components
 
@@ -397,6 +385,9 @@ pub async fn main() -> anyhow::Result<()> {
     // dispatched so it switches from 300s idle polling to 5s immediately.
     let chain_listener_notify = Arc::new(tokio::sync::Notify::new());
 
+    //- Worker liveness watermark, shared with the health endpoint below.
+    let worker_liveness = health::Liveness::new();
+
     //- The worker service
     let (worker_handle, worker_service) = {
         // Each loop can hold up to three pooled connections at once and shares
@@ -459,6 +450,7 @@ pub async fn main() -> anyhow::Result<()> {
                 .map(|c| c.bypass_chain_clock_defenses)
                 .unwrap_or(false),
             chain_listener_chain_id: conf.chain_listener.as_ref().map(|c| c.chain_id),
+            liveness: worker_liveness.clone(),
             reassess_lock,
             unresponsive_breaker,
             dips_accepting_cache,
@@ -595,6 +587,31 @@ pub async fn main() -> anyhow::Result<()> {
     };
     tracing::info!("initialized Admin RPC service");
 
+    //- The health endpoint. On by default so the liveness probe always has an endpoint to hit;
+    //  it reports 503 once the worker watermark goes stale so an orchestrator can restart a
+    //  wedged worker. Bound eagerly so a bad listen address fails startup rather than going unseen.
+    let health_handle = if conf.health.enabled {
+        if conf.health.threshold <= worker::service::PROCESS_JOB_TIMEOUT {
+            tracing::warn!(
+                threshold_secs = conf.health.threshold.as_secs(),
+                job_timeout_secs = worker::service::PROCESS_JOB_TIMEOUT.as_secs(),
+                "health threshold is at or below the per-job timeout: a slow but healthy job can \
+                 trip the liveness probe and cause spurious restarts"
+            );
+        }
+        let (handle, addr, service) = health::new(
+            conf.health.listen_addr,
+            worker_liveness.clone(),
+            conf.health.threshold,
+        )
+        .await?;
+        tracing::info!(%addr, "initialized health endpoint");
+        Some((handle, service))
+    } else {
+        tracing::info!("health endpoint disabled by config");
+        None
+    };
+
     // Construct the task tree
     let mut task_tree = JoinSet::new();
 
@@ -607,18 +624,14 @@ pub async fn main() -> anyhow::Result<()> {
         None
     };
 
-    // Spawn the RCA domain refresher if enabled. It leaves on the shutdown signal
-    // by itself, so it has no stop handle in the sequence below.
-    if let Some(service) = rca_domain_refresh_service {
-        let task_handle = task_tree.spawn(service);
-        tracing::debug!(task_id=%task_handle.id(), "RCA domain refresh service started");
-    }
-
     let indexer_urls_task_handle = task_tree.spawn(indexer_urls_service);
     tracing::debug!(task_id=%indexer_urls_task_handle.id(), "Indexer URLs service started");
 
     let worker_task_handle = task_tree.spawn(worker_service);
     tracing::debug!(task_id=%worker_task_handle.id(), "Worker service started");
+
+    let domain_refresh_task_handle = task_tree.spawn(domain_refresh_service);
+    tracing::debug!(task_id=%domain_refresh_task_handle.id(), "RCA domain refresh started");
 
     // Spawn the reassignment service if enabled
     let reassignment_stop_handle = if let Some((handle, service)) = reassignment_handle {
@@ -665,6 +678,15 @@ pub async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // Spawn the health endpoint if enabled
+    let health_stop_handle = if let Some((handle, service)) = health_handle {
+        let task_handle = task_tree.spawn(service);
+        tracing::debug!(task_id=%task_handle.id(), "Health endpoint started");
+        Some(handle)
+    } else {
+        None
+    };
+
     let admin_rpc_task_handle = task_tree.spawn(admin_rpc_service);
     tracing::debug!(task_id=%admin_rpc_task_handle.id(), "Admin RPC service started");
 
@@ -700,6 +722,12 @@ pub async fn main() -> anyhow::Result<()> {
         // services it depends on. Every step is capped, so the whole sequence has a ceiling
         // that holds however badly an individual service misbehaves.
         let mut all_stopped = true;
+
+        // Stop the health endpoint first; nothing depends on it.
+        if let Some(handle) = health_stop_handle {
+            all_stopped &= stop_service("Health endpoint", handle.stop()).await;
+        }
+
         all_stopped &= stop_service("Admin RPC", admin_rpc_handle.stop()).await;
 
         // Stop reassignment service before worker (it depends on worker queue)
@@ -731,6 +759,10 @@ pub async fn main() -> anyhow::Result<()> {
         if let Some(handle) = entity_count_handle {
             all_stopped &= stop_service("Entity count cache", handle.stop()).await;
         }
+
+        // Stop the RCA domain refresh. It drops any in-flight refresh rather
+        // than waiting for it, so a wedged RPC provider cannot stall shutdown.
+        all_stopped &= stop_service("RCA domain refresh", domain_refresh_handle.stop()).await;
 
         all_stopped &= stop_service("Worker", worker_handle.stop()).await;
         all_stopped &= stop_service("indexer URLs", indexer_urls_handle.stop()).await;
