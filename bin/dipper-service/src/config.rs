@@ -105,6 +105,11 @@ pub struct Config {
 /// even when the whole section is omitted. The k8s liveness probe points at
 /// this endpoint, so a pod whose config lacks the section must still answer the
 /// probe rather than crash-loop for want of one.
+///
+/// The flip side of being on by default is that startup now fails if the listen
+/// address is already taken (a second co-located instance, a port collision,
+/// host-network mode). Set `enabled` to false, or point `listen_addr` at a free
+/// port, in any deployment where 8546 is not guaranteed to be available.
 #[serde_as]
 #[derive(Debug, serde::Deserialize)]
 #[serde(default)]
