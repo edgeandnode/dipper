@@ -97,7 +97,9 @@ pub async fn supervise(
     shutdown: &Shutdown,
     teardown_grace: Duration,
 ) -> anyhow::Result<()> {
-    let mut unexpected_exit = false;
+    // What actually went wrong first. This is the last line in the logs before a
+    // restart, so it names the task rather than just saying something died.
+    let mut first_failure: Option<String> = None;
 
     loop {
         // Before shutdown, tasks are meant to run forever, so wait unbounded.
@@ -132,36 +134,43 @@ pub async fn supervise(
 
         let Some(res) = next else { break };
 
-        match res {
-            Ok((id, Ok(()))) => {
+        let id = match &res {
+            Ok((id, _)) => *id,
+            Err(err) => err.id(),
+        };
+
+        match &res {
+            Ok((_, Ok(()))) => {
                 tracing::debug!(task_id = %id, "task completed");
             }
-            Ok((id, Err(err))) => {
+            Ok((_, Err(err))) => {
                 // A task returning `Err` is a failure regardless of whether
                 // shutdown is already underway; never let it pass as clean.
                 tracing::error!(task_id = %id, error = ?err, "task failed");
-                unexpected_exit = true;
+                first_failure.get_or_insert_with(|| format!("task {id} failed: {err:#}"));
             }
             Err(err) => {
                 // A panic (join error) is likewise fatal in either state, so a
                 // crash while the tree is being torn down still exits non-zero.
-                tracing::error!(task_id = %err.id(), error = ?err, "task join error");
-                unexpected_exit = true;
+                tracing::error!(task_id = %id, error = ?err, "task join error");
+                first_failure.get_or_insert_with(|| format!("task {id} panicked: {err}"));
             }
         }
 
         if !shutdown.is_requested() {
             tracing::error!(
+                task_id = %id,
                 "a critical task exited unexpectedly; initiating shutdown so the process \
                  restarts rather than running on with a dead task"
             );
-            unexpected_exit = true;
+            first_failure
+                .get_or_insert_with(|| format!("task {id} exited before shutdown was requested"));
             shutdown.request();
         }
     }
 
-    if unexpected_exit {
-        anyhow::bail!("a critical task exited unexpectedly");
+    if let Some(cause) = first_failure {
+        anyhow::bail!("a critical task exited unexpectedly: {cause}");
     }
     Ok(())
 }
@@ -361,9 +370,10 @@ mod tests {
         .await
         .expect("supervise did not drain after a panic during shutdown");
 
+        let err = result.expect_err("a panic during teardown must be fatal, not masked");
         assert!(
-            result.is_err(),
-            "a panic during teardown must be fatal, not masked into a clean exit"
+            err.to_string().contains("panicked"),
+            "the error must name what actually died, not just say something did: {err}"
         );
     }
 
