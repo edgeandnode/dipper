@@ -81,13 +81,19 @@ enum Tick {
 /// Whether the loop should try to re-open the notification subscription now.
 ///
 /// Only when there is no listener and it did not just break on this tick. A
-/// failing `wait_for_notification` returns immediately, so re-subscribing on
-/// the same tick and landing on a connection that fails just as fast (a pooled
-/// connection that accepts `LISTEN` but never delivers `NOTIFY`, say) would
-/// spin the loop at full CPU: fail, re-subscribe, pop, fail, with no
-/// poll-period sleep anywhere. Waiting one tick means the listener is already
-/// absent when the wait runs, so the wait falls through to the poll-period
-/// sleep and paces the retry.
+/// `wait_for_notification` that fails fast, on a pool timeout say, returns
+/// immediately, so re-subscribing on the same tick and landing on another that
+/// fails just as fast would spin the loop at full CPU: fail, re-subscribe, pop,
+/// fail, with no poll-period sleep anywhere. Waiting one tick means the listener
+/// is already absent when the wait runs, so the wait falls through to the
+/// poll-period sleep and paces the retry.
+///
+/// Note the limit of this: it paces only the failures we can see. A dropped
+/// connection is not one of them, because sqlx reconnects internally and keeps
+/// waiting rather than returning an error, so that churn happens inside a single
+/// `wait_for_notification` call where this rule has no say. Jobs still flow (the
+/// poll branch keeps firing), but the reconnect rate is sqlx's to decide, not
+/// ours.
 fn should_resubscribe(listener_present: bool, listener_failed_this_tick: bool) -> bool {
     !listener_present && !listener_failed_this_tick
 }
