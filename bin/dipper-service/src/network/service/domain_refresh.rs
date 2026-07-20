@@ -134,6 +134,32 @@ mod tests {
             .expect("refresh loop returned an error");
     }
 
+    /// A failed refresh must not end the loop: the current domain is kept and
+    /// the next tick tries again, rather than the service going quiet forever.
+    #[tokio::test(start_paused = true)]
+    async fn refresh_loop_survives_a_failed_refresh() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_in = calls.clone();
+
+        let (handle, fut) = new(Duration::from_secs(60), move || {
+            let calls = calls_in.clone();
+            async move {
+                // Fail every attempt, the worst case for loop survival.
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err(ChainClientError::ConfigError("refresh unavailable".into()))
+            }
+        });
+        let task = tokio::spawn(fut);
+
+        wait_for_calls(&calls, 3).await;
+        assert!(!task.is_finished(), "a failed refresh ended the loop");
+
+        handle.stop().await;
+        task.await
+            .expect("refresh task panicked")
+            .expect("refresh loop returned an error");
+    }
+
     /// The refresh loop must exit promptly when stopped, even mid-wait, so it
     /// participates in graceful shutdown instead of being a detached task.
     #[tokio::test]
