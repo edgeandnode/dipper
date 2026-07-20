@@ -723,11 +723,6 @@ pub async fn main() -> anyhow::Result<()> {
         // that holds however badly an individual service misbehaves.
         let mut all_stopped = true;
 
-        // Stop the health endpoint first; nothing depends on it.
-        if let Some(handle) = health_stop_handle {
-            all_stopped &= stop_service("Health endpoint", handle.stop()).await;
-        }
-
         all_stopped &= stop_service("Admin RPC", admin_rpc_handle.stop()).await;
 
         // Stop reassignment service before worker (it depends on worker queue)
@@ -766,6 +761,13 @@ pub async fn main() -> anyhow::Result<()> {
 
         all_stopped &= stop_service("Worker", worker_handle.stop()).await;
         all_stopped &= stop_service("indexer URLs", indexer_urls_handle.stop()).await;
+
+        // Stop the health endpoint last: Kubernetes probes /health for as long as the pod runs,
+        // so stopping it early makes every clean teardown look like a liveness failure. The
+        // worker watermark freezes here, but its staleness threshold dwarfs the teardown ceiling.
+        if let Some(handle) = health_stop_handle {
+            all_stopped &= stop_service("Health endpoint", handle.stop()).await;
+        }
 
         // All event producers have stopped; flush buffered diagnostic events to
         // the broker before exit (bounded by an internal timeout).
