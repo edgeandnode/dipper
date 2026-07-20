@@ -93,6 +93,47 @@ mod tests {
 
     use super::*;
 
+    /// Wait on a virtual clock until `calls` reaches `target`, or fail. Virtual
+    /// time advances whenever the loop is idle, so this returns near instantly.
+    async fn wait_for_calls(calls: &Arc<AtomicUsize>, target: usize) {
+        tokio::time::timeout(Duration::from_secs(3600), async {
+            while calls.load(Ordering::SeqCst) < target {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "refresh reached only {} of {target} calls",
+                calls.load(Ordering::SeqCst)
+            )
+        });
+    }
+
+    /// Every tick must actually invoke the refresh, otherwise the domain would
+    /// silently never follow a contract upgrade.
+    #[tokio::test(start_paused = true)]
+    async fn refresh_fires_on_each_tick() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_in = calls.clone();
+
+        let (handle, fut) = new(Duration::from_secs(60), move || {
+            let calls = calls_in.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(true)
+            }
+        });
+        let task = tokio::spawn(fut);
+
+        wait_for_calls(&calls, 3).await;
+
+        handle.stop().await;
+        task.await
+            .expect("refresh task panicked")
+            .expect("refresh loop returned an error");
+    }
+
     /// The refresh loop must exit promptly when stopped, even mid-wait, so it
     /// participates in graceful shutdown instead of being a detached task.
     #[tokio::test]
