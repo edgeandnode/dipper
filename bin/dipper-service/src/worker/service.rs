@@ -31,6 +31,42 @@ use crate::{
 /// Default period to poll the queue for new jobs
 const DEFAULT_QUEUE_POLL_PERIOD: Duration = Duration::from_secs(1);
 
+/// Backstop timeout for processing a single job.
+///
+/// Every external call `process_job` makes is already individually bounded
+/// (IISA HTTP, indexer RPC, chain RPC + receipt polling), so the legitimate
+/// worst case is their sum, on the order of a couple of minutes. This timeout
+/// sits comfortably above that and only fires if a dependency accepts the
+/// connection but never responds, defeating the per-call timeouts. Critically,
+/// for the whole `process_job` call the job's `JobGuard` holds the row's
+/// `Running` lock (and the pgmq transaction behind it). An unbounded hang
+/// would therefore both wedge the worker loop and pin that row indefinitely.
+/// On elapse the in-flight `process_job` future is cancelled (dropped), which
+/// unblocks the loop, and the timeout is surfaced as a retryable error so the
+/// `JobGuard` reschedules the row and releases its lock. Recovery is
+/// idempotent (chain-as-source-of-truth), so re-running a job whose handler
+/// was cancelled mid-flight is safe.
+pub(crate) const PROCESS_JOB_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Base backoff for a job rescheduled after hitting [`PROCESS_JOB_TIMEOUT`].
+const JOB_TIMEOUT_RETRY_BASE_DELAY: Duration = Duration::from_secs(30);
+
+/// Runs a `process_job` future under [`PROCESS_JOB_TIMEOUT`]. On elapse it
+/// cancels the in-flight future and returns a retryable error so the worker
+/// reschedules the job (via its `JobGuard`) rather than blocking indefinitely.
+async fn run_job_with_timeout<F>(timeout: Duration, fut: F) -> JobResult<()>
+where
+    F: std::future::Future<Output = JobResult<()>>,
+{
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(res) => res,
+        Err(_elapsed) => Err(JobError::Retryable(
+            anyhow::anyhow!("job processing exceeded the {timeout:?} backstop timeout"),
+            JOB_TIMEOUT_RETRY_BASE_DELAY,
+        )),
+    }
+}
+
 /// What the worker should do after waiting for the next trigger.
 #[derive(Debug, PartialEq, Eq)]
 enum Tick {
@@ -182,7 +218,7 @@ where
                 }
                 Err(err) => {
                     // A panicking loop must also fail the worker, not be swallowed
-                    // into an Ok — otherwise a single loop death looks like success.
+                    // into an Ok, otherwise a single loop death looks like success.
                     tracing::error!(error=?err, "Worker loop task panicked");
                     first_err.get_or_insert_with(|| anyhow::Error::new(err));
                 }
@@ -276,7 +312,7 @@ where
         };
 
         let _span = tracing::debug_span!("process_job", job = %job.id());
-        match process_job(&state, job.desc()).await {
+        match run_job_with_timeout(PROCESS_JOB_TIMEOUT, process_job(&state, job.desc())).await {
             Ok(..) => {
                 if let Err(err) = job.remove().await {
                     tracing::debug!(error=?err, "Failed to remove job from queue");
@@ -396,7 +432,7 @@ mod tests {
     use async_trait::async_trait;
     use tokio::sync::watch;
 
-    use super::{Tick, await_next_tick};
+    use super::{JobError, Tick, await_next_tick, run_job_with_timeout};
     use crate::worker::queue::JobNotifications;
 
     /// A listener stub whose `wait_for_notification` always errors. Models a
@@ -464,5 +500,40 @@ mod tests {
             await_next_tick(&mut rx, &mut listener, std::time::Duration::from_millis(10)).await;
 
         assert_eq!(tick, Tick::Poll);
+    }
+
+    /// A job that hangs past the timeout must be turned into a retryable error
+    /// (so it reschedules and the open transaction rolls back), not awaited
+    /// indefinitely. Bounded by a test-level timeout so a regression fails fast
+    /// instead of hanging.
+    #[tokio::test]
+    async fn hung_job_times_out_as_retryable() {
+        let hung = future::pending::<super::JobResult<()>>();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            run_job_with_timeout(std::time::Duration::from_millis(50), hung),
+        )
+        .await
+        .expect("run_job_with_timeout did not bound the hung job");
+
+        assert!(
+            matches!(result, Err(JobError::Retryable(..))),
+            "a timed-out job should be retryable, got {result:?}"
+        );
+    }
+
+    /// A job that completes within the timeout passes its result through
+    /// unchanged (including a Fatal classification).
+    #[tokio::test]
+    async fn fast_job_result_passes_through() {
+        let ok = run_job_with_timeout(std::time::Duration::from_secs(60), async { Ok(()) }).await;
+        assert!(ok.is_ok());
+
+        let fatal = run_job_with_timeout(std::time::Duration::from_secs(60), async {
+            Err(JobError::Fatal(anyhow::anyhow!("boom")))
+        })
+        .await;
+        assert!(matches!(fatal, Err(JobError::Fatal(..))));
     }
 }
