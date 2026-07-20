@@ -121,7 +121,13 @@ pub async fn supervise(
                 }
             }
         } else {
-            task_tree.join_next_with_id().await
+            tokio::select! {
+                next = task_tree.join_next_with_id() => next,
+                // Shutdown was requested with no task finishing to wake us. Loop
+                // so the next wait is the bounded one and the watchdog starts;
+                // `join_next_with_id` is cancel-safe, so dropping it loses none.
+                _ = shutdown.requested_signal() => continue,
+            }
         };
 
         let Some(res) = next else { break };
