@@ -1,17 +1,6 @@
-//! Process supervision for the task tree.
-//!
-//! Every long-running service is spawned into a single [`JoinSet`]. In normal
-//! operation none of them ever completes on its own; they run until the
-//! shutdown sequence stops them. So a task that finishes *before* shutdown was
-//! deliberately requested is, by definition, an unexpected critical-task exit
-//! (a panic, or a loop returning `Err` for an unrecoverable reason).
-//!
-//! Leaving the process running in that state (other services up, the daemon
-//! looking healthy, but a critical task dead) is exactly the silent-stall
-//! failure mode we refuse to allow. [`supervise`] therefore treats any such
-//! exit as fatal: it requests shutdown so the rest of the tree is torn down
-//! cleanly, then returns an error so the process exits non-zero and the
-//! orchestrator restarts it.
+//! Process supervision for the task tree. Every long-running service runs in one
+//! [`JoinSet`] and none finishes on its own, so a task finishing before shutdown
+//! was requested has died and the process must restart rather than run on wedged.
 
 use std::{
     sync::{
@@ -23,10 +12,8 @@ use std::{
 
 use tokio::{sync::Notify, task::JoinSet};
 
-/// Shared shutdown coordination between [`supervise`] and the task that runs
-/// the graceful stop sequence.
-///
-/// Cloneable; all clones observe the same state.
+/// Shared shutdown coordination between [`supervise`] and the task running the
+/// graceful stop sequence. Cloneable; all clones observe the same state.
 #[derive(Clone, Default)]
 pub struct Shutdown {
     requested: Arc<AtomicBool>,
@@ -42,11 +29,9 @@ impl Shutdown {
     /// [`Shutdown::requested_signal`]. Idempotent.
     pub fn request(&self) {
         self.requested.store(true, Ordering::SeqCst);
-        // `notify_waiters`, not `notify_one`: multiple tasks may be parked in
-        // `requested_signal`, and shutdown must wake all of them. It stores no
-        // permit for future waiters, but none is needed: a waiter that arrives
-        // after this sees the flag via the register-then-check in
-        // `requested_signal` and returns without parking.
+        // `notify_waiters`, not `notify_one`: several tasks may be parked here and
+        // all must wake. It leaves no permit behind, but a waiter arriving later
+        // sees the flag through the register-then-check below and never parks.
         self.trigger.notify_waiters();
     }
 
@@ -56,10 +41,8 @@ impl Shutdown {
         self.requested.load(Ordering::SeqCst)
     }
 
-    /// Resolves once shutdown has been requested.
-    ///
-    /// Uses the register-then-check ordering so a [`Shutdown::request`] racing
-    /// between the flag read and the wait can't be lost.
+    /// Resolves once shutdown has been requested. Registers interest before
+    /// reading the flag so a [`Shutdown::request`] racing that read isn't lost.
     pub async fn requested_signal(&self) {
         let notified = self.trigger.notified();
         tokio::pin!(notified);
@@ -72,26 +55,9 @@ impl Shutdown {
     }
 }
 
-/// Drains `task_tree`, treating any task that finishes before shutdown was
-/// requested as a fatal unexpected exit.
-///
-/// On the first such exit it logs, requests shutdown (so the stop-sequence task
-/// tears the rest of the tree down), and keeps draining. A task that instead
-/// fails or panics (whether or not shutdown is already underway) is also fatal:
-/// a crash during teardown must never be masked into a clean exit. Returns
-/// `Err` if any unexpected exit, failure, panic, or teardown stall occurred,
-/// otherwise `Ok(())` (a deliberate, fully clean shutdown).
-///
-/// Once shutdown has been requested the wait for each remaining task is bounded
-/// by `teardown_grace`. The graceful stop sequence itself runs inside one of
-/// these tasks, so if that task is the casualty (it panics before stopping the
-/// others) nobody is left to stop the remaining services and they would run
-/// forever, leaving this drain blocked indefinitely: the exact silent stall
-/// this module exists to prevent. The bound is a no-progress watchdog, reset
-/// each time a task finishes, so a teardown that is genuinely making progress
-/// (services stopping one after another, each taking its own time) is never cut
-/// short; it only trips when nothing finishes for the whole grace window, at
-/// which point the remaining tasks are aborted and the process exits non-zero.
+/// Drains `task_tree`. A task finishing before shutdown was requested, and any
+/// failure or panic at all (a crash mid-teardown must never read as clean), is
+/// fatal: shutdown is requested, the drain continues, and the result is `Err`.
 pub async fn supervise(
     mut task_tree: JoinSet<anyhow::Result<()>>,
     shutdown: &Shutdown,
@@ -102,9 +68,9 @@ pub async fn supervise(
     let mut first_failure: Option<String> = None;
 
     loop {
-        // Before shutdown, tasks are meant to run forever, so wait unbounded.
-        // Once shutdown is underway, time-box the wait so a dead stop sequence
-        // can't wedge the drain (see the function docs).
+        // Before shutdown, tasks are meant to run forever, so wait unbounded. Once
+        // it starts, the stop sequence itself runs in one of these tasks, so if
+        // that one died nobody stops the rest: bound the wait as a watchdog.
         let next = if shutdown.is_requested() {
             match tokio::time::timeout(teardown_grace, task_tree.join_next_with_id()).await {
                 Ok(next) => next,
@@ -194,10 +160,9 @@ mod tests {
     /// resolves quickly; the clean-path tests finish well within it.
     const TEST_TEARDOWN_GRACE: Duration = Duration::from_millis(200);
 
-    /// A task finishing before shutdown was requested is fatal: `supervise`
-    /// returns an error and requests shutdown so the rest of the tree is torn
-    /// down. Regression test for the join loop that merely logged a dead task
-    /// and let the process keep running.
+    /// A task finishing before shutdown was requested is fatal, and requests
+    /// shutdown so the rest of the tree comes down. Regression test for the join
+    /// loop that merely logged a dead task and let the process keep running.
     #[tokio::test]
     async fn unexpected_task_exit_is_fatal_and_triggers_shutdown() {
         let shutdown = Shutdown::new();
@@ -266,13 +231,9 @@ mod tests {
         );
     }
 
-    /// If the task that runs the stop sequence dies (or otherwise never stops
-    /// the remaining services) after shutdown was requested, the leftover
-    /// services would run forever and the drain would block indefinitely.
-    /// `supervise` must instead give up after the grace period, abort what's
-    /// left, and return an error so the process exits non-zero rather than
-    /// hanging in the silent-stall state. Regression test for the teardown
-    /// watchdog.
+    /// When the stop sequence dies without stopping the rest, those services run
+    /// forever and the drain would block for good. `supervise` must give up after
+    /// the grace period, abort what's left, and exit non-zero instead of hanging.
     #[tokio::test]
     async fn teardown_stall_is_bounded_and_fatal() {
         let shutdown = Shutdown::new();
@@ -342,10 +303,9 @@ mod tests {
         );
     }
 
-    /// A task that panics (or returns `Err`) while the tree is being torn down
-    /// must still make the process exit non-zero, not be masked into a clean
-    /// exit just because shutdown was already requested. Regression test for
-    /// the arms that logged a failed/panicked task without flagging it fatal.
+    /// A task that panics while the tree is being torn down must still exit the
+    /// process non-zero, not be masked into a clean exit just because shutdown was
+    /// already underway, and the error must name what died.
     #[tokio::test]
     async fn panic_during_shutdown_is_fatal() {
         let shutdown = Shutdown::new();
@@ -379,12 +339,9 @@ mod tests {
         );
     }
 
-    /// A single `request()` must wake *every* parked waiter, not just one.
-    ///
-    /// Both waiters are polled to their suspended (registered) state while the
-    /// flag is still false, then `request()` is called once. Regression test
-    /// for `notify_one`, which wakes only the first waiter and leaves the rest
-    /// hanging forever.
+    /// A single `request()` must wake *every* parked waiter. Both are polled to
+    /// their registered state while the flag is false, then `request()` is called
+    /// once. Regression test for `notify_one`, which wakes only the first.
     #[test]
     fn request_wakes_all_concurrent_waiters() {
         use std::{

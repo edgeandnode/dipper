@@ -44,10 +44,8 @@ const RCA_DOMAIN_FETCH_MAX_RETRIES: u32 = 5;
 const INDEXER_URLS_FETCH_MAX_RETRIES: u32 = 5;
 
 /// How long the supervisor waits for the next task to finish once shutdown is underway before
-/// declaring the teardown stalled. It resets each time a task finishes, so it only trips when
-/// the whole stop sequence makes no progress at all. Set comfortably above the longest single
-/// stop step (a service can be mid-fetch on a 30-second subgraph query timeout when asked to
-/// stop) so a slow-but-progressing shutdown is never cut short.
+/// calling the teardown stalled. It resets on each finish, so it only trips when nothing moves
+/// at all, and sits above the longest single stop step (a 30-second subgraph query timeout).
 const TEARDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(120);
 
 #[tokio::main]
