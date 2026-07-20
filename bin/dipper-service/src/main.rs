@@ -714,6 +714,10 @@ pub async fn main() -> anyhow::Result<()> {
             }
         }
 
+        // On the crash path `signal_task` is dropped here: the library unregisters its handlers
+        // without restoring the default, so a SIGTERM mid-teardown is swallowed. Accepted, as the
+        // supervisor still exits within TEARDOWN_GRACE and a later SIGKILL past the grace ends it.
+
         // Ensure the flag is set on the signal path too, so the supervisor
         // treats the resulting service completions as a deliberate shutdown.
         shutdown_coordinator.request();
