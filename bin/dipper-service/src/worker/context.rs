@@ -115,6 +115,10 @@ pub struct Ctx<Q, R, C, I, T> {
     /// when the chain_listener is not configured.
     pub chain_listener_chain_id: Option<u64>,
 
+    /// Liveness watermark the worker ticks each loop iteration so the health
+    /// endpoint can detect a wedged worker.
+    pub liveness: crate::health::Liveness,
+
     /// Global reassess lock (see `ReassessLock`).
     pub reassess_lock: ReassessLock,
 

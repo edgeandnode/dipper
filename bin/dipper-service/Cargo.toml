@@ -7,6 +7,7 @@ edition = "2024"
 anyhow.workspace = true
 async-signal = "0.2.10"
 async-trait.workspace = true
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 custom_debug = "0.6.1"
 dipper-core = { version = "0.1.0", path = "../../dipper-core" }
 dipper-iisa = { path = "../../dipper-iisa" }
@@ -36,7 +37,9 @@ url.workspace = true
 
 [dev-dependencies]
 fake = { workspace = true, features = ["url"] }
+# `test-util` gives tests a paused clock, so timing tests assert on an elapsed
+# interval instead of really waiting for one.
+tokio = { workspace = true, features = ["test-util"] }
 test-with = { version = "0.14.4", default-features = false }
 thegraph-core = { workspace = true, features = ["fake"] }
-tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
