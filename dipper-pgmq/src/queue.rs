@@ -101,7 +101,7 @@ impl PgQueue {
 
     /// Subscribes to the `pgmq_jobs_available` channel
     pub async fn subscribe(&self) -> anyhow::Result<PgQueueListener> {
-        PgQueueListener::new(self.pool.clone()).await
+        PgQueueListener::new(&self.pool).await
     }
 
     /// Clears the queue
