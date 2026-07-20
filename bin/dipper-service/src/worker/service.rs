@@ -290,6 +290,111 @@ async fn await_next_tick<N: JobNotifications>(
     }
 }
 
+/// One worker loop's job-available subscription, and everything that keeps it
+/// in repair: the poll-interval fallback, degrading to poll-only on a fault,
+/// and paced re-subscription afterwards.
+struct Subscription<N> {
+    /// `Some` while `LISTEN`/`NOTIFY` is healthy, `None` once it has degraded
+    /// to poll-only operation (see `await_next_tick`).
+    listener: Option<N>,
+    warn_pacer: WarnPacer,
+    backoff: ResubscribeBackoff,
+}
+
+impl<N: JobNotifications> Subscription<N> {
+    /// Subscribes for the first time, starting in poll-only mode if that fails.
+    /// Failing the loop instead would stop every sibling loop with it, and the
+    /// notification is only a latency optimisation over the poll interval.
+    async fn start<Q: Queue<Message, Listener = N>>(queue: &Q) -> Self {
+        let mut this = Self {
+            listener: None,
+            warn_pacer: WarnPacer::default(),
+            backoff: ResubscribeBackoff::default(),
+        };
+        match queue.subscribe().await {
+            Ok(l) => {
+                this.backoff.record_success(Instant::now());
+                this.listener = Some(l);
+            }
+            Err(err) => {
+                this.backoff.record_failure(Instant::now());
+                this.warn_pacer.record_failure(Instant::now());
+                tracing::warn!(
+                    error=?err,
+                    "could not subscribe to job-available notifications at startup; starting in poll-only mode"
+                );
+            }
+        }
+        this
+    }
+
+    /// Waits for the next trigger to poll the queue, repairing the subscription
+    /// when the pacing rules allow. Returns `false` once the worker should stop.
+    async fn next_tick<Q: Queue<Message, Listener = N>>(
+        &mut self,
+        queue: &Q,
+        stop_rx: &mut watch::Receiver<bool>,
+        poll_period: Duration,
+    ) -> bool {
+        let listener_failed = match await_next_tick(
+            stop_rx,
+            &mut self.listener,
+            poll_period,
+            &mut self.warn_pacer,
+        )
+        .await
+        {
+            Tick::Stop => return false,
+            Tick::Poll { listener_failed } => listener_failed,
+        };
+
+        if listener_failed {
+            self.backoff.record_failure(Instant::now());
+        }
+        if should_resubscribe(
+            self.listener.is_some(),
+            listener_failed,
+            &self.backoff,
+            Instant::now(),
+        ) {
+            self.resubscribe(queue).await;
+        }
+        true
+    }
+
+    /// Re-opens the subscription. A failure here keeps us in poll-only mode,
+    /// which processes every job just as reliably, only later.
+    async fn resubscribe<Q: Queue<Message, Listener = N>>(&mut self, queue: &Q) {
+        match queue.subscribe().await {
+            Ok(l) => {
+                self.backoff.record_success(Instant::now());
+                // Answer every warning exactly once, so a problem an operator
+                // was told about is reported as over, while a flap nobody was
+                // told about stays quiet.
+                match self.warn_pacer.take_announced() {
+                    Some(failed_attempts) => tracing::info!(
+                        failed_attempts,
+                        "re-subscribed to job-available notifications"
+                    ),
+                    None => tracing::debug!("re-subscribed to job-available notifications"),
+                }
+                self.listener = Some(l);
+            }
+            Err(err) => match self.warn_pacer.record_failure(Instant::now()) {
+                Some(failures) => tracing::warn!(
+                    error=?err,
+                    failures_since_last_warning=failures,
+                    "job-available listener still unavailable; jobs are running on the poll interval alone"
+                ),
+                None => tracing::debug!(
+                    error=?err,
+                    "job-available listener re-subscription failed; staying in poll-only mode"
+                ),
+            },
+        }
+    }
+}
+
 /// Create a worker plus a future that runs `concurrency` (>=1) loops, each
 /// draining the same queue. The queue's `FOR UPDATE SKIP LOCKED` pop hands
 /// every loop a distinct job; the default of 1 is a single serial loop.
@@ -436,83 +541,13 @@ where
     I: CandidateSelection + Clone + Send + Sync + 'static,
     T: ChainClient + Clone + Send + Sync + 'static,
 {
-    // `Some` while LISTEN/NOTIFY is healthy; `None` once it has degraded to
-    // poll-only operation (see `await_next_tick`).
-    //
-    // A subscribe failure here is no more fatal than one that happens later:
-    // the notification is only a latency optimisation over the poll interval,
-    // and returning an error would stop this loop, which stops every sibling
-    // loop with it. Start poll-only instead and let the loop's usual
-    // re-subscription path recover once the database is reachable.
-    let mut warn_pacer = WarnPacer::default();
-    let mut backoff = ResubscribeBackoff::default();
-    let mut listener = match queue.subscribe().await {
-        Ok(l) => {
-            backoff.record_success(Instant::now());
-            Some(l)
-        }
-        Err(err) => {
-            backoff.record_failure(Instant::now());
-            warn_pacer.record_failure(Instant::now());
-            tracing::warn!(
-                error=?err,
-                "could not subscribe to job-available notifications at startup; starting in poll-only mode"
-            );
-            None
-        }
-    };
+    let mut subscription = Subscription::start(&queue).await;
     loop {
-        let listener_failed = match await_next_tick(
-            &mut stop_rx,
-            &mut listener,
-            DEFAULT_QUEUE_POLL_PERIOD,
-            &mut warn_pacer,
-        )
-        .await
+        if !subscription
+            .next_tick(&queue, &mut stop_rx, DEFAULT_QUEUE_POLL_PERIOD)
+            .await
         {
-            Tick::Stop => return Ok(()),
-            Tick::Poll { listener_failed } => listener_failed,
-        };
-
-        if listener_failed {
-            backoff.record_failure(Instant::now());
-        }
-
-        // Re-open the notification subscription when the pacing rule allows it.
-        // A failure here keeps us in correct poll-only mode.
-        if should_resubscribe(
-            listener.is_some(),
-            listener_failed,
-            &backoff,
-            Instant::now(),
-        ) {
-            match queue.subscribe().await {
-                Ok(l) => {
-                    backoff.record_success(Instant::now());
-                    // Answer every warning exactly once, so a problem an
-                    // operator was told about is also reported as over, while a
-                    // flap nobody was told about stays quiet.
-                    match warn_pacer.take_announced() {
-                        Some(failed_attempts) => tracing::info!(
-                            failed_attempts,
-                            "re-subscribed to job-available notifications"
-                        ),
-                        None => tracing::debug!("re-subscribed to job-available notifications"),
-                    }
-                    listener = Some(l);
-                }
-                Err(err) => match warn_pacer.record_failure(Instant::now()) {
-                    Some(failures) => tracing::warn!(
-                        error=?err,
-                        failures_since_last_warning=failures,
-                        "job-available listener still unavailable; jobs are running on the poll interval alone"
-                    ),
-                    None => tracing::debug!(
-                        error=?err,
-                        "job-available listener re-subscription failed; staying in poll-only mode"
-                    ),
-                },
-            }
+            return Ok(());
         }
 
         // Tick the liveness watermark on every iteration (including idle polls
@@ -651,6 +686,10 @@ impl<Q> Handle<Q> {
 mod tests {
     use std::{
         future,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
         time::{Duration, Instant},
     };
 
@@ -658,11 +697,11 @@ mod tests {
     use tokio::sync::watch;
 
     use super::{
-        DEFAULT_QUEUE_POLL_PERIOD, JobError, RESUBSCRIBE_BASE_DELAY, RESUBSCRIBE_MAX_DELAY,
-        RESUBSCRIBE_STABLE_PERIOD, ResubscribeBackoff, Tick, WARN_COOLDOWN, WarnPacer,
-        await_next_tick, run_job_with_timeout, should_resubscribe,
+        DEFAULT_QUEUE_POLL_PERIOD, JobError, Message, RESUBSCRIBE_BASE_DELAY,
+        RESUBSCRIBE_MAX_DELAY, RESUBSCRIBE_STABLE_PERIOD, ResubscribeBackoff, Subscription, Tick,
+        WARN_COOLDOWN, WarnPacer, await_next_tick, run_job_with_timeout, should_resubscribe,
     };
-    use crate::worker::queue::JobNotifications;
+    use crate::worker::queue::{JobGuard, JobId, JobNotifications, JobPriority, Queue};
 
     /// A listener stub whose `wait_for_notification` always errors. Models a
     /// dropped/broken `LISTEN`/`NOTIFY` connection.
@@ -673,6 +712,129 @@ mod tests {
         async fn wait_for_notification(&mut self) -> anyhow::Result<()> {
             anyhow::bail!("simulated listener failure")
         }
+    }
+
+    /// A listener stub that records being consulted, then never notifies, so a
+    /// test can tell whether the loop actually used the subscription it opened.
+    struct RecordingNotifier {
+        waits: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl JobNotifications for RecordingNotifier {
+        async fn wait_for_notification(&mut self) -> anyhow::Result<()> {
+            self.waits.fetch_add(1, Ordering::SeqCst);
+            future::pending().await
+        }
+    }
+
+    /// A queue with no database behind it, whose `subscribe` fails a set number
+    /// of times before it starts succeeding.
+    struct MockQueue {
+        subscribe_attempts: AtomicUsize,
+        failures_before_success: usize,
+        listener_waits: Arc<AtomicUsize>,
+    }
+
+    impl MockQueue {
+        fn failing_first(failures_before_success: usize) -> Self {
+            Self {
+                subscribe_attempts: AtomicUsize::new(0),
+                failures_before_success,
+                listener_waits: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn subscribe_attempts(&self) -> usize {
+            self.subscribe_attempts.load(Ordering::SeqCst)
+        }
+
+        fn listener_waits(&self) -> usize {
+            self.listener_waits.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl Queue<Message> for MockQueue {
+        type Listener = RecordingNotifier;
+
+        async fn push(&self, _msg: Message, _priority: JobPriority) -> anyhow::Result<JobId> {
+            anyhow::bail!("these tests never push")
+        }
+
+        async fn pop(&self) -> anyhow::Result<Option<JobGuard<'_, Message>>> {
+            Ok(None)
+        }
+
+        async fn subscribe(&self) -> anyhow::Result<Self::Listener> {
+            let attempt = self.subscribe_attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt < self.failures_before_success {
+                anyhow::bail!("simulated subscribe failure");
+            }
+            Ok(RecordingNotifier {
+                waits: self.listener_waits.clone(),
+            })
+        }
+    }
+
+    /// A subscription that cannot be opened at startup must leave the worker
+    /// running in poll-only mode. Failing here would stop this loop, and one
+    /// loop stopping stops every sibling loop with it.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_startup_subscribe_leaves_the_loop_running() {
+        let queue = MockQueue::failing_first(usize::MAX);
+        let (_tx, mut rx) = watch::channel(false);
+
+        let mut subscription = Subscription::start(&queue).await;
+        assert!(
+            subscription.listener.is_none(),
+            "a failed startup subscribe should degrade to poll-only"
+        );
+
+        for tick in 0..3 {
+            assert!(
+                subscription
+                    .next_tick(&queue, &mut rx, Duration::from_secs(1))
+                    .await,
+                "the loop should still be running on tick {tick}"
+            );
+        }
+    }
+
+    /// A worker that degraded to poll-only must re-open the subscription on a
+    /// later tick, and then actually use it, rather than polling forever.
+    #[tokio::test(start_paused = true)]
+    async fn a_degraded_subscription_is_re_opened_and_then_used() {
+        let queue = MockQueue::failing_first(0);
+        let (_tx, mut rx) = watch::channel(false);
+        let mut subscription: Subscription<RecordingNotifier> = Subscription {
+            listener: None,
+            warn_pacer: WarnPacer::default(),
+            backoff: ResubscribeBackoff::default(),
+        };
+
+        assert!(
+            subscription
+                .next_tick(&queue, &mut rx, Duration::from_secs(1))
+                .await
+        );
+        assert_eq!(
+            queue.subscribe_attempts(),
+            1,
+            "a tick with no listener should re-subscribe"
+        );
+        assert!(subscription.listener.is_some());
+
+        assert!(
+            subscription
+                .next_tick(&queue, &mut rx, Duration::from_secs(1))
+                .await
+        );
+        assert_eq!(
+            queue.listener_waits(),
+            1,
+            "the re-opened subscription should be waited on, not ignored"
+        );
     }
 
     /// A listener stub that never notifies (its future stays pending).
