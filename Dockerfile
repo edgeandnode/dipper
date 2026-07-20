@@ -2,7 +2,7 @@
 # Compile the Rust code
 FROM rust:1.91.0-slim-bookworm AS rust-builder
 
-RUN --mount=type=cache,target=/var/cache/apt \
+RUN --mount=type=cache,id=apt-builder,target=/var/cache/apt,sharing=locked \
   apt-get update \
   && apt-get install -y --no-install-recommends \
       build-essential \
@@ -29,7 +29,7 @@ RUN cargo build --bin dipper-service --release
 ## Final image
 FROM debian:bookworm-slim
 
-RUN --mount=type=cache,target=/var/cache/apt \
+RUN --mount=type=cache,id=apt-runtime,target=/var/cache/apt,sharing=locked \
   apt-get update \
   && apt-get install -y --no-install-recommends \
       ca-certificates \

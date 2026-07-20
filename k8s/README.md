@@ -48,3 +48,7 @@ This assumes IISA is deployed with a Service named `iisa` in the same namespace.
 |---------|------|----------|---------|
 | Admin RPC | 8545 | TCP | JSON-RPC for admin operations |
 | Indexer RPC | 50051 | TCP | gRPC for indexer interactions |
+| Health | 8546 | TCP | HTTP `GET /health` for the startup and liveness probes |
+
+The health port is deliberately absent from `service.yaml`: the kubelet probes the pod directly, so
+the endpoint does not need to be reachable from elsewhere in the cluster.
