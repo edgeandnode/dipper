@@ -43,6 +43,13 @@ const RCA_DOMAIN_FETCH_MAX_RETRIES: u32 = 5;
 /// stalled subgraph would leave the pod hanging unready with no restart; exit visibly instead.
 const INDEXER_URLS_FETCH_MAX_RETRIES: u32 = 5;
 
+/// How long the supervisor waits for the next task to finish once shutdown is underway before
+/// declaring the teardown stalled. It resets each time a task finishes, so it only trips when
+/// the whole stop sequence makes no progress at all. Set comfortably above the longest single
+/// stop step (a service can be mid-fetch on a 30-second subgraph query timeout when asked to
+/// stop) so a slow-but-progressing shutdown is never cut short.
+const TEARDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(120);
+
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {
     // Set up logging
@@ -729,7 +736,7 @@ pub async fn main() -> anyhow::Result<()> {
     // shutdown was requested) tears the rest of the tree down and returns an
     // error so the process exits non-zero for the orchestrator to restart.
     tracing::info!("starting service");
-    supervisor::supervise(task_tree, &shutdown).await
+    supervisor::supervise(task_tree, &shutdown, TEARDOWN_GRACE).await
 }
 
 /// Signals that the application can receive

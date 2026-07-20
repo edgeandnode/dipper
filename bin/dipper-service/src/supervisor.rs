@@ -13,9 +13,12 @@
 //! cleanly, then returns an error so the process exits non-zero and the
 //! orchestrator restarts it.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 
 use tokio::{sync::Notify, task::JoinSet};
@@ -73,24 +76,71 @@ impl Shutdown {
 /// requested as a fatal unexpected exit.
 ///
 /// On the first such exit it logs, requests shutdown (so the stop-sequence task
-/// tears the rest of the tree down), and keeps draining. Returns `Err` if any
-/// unexpected exit occurred, otherwise `Ok(())` (a deliberate shutdown).
+/// tears the rest of the tree down), and keeps draining. A task that instead
+/// fails or panics (whether or not shutdown is already underway) is also fatal:
+/// a crash during teardown must never be masked into a clean exit. Returns
+/// `Err` if any unexpected exit, failure, panic, or teardown stall occurred,
+/// otherwise `Ok(())` (a deliberate, fully clean shutdown).
+///
+/// Once shutdown has been requested the wait for each remaining task is bounded
+/// by `teardown_grace`. The graceful stop sequence itself runs inside one of
+/// these tasks, so if that task is the casualty (it panics before stopping the
+/// others) nobody is left to stop the remaining services and they would run
+/// forever, leaving this drain blocked indefinitely: the exact silent stall
+/// this module exists to prevent. The bound is a no-progress watchdog, reset
+/// each time a task finishes, so a teardown that is genuinely making progress
+/// (services stopping one after another, each taking its own time) is never cut
+/// short; it only trips when nothing finishes for the whole grace window, at
+/// which point the remaining tasks are aborted and the process exits non-zero.
 pub async fn supervise(
     mut task_tree: JoinSet<anyhow::Result<()>>,
     shutdown: &Shutdown,
+    teardown_grace: Duration,
 ) -> anyhow::Result<()> {
     let mut unexpected_exit = false;
 
-    while let Some(res) = task_tree.join_next_with_id().await {
+    loop {
+        // Before shutdown, tasks are meant to run forever, so wait unbounded.
+        // Once shutdown is underway, time-box the wait so a dead stop sequence
+        // can't wedge the drain (see the function docs).
+        let next = if shutdown.is_requested() {
+            match tokio::time::timeout(teardown_grace, task_tree.join_next_with_id()).await {
+                Ok(next) => next,
+                Err(_elapsed) => {
+                    tracing::error!(
+                        grace_secs = teardown_grace.as_secs(),
+                        "teardown stalled: no task finished within the grace period after \
+                         shutdown was requested. Aborting the remaining tasks and exiting \
+                         non-zero so the orchestrator restarts the process rather than hanging"
+                    );
+                    task_tree.abort_all();
+                    anyhow::bail!(
+                        "teardown stalled: no task finished within {}s of shutdown being requested",
+                        teardown_grace.as_secs()
+                    );
+                }
+            }
+        } else {
+            task_tree.join_next_with_id().await
+        };
+
+        let Some(res) = next else { break };
+
         match res {
             Ok((id, Ok(()))) => {
                 tracing::debug!(task_id = %id, "task completed");
             }
             Ok((id, Err(err))) => {
+                // A task returning `Err` is a failure regardless of whether
+                // shutdown is already underway; never let it pass as clean.
                 tracing::error!(task_id = %id, error = ?err, "task failed");
+                unexpected_exit = true;
             }
             Err(err) => {
+                // A panic (join error) is likewise fatal in either state, so a
+                // crash while the tree is being torn down still exits non-zero.
                 tracing::error!(task_id = %err.id(), error = ?err, "task join error");
+                unexpected_exit = true;
             }
         }
 
@@ -123,6 +173,10 @@ mod tests {
     /// forever; this turns that into a deterministic failure.
     const SUPERVISE_TIMEOUT: Duration = Duration::from_secs(5);
 
+    /// Teardown grace passed to `supervise` in tests. Short so the stall test
+    /// resolves quickly; the clean-path tests finish well within it.
+    const TEST_TEARDOWN_GRACE: Duration = Duration::from_millis(200);
+
     /// A task finishing before shutdown was requested is fatal: `supervise`
     /// returns an error and requests shutdown so the rest of the tree is torn
     /// down. Regression test for the join loop that merely logged a dead task
@@ -145,9 +199,12 @@ mod tests {
         // shutdown.
         task_tree.spawn(async { Ok(()) });
 
-        let result = tokio::time::timeout(SUPERVISE_TIMEOUT, supervise(task_tree, &shutdown))
-            .await
-            .expect("supervise did not request shutdown; coordinator never drained");
+        let result = tokio::time::timeout(
+            SUPERVISE_TIMEOUT,
+            supervise(task_tree, &shutdown, TEST_TEARDOWN_GRACE),
+        )
+        .await
+        .expect("supervise did not request shutdown; coordinator never drained");
 
         assert!(result.is_err(), "an unexpected task exit must be fatal");
         assert!(
@@ -179,13 +236,92 @@ mod tests {
             });
         }
 
-        let result = tokio::time::timeout(SUPERVISE_TIMEOUT, supervise(task_tree, &shutdown))
-            .await
-            .expect("supervise did not drain after a deliberate shutdown");
+        let result = tokio::time::timeout(
+            SUPERVISE_TIMEOUT,
+            supervise(task_tree, &shutdown, TEST_TEARDOWN_GRACE),
+        )
+        .await
+        .expect("supervise did not drain after a deliberate shutdown");
 
         assert!(
             result.is_ok(),
             "a deliberate shutdown must not be reported as fatal: {result:?}"
+        );
+    }
+
+    /// If the task that runs the stop sequence dies (or otherwise never stops
+    /// the remaining services) after shutdown was requested, the leftover
+    /// services would run forever and the drain would block indefinitely.
+    /// `supervise` must instead give up after the grace period, abort what's
+    /// left, and return an error so the process exits non-zero rather than
+    /// hanging in the silent-stall state. Regression test for the teardown
+    /// watchdog.
+    #[tokio::test]
+    async fn teardown_stall_is_bounded_and_fatal() {
+        let shutdown = Shutdown::new();
+        let mut task_tree: JoinSet<anyhow::Result<()>> = JoinSet::new();
+
+        // Stand-in for the stop-sequence task: it requests shutdown and then
+        // exits without stopping anything (as if it had panicked mid-teardown).
+        let coordinator = shutdown.clone();
+        task_tree.spawn(async move {
+            coordinator.request();
+            Ok(())
+        });
+
+        // A service that never gets a stop signal, so it runs forever. Without
+        // the watchdog the drain would wait on this task with no end.
+        task_tree.spawn(async {
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+
+        let result = tokio::time::timeout(
+            SUPERVISE_TIMEOUT,
+            supervise(task_tree, &shutdown, TEST_TEARDOWN_GRACE),
+        )
+        .await
+        .expect("supervise hung on a stalled teardown instead of bounding it");
+
+        assert!(
+            result.is_err(),
+            "a stalled teardown must be fatal, not a silent hang"
+        );
+    }
+
+    /// A task that panics (or returns `Err`) while the tree is being torn down
+    /// must still make the process exit non-zero, not be masked into a clean
+    /// exit just because shutdown was already requested. Regression test for
+    /// the arms that logged a failed/panicked task without flagging it fatal.
+    #[tokio::test]
+    async fn panic_during_shutdown_is_fatal() {
+        let shutdown = Shutdown::new();
+        let mut task_tree: JoinSet<anyhow::Result<()>> = JoinSet::new();
+
+        // The "signal handler": requests shutdown, then completes cleanly.
+        let coordinator = shutdown.clone();
+        task_tree.spawn(async move {
+            coordinator.request();
+            Ok(())
+        });
+
+        // A service that panics once shutdown is underway.
+        let s = shutdown.clone();
+        task_tree.spawn(async move {
+            s.requested_signal().await;
+            panic!("boom during teardown");
+        });
+
+        let result = tokio::time::timeout(
+            SUPERVISE_TIMEOUT,
+            supervise(task_tree, &shutdown, TEST_TEARDOWN_GRACE),
+        )
+        .await
+        .expect("supervise did not drain after a panic during shutdown");
+
+        assert!(
+            result.is_err(),
+            "a panic during teardown must be fatal, not masked into a clean exit"
         );
     }
 
