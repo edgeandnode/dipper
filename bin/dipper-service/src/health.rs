@@ -1,16 +1,18 @@
-//! Worker liveness watermark and a minimal HTTP health endpoint.
+//! Worker liveness watermarks and a minimal HTTP health endpoint.
 //!
 //! Exit-based supervision catches a worker that *exits* (panic or error
-//! return). It cannot catch a worker that is *wedged* — alive but making no
+//! return). It cannot catch a worker that is *wedged*: alive but making no
 //! progress (e.g. parked on an await that nothing bounds). This module closes
-//! that gap: the worker ticks a progress watermark every loop iteration, and a
-//! small health server reports 503 once the watermark goes stale so an external
-//! orchestrator (k8s liveness probe) can restart the wedged process.
+//! that gap. Each worker loop ticks its own progress watermark every iteration,
+//! and a small health server reports 503 once any one of those watermarks goes
+//! stale, so a single wedged loop is caught even while its siblings keep
+//! working, and an external orchestrator (k8s liveness probe) can restart the
+//! process.
 
 use std::{
     net::SocketAddr,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicI64, Ordering},
     },
     time::Duration,
@@ -29,12 +31,35 @@ use tokio::{net::TcpListener, sync::mpsc};
 /// the probe.
 pub const DEFAULT_HEALTH_THRESHOLD: Duration = Duration::from_secs(600);
 
-/// Shared liveness watermark: the unix-seconds timestamp at which the worker
-/// last made progress. The worker ticks it via [`Liveness::record_progress`];
-/// the health server reads it via [`Liveness::is_healthy`].
+/// Shared worker liveness: one progress watermark per worker loop. Each loop
+/// registers its own watermark via [`Liveness::register`] and ticks it through
+/// the returned [`ProgressTicker`]; the health server reads them all via
+/// [`Liveness::is_healthy`].
+///
+/// Health reflects the *oldest* watermark: the worker is healthy only while
+/// every loop is ticking. That way a single loop wedged inside a job trips the
+/// probe even though its siblings keep making progress. A single shared
+/// watermark would only ever detect total worker starvation, since any one live
+/// loop would keep stamping it fresh and hide the stuck one.
 #[derive(Clone)]
 pub struct Liveness {
-    last_progress: Arc<AtomicI64>,
+    // One watermark (unix-seconds of last progress) per registered loop. The
+    // std mutex is only locked to push a slot at registration time and to read
+    // the slots on a health probe, never held across an await.
+    slots: Arc<Mutex<Vec<Arc<AtomicI64>>>>,
+}
+
+/// A single worker loop's progress watermark. The loop calls
+/// [`ProgressTicker::record_progress`] once per iteration.
+pub struct ProgressTicker {
+    slot: Arc<AtomicI64>,
+}
+
+impl ProgressTicker {
+    /// Records that this loop just made progress.
+    pub fn record_progress(&self) {
+        self.slot.store(now_unix(), Ordering::Relaxed);
+    }
 }
 
 fn now_unix() -> i64 {
@@ -42,25 +67,36 @@ fn now_unix() -> i64 {
 }
 
 impl Liveness {
-    /// Creates a watermark seeded to now, so a freshly started worker is
-    /// considered live (startup grace).
+    /// Creates an empty tracker with no loops registered yet.
     pub fn new() -> Self {
         Self {
-            last_progress: Arc::new(AtomicI64::new(now_unix())),
+            slots: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    /// Records that the worker just made progress.
-    pub fn record_progress(&self) {
-        self.last_progress.store(now_unix(), Ordering::Relaxed);
+    /// Registers a worker loop and returns its ticker, seeded to now so a
+    /// freshly spawned loop is considered live (startup grace).
+    pub fn register(&self) -> ProgressTicker {
+        let slot = Arc::new(AtomicI64::new(now_unix()));
+        self.slots
+            .lock()
+            .expect("liveness mutex poisoned")
+            .push(slot.clone());
+        ProgressTicker { slot }
     }
 
-    /// Whether the worker made progress within `threshold` of `now_unix`.
+    /// Whether every registered loop made progress within `threshold` of
+    /// `now_unix`. A single stale loop makes the whole worker unhealthy.
     ///
     /// Pure in its inputs so it is unit testable without touching the clock.
     pub fn is_healthy_at(&self, now_unix: i64, threshold: Duration) -> bool {
-        let age = now_unix.saturating_sub(self.last_progress.load(Ordering::Relaxed));
-        age <= threshold.as_secs() as i64
+        let slots = self.slots.lock().expect("liveness mutex poisoned");
+        // With no loops registered yet (startup) there is nothing stale to
+        // report, so an empty set is healthy.
+        slots.iter().all(|slot| {
+            let age = now_unix.saturating_sub(slot.load(Ordering::Relaxed));
+            age <= threshold.as_secs() as i64
+        })
     }
 
     /// [`Liveness::is_healthy_at`] against the current clock.
@@ -166,8 +202,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn no_loops_registered_is_healthy() {
+        // Before any loop registers (startup), there is nothing stale to report.
+        let liveness = Liveness::new();
+        let now = now_unix() + 10_000;
+        assert!(liveness.is_healthy_at(now, Duration::from_secs(600)));
+    }
+
+    #[test]
     fn fresh_watermark_is_healthy() {
         let liveness = Liveness::new();
+        let _ticker = liveness.register();
         let now = now_unix();
         assert!(liveness.is_healthy_at(now, Duration::from_secs(600)));
     }
@@ -175,6 +220,7 @@ mod tests {
     #[test]
     fn stale_watermark_is_unhealthy() {
         let liveness = Liveness::new();
+        let _ticker = liveness.register();
         // Pretend "now" is well past the threshold since the watermark was set.
         let now = now_unix() + 10_000;
         assert!(
@@ -184,8 +230,30 @@ mod tests {
     }
 
     #[test]
+    fn one_stale_loop_among_fresh_is_unhealthy() {
+        // The headline case: one loop wedges while the others keep ticking. The
+        // stale loop must trip the probe even though its siblings are fresh.
+        let liveness = Liveness::new();
+        let fresh_a = liveness.register();
+        let _stale = liveness.register();
+        let fresh_b = liveness.register();
+
+        // Move the two fresh loops' watermarks forward to `now`; the stale one
+        // is left seeded at registration time.
+        let now = now_unix() + 10_000;
+        fresh_a.slot.store(now, Ordering::Relaxed);
+        fresh_b.slot.store(now, Ordering::Relaxed);
+
+        assert!(
+            !liveness.is_healthy_at(now, Duration::from_secs(600)),
+            "a single stale loop must make the whole worker unhealthy"
+        );
+    }
+
+    #[test]
     fn boundary_is_inclusive_healthy() {
         let liveness = Liveness::new();
+        let _ticker = liveness.register();
         let base = now_unix();
         // Exactly at the threshold is still healthy; one second past is not.
         assert!(liveness.is_healthy_at(base + 600, Duration::from_secs(600)));
@@ -211,6 +279,7 @@ mod tests {
     #[tokio::test]
     async fn server_reports_503_when_stalled() {
         let liveness = Liveness::new();
+        let _ticker = liveness.register();
         // A zero threshold makes the (initially fresh) watermark immediately
         // stale, so we exercise the unhealthy branch deterministically.
         let (handle, addr, fut) = new("127.0.0.1:0".parse().unwrap(), liveness, Duration::ZERO)
@@ -234,6 +303,7 @@ mod tests {
     #[tokio::test]
     async fn server_reports_200_when_live() {
         let liveness = Liveness::new();
+        let _ticker = liveness.register();
         let (handle, addr, fut) = new(
             "127.0.0.1:0".parse().unwrap(),
             liveness,
@@ -260,6 +330,7 @@ mod tests {
     #[tokio::test]
     async fn stalled_client_does_not_block_other_probes() {
         let liveness = Liveness::new();
+        let _ticker = liveness.register();
         let (handle, addr, fut) = new(
             "127.0.0.1:0".parse().unwrap(),
             liveness,

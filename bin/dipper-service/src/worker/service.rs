@@ -112,11 +112,13 @@ where
 
         let mut set = JoinSet::new();
         for _ in 0..concurrency.max(1) {
+            // Each loop gets its own watermark so the health endpoint can spot a
+            // single wedged loop, not just the case where every loop stalls.
             set.spawn(run_loop(
                 state.clone(),
                 queue.clone(),
                 stop_rx.clone(),
-                liveness.clone(),
+                liveness.register(),
             ));
         }
         // Drop the supervisor's own receiver so `Handle::stop`'s `closed()`
@@ -158,7 +160,7 @@ async fn run_loop<Q, R, C, I, T>(
     state: InnerCtx<R, WorkerQueueHandle<Q>, C, I, T>,
     queue: Q,
     mut stop_rx: watch::Receiver<bool>,
-    liveness: crate::health::Liveness,
+    liveness: crate::health::ProgressTicker,
 ) -> anyhow::Result<()>
 where
     Q: Queue<Message> + Clone + Send + Sync + 'static,
