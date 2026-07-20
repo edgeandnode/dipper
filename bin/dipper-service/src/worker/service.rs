@@ -72,8 +72,24 @@ where
 enum Tick {
     /// A stop signal was received; the worker loop should exit.
     Stop,
-    /// Attempt to pop and process the next job.
-    Poll,
+    /// Attempt to pop and process the next job. `listener_failed` is true only
+    /// when the listener broke during this very tick, which is what paces
+    /// re-subscription (see `should_resubscribe`).
+    Poll { listener_failed: bool },
+}
+
+/// Whether the loop should try to re-open the notification subscription now.
+///
+/// Only when there is no listener and it did not just break on this tick. A
+/// failing `wait_for_notification` returns immediately, so re-subscribing on
+/// the same tick and landing on a connection that fails just as fast (a pooled
+/// connection that accepts `LISTEN` but never delivers `NOTIFY`, say) would
+/// spin the loop at full CPU: fail, re-subscribe, pop, fail, with no
+/// poll-period sleep anywhere. Waiting one tick means the listener is already
+/// absent when the wait runs, so the wait falls through to the poll-period
+/// sleep and paces the retry.
+fn should_resubscribe(listener_present: bool, listener_failed_this_tick: bool) -> bool {
+    !listener_present && !listener_failed_this_tick
 }
 
 /// Waits for the next trigger to attempt a queue poll: a stop signal, a
@@ -96,27 +112,38 @@ async fn await_next_tick<N: JobNotifications>(
             tokio::select! { biased;
                 res = stop_rx.changed() => {
                     // Sender dropped (Err) or value flipped to true: shut down.
-                    if res.is_err() || *stop_rx.borrow() { Tick::Stop } else { Tick::Poll }
+                    if res.is_err() || *stop_rx.borrow() {
+                        Tick::Stop
+                    } else {
+                        Tick::Poll { listener_failed: false }
+                    }
                 }
                 res = l.wait_for_notification() => {
-                    if let Err(err) = res {
-                        tracing::warn!(
-                            error=?err,
-                            "job-available listener failed; degrading to poll-only until it can be re-established"
-                        );
-                        *listener = None;
+                    match res {
+                        Ok(()) => Tick::Poll { listener_failed: false },
+                        Err(err) => {
+                            tracing::warn!(
+                                error=?err,
+                                "job-available listener failed; degrading to poll-only until it can be re-established"
+                            );
+                            *listener = None;
+                            Tick::Poll { listener_failed: true }
+                        }
                     }
-                    Tick::Poll
                 }
-                _ = tokio::time::sleep(poll_period) => Tick::Poll,
+                _ = tokio::time::sleep(poll_period) => Tick::Poll { listener_failed: false },
             }
         }
         None => {
             tokio::select! { biased;
                 res = stop_rx.changed() => {
-                    if res.is_err() || *stop_rx.borrow() { Tick::Stop } else { Tick::Poll }
+                    if res.is_err() || *stop_rx.borrow() {
+                        Tick::Stop
+                    } else {
+                        Tick::Poll { listener_failed: false }
+                    }
                 }
-                _ = tokio::time::sleep(poll_period) => Tick::Poll,
+                _ = tokio::time::sleep(poll_period) => Tick::Poll { listener_failed: false },
             }
         }
     }
@@ -278,27 +305,15 @@ where
         }
     };
     loop {
-        // Whether the listener was still healthy going into this tick. Lets us
-        // tell a listener that just failed on this very tick apart from one that
-        // already degraded on an earlier, poll-period-paced tick.
-        let listener_was_present = listener.is_some();
+        let listener_failed =
+            match await_next_tick(&mut stop_rx, &mut listener, DEFAULT_QUEUE_POLL_PERIOD).await {
+                Tick::Stop => return Ok(()),
+                Tick::Poll { listener_failed } => listener_failed,
+            };
 
-        match await_next_tick(&mut stop_rx, &mut listener, DEFAULT_QUEUE_POLL_PERIOD).await {
-            Tick::Stop => return Ok(()),
-            Tick::Poll => {}
-        }
-
-        // If the listener has degraded to poll-only, try to re-establish it,
-        // but never on the same tick the failure fired. A failing
-        // `wait_for_notification` returns immediately, so re-subscribing right
-        // away and landing on a connection that fails just as fast (for example
-        // a pooled connection that accepts LISTEN but never delivers NOTIFY)
-        // would spin the loop at full CPU: fail, re-subscribe, pop, fail, with
-        // no poll-period sleep anywhere. Waiting until the next tick, when the
-        // listener is already `None` and the wait falls through to the
-        // poll-period sleep, paces the retry to at most once per poll period. A
-        // failure here keeps us in correct poll-only mode.
-        if listener.is_none() && !listener_was_present {
+        // Re-open the notification subscription when the pacing rule allows it.
+        // A failure here keeps us in correct poll-only mode.
+        if should_resubscribe(listener.is_some(), listener_failed) {
             match queue.subscribe().await {
                 Ok(l) => {
                     tracing::info!("re-subscribed to job-available notifications");
@@ -447,7 +462,7 @@ mod tests {
     use async_trait::async_trait;
     use tokio::sync::watch;
 
-    use super::{JobError, Tick, await_next_tick, run_job_with_timeout};
+    use super::{JobError, Tick, await_next_tick, run_job_with_timeout, should_resubscribe};
     use crate::worker::queue::JobNotifications;
 
     /// A listener stub whose `wait_for_notification` always errors. Models a
@@ -484,10 +499,35 @@ mod tests {
         let tick =
             await_next_tick(&mut rx, &mut listener, std::time::Duration::from_secs(60)).await;
 
-        assert_eq!(tick, Tick::Poll, "a listener error should still poll");
+        assert_eq!(
+            tick,
+            Tick::Poll {
+                listener_failed: true
+            },
+            "a listener error should still poll, and report the failure"
+        );
         assert!(
             listener.is_none(),
             "a listener error should degrade to poll-only (listener dropped)"
+        );
+    }
+
+    /// The pacing rule that keeps a listener which fails instantly from
+    /// spinning the loop: re-subscribe only once a whole tick has passed since
+    /// the failure, so the poll-period sleep sits between attempts.
+    #[test]
+    fn resubscribes_only_after_a_paced_tick() {
+        assert!(
+            !should_resubscribe(true, false),
+            "a healthy listener needs no re-subscription"
+        );
+        assert!(
+            !should_resubscribe(false, true),
+            "the tick a listener fails on must not re-subscribe immediately"
+        );
+        assert!(
+            should_resubscribe(false, false),
+            "a listener that degraded on an earlier tick should be retried"
         );
     }
 
@@ -514,7 +554,12 @@ mod tests {
         let tick =
             await_next_tick(&mut rx, &mut listener, std::time::Duration::from_millis(10)).await;
 
-        assert_eq!(tick, Tick::Poll);
+        assert_eq!(
+            tick,
+            Tick::Poll {
+                listener_failed: false
+            }
+        );
     }
 
     /// A job that hangs past the timeout must be turned into a retryable error
