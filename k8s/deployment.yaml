@@ -14,6 +14,10 @@ spec:
       labels:
         app: dipper
     spec:
+      # Above the service's own shutdown ceiling (each of its ~11 stop steps is
+      # capped at 5s, then a 5s event flush), so it exits on its own terms and a
+      # SIGKILL part-way through the teardown stays out of reach.
+      terminationGracePeriodSeconds: 90
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
