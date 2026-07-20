@@ -92,6 +92,23 @@ fn should_resubscribe(listener_present: bool, listener_failed_this_tick: bool) -
     !listener_present && !listener_failed_this_tick
 }
 
+/// How many consecutive failed re-subscription attempts between warnings.
+/// Poll-only mode retries about once per poll period, so at the 1 second
+/// default this is roughly one warning a minute.
+const RESUBSCRIBE_WARN_EVERY: u32 = 60;
+
+/// Whether a failed re-subscription should be logged at warn rather than debug.
+///
+/// Losing the notification connection costs latency, not jobs, so each retry is
+/// a debug detail. A connection that never comes back is a different matter:
+/// the worker would sit in poll-only mode indefinitely with nothing above debug
+/// to show for it. Warning periodically keeps that state visible to anyone
+/// reading logs at the usual level. `consecutive_failures` counts the attempt
+/// that just failed.
+fn resubscribe_failure_is_loud(consecutive_failures: u32) -> bool {
+    consecutive_failures > 0 && consecutive_failures % RESUBSCRIBE_WARN_EVERY == 0
+}
+
 /// Waits for the next trigger to attempt a queue poll: a stop signal, a
 /// `LISTEN`/`NOTIFY` notification, or the poll-interval fallback.
 ///
@@ -304,6 +321,7 @@ where
             None
         }
     };
+    let mut resubscribe_failures: u32 = 0;
     loop {
         let listener_failed =
             match await_next_tick(&mut stop_rx, &mut listener, DEFAULT_QUEUE_POLL_PERIOD).await {
@@ -318,12 +336,22 @@ where
                 Ok(l) => {
                     tracing::info!("re-subscribed to job-available notifications");
                     listener = Some(l);
+                    resubscribe_failures = 0;
                 }
                 Err(err) => {
-                    tracing::debug!(
-                        error=?err,
-                        "job-available listener re-subscription failed; staying in poll-only mode"
-                    );
+                    resubscribe_failures = resubscribe_failures.saturating_add(1);
+                    if resubscribe_failure_is_loud(resubscribe_failures) {
+                        tracing::warn!(
+                            error=?err,
+                            consecutive_failures=%resubscribe_failures,
+                            "job-available listener still unavailable; jobs are running on the poll interval alone"
+                        );
+                    } else {
+                        tracing::debug!(
+                            error=?err,
+                            "job-available listener re-subscription failed; staying in poll-only mode"
+                        );
+                    }
                 }
             }
         }
@@ -462,7 +490,10 @@ mod tests {
     use async_trait::async_trait;
     use tokio::sync::watch;
 
-    use super::{JobError, Tick, await_next_tick, run_job_with_timeout, should_resubscribe};
+    use super::{
+        JobError, RESUBSCRIBE_WARN_EVERY, Tick, await_next_tick, resubscribe_failure_is_loud,
+        run_job_with_timeout, should_resubscribe,
+    };
     use crate::worker::queue::JobNotifications;
 
     /// A listener stub whose `wait_for_notification` always errors. Models a
@@ -528,6 +559,30 @@ mod tests {
         assert!(
             should_resubscribe(false, false),
             "a listener that degraded on an earlier tick should be retried"
+        );
+    }
+
+    /// A listener stuck in poll-only mode must escalate past debug periodically,
+    /// so an outage that never recovers is visible at the usual log level
+    /// without one line per retry.
+    #[test]
+    fn repeated_resubscription_failures_escalate_to_warn() {
+        assert!(
+            !resubscribe_failure_is_loud(1),
+            "the first failures stay at debug"
+        );
+        assert!(!resubscribe_failure_is_loud(RESUBSCRIBE_WARN_EVERY - 1));
+        assert!(
+            resubscribe_failure_is_loud(RESUBSCRIBE_WARN_EVERY),
+            "the threshold failure warns"
+        );
+        assert!(
+            resubscribe_failure_is_loud(RESUBSCRIBE_WARN_EVERY * 3),
+            "warnings keep repeating while the outage lasts"
+        );
+        assert!(
+            !resubscribe_failure_is_loud(0),
+            "no failures means nothing to report"
         );
     }
 
