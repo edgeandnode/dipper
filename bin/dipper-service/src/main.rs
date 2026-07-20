@@ -128,33 +128,48 @@ pub async fn main() -> anyhow::Result<()> {
     };
     let rca_domain = Arc::new(std::sync::RwLock::new(rca_domain));
 
+    // Shared shutdown coordination. A signal or an unexpected task exit both drive
+    // the same graceful stop sequence below.
+    let shutdown = supervisor::Shutdown::new();
+
     // Background refresh so a running dipper follows an in-place contract upgrade
     // without a restart. Refresh failures keep the current domain and only warn.
-    if let Some(cfg) = conf.chain_client.as_ref().filter(|cfg| cfg.enabled) {
-        let cfg = cfg.clone();
-        let rca_domain = Arc::clone(&rca_domain);
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(cfg.domain_refresh_interval);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            ticker.tick().await; // the first tick fires immediately; skip it
-            loop {
-                ticker.tick().await;
-                if let Err(err) = chain_client::refresh_rca_eip712_domain(
-                    &cfg,
-                    chain_id,
-                    recurring_collector,
-                    &rca_domain,
-                )
-                .await
-                {
-                    tracing::warn!(
-                        error = %err,
-                        "RCA EIP-712 domain refresh failed; keeping the current domain"
-                    );
+    // Spawned into the task tree below so its death is not silent.
+    let rca_domain_refresh_service = conf.chain_client.as_ref().filter(|cfg| cfg.enabled).map(
+        |cfg| {
+            let cfg = cfg.clone();
+            let rca_domain = Arc::clone(&rca_domain);
+            // Nothing depends on this during teardown, so it needs no stop handle
+            // and no slot in the ordered sequence: it just leaves on the signal.
+            let shutdown = shutdown.clone();
+            async move {
+                let mut ticker = tokio::time::interval(cfg.domain_refresh_interval);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                ticker.tick().await; // the first tick fires immediately; skip it
+                loop {
+                    tokio::select! {
+                        _ = shutdown.requested_signal() => break,
+                        _ = ticker.tick() => {
+                            if let Err(err) = chain_client::refresh_rca_eip712_domain(
+                                &cfg,
+                                chain_id,
+                                recurring_collector,
+                                &rca_domain,
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    error = %err,
+                                    "RCA EIP-712 domain refresh failed; keeping the current domain"
+                                );
+                            }
+                        }
+                    }
                 }
+                Ok(())
             }
-        });
-    }
+        },
+    );
 
     // Initialize the different components
 
@@ -353,20 +368,18 @@ pub async fn main() -> anyhow::Result<()> {
 
     //- The entity count cache (shared with worker jobs for optimistic fee estimation)
     let entity_count_cache = network::service::entity_count_cache::new_cache();
-    let entity_count_handle = match conf.chain_listener {
-        Some(ref cl_conf) if cl_conf.enabled => {
-            let (handle, fut) = network::service::entity_count_cache::new(
-                network::service::entity_count_cache::Ctx {
-                    cache: entity_count_cache.clone(),
-                    endpoint: cl_conf.subgraph_endpoint.clone(),
-                    // Entity counts change slowly (once per collection epoch).
-                    // Refresh hourly to balance freshness and query cost.
-                    interval: std::time::Duration::from_secs(3600),
-                },
-            );
-            tokio::spawn(fut);
-            Some(handle)
-        }
+    // Spawned into the task tree below rather than detached, so a dead cache
+    // restarts the process instead of quietly serving stale entity counts.
+    let entity_count_service = match conf.chain_listener {
+        Some(ref cl_conf) if cl_conf.enabled => Some(network::service::entity_count_cache::new(
+            network::service::entity_count_cache::Ctx {
+                cache: entity_count_cache.clone(),
+                endpoint: cl_conf.subgraph_endpoint.clone(),
+                // Entity counts change slowly (once per collection epoch).
+                // Refresh hourly to balance freshness and query cost.
+                interval: std::time::Duration::from_secs(3600),
+            },
+        )),
         _ => None,
     };
 
@@ -580,9 +593,21 @@ pub async fn main() -> anyhow::Result<()> {
     // Construct the task tree
     let mut task_tree = JoinSet::new();
 
-    // Shared shutdown coordination. A signal or an unexpected task exit both
-    // drive the same graceful stop sequence below.
-    let shutdown = supervisor::Shutdown::new();
+    // Spawn the entity count cache if enabled
+    let entity_count_handle = if let Some((handle, service)) = entity_count_service {
+        let task_handle = task_tree.spawn(service);
+        tracing::debug!(task_id=%task_handle.id(), "Entity count cache service started");
+        Some(handle)
+    } else {
+        None
+    };
+
+    // Spawn the RCA domain refresher if enabled. It leaves on the shutdown signal
+    // by itself, so it has no stop handle in the sequence below.
+    if let Some(service) = rca_domain_refresh_service {
+        let task_handle = task_tree.spawn(service);
+        tracing::debug!(task_id=%task_handle.id(), "RCA domain refresh service started");
+    }
 
     let indexer_urls_task_handle = task_tree.spawn(indexer_urls_service);
     tracing::debug!(task_id=%indexer_urls_task_handle.id(), "Indexer URLs service started");
