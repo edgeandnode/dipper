@@ -685,8 +685,8 @@ pub async fn main() -> anyhow::Result<()> {
             tracing::trace!("stopped Entity count cache service");
         }
 
-        // Stop the RCA domain refresh. Its stop() waits for the loop to exit, so
-        // shutdown blocks until any in-flight refresh has finished.
+        // Stop the RCA domain refresh. It drops any in-flight refresh rather
+        // than waiting for it, so a wedged RPC provider cannot stall shutdown.
         tracing::trace!("stopping RCA domain refresh");
         domain_refresh_handle.stop().await;
         tracing::trace!("stopped RCA domain refresh");

@@ -8,9 +8,9 @@ use tokio::sync::mpsc;
 
 use crate::chain_client::ChainClientError;
 
-/// How long `stop` waits for an in-flight refresh before moving on. A refresh
-/// is one RPC call that normally returns in well under a second, so anything
-/// this slow is a stuck provider that must not hold up the rest of shutdown.
+/// A backstop on how long `stop` waits for the loop to acknowledge the signal.
+/// The loop drops an in-flight refresh as soon as it is told to stop, so
+/// reaching this means something is wedged and must not hold up shutdown.
 const STOP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Handle for controlling the domain refresh service.
@@ -55,8 +55,9 @@ where
     (Handle { tx_stop }, run(interval, rx_stop, refresh))
 }
 
-/// Runs the refresh until `stop_rx` fires, returning `Ok(())` on stop. The
-/// first (immediate) tick is skipped; a failing `refresh` is logged only.
+/// Runs the refresh until `stop_rx` fires, returning `Ok(())` on stop. A stop
+/// arriving mid-refresh drops that attempt; the first (immediate) tick is
+/// skipped and a failing `refresh` is logged only.
 async fn run<F, Fut>(
     interval: Duration,
     mut stop_rx: mpsc::Receiver<()>,
@@ -73,11 +74,18 @@ where
         tokio::select! { biased;
             _ = stop_rx.recv() => return Ok(()),
             _ = ticker.tick() => {
-                if let Err(err) = refresh().await {
-                    tracing::warn!(
-                        error = %err,
-                        "RCA EIP-712 domain refresh failed; keeping the current domain"
-                    );
+                // Stop wins over an in-flight refresh: dropping it costs one
+                // read-only round trip, and waiting for it can cost minutes.
+                tokio::select! { biased;
+                    _ = stop_rx.recv() => return Ok(()),
+                    res = refresh() => {
+                        if let Err(err) = res {
+                            tracing::warn!(
+                                error = %err,
+                                "RCA EIP-712 domain refresh failed; keeping the current domain"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -156,6 +164,35 @@ mod tests {
 
         handle.stop().await;
         task.await
+            .expect("refresh task panicked")
+            .expect("refresh loop returned an error");
+    }
+
+    /// A stop arriving mid-refresh must drop that refresh. Waiting for it lets
+    /// a wedged provider hold up shutdown for minutes, because the task tree
+    /// joins this task before the process exits.
+    #[tokio::test(start_paused = true)]
+    async fn stop_drops_an_in_flight_refresh() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_in = calls.clone();
+
+        let (handle, fut) = new(Duration::from_secs(60), move || {
+            let calls = calls_in.clone();
+            async move {
+                // A refresh that never returns, standing in for a provider
+                // that accepts the request and then goes quiet.
+                calls.fetch_add(1, Ordering::SeqCst);
+                std::future::pending::<Result<bool, ChainClientError>>().await
+            }
+        });
+        let task = tokio::spawn(fut);
+
+        wait_for_calls(&calls, 1).await;
+
+        handle.stop().await;
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("stop did not drop the in-flight refresh")
             .expect("refresh task panicked")
             .expect("refresh loop returned an error");
     }
