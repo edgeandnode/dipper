@@ -44,9 +44,14 @@ const RCA_DOMAIN_FETCH_MAX_RETRIES: u32 = 5;
 const INDEXER_URLS_FETCH_MAX_RETRIES: u32 = 5;
 
 /// How long the supervisor waits for the next task to finish once shutdown is underway before
-/// calling the teardown stalled. It resets on each finish, so it only trips when nothing moves
-/// at all, and sits above the longest single stop step (a 30-second subgraph query timeout).
-const TEARDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(120);
+/// calling the teardown stalled. It resets on each finish, and `STOP_STEP_TIMEOUT` caps how long
+/// any one service can hold the sequence up, so this only trips when the stop sequence is dead.
+const TEARDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for one service to stop before moving on without it. The whole sequence is
+/// bounded by this times the number of services, which is what keeps shutdown inside the pod's
+/// `terminationGracePeriodSeconds` and makes a SIGKILL mid-teardown effectively unreachable.
+const STOP_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {
@@ -692,71 +697,62 @@ pub async fn main() -> anyhow::Result<()> {
         shutdown_coordinator.request();
 
         // Stop all services in reverse dependency order, so a service is stopped before the
-        // services it depends on.
-        tracing::trace!("stopping Admin RPC service");
-        admin_rpc_handle.stop().await;
-        tracing::trace!("stopped Admin RPC service");
+        // services it depends on. Every step is capped, so the whole sequence has a ceiling
+        // that holds however badly an individual service misbehaves.
+        let mut all_stopped = true;
+        all_stopped &= stop_service("Admin RPC", admin_rpc_handle.stop()).await;
 
         // Stop reassignment service before worker (it depends on worker queue)
         if let Some(handle) = reassignment_stop_handle {
-            tracing::trace!("stopping Reassignment service");
-            handle.stop().await;
-            tracing::trace!("stopped Reassignment service");
+            all_stopped &= stop_service("Reassignment", handle.stop()).await;
         }
 
         // Stop expiration service before worker (it depends on worker queue)
         if let Some(handle) = expiration_stop_handle {
-            tracing::trace!("stopping Expiration service");
-            handle.stop().await;
-            tracing::trace!("stopped Expiration service");
+            all_stopped &= stop_service("Expiration", handle.stop()).await;
         }
 
         // Stop liveness checker service before worker (it depends on worker queue)
         if let Some(handle) = liveness_checker_stop_handle {
-            tracing::trace!("stopping Liveness checker service");
-            handle.stop().await;
-            tracing::trace!("stopped Liveness checker service");
+            all_stopped &= stop_service("Liveness checker", handle.stop()).await;
         }
 
         // Stop chain listener service before worker (it depends on worker queue)
         if let Some(handle) = chain_listener_stop_handle {
-            tracing::trace!("stopping Chain listener service");
-            handle.stop().await;
-            tracing::trace!("stopped Chain listener service");
+            all_stopped &= stop_service("Chain listener", handle.stop()).await;
         }
 
         // Stop escrow reconciler service before the DB pool closes
         if let Some(handle) = escrow_reconciler_stop_handle {
-            tracing::trace!("stopping Escrow reconciler service");
-            handle.stop().await;
-            tracing::trace!("stopped Escrow reconciler service");
+            all_stopped &= stop_service("Escrow reconciler", handle.stop()).await;
         }
 
         // Stop entity count cache service
         if let Some(handle) = entity_count_handle {
-            tracing::trace!("stopping Entity count cache service");
-            handle.stop().await;
-            tracing::trace!("stopped Entity count cache service");
+            all_stopped &= stop_service("Entity count cache", handle.stop()).await;
         }
 
-        tracing::trace!("stopping Worker service");
-        worker_handle.stop().await;
-        tracing::trace!("stopped Worker service");
-
-        tracing::trace!("stopping indexer URLs service");
-        indexer_urls_handle.stop().await;
-        tracing::trace!("stopped indexer URLs service");
+        all_stopped &= stop_service("Worker", worker_handle.stop()).await;
+        all_stopped &= stop_service("indexer URLs", indexer_urls_handle.stop()).await;
 
         // All event producers have stopped; flush buffered diagnostic events to
-        // the broker before exit (bounded by an internal timeout). A teardown
-        // that stalls earlier is aborted before here, dropping what is buffered.
+        // the broker before exit (bounded by an internal timeout).
         tracing::trace!("flushing lifecycle event stream");
         subgraph_indexing_agreements_events_emitter.flush().await;
         tracing::trace!("flushed lifecycle event stream");
 
-        tracing::trace!("shutting down DB connection pool");
-        db_conn.close().await;
-        tracing::trace!("shut down DB connection pool");
+        // Closing the pool waits for every checked-out connection back, so a service
+        // we gave up on would hang it and then take a confusing `PoolClosed`. Skipping
+        // costs nothing: Postgres rolls back anything open once the sockets drop.
+        if all_stopped {
+            tracing::trace!("shutting down DB connection pool");
+            db_conn.close().await;
+            tracing::trace!("shut down DB connection pool");
+        } else {
+            tracing::warn!(
+                "skipping the graceful DB pool close because a service did not stop in time"
+            );
+        }
 
         // Everything is stopped, so surface the registration failure now.
         match registration_error {
@@ -786,6 +782,22 @@ enum SignalHandlerError {
 }
 
 // -------- Private app helpers --------
+
+/// Stop one service, giving up after [`STOP_STEP_TIMEOUT`]. Returns whether it stopped in time,
+/// naming the service when it did not so the errors it goes on to log are attributable.
+async fn stop_service(name: &str, stop: impl std::future::Future<Output = ()>) -> bool {
+    tracing::trace!(service = name, "stopping service");
+    if tokio::time::timeout(STOP_STEP_TIMEOUT, stop).await.is_err() {
+        tracing::warn!(
+            service = name,
+            timeout_secs = STOP_STEP_TIMEOUT.as_secs(),
+            "service did not stop in time; continuing teardown without it"
+        );
+        return false;
+    }
+    tracing::trace!(service = name, "stopped service");
+    true
+}
 
 /// Signal handler for the application
 async fn signal_task() -> Result<AppSignal, SignalHandlerError> {
@@ -835,4 +847,24 @@ async fn create_subgraph_indexing_agreements_events_emitter(
         kafka_config.clone(),
         event_streaming_conf.event_queue_capacity.get(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stop_service;
+
+    /// The normal path: a service that stops promptly reports success, which is
+    /// what lets the graceful DB pool close go ahead.
+    #[tokio::test(start_paused = true)]
+    async fn stop_service_reports_success_when_the_service_stops() {
+        assert!(stop_service("prompt", async {}).await);
+    }
+
+    /// A wedged service must not hold the sequence open. `stop_service` gives up
+    /// after the cap and reports the failure, which is what bounds the whole
+    /// teardown and keeps a SIGKILL out of reach.
+    #[tokio::test(start_paused = true)]
+    async fn stop_service_gives_up_on_a_wedged_service() {
+        assert!(!stop_service("wedged", std::future::pending::<()>()).await);
+    }
 }
