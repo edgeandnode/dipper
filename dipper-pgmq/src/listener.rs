@@ -80,8 +80,8 @@ impl PgQueueListener {
     }
 
     /// Waits for a job availability notification, reconnecting as needed. Errors
-    /// once the connection has needed 3 reconnects within 60 seconds of each
-    /// other. Anything sent while it was down is lost, so callers must poll too.
+    /// once 3 reconnects have been needed, each within 60 seconds of the last.
+    /// Anything sent while it was down is lost, so callers must poll too.
     pub async fn wait_for_notification(&mut self) -> anyhow::Result<()> {
         loop {
             if self.listener.is_none() {
@@ -92,7 +92,7 @@ impl PgQueueListener {
                 if failures >= MAX_CONSECUTIVE_FAILURES {
                     self.failures.clear();
                     anyhow::bail!(
-                        "job-available notification connection needed {failures} reconnects within {} seconds",
+                        "job-available notification connection needed {failures} reconnects, each within {} seconds of the last",
                         FAILURE_WINDOW.as_secs()
                     );
                 }
