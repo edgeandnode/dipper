@@ -579,11 +579,18 @@ pub async fn main() -> anyhow::Result<()> {
     };
     tracing::info!("initialized Admin RPC service");
 
-    //- The health endpoint. On by default so the liveness probe always has an
-    //  endpoint to hit; it reports 503 once the worker watermark goes stale so
-    //  an orchestrator can restart a wedged worker. Bound eagerly here so a bad
-    //  listen address fails startup rather than silently going unprobed.
+    //- The health endpoint. On by default so the liveness probe always has an endpoint to hit;
+    //  it reports 503 once the worker watermark goes stale so an orchestrator can restart a
+    //  wedged worker. Bound eagerly so a bad listen address fails startup rather than going unseen.
     let health_handle = if conf.health.enabled {
+        if conf.health.threshold <= worker::service::PROCESS_JOB_TIMEOUT {
+            tracing::warn!(
+                threshold_secs = conf.health.threshold.as_secs(),
+                job_timeout_secs = worker::service::PROCESS_JOB_TIMEOUT.as_secs(),
+                "health threshold is at or below the per-job timeout: a slow but healthy job can \
+                 trip the liveness probe and cause spurious restarts"
+            );
+        }
         let (handle, addr, service) = health::new(
             conf.health.listen_addr,
             worker_liveness.clone(),

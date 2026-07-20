@@ -182,6 +182,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_threshold_exceeds_the_job_timeout() {
+        // A job timeout at or above the threshold means a job running to its bound looks wedged,
+        // so k8s restarts a healthy pod. Raising the timeout past 600s must fail here first.
+        assert!(
+            DEFAULT_HEALTH_THRESHOLD > crate::worker::service::PROCESS_JOB_TIMEOUT,
+            "the health threshold must leave room for one full-length job"
+        );
+    }
+
+    #[test]
     fn no_loops_registered_is_healthy() {
         // Before any loop registers (startup), there is nothing stale to report.
         let liveness = Liveness::new();
