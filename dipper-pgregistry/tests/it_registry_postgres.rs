@@ -4,9 +4,8 @@ use std::collections::HashSet;
 
 use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use dipper_pgregistry::{
-    CancelKind, Error, IndexingAgreementStatus, IndexingAgreementTerms,
-    IndexingReceiptReportedWork, IndexingRequestStatus, NewAgreementParams, PgRegistry,
-    ReconciliationItem,
+    CancelKind, Error, IndexingAgreementStatus, IndexingAgreementTerms, IndexingRequestStatus,
+    NewAgreementParams, PgRegistry, ReconciliationAudit, ReconciliationItem,
 };
 use fake::{Fake, Faker};
 use pgtemp::PgTempDB;
@@ -361,6 +360,7 @@ async fn register_new_indexing_agreement_no_indexing_request() {
             indexer_id,
             indexer_url,
             terms: agreement_terms,
+            terms_version_hash: None,
         })
         .await;
 
@@ -406,6 +406,7 @@ async fn register_new_indexing_agreement() {
             indexer_id,
             indexer_url,
             terms: agreement_terms,
+            terms_version_hash: None,
         })
         .await;
 
@@ -453,6 +454,7 @@ async fn register_new_and_get_indexing_agreement_by_id() {
             indexer_id,
             indexer_url,
             terms: agreement_terms,
+            terms_version_hash: None,
         })
         .await
         .expect("Failed to register new indexing agreement");
@@ -511,94 +513,6 @@ async fn get_indexing_agreements_by_indexing_request_id() {
         }),
         "Expected all agreements to be in CREATED or ACCEPTED_ON_CHAIN state"
     );
-}
-
-#[tokio::test]
-async fn register_new_indexing_receipt_no_indexing_agreement() {
-    //* Given
-    // Indexing agreement
-    let indexing_agreement_id = Faker.fake::<IndexingAgreementId>();
-    let indexer_id = Faker.fake::<IndexerId>();
-    let indexer_operator_id = FakeAlloy.fake();
-    let reported_work = Faker.fake::<IndexingReceiptReportedWork>();
-    let amount = FakeAlloy.fake();
-
-    let (db, _temp_db) = temp_registry_db().await;
-    let registry = PgRegistry::new(db);
-
-    //* When
-    let res = registry
-        .register_new_indexing_receipt(
-            indexing_agreement_id,
-            indexer_id,
-            indexer_operator_id,
-            reported_work,
-            amount,
-        )
-        .await;
-
-    //* Then
-    let _error = res.expect_err("Expected error when registering receipt");
-}
-
-#[tokio::test]
-async fn register_new_indexing_receipt() {
-    //* Given
-    // Indexing request
-    let requested_by = address!("8f8c426f956876325b1e037c6eae9b189952994c");
-    let deployment_id = deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv");
-    let deployment_chain_id = 42161; // arbitrum-one (0xa4b1)
-
-    // Indexing agreement
-    let indexer_id = indexer_id!("3c584ee1d89f43c6ccee17e886a001de2bb4d8a9");
-    let indexer_url = "http://localhost:8020".parse().expect("Invalid URL");
-    let agreement_terms = Faker.fake::<IndexingAgreementTerms>();
-
-    // Indexing receipt
-    let indexer_operator_id = address!("f027cfe07afa186afec8144eb20e53715d7f33b2");
-    let reported_work = Faker.fake::<IndexingReceiptReportedWork>();
-    let amount = FakeAlloy.fake();
-
-    let (db, _temp_db) = temp_registry_db().await;
-    let registry = PgRegistry::new(db);
-
-    // Register a new indexing request
-    let indexing_request_id = match registry
-        .set_indexing_target_candidates(requested_by, deployment_id, deployment_chain_id, 3)
-        .await
-        .expect("Failed to set indexing target candidates")
-    {
-        dipper_pgregistry::IndexingRequestSetTargetOutcome::Inserted { id } => id,
-        other => panic!("seed insert did not produce an Inserted outcome: {other:?}"),
-    };
-
-    // Register a new indexing agreement
-    let indexing_agreement_id = registry
-        .register_new_indexing_agreement(NewAgreementParams {
-            agreement_id: Faker.fake::<IndexingAgreementId>(),
-            nonce_uuid: uuid::Uuid::now_v7(),
-            request_id: indexing_request_id,
-            deployment_id,
-            indexer_id,
-            indexer_url,
-            terms: agreement_terms,
-        })
-        .await
-        .expect("Failed to register new indexing agreement");
-
-    //* When
-    let res = registry
-        .register_new_indexing_receipt(
-            indexing_agreement_id,
-            indexer_id,
-            indexer_operator_id,
-            reported_work,
-            amount,
-        )
-        .await;
-
-    //* Then
-    let _indexing_receipt_id = res.expect("Failed to register new indexing receipt");
 }
 
 #[tokio::test]
@@ -727,7 +641,7 @@ async fn get_declined_indexers_by_deployment_returns_rejected() {
     //* When
     // Use 30 days lookback (agreements were created "now")
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -771,7 +685,7 @@ async fn get_declined_indexers_by_deployment_empty_when_no_declines() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -797,7 +711,7 @@ async fn get_declined_indexers_by_deployment_respects_lookback() {
     //* When
     // Use 0 days lookback - should exclude everything
     let result = registry
-        .get_declined_indexers_by_deployment(0, 0, 0, 0, 0)
+        .get_declined_indexers_by_deployment(0, 0, 0, 0)
         .await
         .expect("Failed to get declined indexers");
 
@@ -856,7 +770,7 @@ async fn get_declined_indexers_by_deployment_excludes_old_rejections() {
     //* When
     // Use 30 days lookback - should NOT include the 31-day-old rejection
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -984,7 +898,7 @@ async fn get_declined_indexers_includes_rejected_status() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -1005,6 +919,145 @@ async fn get_declined_indexers_includes_rejected_status() {
     assert!(
         declined_4d.contains(&indexer_b),
         "Rejected indexer should be in declined list"
+    );
+}
+
+// =============================================================================
+// get_unresponsive_indexers tests
+// =============================================================================
+
+#[tokio::test]
+async fn get_unresponsive_indexers_returns_unresponsive() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // 0003 has no Unresponsive (status 1) rows; mark indexer 2222's agreement
+    // Unresponsive so exactly that indexer comes back for the request's chain.
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = 1, updated_at = timezone('UTC', now())
+        WHERE id = $1
+        "#,
+    )
+    .bind(agreement_id)
+    .execute(&db)
+    .await
+    .expect("Failed to mark agreement Unresponsive");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_unresponsive_indexers(1, 42161)
+        .await
+        .expect("Failed to get unresponsive indexers");
+
+    //* Then
+    let indexer_b = indexer_id!("2222222222222222222222222222222222222222");
+    assert_eq!(result.len(), 1, "only the unresponsive indexer is returned");
+    assert!(
+        result.contains(&indexer_b),
+        "the unresponsive indexer should be returned"
+    );
+}
+
+#[tokio::test]
+async fn get_unresponsive_indexers_excludes_old() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // Mark indexer 2222 Unresponsive but 31 days ago, outside a 30-day window.
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = 1, updated_at = timezone('UTC', now()) - interval '31 days'
+        WHERE id = $1
+        "#,
+    )
+    .bind(agreement_id)
+    .execute(&db)
+    .await
+    .expect("Failed to age the Unresponsive agreement");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_unresponsive_indexers(30, 42161)
+        .await
+        .expect("Failed to get unresponsive indexers");
+
+    //* Then
+    assert!(
+        result.is_empty(),
+        "an Unresponsive row older than the lookback window is excluded"
+    );
+}
+
+#[tokio::test]
+async fn get_unresponsive_indexers_is_scoped_to_chain() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // The fixture's request is on chain 42161; mark indexer 2222 Unresponsive there.
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = 1, updated_at = timezone('UTC', now())
+        WHERE id = $1
+        "#,
+    )
+    .bind(agreement_id)
+    .execute(&db)
+    .await
+    .expect("Failed to mark agreement Unresponsive");
+
+    let registry = PgRegistry::new(db);
+
+    //* Then - querying the same chain returns the indexer
+    let same_chain = registry
+        .get_unresponsive_indexers(1, 42161)
+        .await
+        .expect("query same chain");
+    assert_eq!(
+        same_chain.len(),
+        1,
+        "an indexer unresponsive on the queried chain is returned"
+    );
+
+    //* Then - querying a different chain returns nothing
+    let other_chain = registry
+        .get_unresponsive_indexers(1, 1)
+        .await
+        .expect("query other chain");
+    assert!(
+        other_chain.is_empty(),
+        "an indexer unresponsive on another chain is not returned"
     );
 }
 
@@ -1870,7 +1923,7 @@ async fn get_declined_indexers_price_too_low_excluded_after_1_day() {
     // With 30-day default lookback and 1-day price lookback, the 2-day-old PRICE_TOO_LOW
     // rejection should NOT be included (it's outside the 1-day window)
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -1916,7 +1969,7 @@ async fn get_declined_indexers_price_too_low_included_within_1_day() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -1968,7 +2021,7 @@ async fn get_declined_indexers_other_reason_uses_30_day_window() {
     //* When
     // With 30-day default lookback, the 15-day-old OTHER rejection should be included
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -2030,7 +2083,7 @@ async fn get_declined_indexers_other_reason_excluded_after_30_days() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -2072,7 +2125,7 @@ async fn get_declined_indexers_capacity_exceeded_included_within_5_minutes() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -2124,7 +2177,7 @@ async fn get_declined_indexers_capacity_exceeded_excluded_after_5_minutes() {
     // With 5-minute transient lookback, the 10-minute-old CAPACITY_EXCEEDED
     // rejection should NOT be included (it's outside the 5-minute window)
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -2135,102 +2188,6 @@ async fn get_declined_indexers_capacity_exceeded_excluded_after_5_minutes() {
     assert!(
         !result.contains_key(&deployment_1a),
         "10-minute-old CAPACITY_EXCEEDED rejection should not be in declined list (outside 5-minute window)"
-    );
-}
-
-#[tokio::test]
-async fn get_declined_indexers_insufficient_escrow_included_within_30_minutes() {
-    //* Given
-    let (db, _temp_db) = temp_registry_db().await;
-    run_fixture(
-        &db,
-        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
-    )
-    .await
-    .expect("Failed to run fixture");
-
-    // Mark an agreement as rejected with INSUFFICIENT_ESCROW, set updated_at to 20 minutes ago
-    let agreement_id =
-        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-    sqlx::query(
-        r#"
-        UPDATE dipper_reg_indexing_agreements
-        SET status = 7, rejection_reason = 'INSUFFICIENT_ESCROW', updated_at = timezone('UTC', now()) - interval '20 minutes'
-        WHERE id = $1
-        "#,
-    )
-    .bind(agreement_id)
-    .execute(&db)
-    .await
-    .expect("Failed to update agreement");
-
-    let registry = PgRegistry::new(db);
-
-    //* When
-    // 20-minute-old escrow rejection is inside the 30-minute escrow window but
-    // would be outside the 5-minute transient window -- confirms its own tier.
-    let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
-        .await
-        .expect("Failed to get declined indexers");
-
-    //* Then
-    let deployment_1a: DeploymentId = "QmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1a"
-        .parse()
-        .unwrap();
-    let indexer_a = indexer_id!("1111111111111111111111111111111111111111");
-    assert!(
-        result.contains_key(&deployment_1a),
-        "20-minute-old INSUFFICIENT_ESCROW rejection should be in declined list (within 30-minute window)"
-    );
-    let declined = result.get(&deployment_1a).expect("Deployment not found");
-    assert!(
-        declined.contains(&indexer_a),
-        "Indexer A should be in declined list for deployment 1a"
-    );
-}
-
-#[tokio::test]
-async fn get_declined_indexers_insufficient_escrow_excluded_after_30_minutes() {
-    //* Given
-    let (db, _temp_db) = temp_registry_db().await;
-    run_fixture(
-        &db,
-        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
-    )
-    .await
-    .expect("Failed to run fixture");
-
-    // Mark an agreement as rejected with INSUFFICIENT_ESCROW, set updated_at to 40 minutes ago
-    let agreement_id =
-        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-    sqlx::query(
-        r#"
-        UPDATE dipper_reg_indexing_agreements
-        SET status = 7, rejection_reason = 'INSUFFICIENT_ESCROW', updated_at = timezone('UTC', now()) - interval '40 minutes'
-        WHERE id = $1
-        "#,
-    )
-    .bind(agreement_id)
-    .execute(&db)
-    .await
-    .expect("Failed to update agreement");
-
-    let registry = PgRegistry::new(db);
-
-    //* When
-    let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
-        .await
-        .expect("Failed to get declined indexers");
-
-    //* Then
-    let deployment_1a: DeploymentId = "QmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1a"
-        .parse()
-        .unwrap();
-    assert!(
-        !result.contains_key(&deployment_1a),
-        "40-minute-old INSUFFICIENT_ESCROW rejection should not be in declined list (outside 30-minute window)"
     );
 }
 
@@ -2264,7 +2221,7 @@ async fn get_declined_indexers_invalid_signature_included_within_5_minutes() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -2315,7 +2272,7 @@ async fn get_declined_indexers_invalid_signature_excluded_after_5_minutes() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -2360,7 +2317,7 @@ async fn get_declined_indexers_replay_detected_excluded_after_5_minutes() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -2404,7 +2361,7 @@ async fn get_declined_indexers_sender_not_trusted_included_within_1_day() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -2455,7 +2412,7 @@ async fn get_declined_indexers_sender_not_trusted_excluded_after_1_day() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -2500,7 +2457,7 @@ async fn get_declined_indexers_unspecified_included_within_1_day() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -2551,7 +2508,7 @@ async fn get_declined_indexers_unspecified_excluded_after_1_day() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -2596,7 +2553,7 @@ async fn get_declined_indexers_indexer_unavailable_excluded_after_5_minutes() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -2641,7 +2598,7 @@ async fn get_declined_indexers_manifest_too_large_uses_30_day_window() {
 
     //* When
     let result = registry
-        .get_declined_indexers_by_deployment(30, 1, 5, 30, 1)
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
         .await
         .expect("Failed to get declined indexers");
 
@@ -2698,24 +2655,28 @@ async fn apply_reconciliation_batch_handles_all_four_item_shapes() {
             agreement_id: accept_only_id,
             apply_accept: true,
             cancel: None,
+            audit: ReconciliationAudit::default(),
         },
         // cancel-only by indexer: AcceptedOnChain -> CanceledByIndexer
         ReconciliationItem {
             agreement_id: cancel_by_indexer_id,
             apply_accept: false,
             cancel: Some(CancelKind::ByIndexer),
+            audit: ReconciliationAudit::default(),
         },
         // paired accept+cancel-by-requester: Created -> AcceptedOnChain -> CanceledByRequester
         ReconciliationItem {
             agreement_id: paired_id,
             apply_accept: true,
             cancel: Some(CancelKind::ByRequester),
+            audit: ReconciliationAudit::default(),
         },
         // accept-only recovery from Expired
         ReconciliationItem {
             agreement_id: recover_expired_id,
             apply_accept: true,
             cancel: None,
+            audit: ReconciliationAudit::default(),
         },
     ];
 
@@ -2787,6 +2748,98 @@ async fn apply_reconciliation_batch_handles_all_four_item_shapes() {
 }
 
 #[tokio::test]
+async fn pending_emission_queries_cover_the_paired_accept_then_cancel() {
+    // Regression guard: an agreement accepted and then cancelled in a single
+    // snapshot (paired accept+cancel -- dipper was behind) ends up terminal, but
+    // must still surface for BOTH the accepted and terminated emission sweeps. The
+    // accepted event must not be lost just because the row is no longer
+    // AcceptedOnChain.
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+    let registry = PgRegistry::new(db);
+
+    let paired_id =
+        IndexingAgreementId::from_bytes([0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+
+    // Paired accept+cancel with the on-chain audit populated, as the chain_listener
+    // does from the observed snapshot.
+    let items = vec![ReconciliationItem {
+        agreement_id: paired_id,
+        apply_accept: true,
+        cancel: Some(CancelKind::ByRequester),
+        audit: ReconciliationAudit {
+            accepted_at: Some(1_700_000_001),
+            accepted_tx: Some("0xacc".to_string()),
+            canceled_at: Some(1_700_000_002),
+            canceled_by: Some("0xcxl".to_string()),
+            canceled_tx: Some("0xcxltx".to_string()),
+        },
+    }];
+    let outcomes = registry
+        .apply_reconciliation_batch(&items)
+        .await
+        .expect("batch should succeed");
+    let paired = outcomes.get(&paired_id).copied().unwrap_or_default();
+    assert!(
+        paired.did_accept && paired.did_cancel,
+        "paired accept+cancel applied"
+    );
+
+    // The row is now CanceledByRequester, yet it must appear in BOTH pending sets.
+    let pending_accepted = registry
+        .get_agreements_pending_accepted_emission(100)
+        .await
+        .expect("accepted query");
+    assert!(
+        pending_accepted.iter().any(|p| p.agreement_id == paired_id),
+        "accepted event must NOT be lost for an accepted-then-cancelled agreement"
+    );
+    let pending_terminated = registry
+        .get_agreements_pending_terminated_emission(100)
+        .await
+        .expect("terminated query");
+    assert!(
+        pending_terminated
+            .iter()
+            .any(|p| p.agreement_id == paired_id),
+        "terminated event must surface for the cancelled agreement"
+    );
+
+    // After stamping each marker, neither query returns the row again (emit-once).
+    registry
+        .mark_accepted_event_emitted(&paired_id)
+        .await
+        .expect("mark accepted");
+    registry
+        .mark_terminated_event_emitted(&paired_id)
+        .await
+        .expect("mark terminated");
+    assert!(
+        !registry
+            .get_agreements_pending_accepted_emission(100)
+            .await
+            .expect("accepted query")
+            .iter()
+            .any(|p| p.agreement_id == paired_id),
+        "accepted marker prevents re-emit"
+    );
+    assert!(
+        !registry
+            .get_agreements_pending_terminated_emission(100)
+            .await
+            .expect("terminated query")
+            .iter()
+            .any(|p| p.agreement_id == paired_id),
+        "terminated marker prevents re-emit"
+    );
+}
+
+#[tokio::test]
 async fn apply_reconciliation_batch_no_op_cas_miss_present_with_default_outcome() {
     // Documents the contract the chain_listener relies on to distinguish
     // "row CAS-guard didn't match" (default outcome present) from "whole
@@ -2812,6 +2865,7 @@ async fn apply_reconciliation_batch_no_op_cas_miss_present_with_default_outcome(
         agreement_id: already_canceled_id,
         apply_accept: false,
         cancel: Some(CancelKind::ByIndexer),
+        audit: ReconciliationAudit::default(),
     }];
 
     //* When
@@ -2869,6 +2923,7 @@ async fn apply_reconciliation_batch_paired_rolls_back_on_unmatched_cancel() {
         agreement_id: created_id,
         apply_accept: true,
         cancel: Some(CancelKind::ByIndexer),
+        audit: ReconciliationAudit::default(),
     }];
 
     //* When
@@ -2888,4 +2943,136 @@ async fn apply_reconciliation_batch_paired_rolls_back_on_unmatched_cancel() {
         .expect("agreement missing")
         .status;
     assert_eq!(final_status, IndexingAgreementStatus::CanceledByIndexer);
+}
+
+#[tokio::test]
+async fn count_created_agreements_by_indexer_counts_only_created() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    let registry = PgRegistry::new(db);
+
+    let requested_by = address!("8f8c426f956876325b1e037c6eae9b189952994c");
+    let deployments = [
+        deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv"),
+        deployment_id!("QmXbNL4EMkQ6DAPUcBjYSDXZJdpu1Kb1XkKvNvS8JdT7Hs"),
+        deployment_id!("QmYbNL4EMkQ6DAPUcBjYSDXZJdpu1Kb1XkKvNvS8JdT7Hs"),
+        deployment_id!("QmZbNL4EMkQ6DAPUcBjYSDXZJdpu1Kb1XkKvNvS8JdT7Hs"),
+    ];
+    let indexer_a = indexer_id!("3c584ee1d89f43c6ccee17e886a001de2bb4d8a9");
+    let indexer_b = indexer_id!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let indexer_c = indexer_id!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    let indexer_url: Url = "http://localhost:8020".parse().expect("Invalid URL");
+
+    // Register one agreement per (indexer, deployment) and return its id, so
+    // each is a distinct Created row respecting the per-pair unique index.
+    async fn seed(
+        registry: &PgRegistry,
+        requested_by: thegraph_core::alloy::primitives::Address,
+        deployment_id: DeploymentId,
+        indexer_id: IndexerId,
+        indexer_url: Url,
+    ) -> IndexingAgreementId {
+        let request_id = match registry
+            .set_indexing_target_candidates(requested_by, deployment_id, 42161, 3)
+            .await
+            .expect("set target candidates")
+        {
+            dipper_pgregistry::IndexingRequestSetTargetOutcome::Inserted { id }
+            | dipper_pgregistry::IndexingRequestSetTargetOutcome::Updated { id, .. }
+            | dipper_pgregistry::IndexingRequestSetTargetOutcome::NoOp { id } => id,
+            other => panic!("unexpected set-target outcome: {other:?}"),
+        };
+        let mut terms = Faker.fake::<IndexingAgreementTerms>();
+        terms.metadata.subgraph_deployment_id = deployment_id;
+        registry
+            .register_new_indexing_agreement(NewAgreementParams {
+                agreement_id: Faker.fake::<IndexingAgreementId>(),
+                nonce_uuid: uuid::Uuid::now_v7(),
+                request_id,
+                deployment_id,
+                indexer_id,
+                indexer_url,
+                terms,
+                terms_version_hash: None,
+            })
+            .await
+            .expect("register agreement")
+    }
+
+    // Indexer A: 2 Created (deployments 0,1). Indexer B: 1 Created + 1 that
+    // we flip to AcceptedOnChain (deployments 0,1). Indexer C: 1 that we flip
+    // to Expired (deployment 0). Only Created rows should be counted.
+    let _a0 = seed(
+        &registry,
+        requested_by,
+        deployments[0],
+        indexer_a,
+        indexer_url.clone(),
+    )
+    .await;
+    let _a1 = seed(
+        &registry,
+        requested_by,
+        deployments[1],
+        indexer_a,
+        indexer_url.clone(),
+    )
+    .await;
+    let _b0 = seed(
+        &registry,
+        requested_by,
+        deployments[0],
+        indexer_b,
+        indexer_url.clone(),
+    )
+    .await;
+    let b1 = seed(
+        &registry,
+        requested_by,
+        deployments[1],
+        indexer_b,
+        indexer_url.clone(),
+    )
+    .await;
+    let c0 = seed(
+        &registry,
+        requested_by,
+        deployments[0],
+        indexer_c,
+        indexer_url.clone(),
+    )
+    .await;
+
+    registry
+        .apply_reconciliation(&b1, true, None)
+        .await
+        .expect("flip b1 to AcceptedOnChain");
+    registry
+        .mark_indexing_agreement_as_expired(&c0)
+        .await
+        .expect("flip c0 to Expired");
+
+    //* When
+    let (per_indexer, global) = registry
+        .count_created_agreements_by_indexer()
+        .await
+        .expect("count created agreements");
+
+    //* Then
+    assert_eq!(
+        per_indexer.get(&indexer_a).copied(),
+        Some(2),
+        "A has 2 Created"
+    );
+    assert_eq!(
+        per_indexer.get(&indexer_b).copied(),
+        Some(1),
+        "B has 1 Created"
+    );
+    assert_eq!(
+        per_indexer.get(&indexer_c).copied(),
+        None,
+        "C's only row is Expired, so it should be absent"
+    );
+    assert_eq!(global, 3, "global counts only the 3 Created rows");
 }

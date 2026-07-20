@@ -3,12 +3,9 @@ use std::time::Duration;
 /// The result of processing a job.
 pub type JobResult<T, E = JobError> = Result<T, E>;
 
-/// Calculate retry delay with exponential backoff.
-///
-/// - First 5 attempts: exponential (base * 2^attempt)
-/// - After 5 attempts: fixed 5 minute intervals
-///
-/// With a base delay of 5 seconds, the sequence is: 5s, 10s, 20s, 40s, 80s, 300s, 300s, ...
+/// Calculate retry delay with exponential backoff: `base * 2^attempt` for the
+/// first 5 attempts, then a fixed 5 minutes. With base 5s the sequence is 5, 10,
+/// 20, 40, 80, 300, 300, ... seconds.
 pub fn calculate_backoff_delay(base_delay: Duration, attempt: u32) -> Duration {
     if attempt < 5 {
         base_delay.saturating_mul(2u32.pow(attempt))
@@ -25,6 +22,12 @@ pub enum JobError {
     /// The job will be retried after the specified duration.
     #[error("retryable error: {0}")]
     Retryable(#[source] anyhow::Error, Duration),
+
+    /// The job couldn't run right now (e.g. a global lock is held). Re-queued
+    /// after a flat delay without counting an attempt: the work is still needed,
+    /// so it retries until it can run. The worker logs each deferral at info.
+    #[error("deferred for {0:?}")]
+    Deferred(Duration),
 
     /// A non-recoverable error occurred.
     ///

@@ -30,6 +30,9 @@ pub struct NewAgreementParams {
     pub indexer_id: IndexerId,
     pub indexer_url: Url,
     pub terms: Terms,
+    /// EIP-712 terms hash for the protocol-managed cancel path. `None` only for
+    /// pre-migration rows.
+    pub terms_version_hash: Option<Vec<u8>>,
 }
 
 /// Which party cancelled an agreement. Passed to `apply_reconciliation`
@@ -48,11 +51,69 @@ pub struct ReconciliationOutcome {
 }
 
 /// One row's reconciliation request inside a batched apply.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ReconciliationItem {
     pub agreement_id: IndexingAgreementId,
     pub apply_accept: bool,
     pub cancel: Option<CancelKind>,
+    /// On-chain payload observed for this transition, persisted alongside the
+    /// status change so a later emission sweep can rebuild the lifecycle event
+    /// from the row alone. Only the fields relevant to the applied transition
+    /// are populated.
+    pub audit: ReconciliationAudit,
+}
+
+/// Audit payload captured at reconcile time for later event emission.
+///
+/// Timestamps are chain seconds; tx hashes and `canceled_by` are the 0x hex
+/// string form matching the event wire representation.
+#[derive(Debug, Clone, Default)]
+pub struct ReconciliationAudit {
+    pub accepted_at: Option<u64>,
+    pub accepted_tx: Option<String>,
+    pub canceled_at: Option<u64>,
+    pub canceled_by: Option<String>,
+    pub canceled_tx: Option<String>,
+}
+
+/// A row that needs a `terminated` lifecycle event emitted, rebuilt from the
+/// agreement row alone by the emission sweep.
+#[derive(Debug, Clone)]
+pub struct PendingTerminatedEvent {
+    pub agreement_id: IndexingAgreementId,
+    pub indexer_id: IndexerId,
+    pub deployment_id: DeploymentId,
+    pub protocol_network: ChainId,
+    pub canceled_at: Option<u64>,
+    pub canceled_by: Option<String>,
+    pub canceled_tx: Option<String>,
+    pub updated_at: OffsetDateTime,
+}
+
+/// A row that needs an `accepted` lifecycle event emitted, rebuilt from the
+/// agreement row alone by the emission sweep.
+#[derive(Debug, Clone)]
+pub struct PendingAcceptedEvent {
+    pub agreement_id: IndexingAgreementId,
+    pub indexer_id: IndexerId,
+    pub deployment_id: DeploymentId,
+    pub protocol_network: ChainId,
+    pub accepted_at: u64,
+    pub accepted_tx: String,
+    pub ends_at: u64,
+    pub payer: Address,
+}
+
+/// A row that needs a `request.expired` lifecycle event emitted, rebuilt from
+/// the agreement row alone by the emission sweep.
+#[derive(Debug, Clone)]
+pub struct PendingExpiredEvent {
+    pub agreement_id: IndexingAgreementId,
+    pub indexer_id: IndexerId,
+    pub deployment_id: DeploymentId,
+    pub protocol_network: ChainId,
+    pub request_proposed_at: u64,
+    pub request_expired_at: u64,
 }
 
 #[async_trait]
@@ -113,15 +174,23 @@ pub trait AgreementRegistry {
 
     /// Get declined `CanceledByIndexer`/`Expired`/`Rejected` indexers grouped by
     /// deployment. Each rejection reason gets its own exclusion window (price,
-    /// transient, escrow, uncertain, or default); see the `rejection_reason` constants.
+    /// transient, uncertain, or default); see the `rejection_reason` constants.
     async fn get_declined_indexers_by_deployment(
         &self,
         default_lookback_days: i32,
         price_lookback_days: i32,
         transient_lookback_minutes: i32,
-        escrow_lookback_minutes: i32,
         uncertain_lookback_days: i32,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>;
+
+    /// Get indexers with a recent `Unresponsive` agreement on `chain_id`. The
+    /// result is skipped for that chain's deployments for `lookback_days` after
+    /// the indexer last failed to respond there.
+    async fn get_unresponsive_indexers(
+        &self,
+        lookback_days: i32,
+        chain_id: ChainId,
+    ) -> RegistryResult<Vec<IndexerId>>;
 
     /// Get all agreements by associated indexing request ID.
     async fn get_indexing_agreements_by_indexing_request_id(
@@ -136,6 +205,16 @@ pub trait AgreementRegistry {
         &self,
         request_id: &IndexingRequestId,
     ) -> RegistryResult<Vec<IndexingAgreement>>;
+
+    /// Count the agreements for a deployment that are accepted on-chain.
+    ///
+    /// Populates `remaining_accepted_indexing_agreements` on the `terminated`
+    /// lifecycle event: the number of still-active accepted agreements left on
+    /// the Subgraph (deployment) after a cancellation.
+    async fn count_accepted_agreements_by_deployment(
+        &self,
+        deployment_id: &DeploymentId,
+    ) -> RegistryResult<i64>;
 
     /// Register a new indexing agreement.
     ///
@@ -158,11 +237,11 @@ pub trait AgreementRegistry {
         old_agreement_id: IndexingAgreementId,
     ) -> RegistryResult<IndexingAgreementId>;
 
-    /// Mark an indexing agreement as `DELIVERY_FAILED`.
+    /// Mark an indexing agreement as `UNRESPONSIVE`.
     ///
     /// If there is no indexing agreement with the given ID, or if the agreement is not in the
     /// `CREATED` state, this method returns a [`NoRecordUpdated`](Error::NoRecordsUpdated) error.
-    async fn mark_indexing_agreement_as_delivery_failed(
+    async fn mark_indexing_agreement_as_unresponsive(
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<()>;
@@ -232,6 +311,88 @@ pub trait AgreementRegistry {
         Ok(outcomes)
     }
 
+    /// Fetch agreements awaiting a `terminated` event: terminal-cancel status,
+    /// genuinely accepted on-chain, marker unset. Default returns empty so mocks
+    /// need not override; the production registry runs the real query.
+    async fn get_agreements_pending_terminated_emission(
+        &self,
+        _limit: i64,
+    ) -> RegistryResult<Vec<PendingTerminatedEvent>> {
+        Ok(Vec::new())
+    }
+
+    /// Stamp the `terminated` emission marker after a confirmed broker send.
+    /// Default no-op so mocks need not override.
+    async fn mark_terminated_event_emitted(
+        &self,
+        _agreement_id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        Ok(())
+    }
+
+    /// Fetch agreements awaiting an `accepted` event: `AcceptedOnChain`, accept
+    /// observed by the new reconcile path, marker unset. Default returns empty so
+    /// mocks need not override; the production registry runs the real query.
+    async fn get_agreements_pending_accepted_emission(
+        &self,
+        _limit: i64,
+    ) -> RegistryResult<Vec<PendingAcceptedEvent>> {
+        Ok(Vec::new())
+    }
+
+    /// Stamp the `accepted` emission marker after a confirmed broker send.
+    /// Default no-op so mocks need not override.
+    async fn mark_accepted_event_emitted(
+        &self,
+        _agreement_id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        Ok(())
+    }
+
+    /// Fetch agreements awaiting a `request.expired` event: `Expired`, marker
+    /// unset. Default returns empty so mocks need not override; the production
+    /// registry runs the real query.
+    async fn get_agreements_pending_expired_emission(
+        &self,
+        _limit: i64,
+    ) -> RegistryResult<Vec<PendingExpiredEvent>> {
+        Ok(Vec::new())
+    }
+
+    /// Stamp the `request.expired` emission marker after a confirmed broker send.
+    /// Default no-op so mocks need not override.
+    async fn mark_expired_event_emitted(
+        &self,
+        _agreement_id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        Ok(())
+    }
+
+    /// Record the accepted audit payload out-of-band (rejected-then-accepted
+    /// anomaly), marking the row as genuinely accepted so its eventual
+    /// `terminated` is sweep-eligible. Default no-op so mocks need not override.
+    async fn record_accepted_audit(
+        &self,
+        _agreement_id: &IndexingAgreementId,
+        _accepted_at: u64,
+        _accepted_tx: &str,
+    ) -> RegistryResult<()> {
+        Ok(())
+    }
+
+    /// Record the cancel audit payload for a dipper-initiated cancel so the
+    /// emission sweep can populate the `terminated` event fields. Default no-op
+    /// so mocks need not override.
+    async fn record_cancel_audit(
+        &self,
+        _agreement_id: &IndexingAgreementId,
+        _canceled_at: u64,
+        _canceled_by: &str,
+        _canceled_tx: Option<&str>,
+    ) -> RegistryResult<()> {
+        Ok(())
+    }
+
     /// Get `Created` agreements whose deadline has passed (by block timestamp).
     async fn get_expired_created_agreements(
         &self,
@@ -289,6 +450,18 @@ pub trait AgreementRegistry {
         batch_size: i64,
     ) -> RegistryResult<Vec<IndexingAgreement>>;
 
+    /// Distinct service-provider addresses whose protocol-manager escrow may
+    /// need on-chain reconciliation. Empty by default so mocks need not override.
+    async fn get_providers_for_escrow_reconciliation(
+        &self,
+        _limit: i64,
+    ) -> RegistryResult<Vec<Address>>
+    where
+        Self: Sync,
+    {
+        Ok(Vec::new())
+    }
+
     /// Update the sync progress for an agreement.
     ///
     /// Called when the liveness checker observes the block height has changed
@@ -308,6 +481,13 @@ pub trait AgreementRegistry {
     async fn count_active_agreements_by_deployment(
         &self,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, usize>>;
+
+    /// Count `Created` (in-flight, not yet accepted) agreements per indexer,
+    /// plus the global total. Offer pacing reads both to decide whether an
+    /// indexer or the network has spare acceptance capacity.
+    async fn count_created_agreements_by_indexer(
+        &self,
+    ) -> RegistryResult<(std::collections::HashMap<IndexerId, u64>, u64)>;
 
     /// Whether any agreement is in `Created` or `AcceptedOnChain` status.
     ///
@@ -398,6 +578,10 @@ pub struct IndexingAgreement {
 
     /// Reason the agreement was rejected (only set when status is Rejected).
     pub rejection_reason: Option<String>,
+
+    /// EIP-712 terms hash stored at offer time, used by the protocol-managed
+    /// cancel path. `None` only for pre-migration rows.
+    pub terms_version_hash: Option<Vec<u8>>,
 }
 
 /// The _indexing agreement_ indexer information.
@@ -461,6 +645,9 @@ pub struct TermsMetadata {
     pub protocol_network: ChainId,
     /// Indexed chain, e.g., `eip155:1` (Ethereum Mainnet).
     pub chain_id: ChainId,
+
+    /// Unix-seconds proposal time, in the same clock as the acceptance deadline.
+    pub proposed_at: u64,
 }
 
 /// The status of the [`IndexingAgreement`].
@@ -473,7 +660,7 @@ pub enum Status {
     /// The [`IndexingAgreement`] was registered, but the agreement request failed.
     ///
     /// This is a terminal state.
-    DeliveryFailed,
+    Unresponsive,
 
     /// The associated [`IndexingRequest`] got cancelled.
     ///
@@ -520,7 +707,7 @@ impl std::fmt::Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let status = match self {
             Status::Created => "CREATED",
-            Status::DeliveryFailed => "DELIVERY_FAILED",
+            Status::Unresponsive => "UNRESPONSIVE",
             Status::CanceledByRequester => "CANCELED_BY_REQUESTER",
             Status::CanceledByIndexer => "CANCELED_BY_INDEXER",
             Status::Expired => "EXPIRED",
@@ -543,9 +730,7 @@ impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
             updated_at: value.updated_at,
             status: match value.status {
                 dipper_pgregistry::IndexingAgreementStatus::Created => Status::Created,
-                dipper_pgregistry::IndexingAgreementStatus::DeliveryFailed => {
-                    Status::DeliveryFailed
-                }
+                dipper_pgregistry::IndexingAgreementStatus::Unresponsive => Status::Unresponsive,
                 dipper_pgregistry::IndexingAgreementStatus::CanceledByRequester => {
                     Status::CanceledByRequester
                 }
@@ -570,6 +755,7 @@ impl TryFrom<dipper_pgregistry::IndexingAgreement> for IndexingAgreement {
             last_block_height: value.last_block_height,
             last_progress_at: value.last_progress_at,
             rejection_reason: value.rejection_reason,
+            terms_version_hash: value.terms_version_hash,
         })
     }
 }
@@ -609,6 +795,7 @@ impl From<dipper_pgregistry::IndexingAgreementTermsMetadata> for TermsMetadata {
             subgraph_deployment_id: value.subgraph_deployment_id,
             protocol_network: value.protocol_network,
             chain_id: value.chain_id,
+            proposed_at: value.proposed_at,
         }
     }
 }
@@ -639,6 +826,7 @@ impl From<TermsMetadata> for dipper_pgregistry::IndexingAgreementTermsMetadata {
             subgraph_deployment_id: value.subgraph_deployment_id,
             protocol_network: value.protocol_network,
             chain_id: value.chain_id,
+            proposed_at: value.proposed_at,
         }
     }
 }
@@ -689,6 +877,7 @@ pub mod fake_impl {
                 subgraph_deployment_id: DeploymentId::dummy_with_rng(config, rng),
                 protocol_network: ChainId::dummy_with_rng(config, rng),
                 chain_id: ChainId::dummy_with_rng(config, rng),
+                proposed_at: u64::dummy_with_rng(config, rng),
             }
         }
     }

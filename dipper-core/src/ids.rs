@@ -3,7 +3,7 @@
 //! [`IndexingAgreementId`] wraps the on-chain `bytes16` agreement ID derived from
 //! `keccak256(abi.encode(payer, dataService, serviceProvider, deadline, nonce))[0..16]`.
 //!
-//! [`IndexingRequestId`] and [`IndexingReceiptId`] remain UUID v7 *new-type* wrappers.
+//! [`IndexingRequestId`] remains a UUID v7 *new-type* wrapper.
 
 /// The on-chain agreement ID (`bytes16`).
 ///
@@ -171,12 +171,6 @@ impl ::fake::Dummy<fake::Faker> for IndexingAgreementId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Hash)]
 pub struct IndexingRequestId(uuid::Uuid);
 
-/// A unique identifier of an indexing receipt.
-///
-/// This is a *new-type* wrapper around [`uuid::Uuid`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Hash)]
-pub struct IndexingReceiptId(uuid::Uuid);
-
 /// Implementations for the new-type wrappers around [`uuid::Uuid`].
 macro_rules! uuid_new_type_impls {
     ($name:ident) => {
@@ -303,7 +297,6 @@ macro_rules! uuid_new_type_impls {
 }
 
 uuid_new_type_impls!(IndexingRequestId);
-uuid_new_type_impls!(IndexingReceiptId);
 
 #[cfg(test)]
 mod tests {

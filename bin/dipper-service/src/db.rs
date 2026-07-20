@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::Context;
 use sqlx::{
     Pool, Postgres,
@@ -7,7 +9,12 @@ use sqlx::{
 use crate::config::DbConfig;
 
 /// Default max connections
-const DEFAULT_MAX_CONNECTIONS: u32 = 10;
+pub const DEFAULT_MAX_CONNECTIONS: u32 = 32;
+
+/// How long a caller waits for a free pooled connection before erroring. Set
+/// explicitly so connection-pool starvation surfaces as a bounded error
+/// instead of relying on the driver default.
+const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Connect to the database
 pub async fn connect(conf: &DbConfig) -> anyhow::Result<Pool<Postgres>> {
@@ -19,6 +26,7 @@ pub async fn connect(conf: &DbConfig) -> anyhow::Result<Pool<Postgres>> {
     // Try to connect to the DB
     let pool = PgPoolOptions::new()
         .max_connections(conf.max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS))
+        .acquire_timeout(ACQUIRE_TIMEOUT)
         .connect_with(conn_options)
         .await
         .context("failed to connect to DB")?;

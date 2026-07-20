@@ -3,9 +3,8 @@ use std::{future::Future, time::Duration};
 use dipper_core::state::FromState;
 use dipper_iisa::CandidateSelection;
 use time::OffsetDateTime;
-use tokio::sync::mpsc;
+use tokio::{sync::watch, task::JoinSet};
 
-pub use super::service_queue::{WorkerQueue, WorkerQueueHandle};
 use super::{
     context::{Ctx, InnerCtx},
     handlers::{
@@ -15,6 +14,10 @@ use super::{
     messages::Message,
     queue::{JobNotifications, Queue},
     result::{JobError, JobResult, calculate_backoff_delay},
+};
+pub use super::{
+    queue::JobPriority,
+    service_queue::{WorkerQueue, WorkerQueueHandle},
 };
 use crate::{
     chain_client::ChainClient,
@@ -35,15 +38,14 @@ const DEFAULT_QUEUE_POLL_PERIOD: Duration = Duration::from_secs(1);
 /// worst case is their sum — on the order of a couple of minutes. This timeout
 /// sits comfortably above that and only fires if a dependency accepts the
 /// connection but never responds, defeating the per-call timeouts. Critically,
-/// the worker processes jobs one at a time, and for the whole `process_job`
-/// call the job's `JobGuard` holds the row's `Running` lock (and the pgmq
-/// transaction behind it). An unbounded hang would therefore both wedge the
-/// single worker and pin that row indefinitely. On elapse the in-flight
-/// `process_job` future is cancelled (dropped), which unblocks the worker, and
-/// the timeout is surfaced as a retryable error so the `JobGuard` reschedules
-/// the row and releases its lock. Recovery is idempotent
-/// (chain-as-source-of-truth), so re-running a job whose handler was cancelled
-/// mid-flight is safe.
+/// for the whole `process_job` call the job's `JobGuard` holds the row's
+/// `Running` lock (and the pgmq transaction behind it). An unbounded hang
+/// would therefore both wedge the worker loop and pin that row indefinitely.
+/// On elapse the in-flight `process_job` future is cancelled (dropped), which
+/// unblocks the loop, and the timeout is surfaced as a retryable error so the
+/// `JobGuard` reschedules the row and releases its lock. Recovery is
+/// idempotent (chain-as-source-of-truth), so re-running a job whose handler
+/// was cancelled mid-flight is safe.
 pub(crate) const PROCESS_JOB_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Base backoff for a job rescheduled after hitting [`PROCESS_JOB_TIMEOUT`].
@@ -85,14 +87,17 @@ enum Tick {
 /// leaves the worker in an uncertain state. The caller re-subscribes on a
 /// later poll.
 async fn await_next_tick<N: JobNotifications>(
-    stop_rx: &mut mpsc::Receiver<()>,
+    stop_rx: &mut watch::Receiver<bool>,
     listener: &mut Option<N>,
     poll_period: Duration,
 ) -> Tick {
     match listener {
         Some(l) => {
             tokio::select! { biased;
-                _ = stop_rx.recv() => Tick::Stop,
+                res = stop_rx.changed() => {
+                    // Sender dropped (Err) or value flipped to true: shut down.
+                    if res.is_err() || *stop_rx.borrow() { Tick::Stop } else { Tick::Poll }
+                }
                 res = l.wait_for_notification() => {
                     if let Err(err) = res {
                         tracing::warn!(
@@ -108,20 +113,21 @@ async fn await_next_tick<N: JobNotifications>(
         }
         None => {
             tokio::select! { biased;
-                _ = stop_rx.recv() => Tick::Stop,
+                res = stop_rx.changed() => {
+                    if res.is_err() || *stop_rx.borrow() { Tick::Stop } else { Tick::Poll }
+                }
                 _ = tokio::time::sleep(poll_period) => Tick::Poll,
             }
         }
     }
 }
 
-/// Create a new worker and a future that processes jobs from the queue.
-///
-/// The worker pulls jobs from the queue and processes them one at a time, woken
-/// by a `LISTEN`/`NOTIFY` notification or, failing that, polled every 1 second.
+/// Create a worker plus a future that runs `concurrency` (>=1) loops, each
+/// draining the same queue. The queue's `FOR UPDATE SKIP LOCKED` pop hands
+/// every loop a distinct job; the default of 1 is a single serial loop.
 pub fn new<S, Q, R, C, I, T>(state: S) -> (Handle<Q>, impl Future<Output = anyhow::Result<()>>)
 where
-    Q: Queue<Message> + Clone + Send + Sync,
+    Q: Queue<Message> + Clone + Send + Sync + 'static,
     R: IndexingRequestRegistry
         + AgreementRegistry
         + IndexerDenylistRegistry
@@ -129,16 +135,18 @@ where
         + crate::network::service::chain_listener::ChainListenerStateRegistry
         + Clone
         + Send
-        + Sync,
-    C: IndexerClient + Clone + Send + Sync,
-    I: CandidateSelection + Clone + Send + Sync,
-    T: ChainClient + Clone + Send + Sync,
+        + Sync
+        + 'static,
+    C: IndexerClient + Clone + Send + Sync + 'static,
+    I: CandidateSelection + Clone + Send + Sync + 'static,
+    T: ChainClient + Clone + Send + Sync + 'static,
     S: Into<Ctx<Q, R, C, I, T>>,
 {
     let Ctx {
         queue,
         signer,
         agreement_conf,
+        rca_domain,
         pricing_table,
         registry,
         network,
@@ -152,18 +160,28 @@ where
         bypass_chain_clock_defenses,
         chain_listener_chain_id,
         liveness,
+        reassess_lock,
+        unresponsive_breaker,
+        dips_accepting_cache,
+        concurrency,
+        subgraph_indexing_agreements_events_emitter,
     } = state.into();
 
-    let (tx_stop, rx_stop) = mpsc::channel(1);
+    // A watch channel fans the stop signal out to every loop; a single mpsc
+    // receiver could only wake one of them.
+    let (stop_tx, stop_rx) = watch::channel(false);
 
     let handle = Handle {
-        tx_stop,
+        stop_tx: stop_tx.clone(),
         worker_queue_handle: WorkerQueueHandle::new(queue.clone()),
     };
     let fut = async move {
+        // Built once, cloned per loop. Every field is Arc/Clone, so the clones
+        // share the same registry, caches and reassess locks.
         let state = InnerCtx {
             signer,
             agreement_conf,
+            rca_domain,
             pricing_table,
             registry,
             network,
@@ -177,88 +195,170 @@ where
             worker: WorkerQueueHandle::new(queue.clone()),
             bypass_chain_clock_defenses,
             chain_listener_chain_id,
+            reassess_lock,
+            unresponsive_breaker,
+            dips_accepting_cache,
+            subgraph_indexing_agreements_events_emitter,
         };
 
-        let mut stop_rx = rx_stop;
-        // `Some` while LISTEN/NOTIFY is healthy; `None` once it has degraded to
-        // poll-only operation (see `await_next_tick`).
-        let mut listener = Some(queue.subscribe().await?);
-        loop {
-            match await_next_tick(&mut stop_rx, &mut listener, DEFAULT_QUEUE_POLL_PERIOD).await {
-                Tick::Stop => return Ok(()),
-                Tick::Poll => {}
-            }
+        let mut set = JoinSet::new();
+        for _ in 0..concurrency.max(1) {
+            set.spawn(run_loop(
+                state.clone(),
+                queue.clone(),
+                stop_rx.clone(),
+                liveness.clone(),
+            ));
+        }
+        // Drop the supervisor's own receiver so `Handle::stop`'s `closed()`
+        // tracks only the loops.
+        drop(stop_rx);
 
-            // Tick the liveness watermark on every iteration (including idle
-            // polls) so the health endpoint sees a live worker. A job that runs
-            // up to PROCESS_JOB_TIMEOUT is the longest gap between ticks.
-            liveness.record_progress();
-
-            // If the listener degraded on a previous tick, try to re-establish
-            // it. This is bounded to at most once per poll period and is
-            // non-fatal: a failure keeps us in correct poll-only mode.
-            if listener.is_none() {
-                match queue.subscribe().await {
-                    Ok(l) => {
-                        tracing::info!("re-subscribed to job-available notifications");
-                        listener = Some(l);
-                    }
-                    Err(err) => {
-                        tracing::debug!(
-                            error=?err,
-                            "job-available listener re-subscription failed; staying in poll-only mode"
-                        );
-                    }
+        let mut first_err: Option<anyhow::Error> = None;
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    tracing::error!(error=?err, "Worker loop exited with error");
+                    first_err.get_or_insert(err);
                 }
-            }
-
-            // Process the job
-            let job = match queue.pop().await {
-                Ok(Some(job)) => job,
-                Ok(None) => continue,
                 Err(err) => {
-                    tracing::debug!(error=?err, "Failed to get next job from queue");
-                    continue;
-                }
-            };
-
-            let _span = tracing::debug_span!("process_job", job = %job.id());
-            match run_job_with_timeout(PROCESS_JOB_TIMEOUT, process_job(&state, job.desc())).await {
-                Ok(..) => {
-                    if let Err(err) = job.remove().await {
-                        tracing::debug!(error=?err, "Failed to remove job from queue");
-                    }
-                }
-                Err(JobError::Retryable(err, base_delay)) => {
-                    let attempt = job.failed_attempts();
-                    let delay = calculate_backoff_delay(base_delay, attempt);
-
-                    tracing::debug!(
-                        error=?err,
-                        attempt=%attempt,
-                        delay_secs=%delay.as_secs(),
-                        "Rescheduling job after failure with backoff"
-                    );
-
-                    let scheduled_for = OffsetDateTime::now_utc() + delay;
-                    if let Err(err) = job.mark_as_failed_and_reschedule(scheduled_for).await {
-                        tracing::error!(error=?err, "Failed to reschedule job");
-                    }
-                }
-                Err(JobError::Fatal(err)) => {
-                    tracing::debug!(error=?err, "Failed to process job");
-
-                    // Remove the job from the queue as it failed and
-                    // should not be retried
-                    if let Err(err) = job.remove().await {
-                        tracing::error!(error=?err, "Failed to remove job from queue");
-                    }
+                    // A panicking loop must also fail the worker, not be swallowed
+                    // into an Ok — otherwise a single loop death looks like success.
+                    tracing::error!(error=?err, "Worker loop task panicked");
+                    first_err.get_or_insert_with(|| anyhow::Error::new(err));
                 }
             }
+            // One loop ended (shutdown or death); stop the rest too so the worker
+            // drains and resolves instead of running on at reduced capacity.
+            let _ = stop_tx.send(true);
+        }
+        match first_err {
+            Some(err) => Err(err),
+            None => Ok(()),
         }
     };
 
     (handle, fut)
+}
+
+/// One worker loop: drains jobs until the stop signal fires. Each loop owns its
+/// own queue notification listener because the underlying `LISTEN`/`NOTIFY` is
+/// per-connection and can't be shared across tasks.
+async fn run_loop<Q, R, C, I, T>(
+    state: InnerCtx<R, WorkerQueueHandle<Q>, C, I, T>,
+    queue: Q,
+    mut stop_rx: watch::Receiver<bool>,
+    liveness: crate::health::Liveness,
+) -> anyhow::Result<()>
+where
+    Q: Queue<Message> + Clone + Send + Sync + 'static,
+    R: IndexingRequestRegistry
+        + AgreementRegistry
+        + IndexerDenylistRegistry
+        + PendingCancellationRegistry
+        + crate::network::service::chain_listener::ChainListenerStateRegistry
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    C: IndexerClient + Clone + Send + Sync + 'static,
+    I: CandidateSelection + Clone + Send + Sync + 'static,
+    T: ChainClient + Clone + Send + Sync + 'static,
+{
+    // `Some` while LISTEN/NOTIFY is healthy; `None` once it has degraded to
+    // poll-only operation (see `await_next_tick`).
+    let mut listener = Some(queue.subscribe().await?);
+    loop {
+        match await_next_tick(&mut stop_rx, &mut listener, DEFAULT_QUEUE_POLL_PERIOD).await {
+            Tick::Stop => return Ok(()),
+            Tick::Poll => {}
+        }
+
+        // Tick the liveness watermark on every iteration (including idle
+        // polls) so the health endpoint sees a live worker. A job that runs
+        // up to PROCESS_JOB_TIMEOUT is the longest gap between ticks.
+        liveness.record_progress();
+
+        // If the listener degraded on a previous tick, try to re-establish
+        // it. This is bounded to at most once per poll period and is
+        // non-fatal: a failure keeps us in correct poll-only mode.
+        if listener.is_none() {
+            match queue.subscribe().await {
+                Ok(l) => {
+                    tracing::info!("re-subscribed to job-available notifications");
+                    listener = Some(l);
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        error=?err,
+                        "job-available listener re-subscription failed; staying in poll-only mode"
+                    );
+                }
+            }
+        }
+
+        // Process the job
+        let job = match queue.pop().await {
+            Ok(Some(job)) => job,
+            Ok(None) => continue,
+            Err(err) => {
+                // An unexpected DB failure (the empty queue is Ok(None) above);
+                // surface it so a DB outage doesn't leave every loop spinning
+                // silently while the worker still looks healthy.
+                tracing::warn!(error=?err, "Failed to get next job from queue");
+                continue;
+            }
+        };
+
+        let _span = tracing::debug_span!("process_job", job = %job.id());
+        match run_job_with_timeout(PROCESS_JOB_TIMEOUT, process_job(&state, job.desc())).await {
+            Ok(..) => {
+                if let Err(err) = job.remove().await {
+                    tracing::debug!(error=?err, "Failed to remove job from queue");
+                }
+            }
+            Err(JobError::Retryable(err, base_delay)) => {
+                let attempt = job.failed_attempts();
+                let delay = calculate_backoff_delay(base_delay, attempt);
+
+                tracing::debug!(
+                    error=?err,
+                    attempt=%attempt,
+                    delay_secs=%delay.as_secs(),
+                    "Rescheduling job after failure with backoff"
+                );
+
+                let scheduled_for = OffsetDateTime::now_utc() + delay;
+                if let Err(err) = job.mark_as_failed_and_reschedule(scheduled_for).await {
+                    tracing::error!(error=?err, "Failed to reschedule job");
+                }
+            }
+            Err(JobError::Deferred(delay)) => {
+                // Couldn't run now (another reassessment holds the global lock);
+                // re-queue at a flat delay without counting a failed attempt.
+                // Logged at info so sustained contention is visible per job id.
+                let scheduled_for = OffsetDateTime::now_utc() + delay;
+                tracing::info!(
+                    job = %job.id(),
+                    delay_secs = %delay.as_secs(),
+                    "Deferring job; another reassessment holds the global lock, will retry"
+                );
+                if let Err(err) = job.reschedule(scheduled_for).await {
+                    tracing::error!(error=?err, "Failed to reschedule deferred job");
+                }
+            }
+            Err(JobError::Fatal(err)) => {
+                tracing::debug!(error=?err, "Failed to process job");
+
+                // Remove the job from the queue as it failed and
+                // should not be retried
+                if let Err(err) = job.remove().await {
+                    tracing::error!(error=?err, "Failed to remove job from queue");
+                }
+            }
+        }
+    }
 }
 
 async fn process_job<S, W, R, C, I, T>(state: &S, message: &Message) -> JobResult<()>
@@ -267,7 +367,8 @@ where
         + AgreementRegistry
         + IndexerDenylistRegistry
         + PendingCancellationRegistry
-        + crate::network::service::chain_listener::ChainListenerStateRegistry,
+        + crate::network::service::chain_listener::ChainListenerStateRegistry
+        + Sync,
     W: WorkerQueue,
     C: IndexerClient,
     I: CandidateSelection,
@@ -299,8 +400,8 @@ where
 /// The worker service handle
 #[derive(Clone)]
 pub struct Handle<Q> {
-    /// A channel to stop the worker
-    tx_stop: mpsc::Sender<()>,
+    /// Broadcasts the stop signal to every worker loop
+    stop_tx: watch::Sender<bool>,
 
     /// A handle to the worker's queue
     worker_queue_handle: WorkerQueueHandle<Q>,
@@ -312,16 +413,15 @@ impl<Q> Handle<Q> {
         &self.worker_queue_handle
     }
 
-    /// Stop the worker.
+    /// Stop the worker and wait for every loop to drain.
     pub async fn stop(self) {
-        if self.tx_stop.is_closed() {
+        if self.stop_tx.is_closed() {
             return;
         }
 
-        let _ = self.tx_stop.send(()).await;
-
-        // Wait for the channel to close
-        self.tx_stop.closed().await;
+        // One send wakes all loops; closed() resolves once they've all exited.
+        let _ = self.stop_tx.send(true);
+        self.stop_tx.closed().await;
     }
 }
 
@@ -330,7 +430,7 @@ mod tests {
     use std::future;
 
     use async_trait::async_trait;
-    use tokio::sync::mpsc;
+    use tokio::sync::watch;
 
     use super::{JobError, Tick, await_next_tick, run_job_with_timeout};
     use crate::worker::queue::JobNotifications;
@@ -363,7 +463,7 @@ mod tests {
     #[tokio::test]
     async fn listener_error_degrades_to_poll_without_panicking() {
         // Hold the sender so the stop branch stays pending.
-        let (_tx, mut rx) = mpsc::channel::<()>(1);
+        let (_tx, mut rx) = watch::channel(false);
         let mut listener = Some(FailingNotifier);
 
         let tick =
@@ -379,8 +479,8 @@ mod tests {
     /// A pending stop signal wins over a silent listener (biased select).
     #[tokio::test]
     async fn stop_signal_wins() {
-        let (tx, mut rx) = mpsc::channel::<()>(1);
-        tx.send(()).await.unwrap();
+        let (tx, mut rx) = watch::channel(false);
+        tx.send(true).unwrap();
         let mut listener = Some(SilentNotifier);
 
         let tick =
@@ -393,7 +493,7 @@ mod tests {
     /// the loop so job processing continues.
     #[tokio::test]
     async fn poll_only_mode_ticks_on_interval() {
-        let (_tx, mut rx) = mpsc::channel::<()>(1);
+        let (_tx, mut rx) = watch::channel(false);
         let mut listener: Option<SilentNotifier> = None;
 
         let tick =

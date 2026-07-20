@@ -1,14 +1,13 @@
 use std::time::Duration;
 
-use dipper_pgmq::{JobBuilder, JobGuard, PgQueue};
+use dipper_pgmq::{JobBuilder, JobGuard, JobPriority, PgQueue};
 use fake::{Dummy, Fake, Faker};
 use pgtemp::PgTempDB;
 use sqlx::{Pool, Postgres};
 
-/// Initialize a temporary database for integration testing.
-///
-/// This function creates a temporary database and runs the migrations.
-/// It returns the database connection pool and the temporary database guard.
+/// Initialize a temporary database for integration testing: spins up a temp
+/// Postgres, runs the migrations, and returns the connection pool and the
+/// temporary database guard.
 async fn temp_pgmq_db() -> (Pool<Postgres>, PgTempDB) {
     let temp_db = PgTempDB::new();
     let db = Pool::connect(&temp_db.connection_uri())
@@ -453,25 +452,16 @@ async fn max_retries_with_scheduled_job() {
 
 #[tokio::test]
 async fn pop_marks_only_one_row_running_with_multiple_queued() {
-    // Regression test: the previous pop SQL used `WHERE id IN (subquery)` with
-    // `FOR UPDATE SKIP LOCKED LIMIT 1` inside the subquery. Postgres planned
-    // this as a Nested Loop Semi Join that re-ran the subquery for every
-    // outer-scan row. Each re-evaluation locked and returned a *different*
-    // queued row (the previous one was now skip-locked), so the outer UPDATE
-    // ended up marking every queued row as Running in one statement.
-    // `fetch_optional` then returned only the first RETURNING row, leaving
-    // the rest orphaned.
-    //
-    // 15 rows gives the planner enough cardinality to consider Hash Anti
-    // Join and other alternative shapes, not just the smallest-table
-    // Nested Loop, so the bug can't stay masked at small N.
+    // Regression: the previous pop used `WHERE id IN (subquery)` with FOR UPDATE
+    // SKIP LOCKED inside, which Postgres re-ran per outer row and marked every
+    // queued row Running in one UPDATE. 15 rows defeats small-N planner masking.
 
     //* Given
     const QUEUED_ROWS: usize = 15;
     let (db, _temp_db) = temp_pgmq_db().await;
     let queue = PgQueue::new(db.clone());
 
-    // Push jobs sequentially so each gets an earlier scheduled_for.
+    // Push jobs sequentially so each gets an earlier created_at.
     let mut job_ids = Vec::new();
     for _ in 0..QUEUED_ROWS {
         let msg = Faker.fake::<TestMsg>();
@@ -483,10 +473,8 @@ async fn pop_marks_only_one_row_running_with_multiple_queued() {
     }
 
     //* When
-    // Pop once and remove, which commits the pop tx (deleting the popped row).
-    // With the bug, pop would have marked all rows Running; remove then
-    // deletes 1, leaving the rest orphaned as Running. With the fix, only the
-    // popped row is Running; remove deletes it; the other rows stay Queued.
+    // Pop once and remove (commits the pop tx). With the bug pop marked every
+    // row Running, orphaning all but the removed one; the fix marks only one.
     let popped = queue
         .pop::<TestMsg>()
         .await
@@ -514,5 +502,376 @@ async fn pop_marks_only_one_row_running_with_multiple_queued() {
     assert_eq!(
         queued_count, expected_queued,
         "other queued rows must remain Queued after one pop; got {queued_count}, expected {expected_queued}"
+    );
+}
+
+#[tokio::test]
+async fn deferred_job_not_starved_by_fresh_jobs() {
+    // Regression: pop() orders by created_at, not scheduled_for. A deferred job
+    // is re-queued at now()+delay; ordering by scheduled_for would sort it behind
+    // any freshly pushed job (scheduled_for = now()) and starve it under load.
+
+    //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
+    let queue = PgQueue::new(db);
+
+    let old_msg = Faker.fake::<TestMsg>();
+    let new_msg = Faker.fake::<TestMsg>();
+
+    //* When
+    // Push the older job and defer it ~300ms into the future (the deferral path).
+    let old_id = queue
+        .push(old_msg.clone())
+        .await
+        .expect("Failed to push older message");
+    let old_job = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop older job")
+        .expect("expected the older job");
+    let defer_until =
+        time::OffsetDateTime::now_utc().saturating_add(time::Duration::milliseconds(300));
+    old_job
+        .reschedule(defer_until)
+        .await
+        .expect("Failed to defer older job");
+
+    // Push a fresh job afterwards: its scheduled_for is earlier than the deferred
+    // job's, but its created_at is later.
+    queue
+        .push(new_msg)
+        .await
+        .expect("Failed to push fresh message");
+
+    // Wait until the deferred job is eligible again.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    //* Then
+    // The deferred (older) job is popped first despite its later scheduled_for.
+    let popped = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop")
+        .expect("expected a job to be available");
+    assert_eq!(
+        popped.id(),
+        &old_id,
+        "the deferred job must keep its place ahead of fresher jobs"
+    );
+    assert_eq!(popped.desc().data, old_msg.data);
+}
+
+#[tokio::test]
+async fn failed_job_gives_up_at_max_attempts() {
+    // Regression: the give-up arm of requeue() (count_attempt=true,
+    // attempt_count+1 >= max_attempts) must leave the job Failed with its
+    // schedule untouched, so it is never popped again.
+
+    //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
+    let queue = PgQueue::new(db.clone());
+
+    let msg = Faker.fake::<TestMsg>();
+    // max_retries(0) => max_attempts = 1, so the first failure exhausts it.
+    let job_id = queue
+        .push(JobBuilder::new(msg.clone()).max_retries(0))
+        .await
+        .expect("Failed to push message");
+
+    // Capture the schedule the give-up arm must leave untouched.
+    let (scheduled_before,): (time::OffsetDateTime,) =
+        sqlx::query_as("SELECT scheduled_for FROM pgmq_queue WHERE id = $1")
+            .bind(job_id)
+            .fetch_one(&db)
+            .await
+            .expect("Failed to read scheduled_for");
+
+    //* When
+    let job = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop job")
+        .expect("expected a job");
+    job.mark_as_failed()
+        .await
+        .expect("Failed to mark job as failed");
+
+    //* Then
+    let (status, attempt_count, scheduled_after): (i32, i32, time::OffsetDateTime) =
+        sqlx::query_as("SELECT status, attempt_count, scheduled_for FROM pgmq_queue WHERE id = $1")
+            .bind(job_id)
+            .fetch_one(&db)
+            .await
+            .expect("Failed to read job row");
+    assert_eq!(status, 1, "exhausted job should be Failed (status = 1)");
+    assert_eq!(attempt_count, 1, "the single attempt should be recorded");
+    assert_eq!(
+        scheduled_after, scheduled_before,
+        "give-up must not move scheduled_for"
+    );
+
+    // A Failed job is never handed out again.
+    let next = queue.pop::<TestMsg>().await.expect("Failed to pop");
+    assert!(next.is_none(), "a failed job must not be popped");
+}
+
+#[tokio::test]
+async fn failed_job_below_ceiling_retries_with_incremented_attempt() {
+    // Regression: the retry arm of requeue() (count_attempt=true,
+    // attempt_count+1 < max_attempts) must keep the job Queued, record the
+    // attempt, and move scheduled_for forward so the backoff delay applies.
+
+    //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
+    let queue = PgQueue::new(db.clone());
+
+    let msg = Faker.fake::<TestMsg>();
+    // max_retries(2) => max_attempts = 3, so the first failure stays below it.
+    let job_id = queue
+        .push(JobBuilder::new(msg.clone()).max_retries(2))
+        .await
+        .expect("Failed to push message");
+
+    let (scheduled_before,): (time::OffsetDateTime,) =
+        sqlx::query_as("SELECT scheduled_for FROM pgmq_queue WHERE id = $1")
+            .bind(job_id)
+            .fetch_one(&db)
+            .await
+            .expect("Failed to read scheduled_for");
+
+    //* When
+    let job = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop job")
+        .expect("expected a job");
+    let reschedule_to = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+    job.mark_as_failed_and_reschedule(reschedule_to)
+        .await
+        .expect("Failed to reschedule failed job");
+
+    //* Then
+    let (status, attempt_count, scheduled_after): (i32, i32, time::OffsetDateTime) =
+        sqlx::query_as("SELECT status, attempt_count, scheduled_for FROM pgmq_queue WHERE id = $1")
+            .bind(job_id)
+            .fetch_one(&db)
+            .await
+            .expect("Failed to read job row");
+    assert_eq!(
+        status, 0,
+        "a below-ceiling failure stays Queued (status = 0)"
+    );
+    assert_eq!(attempt_count, 1, "the failed attempt must be recorded");
+    assert!(
+        scheduled_after > scheduled_before,
+        "retry must move scheduled_for forward for the backoff delay"
+    );
+}
+
+#[tokio::test]
+async fn deferred_job_does_not_count_an_attempt() {
+    // Regression: reschedule() (the deferral path) leaves attempt_count
+    // untouched, unlike mark_as_failed(), so a contended job never advances
+    // toward its max-attempt ceiling.
+
+    //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
+    let queue = PgQueue::new(db.clone());
+
+    let msg = Faker.fake::<TestMsg>();
+
+    //* When
+    let job_id = queue
+        .push(msg.clone())
+        .await
+        .expect("Failed to push message");
+    let job = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop job")
+        .expect("expected a job");
+    // Defer it: re-queue immediately, no attempt recorded.
+    job.reschedule(time::OffsetDateTime::now_utc())
+        .await
+        .expect("Failed to reschedule job");
+
+    //* Then
+    let (attempt_count,): (i32,) =
+        sqlx::query_as("SELECT attempt_count FROM pgmq_queue WHERE id = $1")
+            .bind(job_id)
+            .fetch_one(&db)
+            .await
+            .expect("Failed to query attempt_count");
+    assert_eq!(
+        attempt_count, 0,
+        "deferral must not record a failed attempt"
+    );
+
+    // The job is queued again and poppable with zero failed attempts.
+    let job = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop deferred job")
+        .expect("expected the deferred job");
+    assert_eq!(job.id(), &job_id);
+    assert_eq!(job.failed_attempts(), 0);
+}
+
+#[tokio::test]
+async fn interactive_pops_before_earlier_background() {
+    // pop() orders by priority DESC first: an Interactive job pushed after two
+    // Background jobs still pops first. Within a priority class, order stays FIFO
+    // by created_at (the monotonic v7 id breaks same-timestamp ties).
+
+    //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
+    let queue = PgQueue::new(db);
+
+    let bg_first = Faker.fake::<TestMsg>();
+    let bg_second = Faker.fake::<TestMsg>();
+    let interactive = Faker.fake::<TestMsg>();
+
+    //* When
+    // Two Background jobs first, then an Interactive job last.
+    let bg_first_id = queue
+        .push(JobBuilder::new(bg_first).priority(JobPriority::Background))
+        .await
+        .expect("Failed to push first background job");
+    let bg_second_id = queue
+        .push(JobBuilder::new(bg_second).priority(JobPriority::Background))
+        .await
+        .expect("Failed to push second background job");
+    let interactive_id = queue
+        .push(JobBuilder::new(interactive).priority(JobPriority::Interactive))
+        .await
+        .expect("Failed to push interactive job");
+
+    //* Then
+    // Interactive wins despite being inserted last.
+    let first = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop")
+        .expect("expected a job");
+    assert_eq!(
+        first.id(),
+        &interactive_id,
+        "the interactive job must pop before earlier background jobs"
+    );
+    first.remove().await.expect("Failed to remove interactive");
+
+    // Then the two Background jobs come back in insertion order (FIFO).
+    let second = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop")
+        .expect("expected a job");
+    assert_eq!(
+        second.id(),
+        &bg_first_id,
+        "within a class, the earlier background job pops first"
+    );
+    second.remove().await.expect("Failed to remove bg_first");
+
+    let third = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop")
+        .expect("expected a job");
+    assert_eq!(
+        third.id(),
+        &bg_second_id,
+        "within a class, the later background job pops last"
+    );
+}
+
+#[tokio::test]
+async fn reschedule_preserves_priority() {
+    // reschedule() re-queues a job without touching its priority column (it is
+    // preserved by omission from the UPDATE), so a deferred Interactive job keeps
+    // outranking Background work after being put back.
+
+    //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
+    let queue = PgQueue::new(db.clone());
+
+    let msg = Faker.fake::<TestMsg>();
+
+    //* When
+    let job_id = queue
+        .push(JobBuilder::new(msg).priority(JobPriority::Interactive))
+        .await
+        .expect("Failed to push interactive job");
+    let job = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop")
+        .expect("expected a job");
+    // Defer it back into the queue, eligible immediately.
+    job.reschedule(time::OffsetDateTime::now_utc())
+        .await
+        .expect("Failed to reschedule");
+
+    //* Then
+    let (priority,): (i16,) = sqlx::query_as("SELECT priority FROM pgmq_queue WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&db)
+        .await
+        .expect("Failed to read priority");
+    assert_eq!(
+        priority, 1,
+        "reschedule must preserve the Interactive priority (1)"
+    );
+}
+
+#[tokio::test]
+async fn future_interactive_does_not_preempt_eligible_background() {
+    // Priority ordering applies only among eligible rows: the scheduled_for gate
+    // runs first. An Interactive job scheduled in the future must not preempt a
+    // Background job that is already eligible.
+
+    //* Given
+    let (db, _temp_db) = temp_pgmq_db().await;
+    let queue = PgQueue::new(db);
+
+    let background = Faker.fake::<TestMsg>();
+    let interactive = Faker.fake::<TestMsg>();
+    let future = time::OffsetDateTime::now_utc().saturating_add(time::Duration::minutes(1));
+
+    //* When
+    // An eligible Background job, plus a higher-priority Interactive job gated
+    // one minute into the future.
+    let background_id = queue
+        .push(JobBuilder::new(background).priority(JobPriority::Background))
+        .await
+        .expect("Failed to push background job");
+    queue
+        .push(
+            JobBuilder::new(interactive)
+                .priority(JobPriority::Interactive)
+                .schedule_at(future),
+        )
+        .await
+        .expect("Failed to push future interactive job");
+
+    //* Then
+    // Only the eligible Background job is returned; the future Interactive one
+    // is not yet visible to pop().
+    let first = queue
+        .pop::<TestMsg>()
+        .await
+        .expect("Failed to pop")
+        .expect("expected a job");
+    assert_eq!(
+        first.id(),
+        &background_id,
+        "a future interactive job must not preempt an eligible background job"
+    );
+    first.remove().await.expect("Failed to remove background");
+
+    let second: Option<JobGuard<TestMsg>> = queue.pop().await.expect("Failed to pop");
+    assert!(
+        second.is_none(),
+        "the future interactive job must stay gated until its scheduled_for"
     );
 }

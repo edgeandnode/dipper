@@ -56,7 +56,7 @@ VALUES ('\x00000000000000000000000000000001'::bytea,
             }
         }'::json);
 
--- Indexing agreement #2: DELIVERY_FAILED
+-- Indexing agreement #2: UNRESPONSIVE
 INSERT INTO dipper_reg_indexing_agreements (id,
                                             nonce_uuid,
                                             created_at,
@@ -71,7 +71,7 @@ VALUES ('\x00000000000000000000000000000002'::bytea,
         '019300db-ffea-7e1f-95f2-2561bcfeecf3'::uuid,
         timezone('UTC', now()),
         timezone('UTC', now()),
-        1, -- IndexingAgreementStatus::DeliveryFailed
+        1, -- IndexingAgreementStatus::Unresponsive
         '019300ce-4751-780e-b58c-bf696b67eb23'::uuid,
         'QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv',
         '\xc509d8fdd5bd42d4915167b49375cc5680c3c604'::bytea,

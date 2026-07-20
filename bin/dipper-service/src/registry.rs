@@ -1,4 +1,6 @@
 mod agreement;
+#[cfg(test)]
+mod agreement_stub;
 mod indexer_denylist;
 mod indexing_request;
 mod pending_cancellation;
@@ -15,13 +17,16 @@ use thegraph_core::{
 
 // Re-export for tests only
 #[cfg(test)]
-pub use self::agreement::Indexer;
+pub use self::agreement::{Indexer, PendingAcceptedEvent};
+#[cfg(test)]
+pub use self::agreement_stub::StubAgreementRegistry;
 use self::result::Result as RegistryResult;
 pub use self::{
     agreement::{
         AgreementFeeRate, AgreementRegistry, CancelKind, IndexingAgreement, NewAgreementParams,
-        ReconciliationItem, ReconciliationOutcome, Status as IndexingAgreementStatus,
-        Terms as IndexingAgreementTerms, TermsMetadata as IndexingAgreementTermsMetadata,
+        ReconciliationAudit, ReconciliationItem, ReconciliationOutcome,
+        Status as IndexingAgreementStatus, Terms as IndexingAgreementTerms,
+        TermsMetadata as IndexingAgreementTermsMetadata,
     },
     indexer_denylist::IndexerDenylistRegistry,
     indexing_request::{
@@ -41,14 +46,47 @@ impl From<NewAgreementParams> for dipper_pgregistry::NewAgreementParams {
             indexer_id: params.indexer_id,
             indexer_url: params.indexer_url,
             terms: params.terms.into(),
+            terms_version_hash: params.terms_version_hash,
         }
     }
 }
 
-/// Filter and log conversion errors instead of silently dropping them.
+/// Resolve the `remaining_accepted_indexing_agreements` value for a `terminated`
+/// lifecycle event: the number of still-accepted agreements on the deployment.
 ///
-/// This is a replacement for `.filter_map(filter_map_with_logging)` that logs warnings
-/// when conversions fail, making debugging easier.
+/// MUST be called AFTER the just-cancelled agreement's terminal status is persisted,
+/// so the count (which matches only `AcceptedOnChain`) excludes it and returns only
+/// the *other* agreements still active on the subgraph.
+///
+/// Returns `-1` (unknown) on a registry error rather than a misleading `0` — the
+/// proto defines `0` as "the Subgraph has no remaining accepted agreements", so a
+/// transient DB failure must not be reported as "fully unstaffed".
+pub(crate) async fn remaining_accepted_indexing_agreements<R>(
+    registry: &R,
+    deployment_id: &DeploymentId,
+) -> i32
+where
+    R: AgreementRegistry,
+{
+    match registry
+        .count_accepted_agreements_by_deployment(deployment_id)
+        .await
+    {
+        Ok(count) => i32::try_from(count).unwrap_or(i32::MAX),
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                deployment_id = %deployment_id,
+                "failed to count remaining accepted agreements for terminated event; \
+                 emitting -1 (unknown)"
+            );
+            -1
+        }
+    }
+}
+
+/// Filter and log conversion errors instead of silently dropping them: use as
+/// `.filter_map(filter_map_with_logging)` so failed conversions leave a warning.
 fn filter_map_with_logging<T, E: std::fmt::Display>(
     result: std::result::Result<T, E>,
 ) -> Option<T> {
@@ -61,10 +99,8 @@ fn filter_map_with_logging<T, E: std::fmt::Display>(
     }
 }
 
-/// A service for interacting with the registry.
-///
-/// This service provides a set of methods for interacting with the registry,
-/// including registering new indexing requests, indexing agreements, and indexing receipts.
+/// A service for interacting with the registry, including registering new
+/// indexing requests and indexing agreements.
 #[derive(Clone)]
 pub struct RegistryProvider {
     inner: PgRegistry,
@@ -151,6 +187,17 @@ impl IndexingRequestRegistry for RegistryProvider {
             .filter_map(filter_map_with_logging)
             .collect())
     }
+
+    async fn set_indexing_request_shortfall_active(
+        &self,
+        id: &IndexingRequestId,
+        active: bool,
+    ) -> RegistryResult<bool> {
+        Ok(self
+            .inner
+            .set_indexing_request_shortfall_active(id, active)
+            .await?)
+    }
 }
 
 #[async_trait]
@@ -228,7 +275,6 @@ impl AgreementRegistry for RegistryProvider {
         default_lookback_days: i32,
         price_lookback_days: i32,
         transient_lookback_minutes: i32,
-        escrow_lookback_minutes: i32,
         uncertain_lookback_days: i32,
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>> {
         Ok(self
@@ -237,9 +283,19 @@ impl AgreementRegistry for RegistryProvider {
                 default_lookback_days,
                 price_lookback_days,
                 transient_lookback_minutes,
-                escrow_lookback_minutes,
                 uncertain_lookback_days,
             )
+            .await?)
+    }
+
+    async fn get_unresponsive_indexers(
+        &self,
+        lookback_days: i32,
+        chain_id: ChainId,
+    ) -> RegistryResult<Vec<IndexerId>> {
+        Ok(self
+            .inner
+            .get_unresponsive_indexers(lookback_days, chain_id)
             .await?)
     }
 
@@ -269,6 +325,15 @@ impl AgreementRegistry for RegistryProvider {
             .filter_map(filter_map_with_logging)
             .collect())
     }
+    async fn count_accepted_agreements_by_deployment(
+        &self,
+        deployment_id: &DeploymentId,
+    ) -> RegistryResult<i64> {
+        self.inner
+            .count_accepted_agreements_by_deployment(deployment_id)
+            .await
+            .map_err(Into::into)
+    }
     async fn register_new_indexing_agreement(
         &self,
         params: NewAgreementParams,
@@ -290,12 +355,12 @@ impl AgreementRegistry for RegistryProvider {
             .map_err(Into::into)
     }
 
-    async fn mark_indexing_agreement_as_delivery_failed(
+    async fn mark_indexing_agreement_as_unresponsive(
         &self,
         id: &IndexingAgreementId,
     ) -> RegistryResult<()> {
         self.inner
-            .mark_indexing_agreement_as_delivery_failed(id)
+            .mark_indexing_agreement_as_unresponsive(id)
             .await
             .map_err(Into::into)
     }
@@ -358,6 +423,13 @@ impl AgreementRegistry for RegistryProvider {
                     }
                     agreement::CancelKind::ByIndexer => dipper_pgregistry::CancelKind::ByIndexer,
                 }),
+                audit: dipper_pgregistry::ReconciliationAudit {
+                    accepted_at: item.audit.accepted_at,
+                    accepted_tx: item.audit.accepted_tx.clone(),
+                    canceled_at: item.audit.canceled_at,
+                    canceled_by: item.audit.canceled_by.clone(),
+                    canceled_tx: item.audit.canceled_tx.clone(),
+                },
             })
             .collect();
         let outcomes = self.inner.apply_reconciliation_batch(&pg_items).await?;
@@ -373,6 +445,121 @@ impl AgreementRegistry for RegistryProvider {
                 )
             })
             .collect())
+    }
+
+    async fn get_agreements_pending_terminated_emission(
+        &self,
+        limit: i64,
+    ) -> RegistryResult<Vec<agreement::PendingTerminatedEvent>> {
+        Ok(self
+            .inner
+            .get_agreements_pending_terminated_emission(limit)
+            .await?
+            .into_iter()
+            .map(|p| agreement::PendingTerminatedEvent {
+                agreement_id: p.agreement_id,
+                indexer_id: p.indexer_id,
+                deployment_id: p.deployment_id,
+                protocol_network: p.protocol_network,
+                canceled_at: p.canceled_at,
+                canceled_by: p.canceled_by,
+                canceled_tx: p.canceled_tx,
+                updated_at: p.updated_at,
+            })
+            .collect())
+    }
+
+    async fn mark_terminated_event_emitted(
+        &self,
+        agreement_id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        self.inner
+            .mark_terminated_event_emitted(agreement_id)
+            .await?;
+        Ok(())
+    }
+
+    async fn get_agreements_pending_accepted_emission(
+        &self,
+        limit: i64,
+    ) -> RegistryResult<Vec<agreement::PendingAcceptedEvent>> {
+        Ok(self
+            .inner
+            .get_agreements_pending_accepted_emission(limit)
+            .await?
+            .into_iter()
+            .map(|p| agreement::PendingAcceptedEvent {
+                agreement_id: p.agreement_id,
+                indexer_id: p.indexer_id,
+                deployment_id: p.deployment_id,
+                protocol_network: p.protocol_network,
+                accepted_at: p.accepted_at,
+                accepted_tx: p.accepted_tx,
+                ends_at: p.ends_at,
+                payer: p.payer,
+            })
+            .collect())
+    }
+
+    async fn mark_accepted_event_emitted(
+        &self,
+        agreement_id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        self.inner.mark_accepted_event_emitted(agreement_id).await?;
+        Ok(())
+    }
+
+    async fn get_agreements_pending_expired_emission(
+        &self,
+        limit: i64,
+    ) -> RegistryResult<Vec<agreement::PendingExpiredEvent>> {
+        Ok(self
+            .inner
+            .get_agreements_pending_expired_emission(limit)
+            .await?
+            .into_iter()
+            .map(|p| agreement::PendingExpiredEvent {
+                agreement_id: p.agreement_id,
+                indexer_id: p.indexer_id,
+                deployment_id: p.deployment_id,
+                protocol_network: p.protocol_network,
+                request_proposed_at: p.request_proposed_at,
+                request_expired_at: p.request_expired_at,
+            })
+            .collect())
+    }
+
+    async fn mark_expired_event_emitted(
+        &self,
+        agreement_id: &IndexingAgreementId,
+    ) -> RegistryResult<()> {
+        self.inner.mark_expired_event_emitted(agreement_id).await?;
+        Ok(())
+    }
+
+    async fn record_accepted_audit(
+        &self,
+        agreement_id: &IndexingAgreementId,
+        accepted_at: u64,
+        accepted_tx: &str,
+    ) -> RegistryResult<()> {
+        self.inner
+            .record_accepted_audit(agreement_id, accepted_at, accepted_tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn record_cancel_audit(
+        &self,
+        agreement_id: &IndexingAgreementId,
+        canceled_at: u64,
+        canceled_by: &str,
+        canceled_tx: Option<&str>,
+    ) -> RegistryResult<()> {
+        self.inner
+            .record_cancel_audit(agreement_id, canceled_at, canceled_by, canceled_tx)
+            .await?;
+        Ok(())
     }
 
     async fn get_expired_created_agreements(
@@ -439,6 +626,16 @@ impl AgreementRegistry for RegistryProvider {
             .collect())
     }
 
+    async fn get_providers_for_escrow_reconciliation(
+        &self,
+        limit: i64,
+    ) -> RegistryResult<Vec<Address>> {
+        self.inner
+            .get_providers_for_escrow_reconciliation(limit)
+            .await
+            .map_err(Into::into)
+    }
+
     async fn update_agreement_sync_progress(
         &self,
         id: &IndexingAgreementId,
@@ -456,6 +653,15 @@ impl AgreementRegistry for RegistryProvider {
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, usize>> {
         self.inner
             .count_active_agreements_by_deployment()
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn count_created_agreements_by_indexer(
+        &self,
+    ) -> RegistryResult<(std::collections::HashMap<IndexerId, u64>, u64)> {
+        self.inner
+            .count_created_agreements_by_indexer()
             .await
             .map_err(Into::into)
     }

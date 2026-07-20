@@ -68,8 +68,8 @@ pub mod rejection_reason {
     /// clears once dipper stops reusing agreement ids).
     pub const REPLAY_DETECTED: &str = "REPLAY_DETECTED";
 
-    /// The payer has insufficient escrow to back the agreement.
-    /// Lookback: 30 minutes (clears once the payer tops up escrow).
+    /// The payer has insufficient escrow to back the agreement. Uses the default
+    /// lookback: the protocol contract funds escrow, so this should not recur.
     pub const INSUFFICIENT_ESCROW: &str = "INSUFFICIENT_ESCROW";
 
     /// A transient internal error on the indexer; the proposal may be resent.
@@ -136,6 +136,10 @@ pub struct IndexingAgreement {
     ///
     /// Values from the `rejection_reason` module constants, or None.
     pub rejection_reason: Option<String>,
+
+    /// EIP-712 terms hash stored for the offer (RecurringAgreementManager
+    /// cancel path). `None` only for pre-migration rows.
+    pub terms_version_hash: Option<Vec<u8>>,
 }
 
 /// The status of the [`IndexingAgreement`].
@@ -158,10 +162,9 @@ pub enum Status {
     #[default]
     Created = -1,
 
-    /// The [`IndexingAgreement`] was registered, but the agreement request failed.
-    ///
-    /// This is a terminal state.
-    DeliveryFailed = 1,
+    /// The proposal was sent but the indexer never responded (timeout,
+    /// connection failure, or unreachable). Terminal state.
+    Unresponsive = 1,
 
     /// The associated [`IndexingRequest`] got cancelled.
     ///
@@ -211,7 +214,7 @@ impl std::fmt::Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let status = match self {
             Status::Created => "CREATED",
-            Status::DeliveryFailed => "DELIVERY_FAILED",
+            Status::Unresponsive => "UNRESPONSIVE",
             Status::CanceledByRequester => "CANCELED_BY_REQUESTER",
             Status::CanceledByIndexer => "CANCELED_BY_INDEXER",
             Status::Expired => "EXPIRED",
@@ -288,6 +291,11 @@ pub struct TermsMetadata {
     pub protocol_network: ChainId,
     /// Indexed chain, e.g., `eip155:1` (Ethereum Mainnet).
     pub chain_id: ChainId,
+
+    /// Unix-seconds proposal time, in the same clock as `Terms::deadline`.
+    /// `serde(default)` yields 0 for rows written before this field existed.
+    #[serde(default)]
+    pub proposed_at: u64,
 }
 
 /// The _indexing agreement_ [`fake`] implementation for test data generation.
@@ -344,6 +352,7 @@ pub mod fake_impl {
                 subgraph_deployment_id: DeploymentId::dummy_with_rng(config, rng),
                 protocol_network: ChainId::dummy_with_rng(config, rng),
                 chain_id: ChainId::dummy_with_rng(config, rng),
+                proposed_at: u64::dummy_with_rng(config, rng),
             }
         }
     }
@@ -380,6 +389,7 @@ mod tests {
                 .unwrap(),
                 protocol_network: 42161,
                 chain_id: 1,
+                proposed_at: 1_700_000_000,
             },
         };
 

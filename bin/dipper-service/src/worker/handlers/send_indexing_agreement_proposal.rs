@@ -14,7 +14,7 @@ use crate::{
     },
     worker::{
         result::{JobError, JobResult},
-        service::WorkerQueue,
+        service::{JobPriority, WorkerQueue},
     },
 };
 
@@ -42,9 +42,9 @@ pub struct Message {
 /// This function sends a SignedRCA to the indexer and processes the response:
 /// - `Accept`: The indexer received the proposal and may accept on-chain before the deadline.
 ///   Agreement stays in `Created` until an on-chain acceptance event is observed.
-/// - `Reject`: The indexer explicitly rejected the proposal. Agreement is marked as
-///   `DeliveryFailed` and the indexing request is reassessed to find replacement indexers.
-/// - Network error: Same handling as `Reject` - mark failed and reassess.
+/// - `Reject`: The indexer explicitly rejected the proposal. Agreement is marked
+///   `Rejected` and the indexing request is reassessed to find replacement indexers.
+/// - Network error / no response: Agreement is marked `Unresponsive` and reassessed.
 pub async fn handle<R, W, C>(
     ctx: Ctx<R, W, C>,
     Message {
@@ -119,10 +119,7 @@ where
                 tracing::info!(
                     agreement_id = %agreement_id,
                     indexing_request_id = %indexing_request_id,
-                    old_status = "CREATED",
-                    new_status = "CREATED",
-                    reason = "accepted_by_indexer",
-                    "agreement state transition (submitting offer on-chain)"
+                    "Indexer accepted proposal off-chain; submitting offer on-chain (agreement stays CREATED until the chain listener observes on-chain acceptance)"
                 );
 
                 // Indexer accepted the terms. Submit the on-chain offer so
@@ -136,6 +133,8 @@ where
                         indexer_url.clone(),
                         *deployment_id,
                         *deployment_chain_id,
+                        // Background: a follow-up proposal-pipeline job (see JobPriority).
+                        JobPriority::Background,
                     )
                     .await
                 {
@@ -228,8 +227,8 @@ where
                 agreement_id = %agreement_id,
                 indexing_request_id = %indexing_request_id,
                 old_status = "CREATED",
-                new_status = "DELIVERY_FAILED",
-                reason = "delivery_failed",
+                new_status = "UNRESPONSIVE",
+                reason = "unresponsive",
                 "agreement state transition"
             );
             tracing::error!(
@@ -306,10 +305,10 @@ where
     tracing::trace!(
         indexing_request_id=%indexing_request_id,
         agreement_id=%agreement_id,
-        "Marking indexing agreement as DELIVERY_FAILED"
+        "Marking indexing agreement as UNRESPONSIVE"
     );
     ctx.registry
-        .mark_indexing_agreement_as_delivery_failed(agreement_id)
+        .mark_indexing_agreement_as_unresponsive(agreement_id)
         .await
         .map_err(|err| JobError::Fatal(err.into()))?;
 
@@ -353,6 +352,8 @@ where
             *deployment_id,
             *deployment_chain_id,
             num_candidates,
+            // Background: reassessment retry after a proposal failure.
+            JobPriority::Background,
         )
         .await
     {
@@ -443,11 +444,17 @@ mod tests {
             _default_lookback_days: i32,
             _price_lookback_days: i32,
             _transient_lookback_minutes: i32,
-            _escrow_lookback_minutes: i32,
             _uncertain_lookback_days: i32,
         ) -> crate::registry::Result<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>
         {
             Ok(std::collections::HashMap::new())
+        }
+        async fn get_unresponsive_indexers(
+            &self,
+            _lookback_days: i32,
+            _chain_id: thegraph_core::alloy::primitives::ChainId,
+        ) -> crate::registry::Result<Vec<IndexerId>> {
+            Ok(vec![])
         }
 
         async fn get_indexing_agreements_by_indexing_request_id(
@@ -462,6 +469,13 @@ mod tests {
             _request_id: &IndexingRequestId,
         ) -> crate::registry::Result<Vec<IndexingAgreement>> {
             Ok(vec![])
+        }
+
+        async fn count_accepted_agreements_by_deployment(
+            &self,
+            _deployment_id: &DeploymentId,
+        ) -> crate::registry::Result<i64> {
+            Ok(0)
         }
 
         async fn register_new_indexing_agreement(
@@ -479,7 +493,7 @@ mod tests {
             Ok(IndexingAgreementId::from_bytes(rand::random()))
         }
 
-        async fn mark_indexing_agreement_as_delivery_failed(
+        async fn mark_indexing_agreement_as_unresponsive(
             &self,
             id: &IndexingAgreementId,
         ) -> crate::registry::Result<()> {
@@ -569,6 +583,15 @@ mod tests {
             &self,
         ) -> crate::registry::Result<std::collections::HashMap<DeploymentId, usize>> {
             Ok(std::collections::HashMap::new())
+        }
+
+        async fn count_created_agreements_by_indexer(
+            &self,
+        ) -> crate::registry::Result<(
+            std::collections::HashMap<thegraph_core::IndexerId, u64>,
+            u64,
+        )> {
+            Ok((std::collections::HashMap::new(), 0))
         }
 
         async fn mark_indexing_agreement_as_abandoned(
@@ -678,6 +701,7 @@ mod tests {
             _indexing_request_id: IndexingRequestId,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             Ok(JobId::default())
         }
@@ -688,6 +712,7 @@ mod tests {
             deployment_id: DeploymentId,
             chain_id: ChainId,
             num_candidates: usize,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             self.state.lock().unwrap().reassess_calls.push((
                 request_id,
@@ -701,6 +726,7 @@ mod tests {
         async fn cancel_rejected_agreement_on_chain(
             &self,
             _agreement_id: IndexingAgreementId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             Ok(JobId::default())
         }
@@ -712,6 +738,7 @@ mod tests {
             _indexer_url: Url,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             Ok(JobId::default())
         }
@@ -860,6 +887,7 @@ mod tests {
                 ),
                 protocol_network: 1,
                 chain_id: 1,
+                proposed_at: 0,
             },
         };
         IndexingAgreement {
@@ -877,6 +905,7 @@ mod tests {
             last_block_height: None,
             last_progress_at: None,
             rejection_reason: None,
+            terms_version_hash: None,
         }
     }
 

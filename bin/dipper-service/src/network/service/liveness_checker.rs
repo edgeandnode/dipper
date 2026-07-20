@@ -35,7 +35,7 @@
 //! Indexer URLs are looked up fresh from the network topology on each cycle,
 //! not read from the stored agreement. This ensures URL changes are detected.
 
-use std::{collections::HashMap, future::Future, time::Duration};
+use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
 
 use thegraph_core::{DeploymentId, IndexerId};
 use time::OffsetDateTime;
@@ -49,7 +49,7 @@ use crate::{
     registry::{
         AgreementRegistry, IndexingAgreement, IndexingRequestRegistry, PendingCancellationRegistry,
     },
-    worker::service::WorkerQueue,
+    worker::service::{JobPriority, WorkerQueue},
 };
 
 /// Handle for controlling the liveness checker service lifecycle.
@@ -79,6 +79,8 @@ pub struct Ctx<R, W, C> {
     pub chain_client: C,
     /// Network provider for looking up fresh indexer URLs.
     pub network: NetworkProviderService,
+    /// Indexing agreement config (manager address for cancel dispatch).
+    pub agreement_conf: Arc<crate::config::IndexingAgreementConfig>,
     /// Service configuration.
     pub config: LivenessCheckerConfig,
 }
@@ -101,6 +103,7 @@ where
         worker_queue,
         chain_client,
         network,
+        agreement_conf,
         config,
     } = ctx;
 
@@ -205,6 +208,7 @@ where
                             &registry,
                             &worker_queue,
                             &chain_client,
+                            &agreement_conf,
                             DB_UPDATE_TIMEOUT,
                             QUEUE_PUSH_TIMEOUT,
                         )
@@ -296,6 +300,7 @@ where
                                 &registry,
                                 &worker_queue,
                                 &chain_client,
+                                &agreement_conf,
                                 DB_UPDATE_TIMEOUT,
                                 QUEUE_PUSH_TIMEOUT,
                             )
@@ -353,6 +358,7 @@ async fn process_agreements_with_no_data<R, W, C>(
     registry: &R,
     worker_queue: &W,
     chain_client: &C,
+    agreement_conf: &crate::config::IndexingAgreementConfig,
     db_timeout: Duration,
     queue_timeout: Duration,
 ) where
@@ -417,6 +423,7 @@ async fn process_agreements_with_no_data<R, W, C>(
                     registry,
                     worker_queue,
                     chain_client,
+                    agreement_conf,
                     db_timeout,
                     queue_timeout,
                 )
@@ -469,11 +476,13 @@ async fn record_progress<R>(
 ///
 /// If the on-chain cancel fails, the DB is not updated and reassessment is not
 /// queued, leaving the agreement in `AcceptedOnChain` for the next cycle to retry.
+#[allow(clippy::too_many_arguments)]
 async fn cancel_and_reassess<R, W, C>(
     agreement: &IndexingAgreement,
     registry: &R,
     worker_queue: &W,
     chain_client: &C,
+    agreement_conf: &crate::config::IndexingAgreementConfig,
     db_timeout: Duration,
     queue_timeout: Duration,
 ) where
@@ -481,9 +490,9 @@ async fn cancel_and_reassess<R, W, C>(
     W: WorkerQueue + Send + Sync,
     C: ChainClient + Send + Sync,
 {
-    // 1. Cancel on-chain
-    match chain_client
-        .cancel_indexing_agreement_by_payer(agreement.id.as_bytes())
+    // 1. Cancel on-chain (mode-aware dispatch)
+    let mut on_chain_cancel_tx: Option<String> = None;
+    match crate::cancel_dispatch::cancel_agreement_on_chain(chain_client, agreement, agreement_conf)
         .await
     {
         Ok(Some(tx_hash)) => {
@@ -492,12 +501,24 @@ async fn cancel_and_reassess<R, W, C>(
                 tx_hash = %tx_hash,
                 "canceled stale agreement on-chain"
             );
+            on_chain_cancel_tx = Some(tx_hash.to_string());
         }
         Ok(None) => {
             tracing::info!(
                 agreement_id = %agreement.id,
                 "stale agreement already canceled on-chain; proceeding to mark abandoned"
             );
+        }
+        Err(err @ ChainClientError::MissingTermsVersionHash { .. }) => {
+            // Permanent per-agreement condition: the on-chain agreement is
+            // still live, so do NOT mark abandoned (that would hide a
+            // money-draining agreement). Surface for operator action.
+            tracing::error!(
+                agreement_id = %agreement.id,
+                error = %err,
+                "cannot cancel stale agreement: missing terms_version_hash; leaving active for operator action"
+            );
+            return;
         }
         Err(ChainClientError::ConfigError(_)) => {
             // Chain client disabled: still proceed to mark and reassess so the
@@ -541,6 +562,27 @@ async fn cancel_and_reassess<R, W, C>(
             return;
         }
     };
+
+    // The accepted agreement was canceled on-chain because the indexer went
+    // stale. Record the cancel audit so the chain_listener's `terminated` sweep
+    // announces it durably: this row is marked `AbandonedByIndexer` (terminal)
+    // and was accepted on-chain, so it is sweep-eligible.
+    let manager = agreement_conf.recurring_agreement_manager().to_string();
+    if let Err(err) = registry
+        .record_cancel_audit(
+            &agreement.id,
+            dipper_core::time::now_secs(),
+            &manager,
+            on_chain_cancel_tx.as_deref(),
+        )
+        .await
+    {
+        tracing::warn!(
+            agreement_id = %agreement.id,
+            error = %err,
+            "failed to record cancel audit; terminated event may emit with fallback fields"
+        );
+    }
 
     // Clean up pending cancellations: if this abandoned agreement was a
     // replacement, the old agreement it was replacing should stay active.
@@ -596,6 +638,8 @@ async fn cancel_and_reassess<R, W, C>(
             abandoned.terms.metadata.subgraph_deployment_id,
             abandoned.terms.metadata.chain_id,
             request.num_candidates,
+            // Background: abandonment remediation yields to interactive work.
+            JobPriority::Background,
         ),
     )
     .await;
@@ -780,11 +824,11 @@ mod tests {
         chain_client::{ChainClient, ChainClientError},
         config::LivenessCheckerConfig,
         registry::{
-            AgreementFeeRate, AgreementRegistry, IndexingAgreement, IndexingAgreementStatus,
-            IndexingAgreementTerms, IndexingAgreementTermsMetadata, IndexingRequest,
-            IndexingRequestRegistry, PendingCancellationRegistry, Result as RegistryResult,
+            AgreementFeeRate, IndexingAgreement, IndexingAgreementStatus, IndexingAgreementTerms,
+            IndexingAgreementTermsMetadata, IndexingRequest, IndexingRequestRegistry,
+            PendingCancellationRegistry, Result as RegistryResult, StubAgreementRegistry,
         },
-        worker::service::WorkerQueue,
+        worker::service::{JobPriority, WorkerQueue},
     };
 
     // ---- Test helpers ----
@@ -814,6 +858,7 @@ mod tests {
                 subgraph_deployment_id: deployment_id,
                 protocol_network: 1u64,
                 chain_id: 1u64,
+                proposed_at: 0,
             },
         };
         IndexingAgreement {
@@ -831,6 +876,8 @@ mod tests {
             last_block_height,
             last_progress_at,
             rejection_reason: None,
+            // The manager cancel path requires a 32-byte stored terms hash.
+            terms_version_hash: Some(vec![0u8; 32]),
         }
     }
 
@@ -858,6 +905,9 @@ mod tests {
         abandoned: Arc<Mutex<Vec<IndexingAgreementId>>>,
         reassessments: Arc<Mutex<Vec<IndexingRequestId>>>,
         chain_cancels: Arc<Mutex<Vec<[u8; 16]>>>,
+        /// Ids passed to `record_cancel_audit` -- the signal the handler drives
+        /// the terminated event (the chain_listener sweep emits from this audit).
+        cancel_audits: Arc<Mutex<Vec<IndexingAgreementId>>>,
     }
 
     struct MockRegistry {
@@ -889,124 +939,13 @@ mod tests {
     }
 
     #[async_trait]
-    impl AgreementRegistry for MockRegistry {
-        async fn get_indexing_agreement_by_id(
+    impl StubAgreementRegistry for MockRegistry {
+        async fn get_unresponsive_indexers(
             &self,
-            _id: &IndexingAgreementId,
-        ) -> RegistryResult<Option<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_indexing_agreements_by_deployment_id(
-            &self,
-            _id: &DeploymentId,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_indexing_agreements_by_indexer_id(
-            &self,
-            _id: &IndexerId,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_pending_agreement_indexers_by_deployment(
-            &self,
-            _ids: &[IndexerId],
-        ) -> RegistryResult<HashMap<DeploymentId, Vec<IndexerId>>> {
-            unimplemented!()
-        }
-        async fn get_declined_indexers_by_deployment(
-            &self,
-            _default_lookback_days: i32,
-            _price_lookback_days: i32,
-            _transient_lookback_minutes: i32,
-            _escrow_lookback_minutes: i32,
-            _uncertain_lookback_days: i32,
-        ) -> RegistryResult<HashMap<DeploymentId, Vec<IndexerId>>> {
-            unimplemented!()
-        }
-        async fn get_indexing_agreements_by_indexing_request_id(
-            &self,
-            _id: &IndexingRequestId,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_active_indexing_agreements_by_indexing_request_id(
-            &self,
-            _id: &IndexingRequestId,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn register_new_indexing_agreement(
-            &self,
-            _params: crate::registry::NewAgreementParams,
-        ) -> RegistryResult<IndexingAgreementId> {
-            unimplemented!()
-        }
-        async fn register_agreement_with_pending_cancellation(
-            &self,
-            _params: crate::registry::NewAgreementParams,
-            _old_agreement_id: IndexingAgreementId,
-        ) -> RegistryResult<IndexingAgreementId> {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_delivery_failed(
-            &self,
-            _id: &IndexingAgreementId,
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
-        async fn update_offer_tx_hash(
-            &self,
-            _id: &IndexingAgreementId,
-            _tx_hash: &[u8; 32],
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_canceled_by_requester(
-            &self,
-            _id: &IndexingAgreementId,
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
-        async fn apply_reconciliation(
-            &self,
-            _id: &IndexingAgreementId,
-            _apply_accept: bool,
-            _cancel: Option<crate::registry::CancelKind>,
-        ) -> RegistryResult<crate::registry::ReconciliationOutcome> {
-            unimplemented!()
-        }
-        async fn get_expired_created_agreements(
-            &self,
-            _limit: i64,
-            _chain_timestamp: u64,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_expired(
-            &self,
-            _id: &IndexingAgreementId,
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
-        async fn mark_indexing_agreement_as_rejected(
-            &self,
-            _id: &IndexingAgreementId,
-            _rejection_reason: Option<&str>,
-        ) -> RegistryResult<()> {
-            unimplemented!()
-        }
-        async fn get_accepted_on_chain_agreements(
-            &self,
-            _limit: i64,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
-        }
-        async fn get_agreements_pending_chain_cancel(
-            &self,
-            _batch_size: i64,
-        ) -> RegistryResult<Vec<IndexingAgreement>> {
-            unimplemented!()
+            _lookback_days: i32,
+            _chain_id: thegraph_core::alloy::primitives::ChainId,
+        ) -> RegistryResult<Vec<IndexerId>> {
+            Ok(vec![])
         }
         async fn update_agreement_sync_progress(
             &self,
@@ -1021,11 +960,6 @@ mod tests {
                 .push((*id, block_height));
             Ok(())
         }
-        async fn count_active_agreements_by_deployment(
-            &self,
-        ) -> RegistryResult<HashMap<DeploymentId, usize>> {
-            unimplemented!()
-        }
         async fn mark_indexing_agreement_as_abandoned(
             &self,
             id: &IndexingAgreementId,
@@ -1036,6 +970,17 @@ mod tests {
                 .unwrap()
                 .take()
                 .expect("mark_abandoned called more than once")
+        }
+
+        async fn record_cancel_audit(
+            &self,
+            agreement_id: &IndexingAgreementId,
+            _canceled_at: u64,
+            _canceled_by: &str,
+            _canceled_tx: Option<&str>,
+        ) -> RegistryResult<()> {
+            self.calls.cancel_audits.lock().unwrap().push(*agreement_id);
+            Ok(())
         }
 
         async fn get_agreement_fee_rates(&self) -> RegistryResult<Vec<AgreementFeeRate>> {
@@ -1125,6 +1070,7 @@ mod tests {
             _req_id: IndexingRequestId,
             _dep: DeploymentId,
             _chain: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
@@ -1134,6 +1080,7 @@ mod tests {
             _dep: DeploymentId,
             _chain: ChainId,
             _n: usize,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             self.calls.reassessments.lock().unwrap().push(req_id);
             Ok(JobId::default())
@@ -1141,6 +1088,7 @@ mod tests {
         async fn cancel_rejected_agreement_on_chain(
             &self,
             _agr_id: IndexingAgreementId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
@@ -1151,6 +1099,7 @@ mod tests {
             _indexer_url: Url,
             _deployment_id: DeploymentId,
             _deployment_chain_id: ChainId,
+            _priority: JobPriority,
         ) -> anyhow::Result<JobId> {
             unimplemented!()
         }
@@ -1186,10 +1135,30 @@ mod tests {
 
     #[async_trait]
     impl ChainClient for MockChainClient {
-        async fn cancel_indexing_agreement_by_payer(
+        async fn latest_block_timestamp(&self) -> Result<u64, ChainClientError> {
+            // Err by default so a test must mock this explicitly to take the
+            // live-chain-head path instead of silently reading timestamp 0.
+            Err(ChainClientError::RpcError(anyhow::anyhow!(
+                "latest_block_timestamp not mocked"
+            )))
+        }
+
+        async fn offer_via_manager(
             &self,
-            agreement_id: &[u8; 16],
+            _rca: &dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement,
         ) -> Result<Option<B256>, ChainClientError> {
+            Ok(None)
+        }
+
+        async fn cancel_via_manager(
+            &self,
+            _collector: thegraph_core::alloy::primitives::Address,
+            agreement_id: &[u8; 16],
+            _version_hash: B256,
+            _options: u16,
+        ) -> Result<Option<B256>, ChainClientError> {
+            // Route manager cancels through the same recorder and result so the
+            // existing cancel-path assertions hold.
             self.calls.chain_cancels.lock().unwrap().push(*agreement_id);
             match &self.result {
                 Ok(hash) => Ok(Some(*hash)),
@@ -1199,34 +1168,58 @@ mod tests {
                 Err(ChainClientError::RpcError(e)) => {
                     Err(ChainClientError::RpcError(anyhow::anyhow!("{e}")))
                 }
-                Err(ChainClientError::SubmitFailed(e)) => {
-                    Err(ChainClientError::SubmitFailed(anyhow::anyhow!("{e}")))
-                }
-                Err(ChainClientError::OfferHashMismatch { .. })
-                | Err(ChainClientError::TxDropped { .. })
-                | Err(ChainClientError::TxReverted { .. })
-                | Err(ChainClientError::ContractRevert { .. }) => {
-                    // Not applicable to the cancel path here; mirror as
-                    // RpcError so the test helper keeps a single error shape.
-                    Err(ChainClientError::RpcError(anyhow::anyhow!(
-                        "unexpected chain-client error variant for cancel"
-                    )))
-                }
+                Err(e) => Err(ChainClientError::RpcError(anyhow::anyhow!("{e}"))),
             }
         }
 
-        async fn post_offer(
+        async fn reconcile_provider(
             &self,
-            _rca: &dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement,
+            _collector: thegraph_core::alloy::primitives::Address,
+            _provider: thegraph_core::alloy::primitives::Address,
         ) -> Result<Option<B256>, ChainClientError> {
-            // Not exercised by liveness_checker tests; the mock is fixed at
-            // the cancel path. Return None to signal "offer already stored".
+            // Not exercised by liveness_checker tests.
             Ok(None)
+        }
+
+        async fn agreement_still_active(
+            &self,
+            _agreement_id: &[u8; 16],
+        ) -> Result<bool, ChainClientError> {
+            // Cancel dispatch reads back after a mined cancel; reporting
+            // not-active means "cancel confirmed", which these tests expect.
+            Ok(false)
         }
     }
 
     const DB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
     const QUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Default agreement config for the cancel-path tests.
+    fn test_agreement_conf() -> crate::config::IndexingAgreementConfig {
+        crate::config::IndexingAgreementConfig {
+            data_service: thegraph_core::alloy::primitives::Address::ZERO,
+            recurring_collector: thegraph_core::alloy::primitives::Address::ZERO,
+            recurring_agreement_manager: thegraph_core::alloy::primitives::Address::ZERO,
+            max_agreement_grt_per_30_days: 0.0,
+            max_seconds_per_collection: 0,
+            min_seconds_per_collection: 0,
+            duration_seconds: 0,
+            deadline_seconds: 0,
+            max_grt_per_30_days: std::collections::BTreeMap::new(),
+            max_grt_per_billion_entities_per_30_days: 0.0,
+            declined_indexer_lookback_days: 0,
+            price_rejection_lookback_days: 0,
+            transient_rejection_lookback_minutes: 0,
+            uncertain_rejection_lookback_days: 0,
+            unresponsive_indexer_lookback_days: 0,
+            mass_unresponsive_trip_fraction: 0.5,
+            mass_unresponsive_reset_fraction: 0.25,
+            dips_accepting_snapshot_max_age_hours: 48,
+            dips_accepting_cache_ttl_seconds: 300,
+            max_in_flight_offers_per_indexer: None,
+            max_in_flight_offers_total: None,
+        }
+    }
 
     // ---- Pure function tests ----
 
@@ -1492,6 +1485,7 @@ mod tests {
             &registry,
             &queue,
             &chain,
+            &test_agreement_conf(),
             DB_TIMEOUT,
             QUEUE_TIMEOUT,
         )
@@ -1504,6 +1498,49 @@ mod tests {
         );
         assert_eq!(calls.abandoned.lock().unwrap().as_slice(), &[agr_id]);
         assert_eq!(calls.reassessments.lock().unwrap().as_slice(), &[req_id]);
+    }
+
+    #[tokio::test]
+    async fn cancel_and_reassess_records_cancel_audit() {
+        // The stale-agreement cancel no longer emits `terminated` directly: it
+        // records the cancel audit and the chain_listener sweep announces it.
+        let dep: DeploymentId = "QmTXzATwNfgGVukV1fX2T6xw9f6LAYRVWpsdXyRWzUR2H9"
+            .parse()
+            .unwrap();
+        let indexer_id = IndexerId::from(Address::ZERO);
+        let url: Url = "http://indexer.example.com/".parse().unwrap();
+        let agreement = make_agreement(
+            indexer_id,
+            url,
+            dep,
+            Some(100),
+            Some(OffsetDateTime::now_utc()),
+        );
+        let agr_id = agreement.id;
+
+        let calls = MockCalls::default();
+        let registry = MockRegistry::new(calls.clone(), agreement.clone());
+        let queue = MockWorkerQueue {
+            calls: calls.clone(),
+        };
+        let chain = MockChainClient::success(calls.clone());
+
+        cancel_and_reassess(
+            &agreement,
+            &registry,
+            &queue,
+            &chain,
+            &test_agreement_conf(),
+            DB_TIMEOUT,
+            QUEUE_TIMEOUT,
+        )
+        .await;
+
+        assert_eq!(
+            calls.cancel_audits.lock().unwrap().as_slice(),
+            &[agr_id],
+            "exactly one cancel audit recorded for the stale agreement"
+        );
     }
 
     #[tokio::test]
@@ -1537,6 +1574,7 @@ mod tests {
             &registry,
             &queue,
             &chain,
+            &test_agreement_conf(),
             DB_TIMEOUT,
             QUEUE_TIMEOUT,
         )
@@ -1581,6 +1619,7 @@ mod tests {
             &registry,
             &queue,
             &chain,
+            &test_agreement_conf(),
             DB_TIMEOUT,
             QUEUE_TIMEOUT,
         )

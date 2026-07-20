@@ -122,7 +122,7 @@ fn into_indexing_agreement_status(
 ) -> IndexingAgreementStatus {
     match status {
         IndexingAgreementRecordStatus::Created => IndexingAgreementStatus::Created,
-        IndexingAgreementRecordStatus::DeliveryFailed => IndexingAgreementStatus::DeliveryFailed,
+        IndexingAgreementRecordStatus::Unresponsive => IndexingAgreementStatus::Unresponsive,
         IndexingAgreementRecordStatus::CanceledByRequester => {
             IndexingAgreementStatus::CanceledByRequester
         }

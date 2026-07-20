@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 
-use dipper_core::ids::{IndexingAgreementId, IndexingReceiptId, IndexingRequestId};
+use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
 use sqlx::{Pool, Postgres, types::Json};
 use thegraph_core::{
     DeploymentId, IndexerId,
-    alloy::primitives::{Address, ChainId, U256},
+    alloy::primitives::{Address, ChainId},
 };
 use url::Url;
 
@@ -19,16 +19,12 @@ pub struct NewAgreementParams {
     pub indexer_id: IndexerId,
     pub indexer_url: Url,
     pub terms: crate::IndexingAgreementTerms,
+    pub terms_version_hash: Option<Vec<u8>>,
 }
 
-use self::common::{
-    PgAddress, PgAllocationId, PgDeploymentId, PgIndexerId, PgProofOfIndexing, PgU32, PgU64,
-    PgU256, PgUrl,
-};
+use self::common::{PgAddress, PgDeploymentId, PgIndexerId, PgU64, PgUrl};
 use super::{
-    IndexingReceiptReportedWork,
     indexing_agreement::{IndexingAgreement, Status as IndexingAgreementStatus},
-    indexing_receipt::IndexingReceipt,
     indexing_request::{
         IndexingRequest, SetTargetOutcome as IndexingRequestSetTargetOutcome,
         Status as IndexingRequestStatus,
@@ -38,7 +34,6 @@ use super::{
 
 pub(crate) mod common;
 mod indexing_agreement;
-mod indexing_receipt;
 mod indexing_request;
 
 /// Chain listener state row from the database.
@@ -75,14 +70,155 @@ pub struct ReconciliationOutcome {
 }
 
 /// One row's reconciliation request inside a batched apply.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ReconciliationItem {
     pub agreement_id: dipper_core::ids::IndexingAgreementId,
     pub apply_accept: bool,
     pub cancel: Option<CancelKind>,
+    /// On-chain payload observed for this transition, persisted alongside the
+    /// status change so a later emission sweep can rebuild the lifecycle event
+    /// from the row alone. Only the fields relevant to the applied transition
+    /// are populated.
+    pub audit: ReconciliationAudit,
 }
 
-/// A registry that stores indexing requests, agreements, and receipts in a PostgreSQL database.
+/// Audit payload captured at reconcile time for later event emission.
+///
+/// Timestamps are chain seconds; tx hashes and `canceled_by` are the 0x hex
+/// string form matching the event wire representation.
+#[derive(Debug, Clone, Default)]
+pub struct ReconciliationAudit {
+    pub accepted_at: Option<u64>,
+    pub accepted_tx: Option<String>,
+    pub canceled_at: Option<u64>,
+    pub canceled_by: Option<String>,
+    pub canceled_tx: Option<String>,
+}
+
+/// A row that needs a `terminated` lifecycle event emitted. Sourced entirely
+/// from the agreement row so the emission sweep is a pure DB -> broker drain.
+#[derive(Debug, Clone)]
+pub struct PendingTerminatedEvent {
+    pub agreement_id: IndexingAgreementId,
+    pub indexer_id: IndexerId,
+    pub deployment_id: DeploymentId,
+    pub protocol_network: ChainId,
+    /// Chain seconds of the on-chain cancel; `None` if the cancel audit was
+    /// never recorded (the sweep falls back to `updated_at`).
+    pub canceled_at: Option<u64>,
+    /// 0x address that cancelled; `None` -> the sweep falls back to the manager.
+    pub canceled_by: Option<String>,
+    /// 0x hex of the cancel tx; `None` -> emitted empty.
+    pub canceled_tx: Option<String>,
+    /// When the row was marked terminal; the `terminated_at` fallback.
+    pub updated_at: time::OffsetDateTime,
+}
+
+impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for PendingTerminatedEvent {
+    fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row as _;
+        let agreement_id = row.try_get("id")?;
+        let PgIndexerId(indexer_id) = row.try_get("indexer_id")?;
+        let sqlx::types::Json(terms): sqlx::types::Json<crate::indexing_agreement::Terms> =
+            row.try_get("terms")?;
+        let canceled_at: Option<i64> = row.try_get("canceled_at")?;
+        let canceled_by: Option<String> = row.try_get("canceled_by")?;
+        let canceled_tx: Option<String> = row.try_get("canceled_tx")?;
+        let updated_at = row.try_get("updated_at")?;
+        Ok(Self {
+            agreement_id,
+            indexer_id,
+            deployment_id: terms.metadata.subgraph_deployment_id,
+            protocol_network: terms.metadata.protocol_network,
+            canceled_at: canceled_at.map(|v| v as u64),
+            canceled_by,
+            canceled_tx,
+            updated_at,
+        })
+    }
+}
+
+/// A row that needs an `accepted` lifecycle event emitted. Sourced entirely from
+/// the agreement row so the emission sweep is a pure DB -> broker drain.
+#[derive(Debug, Clone)]
+pub struct PendingAcceptedEvent {
+    pub agreement_id: IndexingAgreementId,
+    pub indexer_id: IndexerId,
+    pub deployment_id: DeploymentId,
+    pub protocol_network: ChainId,
+    /// Chain seconds of the on-chain accept (always present -- the query gates on
+    /// `accepted_at IS NOT NULL`).
+    pub accepted_at: u64,
+    /// 0x hex of the accept tx; empty if unset.
+    pub accepted_tx: String,
+    /// Agreement end timestamp, from the row's terms.
+    pub ends_at: u64,
+    /// Payer address, from the row's terms.
+    pub payer: Address,
+}
+
+impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for PendingAcceptedEvent {
+    fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row as _;
+        let agreement_id = row.try_get("id")?;
+        let PgIndexerId(indexer_id) = row.try_get("indexer_id")?;
+        let sqlx::types::Json(terms): sqlx::types::Json<crate::indexing_agreement::Terms> =
+            row.try_get("terms")?;
+        let accepted_at: i64 = row.try_get("accepted_at")?;
+        let accepted_tx: Option<String> = row.try_get("accepted_tx")?;
+        Ok(Self {
+            agreement_id,
+            indexer_id,
+            deployment_id: terms.metadata.subgraph_deployment_id,
+            protocol_network: terms.metadata.protocol_network,
+            accepted_at: accepted_at as u64,
+            accepted_tx: accepted_tx.unwrap_or_default(),
+            ends_at: terms.ends_at,
+            payer: terms.payer,
+        })
+    }
+}
+
+/// A row that needs a `request.expired` lifecycle event emitted. Sourced from
+/// the agreement row alone; `request_expired_at` is the terms deadline (the true
+/// expiry instant), so the sweep needs no chain-time snapshot.
+#[derive(Debug, Clone)]
+pub struct PendingExpiredEvent {
+    pub agreement_id: IndexingAgreementId,
+    pub indexer_id: IndexerId,
+    pub deployment_id: DeploymentId,
+    pub protocol_network: ChainId,
+    /// Proposal time (terms `proposed_at`, or the row `created_at` for
+    /// pre-`proposed_at` rows).
+    pub request_proposed_at: u64,
+    /// The deadline that passed -- the true expiry instant.
+    pub request_expired_at: u64,
+}
+
+impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for PendingExpiredEvent {
+    fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row as _;
+        let agreement_id = row.try_get("id")?;
+        let PgIndexerId(indexer_id) = row.try_get("indexer_id")?;
+        let created_at: time::OffsetDateTime = row.try_get("created_at")?;
+        let sqlx::types::Json(terms): sqlx::types::Json<crate::indexing_agreement::Terms> =
+            row.try_get("terms")?;
+        let request_proposed_at = match terms.metadata.proposed_at {
+            0 => created_at.unix_timestamp().max(0) as u64,
+            ts => ts,
+        };
+        Ok(Self {
+            agreement_id,
+            indexer_id,
+            deployment_id: terms.metadata.subgraph_deployment_id,
+            protocol_network: terms.metadata.protocol_network,
+            request_proposed_at,
+            request_expired_at: terms.deadline,
+        })
+    }
+}
+
+/// A registry that stores indexing requests and agreements in a PostgreSQL database.
 #[derive(Clone)]
 pub struct PgRegistry {
     pool: Pool<Postgres>,
@@ -287,7 +423,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1 AND status IN ($2, $3)
             "#,
@@ -298,6 +435,29 @@ impl PgRegistry {
         .fetch_all(&self.pool)
         .await
         .map_err(Into::into)
+    }
+
+    /// Counts the indexing agreements for a deployment that are accepted on-chain.
+    ///
+    /// Used to populate `remaining_accepted_indexing_agreements` on the
+    /// `terminated` lifecycle event: the number of still-active accepted
+    /// agreements left on the Subgraph (deployment) after a cancellation.
+    pub async fn count_accepted_agreements_by_deployment(
+        &self,
+        deployment_id: &DeploymentId,
+    ) -> Result<i64, Error> {
+        let (count,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*)
+            FROM dipper_reg_indexing_agreements
+            WHERE deployment_id = $1 AND status = $2
+            "#,
+        )
+        .bind(PgDeploymentId(*deployment_id))
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count)
     }
 
     pub async fn register_new_indexing_agreement(
@@ -312,6 +472,7 @@ impl PgRegistry {
             indexer_id,
             indexer_url,
             terms,
+            terms_version_hash,
         } = params;
         sqlx::query_as(
             r#"
@@ -325,11 +486,12 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                terms
+                terms,
+                terms_version_hash
             )
             VALUES (
                 $1, $2, timezone('UTC', now()), timezone('UTC', now()), $3, $4, $5, $6,
-                $7, $8
+                $7, $8, $9
             )
             RETURNING id
             "#,
@@ -342,6 +504,7 @@ impl PgRegistry {
         .bind(PgIndexerId(indexer_id))
         .bind(PgUrl(indexer_url))
         .bind(Json(terms))
+        .bind(terms_version_hash)
         .fetch_one(&self.pool)
         .await
         .map(|(id,)| id)
@@ -367,7 +530,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE id = $1
             "#,
@@ -404,7 +568,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE id = ANY($1)
             "#,
@@ -435,7 +600,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE deployment_id = $1
             "#,
@@ -465,7 +631,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE indexer_id = $1
             "#,
@@ -522,20 +689,19 @@ impl PgRegistry {
 
     /// Get declined `CanceledByIndexer`/`Expired`/`Rejected` indexers grouped by
     /// deployment (deployment id -> indexer ids). Each rejection reason gets its own
-    /// exclusion window (price, transient, escrow, uncertain, default); see the constants.
+    /// exclusion window (price, transient, uncertain, default); see the constants.
     pub async fn get_declined_indexers_by_deployment(
         &self,
         default_lookback_days: i32,
         price_lookback_days: i32,
         transient_lookback_minutes: i32,
-        escrow_lookback_minutes: i32,
         uncertain_lookback_days: i32,
     ) -> Result<HashMap<DeploymentId, Vec<IndexerId>>, Error> {
         use crate::rejection_reason::{
             AGREEMENT_EXPIRED, CAPACITY_EXCEEDED, DEADLINE_EXPIRED, INDEXER_UNAVAILABLE,
-            INSUFFICIENT_ESCROW, INVALID_SIGNATURE, PRICE_TOO_LOW, REPLAY_DETECTED,
-            SENDER_NOT_TRUSTED, SUBGRAPH_MANIFEST_UNAVAILABLE, UNEXPECTED_SERVICE_PROVIDER,
-            UNSPECIFIED, UNSUPPORTED_METADATA_VERSION,
+            INVALID_SIGNATURE, PRICE_TOO_LOW, REPLAY_DETECTED, SENDER_NOT_TRUSTED,
+            SUBGRAPH_MANIFEST_UNAVAILABLE, UNEXPECTED_SERVICE_PROVIDER, UNSPECIFIED,
+            UNSUPPORTED_METADATA_VERSION,
         };
 
         let rows: Vec<(PgDeploymentId, Vec<PgIndexerId>)> = sqlx::query_as(
@@ -552,20 +718,16 @@ impl PgRegistry {
                 OR
                 -- Transient, not-indexer's-fault, or dipper-side faults that
                 -- clear once dipper is fixed: very short lookback
-                (rejection_reason IN ($8, $9, $10, $11, $12, $13, $14, $17, $18)
+                (rejection_reason IN ($8, $9, $10, $11, $12, $13, $14, $15, $16)
                  AND updated_at >= timezone('UTC', now()) - make_interval(mins => $7))
-                OR
-                -- INSUFFICIENT_ESCROW: medium lookback (clears when payer tops up)
-                (rejection_reason = $16
-                 AND updated_at >= timezone('UTC', now()) - make_interval(mins => $15))
                 OR
                 -- Uncertain reasons (sender not trusted, unspecified/unknown):
                 -- may clear within about a day, so a 1-day lookback
-                (rejection_reason IN ($20, $21)
-                 AND updated_at >= timezone('UTC', now()) - make_interval(days => $19))
+                (rejection_reason IN ($18, $19)
+                 AND updated_at >= timezone('UTC', now()) - make_interval(days => $17))
                 OR
                 -- All other rejections/expirations/cancellations: standard lookback
-                (COALESCE(rejection_reason, '') NOT IN ($6, $8, $9, $10, $11, $12, $13, $14, $16, $17, $18, $20, $21)
+                (COALESCE(rejection_reason, '') NOT IN ($6, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18, $19)
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $5))
               )
             GROUP BY deployment_id
@@ -585,13 +747,11 @@ impl PgRegistry {
         .bind(UNSUPPORTED_METADATA_VERSION) // $12
         .bind(CAPACITY_EXCEEDED) // $13
         .bind(INDEXER_UNAVAILABLE) // $14
-        .bind(escrow_lookback_minutes) // $15
-        .bind(INSUFFICIENT_ESCROW) // $16
-        .bind(INVALID_SIGNATURE) // $17
-        .bind(REPLAY_DETECTED) // $18
-        .bind(uncertain_lookback_days) // $19
-        .bind(SENDER_NOT_TRUSTED) // $20
-        .bind(UNSPECIFIED) // $21
+        .bind(INVALID_SIGNATURE) // $15
+        .bind(REPLAY_DETECTED) // $16
+        .bind(uncertain_lookback_days) // $17
+        .bind(SENDER_NOT_TRUSTED) // $18
+        .bind(UNSPECIFIED) // $19
         .fetch_all(&self.pool)
         .await?;
 
@@ -601,6 +761,33 @@ impl PgRegistry {
                 (deployment.0, indexers.into_iter().map(|i| i.0).collect())
             })
             .collect())
+    }
+
+    /// Get indexers with a recent `Unresponsive` agreement on a given chain. Used
+    /// to skip an unresponsive indexer for that chain's deployments for
+    /// `lookback_days` after it last failed to respond there.
+    pub async fn get_unresponsive_indexers(
+        &self,
+        lookback_days: i32,
+        chain_id: ChainId,
+    ) -> Result<Vec<IndexerId>, Error> {
+        let rows: Vec<(PgIndexerId,)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT a.indexer_id
+            FROM dipper_reg_indexing_agreements a
+            JOIN dipper_reg_indexing_requests r ON a.indexing_request_id = r.id
+            WHERE a.status = $1
+              AND a.updated_at >= timezone('UTC', now()) - make_interval(days => $2)
+              AND r.deployment_chain_id = $3
+            "#,
+        )
+        .bind(IndexingAgreementStatus::Unresponsive)
+        .bind(lookback_days)
+        .bind(PgU64(chain_id))
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id.0).collect())
     }
 
     pub async fn get_indexing_agreements_by_indexing_request_id(
@@ -622,7 +809,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE indexing_request_id = $1
             "#,
@@ -633,7 +821,7 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
-    pub async fn mark_indexing_agreement_as_delivery_failed(
+    pub async fn mark_indexing_agreement_as_unresponsive(
         &self,
         agreement_id: &IndexingAgreementId,
     ) -> Result<(), Error> {
@@ -647,7 +835,7 @@ impl PgRegistry {
             RETURNING id
             "#,
         )
-        .bind(IndexingAgreementStatus::DeliveryFailed)
+        .bind(IndexingAgreementStatus::Unresponsive)
         .bind(agreement_id)
         .bind(IndexingAgreementStatus::Created)
         .fetch_optional(&self.pool)
@@ -667,7 +855,7 @@ impl PgRegistry {
     ///
     /// Guarded on `status IN (Created, AcceptedOnChain)` so a delayed
     /// receipt-confirmation cannot stamp `offer_tx_hash` onto a row that
-    /// has since transitioned to `Expired`, `DeliveryFailed`, `Rejected`,
+    /// has since transitioned to `Expired`, `Unresponsive`, `Rejected`,
     /// or one of the cancel states. The caller treats any failure here
     /// as non-fatal and just logs; a no-match result is also non-fatal
     /// and silently skipped.
@@ -740,7 +928,7 @@ impl PgRegistry {
     /// follow-up cancel, which the Accept-then-Cancel-in-one-snapshot
     /// invariant forbids. When both writes find no matching row (caller
     /// passed `apply_accept = false` and the cancel filter rejected, e.g.
-    /// the row is in a terminal-but-not-cancel state like `DeliveryFailed`
+    /// the row is in a terminal-but-not-cancel state like `Unresponsive`
     /// that the chain_listener's Rust-side guard does not catch), commit
     /// the empty tx and return `Ok` with both flags false. The
     /// chain_listener treats that as a successful no-op rather than a
@@ -931,112 +1119,217 @@ impl PgRegistry {
             outcomes.entry(id).or_default().did_cancel = true;
         }
 
+        // Persist the observed on-chain payload for every row that actually
+        // transitioned, in the same transaction as the status change, so a later
+        // emission sweep can rebuild the lifecycle event from the row alone.
+        for item in items {
+            let outcome = outcomes
+                .get(&item.agreement_id)
+                .copied()
+                .unwrap_or_default();
+            if outcome.did_accept {
+                persist_accept_audit(&mut tx, &item.agreement_id, &item.audit).await?;
+            }
+            if outcome.did_cancel {
+                persist_cancel_audit(&mut tx, &item.agreement_id, &item.audit).await?;
+            }
+        }
+
         tx.commit().await?;
 
         Ok(outcomes)
     }
 
-    pub async fn register_new_indexing_receipt(
+    /// Fetch a batch of agreements awaiting a `terminated` event: in a
+    /// terminal-cancel state, genuinely accepted on-chain (`accepted_at IS NOT
+    /// NULL`, so a never-accepted local cancel is excluded), and not yet
+    /// emitted. Oldest-marked first so the backlog drains in order.
+    pub async fn get_agreements_pending_terminated_emission(
         &self,
-        agreement_id: IndexingAgreementId,
-        indexer_id: IndexerId,
-        indexer_operator_id: Address,
-        reported_work: IndexingReceiptReportedWork,
-        amount: U256,
-    ) -> Result<IndexingReceiptId, Error> {
-        sqlx::query_as(
+        limit: i64,
+    ) -> Result<Vec<PendingTerminatedEvent>, Error> {
+        let rows = sqlx::query_as::<_, PendingTerminatedEvent>(
             r#"
-            INSERT INTO dipper_reg_indexing_receipts (
-                id,
-                created_at,
-                updated_at,
-                indexing_agreement_id,
-                indexer_id,
-                indexer_operator_id,
-                reported_work_epoch,
-                reported_work_allocation_id,
-                reported_work_entity_count,
-                reported_work_poi,
-                amount
-            )
-            VALUES (
-                $1, timezone('UTC', now()), timezone('UTC', now()),
-                $2, $3, $4, $5, $6, $7, $8, $9
-            )
-            RETURNING id
+            SELECT id, indexer_id, terms, canceled_at, canceled_by, canceled_tx, updated_at
+            FROM dipper_reg_indexing_agreements
+            WHERE status IN ($1, $2, $3)
+              AND accepted_at IS NOT NULL
+              AND terminated_event_emitted_at IS NULL
+            ORDER BY updated_at ASC
+            LIMIT $4
             "#,
         )
-        .bind(IndexingReceiptId::new())
-        .bind(agreement_id)
-        .bind(PgIndexerId(indexer_id))
-        .bind(PgAddress(indexer_operator_id))
-        .bind(PgU32(reported_work.epoch))
-        .bind(PgAllocationId(reported_work.allocation_id))
-        .bind(PgU64(reported_work.entity_count))
-        .bind(PgProofOfIndexing(reported_work.poi))
-        .bind(PgU256(amount))
-        .fetch_one(&self.pool)
-        .await
-        .map(|(id,)| id)
-        .map_err(Into::into)
-    }
-
-    pub async fn get_all_indexing_receipts_by_indexing_agreement_id(
-        &self,
-        agreement_id: &IndexingAgreementId,
-    ) -> Result<Vec<IndexingReceipt>, Error> {
-        sqlx::query_as(
-            r#"
-            SELECT
-                id,
-                created_at,
-                updated_at,
-                indexing_agreement_id,
-                indexer_id,
-                indexer_operator_id,
-                reported_work_epoch,
-                reported_work_allocation_id,
-                reported_work_entity_count,
-                reported_work_poi,
-                amount
-            FROM dipper_reg_indexing_receipts
-            WHERE indexing_agreement_id = $1
-            "#,
-        )
-        .bind(agreement_id)
+        .bind(IndexingAgreementStatus::CanceledByRequester)
+        .bind(IndexingAgreementStatus::CanceledByIndexer)
+        .bind(IndexingAgreementStatus::AbandonedByIndexer)
+        .bind(limit)
         .fetch_all(&self.pool)
-        .await
-        .map_err(Into::into)
+        .await?;
+        Ok(rows)
     }
 
-    pub async fn get_last_receipt_for_agreement_id(
+    /// Stamp the `terminated` emission marker after a confirmed broker send.
+    pub async fn mark_terminated_event_emitted(
         &self,
         agreement_id: &IndexingAgreementId,
-    ) -> Result<Option<IndexingReceipt>, Error> {
-        sqlx::query_as(
+    ) -> Result<(), Error> {
+        sqlx::query(
             r#"
-            SELECT
-                id,
-                created_at,
-                updated_at,
-                indexing_agreement_id,
-                indexer_id,
-                indexer_operator_id,
-                reported_work_epoch,
-                reported_work_allocation_id,
-                reported_work_entity_count,
-                reported_work_poi,
-                amount
-            FROM dipper_reg_indexing_receipts
-            WHERE indexing_agreement_id = $1
-            ORDER BY created_at DESC
-            LIMIT 1
+            UPDATE dipper_reg_indexing_agreements
+            SET terminated_event_emitted_at = timezone('UTC', now())
+            WHERE id = $1
             "#,
         )
         .bind(agreement_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(Into::into)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Fetch a batch of agreements awaiting an `accepted` event: the accept was
+    /// observed by the reconcile path (`accepted_at IS NOT NULL`, so pre-feature
+    /// rows are never backfilled) and not yet emitted. Note this is NOT gated on
+    /// current status: an agreement accepted and then cancelled in a single
+    /// snapshot (dipper was behind) ends up `CanceledBy*` with `accepted_at` set,
+    /// and must still emit its `accepted` before the `terminated`. Oldest-accepted
+    /// first.
+    pub async fn get_agreements_pending_accepted_emission(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<PendingAcceptedEvent>, Error> {
+        let rows = sqlx::query_as::<_, PendingAcceptedEvent>(
+            r#"
+            SELECT id, indexer_id, terms, accepted_at, accepted_tx
+            FROM dipper_reg_indexing_agreements
+            WHERE accepted_at IS NOT NULL
+              AND accepted_event_emitted_at IS NULL
+            ORDER BY accepted_at ASC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Stamp the `accepted` emission marker after a confirmed broker send.
+    pub async fn mark_accepted_event_emitted(
+        &self,
+        agreement_id: &IndexingAgreementId,
+    ) -> Result<(), Error> {
+        sqlx::query(
+            r#"
+            UPDATE dipper_reg_indexing_agreements
+            SET accepted_event_emitted_at = timezone('UTC', now())
+            WHERE id = $1
+            "#,
+        )
+        .bind(agreement_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Fetch a batch of agreements awaiting a `request.expired` event: currently
+    /// `Expired` and not yet emitted. A row recovered `Expired -> AcceptedOnChain`
+    /// before the sweep runs is no longer selected, so no premature `expired`
+    /// contradicts a later `accepted`. Oldest-updated first.
+    pub async fn get_agreements_pending_expired_emission(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<PendingExpiredEvent>, Error> {
+        let rows = sqlx::query_as::<_, PendingExpiredEvent>(
+            r#"
+            SELECT id, indexer_id, created_at, terms
+            FROM dipper_reg_indexing_agreements
+            WHERE status = $1
+              AND expired_event_emitted_at IS NULL
+            ORDER BY updated_at ASC
+            LIMIT $2
+            "#,
+        )
+        .bind(IndexingAgreementStatus::Expired)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Stamp the `request.expired` emission marker after a confirmed broker send.
+    pub async fn mark_expired_event_emitted(
+        &self,
+        agreement_id: &IndexingAgreementId,
+    ) -> Result<(), Error> {
+        sqlx::query(
+            r#"
+            UPDATE dipper_reg_indexing_agreements
+            SET expired_event_emitted_at = timezone('UTC', now())
+            WHERE id = $1
+            "#,
+        )
+        .bind(agreement_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Record the accepted audit payload out-of-band from `apply_reconciliation`.
+    ///
+    /// Used for the rejected-then-accepted anomaly: such a row goes
+    /// `Rejected -> Canceled` without ever transiting `AcceptedOnChain`, so the
+    /// normal accept transition never records it. Persisting it here (from the
+    /// observed snapshot) marks the row as genuinely accepted so its eventual
+    /// `terminated` is sweep-eligible. `COALESCE` keeps any existing value.
+    pub async fn record_accepted_audit(
+        &self,
+        agreement_id: &IndexingAgreementId,
+        accepted_at: u64,
+        accepted_tx: &str,
+    ) -> Result<(), Error> {
+        sqlx::query(
+            r#"
+            UPDATE dipper_reg_indexing_agreements
+            SET accepted_at = COALESCE(accepted_at, $2),
+                accepted_tx = COALESCE(accepted_tx, $3)
+            WHERE id = $1
+            "#,
+        )
+        .bind(agreement_id)
+        .bind(accepted_at as i64)
+        .bind(accepted_tx)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Record the cancel audit payload for a dipper-initiated cancel so the
+    /// emission sweep can populate the `terminated` event's tx/by/at fields.
+    /// `COALESCE` keeps any value already observed on-chain. Best-effort
+    /// enrichment: the event still emits (with fallbacks) if never recorded.
+    pub async fn record_cancel_audit(
+        &self,
+        agreement_id: &IndexingAgreementId,
+        canceled_at: u64,
+        canceled_by: &str,
+        canceled_tx: Option<&str>,
+    ) -> Result<(), Error> {
+        sqlx::query(
+            r#"
+            UPDATE dipper_reg_indexing_agreements
+            SET canceled_at = COALESCE(canceled_at, $2),
+                canceled_by = COALESCE(canceled_by, $3),
+                canceled_tx = COALESCE(canceled_tx, $4)
+            WHERE id = $1
+            "#,
+        )
+        .bind(agreement_id)
+        .bind(canceled_at as i64)
+        .bind(canceled_by)
+        .bind(canceled_tx)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     // =========================================================================
@@ -1082,6 +1375,30 @@ impl PgRegistry {
         .map_err(Into::into)
     }
 
+    /// Atomically set the coverage-shortfall latch on a request, returning whether
+    /// the value changed. The `shortfall_active <> $2` guard makes the UPDATE a
+    /// no-op (returning no row) when the value is unchanged, so the caller learns
+    /// whether this was a transition.
+    pub async fn set_indexing_request_shortfall_active(
+        &self,
+        id: &IndexingRequestId,
+        active: bool,
+    ) -> Result<bool, Error> {
+        let record: Option<(IndexingRequestId,)> = sqlx::query_as(
+            r#"
+            UPDATE dipper_reg_indexing_requests
+            SET shortfall_active = $2
+            WHERE id = $1 AND shortfall_active <> $2
+            RETURNING id
+            "#,
+        )
+        .bind(id)
+        .bind(active)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(record.is_some())
+    }
+
     // =========================================================================
     // Deadline expiration operations
     // =========================================================================
@@ -1109,7 +1426,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
               AND CAST(terms->>'deadline' AS bigint) < $3
@@ -1220,7 +1538,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             FROM dipper_reg_indexing_agreements
             WHERE status = $1
             ORDER BY last_progress_at ASC NULLS FIRST
@@ -1258,7 +1577,8 @@ impl PgRegistry {
                 a.terms,
                 a.last_block_height,
                 a.last_progress_at,
-                a.rejection_reason
+                a.rejection_reason,
+                a.terms_version_hash
             FROM dipper_reg_indexing_agreements a
             JOIN dipper_reg_indexing_requests r
               ON a.indexing_request_id = r.id
@@ -1274,6 +1594,33 @@ impl PgRegistry {
         .fetch_all(&self.pool)
         .await
         .map_err(Into::into)
+    }
+
+    /// Distinct `indexer_id` (on-chain `service_provider`) of agreements whose
+    /// protocol-manager escrow may be orphaned or mid-thaw: ended, canceled, or
+    /// still-accepted. Bounded by `limit`.
+    pub async fn get_providers_for_escrow_reconciliation(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<Address>, Error> {
+        let rows: Vec<(PgIndexerId,)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT indexer_id
+            FROM dipper_reg_indexing_agreements
+            WHERE status IN ($1, $2, $3, $4)
+            ORDER BY indexer_id
+            LIMIT CASE WHEN $5 > 0 THEN $5 ELSE NULL END
+            "#,
+        )
+        .bind(IndexingAgreementStatus::CanceledByRequester)
+        .bind(IndexingAgreementStatus::CanceledByIndexer)
+        .bind(IndexingAgreementStatus::Expired)
+        .bind(IndexingAgreementStatus::AcceptedOnChain)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id.0.into_inner()).collect())
     }
 
     /// Update the sync progress for an agreement.
@@ -1331,6 +1678,39 @@ impl PgRegistry {
             .collect())
     }
 
+    /// Count `Created` (in-flight, not yet accepted) agreements per indexer,
+    /// returning the per-indexer map and global total in one round-trip. Offer
+    /// pacing reads both to gauge spare acceptance capacity before creating more.
+    pub async fn count_created_agreements_by_indexer(
+        &self,
+    ) -> Result<(HashMap<IndexerId, u64>, u64), Error> {
+        // GROUPING SETS emits one row per indexer plus a single ()-group row
+        // with a NULL indexer_id carrying the global total.
+        let rows: Vec<(Option<PgIndexerId>, i64)> = sqlx::query_as(
+            r#"
+            SELECT indexer_id, COUNT(*) as count
+            FROM dipper_reg_indexing_agreements
+            WHERE status = $1
+            GROUP BY GROUPING SETS ((indexer_id), ())
+            "#,
+        )
+        .bind(IndexingAgreementStatus::Created)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut per_indexer = HashMap::new();
+        let mut global = 0u64;
+        for (indexer, count) in rows {
+            match indexer {
+                Some(id) => {
+                    per_indexer.insert(id.0, count as u64);
+                }
+                None => global = count as u64,
+            }
+        }
+        Ok((per_indexer, global))
+    }
+
     /// Whether any agreement is in `Created` or `AcceptedOnChain` status.
     ///
     /// Cheap `EXISTS` probe used by the chain listener's adaptive-interval
@@ -1385,7 +1765,8 @@ impl PgRegistry {
                 terms,
                 last_block_height,
                 last_progress_at,
-                rejection_reason
+                rejection_reason,
+                terms_version_hash
             "#,
         )
         .bind(IndexingAgreementStatus::AbandonedByIndexer)
@@ -1550,6 +1931,7 @@ impl PgRegistry {
             indexer_id,
             indexer_url,
             terms,
+            terms_version_hash,
         } = params;
         let mut tx = self.pool.begin().await?;
 
@@ -1565,11 +1947,12 @@ impl PgRegistry {
                 deployment_id,
                 indexer_id,
                 indexer_url,
-                terms
+                terms,
+                terms_version_hash
             )
             VALUES (
                 $1, $2, timezone('UTC', now()), timezone('UTC', now()), $3, $4, $5, $6,
-                $7, $8
+                $7, $8, $9
             )
             RETURNING id
             "#,
@@ -1582,6 +1965,7 @@ impl PgRegistry {
         .bind(PgIndexerId(indexer_id))
         .bind(PgUrl(indexer_url))
         .bind(Json(terms))
+        .bind(terms_version_hash)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -1738,6 +2122,60 @@ async fn batch_update_status_from(
 
 /// Transition an agreement's status inside a transaction. Thin wrapper
 /// over `batch_update_status_from` for the single-row case.
+/// Persist the accepted-transition audit payload for a single row. `COALESCE`
+/// keeps any already-stored value rather than clobbering it with `NULL`.
+async fn persist_accept_audit(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    id: &IndexingAgreementId,
+    audit: &ReconciliationAudit,
+) -> Result<(), Error> {
+    if audit.accepted_at.is_none() && audit.accepted_tx.is_none() {
+        return Ok(());
+    }
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET accepted_at = COALESCE($2, accepted_at),
+            accepted_tx = COALESCE($3, accepted_tx)
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .bind(audit.accepted_at.map(|v| v as i64))
+    .bind(audit.accepted_tx.as_deref())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Persist the cancel-transition audit payload for a single row. `COALESCE`
+/// keeps any already-stored value rather than clobbering it with `NULL`.
+async fn persist_cancel_audit(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    id: &IndexingAgreementId,
+    audit: &ReconciliationAudit,
+) -> Result<(), Error> {
+    if audit.canceled_at.is_none() && audit.canceled_by.is_none() && audit.canceled_tx.is_none() {
+        return Ok(());
+    }
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET canceled_at = COALESCE($2, canceled_at),
+            canceled_by = COALESCE($3, canceled_by),
+            canceled_tx = COALESCE($4, canceled_tx)
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .bind(audit.canceled_at.map(|v| v as i64))
+    .bind(audit.canceled_by.as_deref())
+    .bind(audit.canceled_tx.as_deref())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 async fn update_status_from(
     tx: &mut sqlx::Transaction<'_, Postgres>,
     agreement_id: &IndexingAgreementId,

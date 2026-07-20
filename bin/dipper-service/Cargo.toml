@@ -9,15 +9,14 @@ async-signal = "0.2.10"
 async-trait.workspace = true
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 custom_debug = "0.6.1"
-dashmap = "6.1.0"
 dipper-core = { version = "0.1.0", path = "../../dipper-core" }
 dipper-iisa = { path = "../../dipper-iisa" }
 dipper-pgmq = { path = "../../dipper-pgmq" }
 dipper-pgregistry = { path = "../../dipper-pgregistry" }
+dipper-producer = { path = "../../dipper-producer" }
 dipper-rpc = { version = "0.1.0", path = "../../dipper-rpc", features = ["admin-rpc", "indexer-rpc"] }
 futures-lite = { version = "2.4.0", default-features = false }
 graph-networks-registry.workspace = true
-indoc = "2.0.5"
 jsonrpsee = { workspace = true, features = ["server"] }
 rand = "0.9.0"
 reqwest = { workspace = true, features = ["json"] }
@@ -27,9 +26,8 @@ serde_with.workspace = true
 snmalloc-rs = "0.3.6"
 sqlx.workspace = true
 thegraph-core = { workspace = true, features = ["alloy-signer-local", "serde", "signed-message"] }
-thegraph-graphql-http = { version = "0.4.0", features = ["reqwest"] }
 thiserror.workspace = true
-time.workspace = true
+time = { workspace = true, features = ["parsing", "formatting"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tonic = { version = "0.14", default-features = false, features = ["server", "channel"] }
 tracing.workspace = true

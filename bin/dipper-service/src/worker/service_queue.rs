@@ -9,7 +9,7 @@ use super::{
         SubmitOffer,
     },
     messages::Message,
-    queue::{JobId, Queue},
+    queue::{JobId, JobPriority, Queue},
 };
 
 #[async_trait]
@@ -21,6 +21,7 @@ pub trait WorkerQueue {
         indexing_request_id: IndexingRequestId,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
+        priority: JobPriority,
     ) -> anyhow::Result<JobId>;
 
     async fn reassess_indexing_request(
@@ -29,6 +30,7 @@ pub trait WorkerQueue {
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
         num_candidates: usize,
+        priority: JobPriority,
     ) -> anyhow::Result<JobId>;
 
     /// Cancel a rejected agreement on-chain.
@@ -38,6 +40,7 @@ pub trait WorkerQueue {
     async fn cancel_rejected_agreement_on_chain(
         &self,
         agreement_id: IndexingAgreementId,
+        priority: JobPriority,
     ) -> anyhow::Result<JobId>;
 
     /// Submit an RCA offer on-chain as the first step of a new proposal.
@@ -48,6 +51,7 @@ pub trait WorkerQueue {
         indexer_url: Url,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
+        priority: JobPriority,
     ) -> anyhow::Result<JobId>;
 }
 
@@ -76,17 +80,19 @@ where
         indexing_request_id: IndexingRequestId,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
+        priority: JobPriority,
     ) -> anyhow::Result<JobId> {
         self.queue
-            .push(Message::SendIndexingAgreementProposal(
-                SendIndexingAgreementProposal {
+            .push(
+                Message::SendIndexingAgreementProposal(SendIndexingAgreementProposal {
                     indexer_url,
                     agreement_id,
                     indexing_request_id,
                     deployment_id,
                     deployment_chain_id,
-                },
-            ))
+                }),
+                priority,
+            )
             .await
     }
 
@@ -96,25 +102,33 @@ where
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
         num_candidates: usize,
+        priority: JobPriority,
     ) -> anyhow::Result<JobId> {
         self.queue
-            .push(Message::ReassessIndexingRequest(ReassessIndexingRequest {
-                indexing_request_id,
-                deployment_id,
-                deployment_chain_id,
-                num_candidates,
-            }))
+            .push(
+                Message::ReassessIndexingRequest(ReassessIndexingRequest {
+                    indexing_request_id,
+                    deployment_id,
+                    deployment_chain_id,
+                    num_candidates,
+                }),
+                priority,
+            )
             .await
     }
 
     async fn cancel_rejected_agreement_on_chain(
         &self,
         agreement_id: IndexingAgreementId,
+        priority: JobPriority,
     ) -> anyhow::Result<JobId> {
         self.queue
-            .push(Message::CancelRejectedAgreementOnChain(
-                CancelRejectedAgreementOnChain { agreement_id },
-            ))
+            .push(
+                Message::CancelRejectedAgreementOnChain(CancelRejectedAgreementOnChain {
+                    agreement_id,
+                }),
+                priority,
+            )
             .await
     }
 
@@ -125,15 +139,19 @@ where
         indexer_url: Url,
         deployment_id: DeploymentId,
         deployment_chain_id: ChainId,
+        priority: JobPriority,
     ) -> anyhow::Result<JobId> {
         self.queue
-            .push(Message::SubmitOffer(SubmitOffer {
-                agreement_id,
-                indexing_request_id,
-                indexer_url,
-                deployment_id,
-                deployment_chain_id,
-            }))
+            .push(
+                Message::SubmitOffer(SubmitOffer {
+                    agreement_id,
+                    indexing_request_id,
+                    indexer_url,
+                    deployment_id,
+                    deployment_chain_id,
+                }),
+                priority,
+            )
             .await
     }
 }

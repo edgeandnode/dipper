@@ -1,13 +1,17 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use dipper_core::state::FromState;
+use dipper_producer::events::SubgraphIndexingAgreementEventsProducer;
 use graph_networks_registry::NetworksRegistry;
 use thegraph_core::alloy::primitives::ChainId;
-use tokio::sync::Notify;
+use tokio::sync::{Mutex, Notify};
 
-use super::handlers::{
-    CancelRejectedAgreementOnChainCtx, ReassessIndexingRequestCtx,
-    SendIndexingAgreementProposalCtx, SubmitOfferCtx,
+use super::{
+    handlers::{
+        CancelRejectedAgreementOnChainCtx, ReassessIndexingRequestCtx,
+        SendIndexingAgreementProposalCtx, SubmitOfferCtx,
+    },
+    unresponsive_breaker::{DipsAcceptingCache, UnresponsiveBreaker},
 };
 use crate::{
     config::{IndexingAgreementChainPrices, IndexingAgreementConfig},
@@ -15,15 +19,14 @@ use crate::{
     signing::eip712::Eip712Signer,
 };
 
-/// Generates a `FromState<InnerCtx<...>>` impl for a handler context type.
-///
-/// The macro maps InnerCtx fields to handler context fields, supporting field renaming.
-///
-/// Syntax: `impl_from_state!(TargetType<generics> { field_mappings })`
-///
-/// Field mappings can be:
-/// - `field` - maps `state.field` to `self.field`
-/// - `target_field: source_field` - maps `state.source_field` to `self.target_field`
+/// A single process-wide async mutex. Only one reassessment runs at a time
+/// across every worker loop, so two loops can't diff the same baseline and both
+/// create agreements. In-process only (dipper is single-replica).
+pub type ReassessLock = Arc<Mutex<()>>;
+
+/// Generates a `FromState<InnerCtx<...>>` impl mapping InnerCtx fields onto a
+/// handler context type. Syntax: `impl_from_state!(Target<generics> { mappings })`,
+/// where a mapping is `field` (same name) or `target: source` (renamed).
 macro_rules! impl_from_state {
     (
         $target:ident < $($gen:ident),* > {
@@ -69,6 +72,9 @@ pub struct Ctx<Q, R, C, I, T> {
     /// The _indexing agreement_ configuration
     pub agreement_conf: Arc<IndexingAgreementConfig>,
 
+    /// The RCA EIP-712 domain (for computing the persisted terms hash).
+    pub rca_domain: Arc<std::sync::RwLock<thegraph_core::alloy::sol_types::Eip712Domain>>,
+
     /// The _indexing agreement_ per-chain pricing table
     pub pricing_table: Arc<BTreeMap<ChainId, IndexingAgreementChainPrices>>,
 
@@ -99,10 +105,9 @@ pub struct Ctx<Q, R, C, I, T> {
     /// Wakes the chain_listener when proposals are dispatched
     pub chain_listener_notify: Arc<Notify>,
 
-    /// Mirrors `ChainListenerConfig::bypass_chain_clock_defenses`.
-    /// When true, the reassess handler computes agreement deadlines
-    /// from chain time instead of wall clock. Must stay false in
-    /// production.
+    /// Mirrors `ChainListenerConfig::bypass_chain_clock_defenses`. When true the
+    /// reassess handler computes agreement deadlines from chain time instead of
+    /// wall clock. Must stay false in production.
     pub bypass_chain_clock_defenses: bool,
 
     /// The chain ID the chain_listener tracks, used to look up
@@ -113,6 +118,22 @@ pub struct Ctx<Q, R, C, I, T> {
     /// Liveness watermark the worker ticks each loop iteration so the health
     /// endpoint can detect a wedged worker.
     pub liveness: crate::health::Liveness,
+
+    /// Global reassess lock (see `ReassessLock`).
+    pub reassess_lock: ReassessLock,
+
+    /// Suppresses the network-wide unresponsive exclusion during a dipper-side outage.
+    pub unresponsive_breaker: Arc<UnresponsiveBreaker>,
+
+    /// Short-TTL cache of IISA's DIPs-accepting set (the breaker's denominator).
+    pub dips_accepting_cache: DipsAcceptingCache,
+
+    /// Number of concurrent worker loops to spawn (>=1). Defaults to 1.
+    pub concurrency: usize,
+
+    /// Subgraph Indexing Agreements Event emitter for sending indexing agreement events downstream
+    pub subgraph_indexing_agreements_events_emitter:
+        Arc<dyn SubgraphIndexingAgreementEventsProducer>,
 }
 
 /// The inner worker context.
@@ -125,6 +146,9 @@ pub(super) struct InnerCtx<R, W, C, I, T> {
 
     /// The _indexing agreement_ configuration
     pub agreement_conf: Arc<IndexingAgreementConfig>,
+
+    /// The RCA EIP-712 domain (for computing the persisted terms hash).
+    pub rca_domain: Arc<std::sync::RwLock<thegraph_core::alloy::sol_types::Eip712Domain>>,
 
     /// The _indexing agreement_ per-chain pricing table
     pub pricing_table: Arc<BTreeMap<ChainId, IndexingAgreementChainPrices>>,
@@ -164,11 +188,25 @@ pub(super) struct InnerCtx<R, W, C, I, T> {
 
     /// See `Ctx::chain_listener_chain_id`.
     pub chain_listener_chain_id: Option<u64>,
+
+    /// See `Ctx::reassess_lock`.
+    pub reassess_lock: ReassessLock,
+
+    /// See `Ctx::unresponsive_breaker`.
+    pub unresponsive_breaker: Arc<UnresponsiveBreaker>,
+
+    /// See `Ctx::dips_accepting_cache`.
+    pub dips_accepting_cache: DipsAcceptingCache,
+
+    /// See: `Ctx::subgraph_indexing_agreements_events_emitter`
+    pub subgraph_indexing_agreements_events_emitter:
+        Arc<dyn SubgraphIndexingAgreementEventsProducer>,
 }
 
 impl_from_state!(ReassessIndexingRequestCtx<R, W, I, T> {
     signer,
     agreement_conf,
+    rca_domain,
     chain_price: pricing_table,
     registry,
     network,
@@ -181,6 +219,10 @@ impl_from_state!(ReassessIndexingRequestCtx<R, W, I, T> {
     chain_listener_notify,
     bypass_chain_clock_defenses,
     chain_listener_chain_id,
+    reassess_lock,
+    unresponsive_breaker,
+    dips_accepting_cache,
+    subgraph_indexing_agreements_events_emitter
 });
 
 impl_from_state!(SendIndexingAgreementProposalCtx<R, W, C> {
@@ -192,6 +234,7 @@ impl_from_state!(SendIndexingAgreementProposalCtx<R, W, C> {
 impl_from_state!(CancelRejectedAgreementOnChainCtx<R, T> {
     registry,
     chain_client,
+    agreement_conf,
 });
 
 impl_from_state!(SubmitOfferCtx<R, T> {

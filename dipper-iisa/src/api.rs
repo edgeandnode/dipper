@@ -64,6 +64,17 @@ pub struct SelectedIndexer {
     pub min_grt_per_billion_entities_per_30_days: Option<f64>,
 }
 
+/// A snapshot of the indexers that currently accept DIPs, from IISA's
+/// `GET /dips-indexers`. `computed_at` is IISA's scoring-snapshot time (raw
+/// ISO-8601), so callers can reject a stale snapshot.
+#[derive(Debug, Clone)]
+pub struct DipsAcceptingSnapshot {
+    /// Scoring-snapshot timestamp (RFC 3339), or `None` when no scores are loaded.
+    pub computed_at: Option<String>,
+    /// Indexers that currently accept DIPs.
+    pub indexers: Vec<IndexerId>,
+}
+
 /// The `SelectionError` enum represents the errors that can occur during the candidate selection
 /// process.
 #[derive(Debug, thiserror::Error)]
@@ -103,4 +114,13 @@ pub trait CandidateSelection {
         num_candidates: usize,
         context: &SelectionContext,
     ) -> Result<Vec<SelectedIndexer>, SelectionError>;
+
+    /// Fetch the indexers that currently accept DIPs on `chain` (stricter than
+    /// "IISA scores it"). `chain` is a required chain *name*; `max_grt_per_30_days`
+    /// optionally caps the set to indexers priced at or under that ceiling.
+    async fn dips_accepting_indexers(
+        &self,
+        chain: &str,
+        max_grt_per_30_days: Option<f64>,
+    ) -> Result<DipsAcceptingSnapshot, SelectionError>;
 }
