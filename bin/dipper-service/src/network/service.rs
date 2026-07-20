@@ -1,5 +1,6 @@
 pub mod chain_events;
 pub mod chain_listener;
+pub mod domain_refresh;
 pub mod entity_count_cache;
 pub mod escrow_reconciler;
 pub mod expiration;
