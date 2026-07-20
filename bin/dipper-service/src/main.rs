@@ -92,15 +92,16 @@ pub async fn main() -> anyhow::Result<()> {
     // The chain client is mandatory: dipper signs RCAs under the RecurringCollector's EIP-712
     // domain and settles offers on-chain, so a deployed contract and reachable RPC are required.
     // Fetch the domain (EIP-5267) with retries, then refuse to start rather than sign unverified.
+    let chain_client_conf = match &conf.chain_client {
+        Some(cfg) if cfg.enabled => cfg.clone(),
+        _ => anyhow::bail!(
+            "chain_client must be enabled with at least one RPC provider and a deployed \
+             recurring_collector: dipper fetches the RecurringCollector EIP-712 domain \
+             on-chain and cannot sign agreements without it"
+        ),
+    };
     let rca_domain = {
-        let cfg = match &conf.chain_client {
-            Some(cfg) if cfg.enabled => cfg,
-            _ => anyhow::bail!(
-                "chain_client must be enabled with at least one RPC provider and a deployed \
-                 recurring_collector: dipper fetches the RecurringCollector EIP-712 domain \
-                 on-chain and cannot sign agreements without it"
-            ),
-        };
+        let cfg = &chain_client_conf;
         let mut attempt: u32 = 0;
         loop {
             match chain_client::fetch_rca_eip712_domain(cfg, chain_id, recurring_collector).await {
@@ -127,32 +128,26 @@ pub async fn main() -> anyhow::Result<()> {
     let rca_domain = Arc::new(std::sync::RwLock::new(rca_domain));
 
     // Background refresh so a running dipper follows an in-place contract upgrade
-    // without a restart. Refresh failures keep the current domain and only warn.
-    if let Some(cfg) = conf.chain_client.as_ref().filter(|cfg| cfg.enabled) {
-        let cfg = cfg.clone();
+    // without a restart. Built here but spawned into the task tree below, with a
+    // stop handle, so it shares the shutdown of every other long-running task.
+    let (domain_refresh_handle, domain_refresh_service) = {
+        let cfg = chain_client_conf.clone();
         let rca_domain = Arc::clone(&rca_domain);
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(cfg.domain_refresh_interval);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            ticker.tick().await; // the first tick fires immediately; skip it
-            loop {
-                ticker.tick().await;
-                if let Err(err) = chain_client::refresh_rca_eip712_domain(
+        let interval = cfg.domain_refresh_interval;
+        network::service::domain_refresh::new(interval, move || {
+            let cfg = cfg.clone();
+            let rca_domain = Arc::clone(&rca_domain);
+            async move {
+                chain_client::refresh_rca_eip712_domain(
                     &cfg,
                     chain_id,
                     recurring_collector,
                     &rca_domain,
                 )
                 .await
-                {
-                    tracing::warn!(
-                        error = %err,
-                        "RCA EIP-712 domain refresh failed; keeping the current domain"
-                    );
-                }
             }
-        });
-    }
+        })
+    };
 
     // Initialize the different components
 
@@ -613,6 +608,9 @@ pub async fn main() -> anyhow::Result<()> {
     let worker_task_handle = task_tree.spawn(worker_service);
     tracing::debug!(task_id=%worker_task_handle.id(), "Worker service started");
 
+    let domain_refresh_task_handle = task_tree.spawn(domain_refresh_service);
+    tracing::debug!(task_id=%domain_refresh_task_handle.id(), "RCA domain refresh started");
+
     // Spawn the reassignment service if enabled
     let reassignment_stop_handle = if let Some((handle, service)) = reassignment_handle {
         let task_handle = task_tree.spawn(service);
@@ -736,6 +734,12 @@ pub async fn main() -> anyhow::Result<()> {
             handle.stop().await;
             tracing::trace!("stopped Entity count cache service");
         }
+
+        // Stop the RCA domain refresh. It drops any in-flight refresh rather
+        // than waiting for it, so a wedged RPC provider cannot stall shutdown.
+        tracing::trace!("stopping RCA domain refresh");
+        domain_refresh_handle.stop().await;
+        tracing::trace!("stopped RCA domain refresh");
 
         tracing::trace!("stopping Worker service");
         worker_handle.stop().await;
