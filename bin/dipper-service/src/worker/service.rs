@@ -1,4 +1,7 @@
-use std::{future::Future, time::Duration};
+use std::{
+    future::Future,
+    time::{Duration, Instant},
+};
 
 use dipper_core::state::FromState;
 use dipper_iisa::CandidateSelection;
@@ -88,35 +91,52 @@ enum Tick {
 /// is already absent when the wait runs, so the wait falls through to the
 /// poll-period sleep and paces the retry.
 ///
-/// Note the limit of this: it paces only the failures we can see. A dropped
-/// connection is not one of them, because sqlx reconnects internally and keeps
-/// waiting rather than returning an error, so that churn happens inside a single
-/// `wait_for_notification` call where this rule has no say. Jobs still flow (the
-/// poll branch keeps firing), but the reconnect rate is sqlx's to decide, not
-/// ours.
+/// This paces only the failures we can see, which is why the queue reports a
+/// connection that keeps dropping as an error rather than rebuilding it forever
+/// on its own. Without that, the churn would happen inside a single
+/// `wait_for_notification` call, where this rule has no say.
 fn should_resubscribe(listener_present: bool, listener_failed_this_tick: bool) -> bool {
     !listener_present && !listener_failed_this_tick
 }
 
-/// How many consecutive failed re-subscription attempts between warnings.
-///
-/// The cadence follows how fast attempts fail, not the clock. Against a
-/// database that refuses quickly, poll-only mode retries about once per poll
-/// period, so this is roughly one warning a minute. Against one that accepts
-/// but never answers, each attempt can burn the 30 second pool acquire timeout
-/// instead, stretching the gap to half an hour.
-const RESUBSCRIBE_WARN_EVERY: u32 = 60;
+/// How long to wait before repeating a warning about the same ongoing problem.
+const WARN_COOLDOWN: Duration = Duration::from_secs(60);
 
-/// Whether a failed re-subscription should be logged at warn rather than debug.
+/// Paces warnings about a notification connection that will not stay up, and
+/// remembers whether an operator was told, so the recovery can be reported at
+/// the same volume.
 ///
-/// Losing the notification connection costs latency, not jobs, so each retry is
-/// a debug detail. A connection that never comes back is a different matter:
-/// the worker would sit in poll-only mode indefinitely with nothing above debug
-/// to show for it. Warning periodically keeps that state visible to anyone
-/// reading logs at the usual level. `consecutive_failures` counts the attempt
-/// that just failed.
-fn resubscribe_failure_is_loud(consecutive_failures: u32) -> bool {
-    consecutive_failures > 0 && consecutive_failures.is_multiple_of(RESUBSCRIBE_WARN_EVERY)
+/// Counting failures does not work for this. A flapping connection that
+/// delivers the occasional notification resets any "consecutive" count, so
+/// every cycle looks like a first failure and warns, which is the noise this
+/// exists to prevent. It also makes the interval depend on how quickly attempts
+/// fail rather than on the clock. Time is the honest measure of "still broken".
+#[derive(Debug, Default)]
+struct WarnPacer {
+    last_warned: Option<Instant>,
+    announced: bool,
+}
+
+impl WarnPacer {
+    /// Whether to warn now rather than log the same thing at debug.
+    fn should_warn(&mut self, now: Instant) -> bool {
+        let due = self
+            .last_warned
+            .is_none_or(|last| now.duration_since(last) >= WARN_COOLDOWN);
+        if due {
+            self.last_warned = Some(now);
+            self.announced = true;
+        }
+        due
+    }
+
+    /// Whether a warning is outstanding, clearing it so one recovery message
+    /// answers it. Deliberately leaves the cooldown alone: a connection that
+    /// recovers between every failure must not win back the right to warn on
+    /// every cycle.
+    fn take_announced(&mut self) -> bool {
+        std::mem::take(&mut self.announced)
+    }
 }
 
 /// Waits for the next trigger to attempt a queue poll: a stop signal, a
@@ -148,6 +168,7 @@ async fn await_next_tick<N: JobNotifications>(
     stop_rx: &mut watch::Receiver<bool>,
     listener: &mut Option<N>,
     poll_period: Duration,
+    warn_pacer: &mut WarnPacer,
 ) -> Tick {
     match listener {
         Some(l) => {
@@ -164,10 +185,17 @@ async fn await_next_tick<N: JobNotifications>(
                     match res {
                         Ok(()) => Tick::Poll { listener_failed: false },
                         Err(err) => {
-                            tracing::warn!(
-                                error=?err,
-                                "job-available listener failed; degrading to poll-only until it can be re-established"
-                            );
+                            if warn_pacer.should_warn(Instant::now()) {
+                                tracing::warn!(
+                                    error=?err,
+                                    "job-available listener failed; degrading to poll-only until it can be re-established"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    error=?err,
+                                    "job-available listener failed again; staying in poll-only mode"
+                                );
+                            }
                             *listener = None;
                             Tick::Poll { listener_failed: true }
                         }
@@ -336,9 +364,11 @@ where
     // and returning an error would stop this loop, which stops every sibling
     // loop with it. Start poll-only instead and let the loop's usual
     // re-subscription path recover once the database is reachable.
+    let mut warn_pacer = WarnPacer::default();
     let mut listener = match queue.subscribe().await {
         Ok(l) => Some(l),
         Err(err) => {
+            warn_pacer.should_warn(Instant::now());
             tracing::warn!(
                 error=?err,
                 "could not subscribe to job-available notifications at startup; starting in poll-only mode"
@@ -346,29 +376,38 @@ where
             None
         }
     };
-    let mut resubscribe_failures: u32 = 0;
     loop {
-        let listener_failed =
-            match await_next_tick(&mut stop_rx, &mut listener, DEFAULT_QUEUE_POLL_PERIOD).await {
-                Tick::Stop => return Ok(()),
-                Tick::Poll { listener_failed } => listener_failed,
-            };
+        let listener_failed = match await_next_tick(
+            &mut stop_rx,
+            &mut listener,
+            DEFAULT_QUEUE_POLL_PERIOD,
+            &mut warn_pacer,
+        )
+        .await
+        {
+            Tick::Stop => return Ok(()),
+            Tick::Poll { listener_failed } => listener_failed,
+        };
 
         // Re-open the notification subscription when the pacing rule allows it.
         // A failure here keeps us in correct poll-only mode.
         if should_resubscribe(listener.is_some(), listener_failed) {
             match queue.subscribe().await {
                 Ok(l) => {
-                    tracing::info!("re-subscribed to job-available notifications");
+                    // Answer every warning exactly once, so a problem an
+                    // operator was told about is also reported as over, while a
+                    // flap nobody was told about stays quiet.
+                    if warn_pacer.take_announced() {
+                        tracing::info!("re-subscribed to job-available notifications");
+                    } else {
+                        tracing::debug!("re-subscribed to job-available notifications");
+                    }
                     listener = Some(l);
-                    resubscribe_failures = 0;
                 }
                 Err(err) => {
-                    resubscribe_failures = resubscribe_failures.saturating_add(1);
-                    if resubscribe_failure_is_loud(resubscribe_failures) {
+                    if warn_pacer.should_warn(Instant::now()) {
                         tracing::warn!(
                             error=?err,
-                            consecutive_failures=%resubscribe_failures,
                             "job-available listener still unavailable; jobs are running on the poll interval alone"
                         );
                     } else {
@@ -510,14 +549,17 @@ impl<Q> Handle<Q> {
 
 #[cfg(test)]
 mod tests {
-    use std::future;
+    use std::{
+        future,
+        time::{Duration, Instant},
+    };
 
     use async_trait::async_trait;
     use tokio::sync::watch;
 
     use super::{
-        JobError, RESUBSCRIBE_WARN_EVERY, Tick, await_next_tick, resubscribe_failure_is_loud,
-        run_job_with_timeout, should_resubscribe,
+        JobError, Tick, WARN_COOLDOWN, WarnPacer, await_next_tick, run_job_with_timeout,
+        should_resubscribe,
     };
     use crate::worker::queue::JobNotifications;
 
@@ -552,8 +594,13 @@ mod tests {
         let (_tx, mut rx) = watch::channel(false);
         let mut listener = Some(FailingNotifier);
 
-        let tick =
-            await_next_tick(&mut rx, &mut listener, std::time::Duration::from_secs(60)).await;
+        let tick = await_next_tick(
+            &mut rx,
+            &mut listener,
+            std::time::Duration::from_secs(60),
+            &mut WarnPacer::default(),
+        )
+        .await;
 
         assert_eq!(
             tick,
@@ -587,27 +634,61 @@ mod tests {
         );
     }
 
-    /// A listener stuck in poll-only mode must escalate past debug periodically,
-    /// so an outage that never recovers is visible at the usual log level
-    /// without one line per retry.
+    /// An outage warns once, then stays quiet until the cooldown expires, so a
+    /// fault that never recovers keeps resurfacing without one line per retry.
     #[test]
-    fn repeated_resubscription_failures_escalate_to_warn() {
+    fn a_continuing_outage_warns_on_a_cooldown() {
+        let mut pacer = WarnPacer::default();
+        let start = Instant::now();
+
         assert!(
-            !resubscribe_failure_is_loud(1),
-            "the first failures stay at debug"
-        );
-        assert!(!resubscribe_failure_is_loud(RESUBSCRIBE_WARN_EVERY - 1));
-        assert!(
-            resubscribe_failure_is_loud(RESUBSCRIBE_WARN_EVERY),
-            "the threshold failure warns"
+            pacer.should_warn(start),
+            "the first failure is what an operator needs to see"
         );
         assert!(
-            resubscribe_failure_is_loud(RESUBSCRIBE_WARN_EVERY * 3),
-            "warnings keep repeating while the outage lasts"
+            !pacer.should_warn(start + Duration::from_secs(1)),
+            "a continuing fault should not warn every cycle"
         );
+        assert!(!pacer.should_warn(start + WARN_COOLDOWN - Duration::from_secs(1)));
         assert!(
-            !resubscribe_failure_is_loud(0),
-            "no failures means nothing to report"
+            pacer.should_warn(start + WARN_COOLDOWN),
+            "a fault that persists should resurface"
+        );
+    }
+
+    /// A connection that recovers between every failure must not win back the
+    /// right to warn each cycle, which is how counting failures went wrong.
+    #[test]
+    fn recovering_between_failures_does_not_reset_the_cooldown() {
+        let mut pacer = WarnPacer::default();
+        let start = Instant::now();
+
+        assert!(pacer.should_warn(start));
+        assert!(pacer.take_announced(), "the warning is outstanding");
+
+        assert!(
+            !pacer.should_warn(start + Duration::from_secs(2)),
+            "recovering in between must not make the next failure loud"
+        );
+    }
+
+    /// Every warning gets exactly one resolution, and a flap nobody was told
+    /// about stays quiet.
+    #[test]
+    fn only_an_announced_problem_reports_its_recovery() {
+        let mut pacer = WarnPacer::default();
+        let start = Instant::now();
+
+        assert!(
+            !pacer.take_announced(),
+            "nothing was announced, so nothing to resolve"
+        );
+
+        pacer.should_warn(start);
+        assert!(pacer.take_announced(), "the warning deserves an answer");
+        assert!(
+            !pacer.take_announced(),
+            "but only one, not one per re-subscription"
         );
     }
 
@@ -618,8 +699,13 @@ mod tests {
         tx.send(true).unwrap();
         let mut listener = Some(SilentNotifier);
 
-        let tick =
-            await_next_tick(&mut rx, &mut listener, std::time::Duration::from_secs(60)).await;
+        let tick = await_next_tick(
+            &mut rx,
+            &mut listener,
+            std::time::Duration::from_secs(60),
+            &mut WarnPacer::default(),
+        )
+        .await;
 
         assert_eq!(tick, Tick::Stop);
     }
@@ -632,8 +718,13 @@ mod tests {
         let (_tx, mut rx) = watch::channel(false);
         let mut listener: Option<SilentNotifier> = None;
 
-        let tick =
-            await_next_tick(&mut rx, &mut listener, std::time::Duration::from_secs(60)).await;
+        let tick = await_next_tick(
+            &mut rx,
+            &mut listener,
+            std::time::Duration::from_secs(60),
+            &mut WarnPacer::default(),
+        )
+        .await;
 
         assert_eq!(
             tick,
