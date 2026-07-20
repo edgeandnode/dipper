@@ -46,7 +46,7 @@ const INDEXER_URLS_FETCH_MAX_RETRIES: u32 = 5;
 
 /// Total budget for the teardown, from shutdown being requested to the last task draining. The
 /// stop sequence's own ceiling is 65s (11 stop steps and the event flush and the DB pool close,
-/// each capped at `STOP_STEP_TIMEOUT`), so this sits above it and below the pod's 90s grace.
+/// each capped locally at `STOP_STEP_TIMEOUT`), so this sits above it and below the pod's 90s grace.
 const TEARDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(75);
 
 /// How long to wait for one stop step before moving on without it. Every step of the sequence is
@@ -773,11 +773,14 @@ pub async fn main() -> anyhow::Result<()> {
             all_stopped &= stop_service("Health endpoint", handle.stop()).await;
         }
 
-        // All event producers have stopped; flush buffered diagnostic events to
-        // the broker before exit (bounded by an internal timeout).
-        tracing::trace!("flushing lifecycle event stream");
-        subgraph_indexing_agreements_events_emitter.flush().await;
-        tracing::trace!("flushed lifecycle event stream");
+        // All event producers have stopped; flush buffered diagnostic events to the broker
+        // before exit, capped locally like every stop step so the teardown ceiling holds even
+        // if the producer's own flush timeout is later raised.
+        all_stopped &= stop_service(
+            "Lifecycle event flush",
+            subgraph_indexing_agreements_events_emitter.flush(),
+        )
+        .await;
 
         // Closing the pool waits for every checked-out connection back, so a service we gave up
         // on would hang it and then take a confusing `PoolClosed`. Skipping it, or giving up on
