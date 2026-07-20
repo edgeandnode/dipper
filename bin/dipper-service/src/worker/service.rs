@@ -120,14 +120,20 @@ fn resubscribe_failure_is_loud(consecutive_failures: u32) -> bool {
 /// never leaves the worker in an uncertain state. The caller re-subscribes on a
 /// later poll.
 ///
-/// Losing the race here does not lose a notification. Whichever branch does not
-/// win has its future dropped, and for the listener that future bottoms out in
-/// sqlx's `recv_unchecked`, which is written to be cancel-safe: it leaves its
-/// read buffer untouched until a whole message has arrived. A half-read message
-/// stays buffered for the next call, and a message that did finish arriving
-/// makes the branch ready, which the `biased` ordering then prefers over the
-/// poll timer below it. Do not "fix" this by moving the listener onto its own
-/// task; there is nothing to fix.
+/// Whichever branch does not win has its future dropped. In the steady state
+/// that future is suspended in sqlx's `recv_unchecked`, which is written to be
+/// cancel-safe: it leaves its read buffer untouched until a whole message has
+/// arrived. What makes that sufficient is that the buffer lives on the
+/// connection the listener owns rather than in the future, so a half-read
+/// message stays buffered for the next call, and a message that did finish
+/// arriving makes the branch ready, which returns from the select before the
+/// poll timer below is even polled.
+///
+/// The exception is a cancellation landing inside sqlx's re-subscription after a
+/// lost connection, which can drop a notification. The 1 second poll bounds that
+/// to added latency, never a dropped job, which is the property worth relying on
+/// here. Cancellation on its own is therefore not a reason to move the listener
+/// onto a task of its own; connection budget or reconnect pacing might be.
 async fn await_next_tick<N: JobNotifications>(
     stop_rx: &mut watch::Receiver<bool>,
     listener: &mut Option<N>,
