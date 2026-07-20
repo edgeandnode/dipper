@@ -15,8 +15,7 @@ use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, rou
 use tokio::{net::TcpListener, sync::mpsc};
 
 /// Default staleness threshold, twice the [`crate::worker::service::PROCESS_JOB_TIMEOUT`] of 300s
-/// that bounds a single job, so a legitimately slow job never trips the probe. Accepted edge: an
-/// indexer stalling every retry just under the client timeout stretches a job to about 967s.
+/// that bounds a single job, so a legitimately slow job never trips the probe.
 pub const DEFAULT_HEALTH_THRESHOLD: Duration = Duration::from_secs(600);
 
 /// Reference point for every watermark, fixed the first time liveness is touched. Watermarks are
@@ -43,12 +42,12 @@ pub struct ProgressTicker {
 impl ProgressTicker {
     /// Records that this loop just made progress.
     pub fn record_progress(&self) {
-        self.slot.store(now_secs(), Ordering::Relaxed);
+        self.slot.store(elapsed_secs(), Ordering::Relaxed);
     }
 }
 
 /// Seconds elapsed since [`PROCESS_START`]. Monotonic, so it never jumps with the system clock.
-fn now_secs() -> i64 {
+fn elapsed_secs() -> i64 {
     PROCESS_START.elapsed().as_secs() as i64
 }
 
@@ -63,7 +62,7 @@ impl Liveness {
     /// Registers a worker loop and returns its ticker, seeded to now so a
     /// freshly spawned loop is considered live (startup grace).
     pub fn register(&self) -> ProgressTicker {
-        let slot = Arc::new(AtomicI64::new(now_secs()));
+        let slot = Arc::new(AtomicI64::new(elapsed_secs()));
         self.slots
             .lock()
             .expect("liveness mutex poisoned")
@@ -71,21 +70,21 @@ impl Liveness {
         ProgressTicker { slot }
     }
 
-    /// Whether every registered loop made progress within `threshold` of `now_secs`, where both
-    /// are seconds since [`PROCESS_START`]. A single stale loop makes the whole worker unhealthy.
-    /// Pure in its inputs so it is unit testable without waiting on real time.
-    pub fn is_healthy_at(&self, now_secs: i64, threshold: Duration) -> bool {
+    /// Whether every registered loop made progress within `threshold` of `now_elapsed_secs`, where
+    /// both are seconds since [`PROCESS_START`]. A single stale loop makes the whole worker
+    /// unhealthy. Pure in its inputs so it is unit testable without waiting on real time.
+    fn is_healthy_at(&self, now_elapsed_secs: i64, threshold: Duration) -> bool {
         let slots = self.slots.lock().expect("liveness mutex poisoned");
         // With no loops registered yet (startup) there is nothing stale to report.
         slots.iter().all(|slot| {
-            let age = now_secs.saturating_sub(slot.load(Ordering::Relaxed));
+            let age = now_elapsed_secs.saturating_sub(slot.load(Ordering::Relaxed));
             age <= threshold.as_secs() as i64
         })
     }
 
     /// [`Liveness::is_healthy_at`] against the current elapsed time.
     pub fn is_healthy(&self, threshold: Duration) -> bool {
-        self.is_healthy_at(now_secs(), threshold)
+        self.is_healthy_at(elapsed_secs(), threshold)
     }
 }
 
@@ -195,7 +194,7 @@ mod tests {
     fn no_loops_registered_is_healthy() {
         // Before any loop registers (startup), there is nothing stale to report.
         let liveness = Liveness::new();
-        let now = now_secs() + 10_000;
+        let now = elapsed_secs() + 10_000;
         assert!(liveness.is_healthy_at(now, Duration::from_secs(600)));
     }
 
@@ -203,7 +202,7 @@ mod tests {
     fn fresh_watermark_is_healthy() {
         let liveness = Liveness::new();
         let _ticker = liveness.register();
-        let now = now_secs();
+        let now = elapsed_secs();
         assert!(liveness.is_healthy_at(now, Duration::from_secs(600)));
     }
 
@@ -212,7 +211,7 @@ mod tests {
         let liveness = Liveness::new();
         let _ticker = liveness.register();
         // Pretend "now" is well past the threshold since the watermark was set.
-        let now = now_secs() + 10_000;
+        let now = elapsed_secs() + 10_000;
         assert!(
             !liveness.is_healthy_at(now, Duration::from_secs(600)),
             "a watermark older than the threshold must report unhealthy"
@@ -225,15 +224,17 @@ mod tests {
         let liveness = Liveness::new();
         let ticker = liveness.register();
         let threshold = Duration::from_secs(600);
-        ticker.slot.store(now_secs() - 10_000, Ordering::Relaxed);
+        ticker
+            .slot
+            .store(elapsed_secs() - 10_000, Ordering::Relaxed);
         assert!(
-            !liveness.is_healthy_at(now_secs(), threshold),
+            !liveness.is_healthy_at(elapsed_secs(), threshold),
             "a watermark 10000s old must report unhealthy before the tick"
         );
 
         ticker.record_progress();
         assert!(
-            liveness.is_healthy_at(now_secs(), threshold),
+            liveness.is_healthy_at(elapsed_secs(), threshold),
             "record_progress must advance the watermark back to now"
         );
     }
@@ -249,7 +250,7 @@ mod tests {
 
         // Move the two fresh loops' watermarks forward to `now`; the stale one
         // is left seeded at registration time.
-        let now = now_secs() + 10_000;
+        let now = elapsed_secs() + 10_000;
         fresh_a.slot.store(now, Ordering::Relaxed);
         fresh_b.slot.store(now, Ordering::Relaxed);
 
@@ -263,7 +264,7 @@ mod tests {
     fn boundary_is_inclusive_healthy() {
         let liveness = Liveness::new();
         let _ticker = liveness.register();
-        let base = now_secs();
+        let base = elapsed_secs();
         // Exactly at the threshold is still healthy; one second past is not.
         assert!(liveness.is_healthy_at(base + 600, Duration::from_secs(600)));
         assert!(!liveness.is_healthy_at(base + 601, Duration::from_secs(600)));
@@ -291,7 +292,7 @@ mod tests {
         let ticker = liveness.register();
         // A zero threshold plus a backdated watermark makes the worker stale on
         // the spot, so the unhealthy branch is exercised without waiting.
-        ticker.slot.store(now_secs() - 1, Ordering::Relaxed);
+        ticker.slot.store(elapsed_secs() - 1, Ordering::Relaxed);
         let (handle, addr, fut) = new("127.0.0.1:0".parse().unwrap(), liveness, Duration::ZERO)
             .await
             .unwrap();
