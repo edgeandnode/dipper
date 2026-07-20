@@ -42,17 +42,17 @@ spec:
                 - ALL
           # Startup can take minutes: a retrying RPC domain fetch, database
           # migrations and an indexer URL snapshot all run before the health
-          # port opens. Liveness stays suspended until this passes (300s).
+          # port opens. Liveness stays suspended until this passes (600s).
           startupProbe:
             httpGet:
               path: /health
               port: health
             periodSeconds: 10
             timeoutSeconds: 5
-            failureThreshold: 30
+            failureThreshold: 60
           # Probe the health endpoint, not a TCP socket: it returns 503 once the
           # worker watermark goes stale, catching a worker that is alive but
-          # stuck. Six failures so a brief stall cannot kill the only replica.
+          # stuck. 6 failures so a brief stall cannot kill the only replica.
           livenessProbe:
             httpGet:
               path: /health
@@ -63,7 +63,6 @@ spec:
           readinessProbe:
             tcpSocket:
               port: admin-rpc
-            initialDelaySeconds: 15
             periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 3
