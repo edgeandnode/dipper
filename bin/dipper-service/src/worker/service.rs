@@ -35,7 +35,7 @@ const DEFAULT_QUEUE_POLL_PERIOD: Duration = Duration::from_secs(1);
 ///
 /// Every external call `process_job` makes is already individually bounded
 /// (IISA HTTP, indexer RPC, chain RPC + receipt polling), so the legitimate
-/// worst case is their sum — on the order of a couple of minutes. This timeout
+/// worst case is their sum, on the order of a couple of minutes. This timeout
 /// sits comfortably above that and only fires if a dependency accepts the
 /// connection but never responds, defeating the per-call timeouts. Critically,
 /// for the whole `process_job` call the job's `JobGuard` holds the row's
@@ -163,7 +163,7 @@ where
                 }
                 Err(err) => {
                     // A panicking loop must also fail the worker, not be swallowed
-                    // into an Ok — otherwise a single loop death looks like success.
+                    // into an Ok, otherwise a single loop death looks like success.
                     tracing::error!(error=?err, "Worker loop task panicked");
                     first_err.get_or_insert_with(|| anyhow::Error::new(err));
                 }
