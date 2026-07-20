@@ -90,6 +90,51 @@ pub struct Config {
     /// the pool with the registry and background services; size accordingly.
     #[serde(default = "default_worker_concurrency")]
     pub worker_concurrency: usize,
+    /// The HTTP health endpoint configuration. The health server is on by
+    /// default so the liveness probe always has an endpoint to hit; omitting
+    /// this section keeps the defaults, and setting `enabled` to false turns
+    /// the server off.
+    #[serde(default)]
+    pub health: HealthConfig,
+}
+
+/// Configuration for the HTTP health endpoint used by orchestrator liveness
+/// probes.
+///
+/// The defaults deliberately produce a working server (bound to 0.0.0.0:8546)
+/// even when the whole section is omitted. The k8s liveness probe points at
+/// this endpoint, so a pod whose config lacks the section must still answer the
+/// probe rather than crash-loop for want of one.
+#[serde_as]
+#[derive(Debug, serde::Deserialize)]
+#[serde(default)]
+pub struct HealthConfig {
+    /// Whether to start the health server at all. On by default; set to false
+    /// to disable the endpoint entirely.
+    pub enabled: bool,
+
+    /// The health server listen address (e.g. `0.0.0.0:8546`).
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub listen_addr: std::net::SocketAddr,
+
+    /// Staleness threshold in seconds after which the worker is reported
+    /// unhealthy. Defaults to [`crate::health::DEFAULT_HEALTH_THRESHOLD`].
+    #[serde_as(as = "serde_with::DurationSeconds")]
+    pub threshold: Duration,
+}
+
+impl Default for HealthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            listen_addr: default_health_listen_addr(),
+            threshold: crate::health::DEFAULT_HEALTH_THRESHOLD,
+        }
+    }
+}
+
+fn default_health_listen_addr() -> std::net::SocketAddr {
+    std::net::SocketAddr::from(([0, 0, 0, 0], 8546))
 }
 
 /// The IISA (Indexing Indexer Selection Algorithm) service configuration

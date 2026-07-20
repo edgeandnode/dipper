@@ -68,6 +68,7 @@ where
         chain_listener_notify,
         bypass_chain_clock_defenses,
         chain_listener_chain_id,
+        liveness,
         reassess_lock,
         unresponsive_breaker,
         dips_accepting_cache,
@@ -111,7 +112,12 @@ where
 
         let mut set = JoinSet::new();
         for _ in 0..concurrency.max(1) {
-            set.spawn(run_loop(state.clone(), queue.clone(), stop_rx.clone()));
+            set.spawn(run_loop(
+                state.clone(),
+                queue.clone(),
+                stop_rx.clone(),
+                liveness.clone(),
+            ));
         }
         // Drop the supervisor's own receiver so `Handle::stop`'s `closed()`
         // tracks only the loops.
@@ -152,6 +158,7 @@ async fn run_loop<Q, R, C, I, T>(
     state: InnerCtx<R, WorkerQueueHandle<Q>, C, I, T>,
     queue: Q,
     mut stop_rx: watch::Receiver<bool>,
+    liveness: crate::health::Liveness,
 ) -> anyhow::Result<()>
 where
     Q: Queue<Message> + Clone + Send + Sync + 'static,
@@ -185,6 +192,11 @@ where
             }
             _ = tokio::time::sleep(DEFAULT_QUEUE_POLL_PERIOD) => {}
         }
+
+        // Tick the liveness watermark on every iteration (including idle polls
+        // that find no job) so the health endpoint sees a worker that is still
+        // making its way around the loop rather than one that has wedged.
+        liveness.record_progress();
 
         // Process the job
         let job = match queue.pop().await {
