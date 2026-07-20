@@ -8,6 +8,11 @@ use tokio::sync::mpsc;
 
 use crate::chain_client::ChainClientError;
 
+/// How long `stop` waits for an in-flight refresh before moving on. A refresh
+/// is one RPC call that normally returns in well under a second, so anything
+/// this slow is a stuck provider that must not hold up the rest of shutdown.
+const STOP_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Handle for controlling the domain refresh service.
 #[derive(Clone)]
 pub struct Handle {
@@ -15,13 +20,23 @@ pub struct Handle {
 }
 
 impl Handle {
-    /// Stop the service gracefully.
+    /// Stop the service gracefully, waiting up to [`STOP_TIMEOUT`] for the loop
+    /// to exit. On expiry the rest of shutdown proceeds; the task tree still
+    /// joins the task before the process exits.
     pub async fn stop(&self) {
         if self.tx_stop.is_closed() {
             return;
         }
         let _ = self.tx_stop.send(()).await;
-        self.tx_stop.closed().await;
+        if tokio::time::timeout(STOP_TIMEOUT, self.tx_stop.closed())
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                timeout_secs = STOP_TIMEOUT.as_secs(),
+                "RCA domain refresh did not stop in time; continuing shutdown without it"
+            );
+        }
     }
 }
 
