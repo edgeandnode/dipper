@@ -295,6 +295,42 @@ mod tests {
         );
     }
 
+    /// The same stall with the stop sequence wedging on its first step, so *no*
+    /// task finishes. The test above lets its coordinator return, which wakes the
+    /// drain; here the watchdog has to start off the shutdown flag alone.
+    #[tokio::test]
+    async fn teardown_stall_before_any_task_finishes_is_bounded() {
+        let shutdown = Shutdown::new();
+        let mut task_tree: JoinSet<anyhow::Result<()>> = JoinSet::new();
+
+        // Stand-in for the signal handler: asks for shutdown, then wedges on its
+        // first stop step and never returns.
+        let coordinator = shutdown.clone();
+        task_tree.spawn(async move {
+            coordinator.request();
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+
+        // A service nobody is left to stop.
+        task_tree.spawn(async {
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+
+        let result = tokio::time::timeout(
+            SUPERVISE_TIMEOUT,
+            supervise(task_tree, &shutdown, TEST_TEARDOWN_GRACE),
+        )
+        .await
+        .expect("supervise hung: the teardown watchdog never engaged");
+
+        assert!(
+            result.is_err(),
+            "a teardown that stalls before any task finishes must still be fatal"
+        );
+    }
+
     /// A task that panics (or returns `Err`) while the tree is being torn down
     /// must still make the process exit non-zero, not be masked into a clean
     /// exit just because shutdown was already requested. Regression test for
