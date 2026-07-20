@@ -91,12 +91,76 @@ enum Tick {
 /// is already absent when the wait runs, so the wait falls through to the
 /// poll-period sleep and paces the retry.
 ///
-/// This paces only the failures we can see, which is why the queue reports a
-/// connection that keeps dropping as an error rather than rebuilding it forever
-/// on its own. Without that, the churn would happen inside a single
-/// `wait_for_notification` call, where this rule has no say.
-fn should_resubscribe(listener_present: bool, listener_failed_this_tick: bool) -> bool {
-    !listener_present && !listener_failed_this_tick
+/// Attempts are further spaced out by `backoff`, so a database that cannot hold
+/// the subscription is not asked once a second per loop indefinitely.
+fn should_resubscribe(
+    listener_present: bool,
+    listener_failed_this_tick: bool,
+    backoff: &ResubscribeBackoff,
+    now: Instant,
+) -> bool {
+    !listener_present && !listener_failed_this_tick && backoff.is_due(now)
+}
+
+/// Shortest and longest wait between re-subscription attempts.
+const RESUBSCRIBE_BASE_DELAY: Duration = Duration::from_secs(1);
+const RESUBSCRIBE_MAX_DELAY: Duration = Duration::from_secs(30);
+
+/// How long a subscription must survive before the next failure is treated as a
+/// fresh problem rather than a continuation of the last one.
+const RESUBSCRIBE_STABLE_PERIOD: Duration = RESUBSCRIBE_MAX_DELAY;
+
+/// How many times the delay may double before it stops growing. Five doublings
+/// take the 1 second base past the 30 second ceiling.
+const RESUBSCRIBE_MAX_DOUBLINGS: u32 = 5;
+
+/// Spaces out re-subscription attempts while the notification connection keeps
+/// failing, so eight worker loops do not open eight connections a second
+/// against a database that is already struggling.
+#[derive(Debug, Default)]
+struct ResubscribeBackoff {
+    failures: u32,
+    next_attempt: Option<Instant>,
+    subscribed_at: Option<Instant>,
+}
+
+impl ResubscribeBackoff {
+    /// Whether enough time has passed since the last failure to try again.
+    fn is_due(&self, now: Instant) -> bool {
+        self.next_attempt.is_none_or(|at| now >= at)
+    }
+
+    /// Records a subscription that failed, or one that broke after being
+    /// established, and schedules the next attempt.
+    fn record_failure(&mut self, now: Instant) {
+        // A subscription that held for a good while was not part of this run of
+        // failures, so its loss starts the delay again from the bottom.
+        let was_stable = self
+            .subscribed_at
+            .is_some_and(|at| now.duration_since(at) >= RESUBSCRIBE_STABLE_PERIOD);
+        if was_stable {
+            self.failures = 0;
+        }
+        self.subscribed_at = None;
+        self.failures = self.failures.saturating_add(1);
+        self.next_attempt = Some(now + self.delay());
+    }
+
+    /// Records a subscription that was established, clearing the wait.
+    fn record_success(&mut self, now: Instant) {
+        self.next_attempt = None;
+        self.subscribed_at = Some(now);
+    }
+
+    /// The wait after the failures seen so far: 1 second, then doubling to a
+    /// ceiling of 30 seconds.
+    fn delay(&self) -> Duration {
+        let doublings = self
+            .failures
+            .saturating_sub(1)
+            .min(RESUBSCRIBE_MAX_DOUBLINGS);
+        (RESUBSCRIBE_BASE_DELAY * (1u32 << doublings)).min(RESUBSCRIBE_MAX_DELAY)
+    }
 }
 
 /// How long to wait before repeating a warning about the same ongoing problem.
@@ -374,9 +438,14 @@ where
     // loop with it. Start poll-only instead and let the loop's usual
     // re-subscription path recover once the database is reachable.
     let mut warn_pacer = WarnPacer::default();
+    let mut backoff = ResubscribeBackoff::default();
     let mut listener = match queue.subscribe().await {
-        Ok(l) => Some(l),
+        Ok(l) => {
+            backoff.record_success(Instant::now());
+            Some(l)
+        }
         Err(err) => {
+            backoff.record_failure(Instant::now());
             warn_pacer.should_warn(Instant::now());
             tracing::warn!(
                 error=?err,
@@ -398,11 +467,21 @@ where
             Tick::Poll { listener_failed } => listener_failed,
         };
 
+        if listener_failed {
+            backoff.record_failure(Instant::now());
+        }
+
         // Re-open the notification subscription when the pacing rule allows it.
         // A failure here keeps us in correct poll-only mode.
-        if should_resubscribe(listener.is_some(), listener_failed) {
+        if should_resubscribe(
+            listener.is_some(),
+            listener_failed,
+            &backoff,
+            Instant::now(),
+        ) {
             match queue.subscribe().await {
                 Ok(l) => {
+                    backoff.record_success(Instant::now());
                     // Answer every warning exactly once, so a problem an
                     // operator was told about is also reported as over, while a
                     // flap nobody was told about stays quiet.
@@ -572,8 +651,9 @@ mod tests {
     use tokio::sync::watch;
 
     use super::{
-        JobError, Tick, WARN_COOLDOWN, WarnPacer, await_next_tick, run_job_with_timeout,
-        should_resubscribe,
+        DEFAULT_QUEUE_POLL_PERIOD, JobError, RESUBSCRIBE_BASE_DELAY, RESUBSCRIBE_MAX_DELAY,
+        RESUBSCRIBE_STABLE_PERIOD, ResubscribeBackoff, Tick, WARN_COOLDOWN, WarnPacer,
+        await_next_tick, run_job_with_timeout, should_resubscribe,
     };
     use crate::worker::queue::JobNotifications;
 
@@ -634,17 +714,102 @@ mod tests {
     /// the failure, so the poll-period sleep sits between attempts.
     #[test]
     fn resubscribes_only_after_a_paced_tick() {
+        let idle = ResubscribeBackoff::default();
+        let now = Instant::now();
+
         assert!(
-            !should_resubscribe(true, false),
+            !should_resubscribe(true, false, &idle, now),
             "a healthy listener needs no re-subscription"
         );
         assert!(
-            !should_resubscribe(false, true),
+            !should_resubscribe(false, true, &idle, now),
             "the tick a listener fails on must not re-subscribe immediately"
         );
         assert!(
-            should_resubscribe(false, false),
+            should_resubscribe(false, false, &idle, now),
             "a listener that degraded on an earlier tick should be retried"
+        );
+    }
+
+    /// The one-tick deferral still holds while a backoff is running, so the two
+    /// rules cannot combine into an immediate retry.
+    #[test]
+    fn a_running_backoff_holds_off_re_subscription() {
+        let mut backoff = ResubscribeBackoff::default();
+        let start = Instant::now();
+        backoff.record_failure(start);
+
+        assert!(
+            !should_resubscribe(false, false, &backoff, start),
+            "an attempt that just failed must wait out its delay"
+        );
+        assert!(
+            should_resubscribe(false, false, &backoff, start + RESUBSCRIBE_BASE_DELAY),
+            "once the delay has passed the loop should try again"
+        );
+    }
+
+    /// Consecutive failures double the wait up to the ceiling, so a database
+    /// that cannot hold the subscription is asked less and less often.
+    #[test]
+    fn repeated_failures_back_off_up_to_the_ceiling() {
+        let mut backoff = ResubscribeBackoff::default();
+        let start = Instant::now();
+
+        for expected in [1u64, 2, 4, 8, 16, 30, 30] {
+            backoff.record_failure(start);
+            assert_eq!(
+                backoff.delay(),
+                Duration::from_secs(expected),
+                "unexpected delay after {} failures",
+                backoff.failures
+            );
+        }
+    }
+
+    /// Job polling is never delayed by the backoff: the ceiling only spaces out
+    /// subscription attempts, and the poll period stays where it was.
+    #[test]
+    fn the_backoff_never_slows_job_polling() {
+        assert_eq!(DEFAULT_QUEUE_POLL_PERIOD, Duration::from_secs(1));
+        assert!(RESUBSCRIBE_MAX_DELAY > DEFAULT_QUEUE_POLL_PERIOD);
+    }
+
+    /// A subscription that held for a good while is not part of the previous
+    /// run of failures, so losing it starts the delay from the bottom again.
+    #[test]
+    fn a_long_lived_subscription_resets_the_backoff() {
+        let mut backoff = ResubscribeBackoff::default();
+        let start = Instant::now();
+
+        backoff.record_failure(start);
+        backoff.record_failure(start);
+        assert_eq!(backoff.delay(), Duration::from_secs(2));
+
+        backoff.record_success(start);
+        backoff.record_failure(start + RESUBSCRIBE_STABLE_PERIOD);
+        assert_eq!(
+            backoff.delay(),
+            RESUBSCRIBE_BASE_DELAY,
+            "a subscription that proved itself should not inherit old failures"
+        );
+    }
+
+    /// A subscription that drops straight back out keeps escalating, which is
+    /// the flap the backoff exists to slow down.
+    #[test]
+    fn a_flapping_subscription_keeps_escalating() {
+        let mut backoff = ResubscribeBackoff::default();
+        let start = Instant::now();
+
+        backoff.record_failure(start);
+        backoff.record_success(start);
+        backoff.record_failure(start + Duration::from_millis(10));
+
+        assert_eq!(
+            backoff.delay(),
+            Duration::from_secs(2),
+            "a subscription that dies immediately is the same problem continuing"
         );
     }
 
