@@ -114,11 +114,20 @@ fn resubscribe_failure_is_loud(consecutive_failures: u32) -> bool {
 ///
 /// On a listener error the listener is dropped (`*listener = None`) and the
 /// worker degrades to poll-only operation. This is correct, not a degraded
-/// state to be feared: `queue.pop()` is independent of `LISTEN`/`NOTIFY` — the
-/// notification only wakes the loop earlier than the poll interval, a latency
-/// optimisation — so a listener fault never stops job processing and never
-/// leaves the worker in an uncertain state. The caller re-subscribes on a
+/// state to be feared: `queue.pop()` is independent of `LISTEN`/`NOTIFY`, since
+/// the notification only wakes the loop earlier than the poll interval as a
+/// latency optimisation, so a listener fault never stops job processing and
+/// never leaves the worker in an uncertain state. The caller re-subscribes on a
 /// later poll.
+///
+/// Losing the race here does not lose a notification. Whichever branch does not
+/// win has its future dropped, and for the listener that future bottoms out in
+/// sqlx's `recv_unchecked`, which is written to be cancel-safe: it leaves its
+/// read buffer untouched until a whole message has arrived. A half-read message
+/// stays buffered for the next call, and a message that did finish arriving
+/// makes the branch ready, which the `biased` ordering then prefers over the
+/// poll timer below it. Do not "fix" this by moving the listener onto its own
+/// task; there is nothing to fix.
 async fn await_next_tick<N: JobNotifications>(
     stop_rx: &mut watch::Receiver<bool>,
     listener: &mut Option<N>,
