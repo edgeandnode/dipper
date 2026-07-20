@@ -231,11 +231,10 @@ impl WarnPacer {
 /// arriving makes the branch ready, which returns from the select before the
 /// poll timer below is even polled.
 ///
-/// The exception is a cancellation landing inside sqlx's re-subscription after a
-/// lost connection, which can drop a notification. The 1 second poll bounds that
-/// to added latency, never a dropped job, which is the property worth relying on
-/// here. Cancellation on its own is therefore not a reason to move the listener
-/// onto a task of its own; connection budget or reconnect pacing might be.
+/// Notifications are still lost whenever the connection goes down, cancellation
+/// or not, because PostgreSQL only holds them for sessions currently listening.
+/// The 1 second poll bounds that to added latency, never a dropped job, which is
+/// the property worth relying on here.
 async fn await_next_tick<N: JobNotifications>(
     stop_rx: &mut watch::Receiver<bool>,
     listener: &mut Option<N>,
