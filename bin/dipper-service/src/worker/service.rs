@@ -227,15 +227,27 @@ where
     // poll-only operation (see `await_next_tick`).
     let mut listener = Some(queue.subscribe().await?);
     loop {
+        // Whether the listener was still healthy going into this tick. Lets us
+        // tell a listener that just failed on this very tick apart from one that
+        // already degraded on an earlier, poll-period-paced tick.
+        let listener_was_present = listener.is_some();
+
         match await_next_tick(&mut stop_rx, &mut listener, DEFAULT_QUEUE_POLL_PERIOD).await {
             Tick::Stop => return Ok(()),
             Tick::Poll => {}
         }
 
-        // If the listener degraded on a previous tick, try to re-establish
-        // it. This is bounded to at most once per poll period and is
-        // non-fatal: a failure keeps us in correct poll-only mode.
-        if listener.is_none() {
+        // If the listener has degraded to poll-only, try to re-establish it,
+        // but never on the same tick the failure fired. A failing
+        // `wait_for_notification` returns immediately, so re-subscribing right
+        // away and landing on a connection that fails just as fast (for example
+        // a pooled connection that accepts LISTEN but never delivers NOTIFY)
+        // would spin the loop at full CPU: fail, re-subscribe, pop, fail, with
+        // no poll-period sleep anywhere. Waiting until the next tick, when the
+        // listener is already `None` and the wait falls through to the
+        // poll-period sleep, paces the retry to at most once per poll period. A
+        // failure here keeps us in correct poll-only mode.
+        if listener.is_none() && !listener_was_present {
             match queue.subscribe().await {
                 Ok(l) => {
                     tracing::info!("re-subscribed to job-available notifications");
