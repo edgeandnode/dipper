@@ -118,6 +118,18 @@ pub struct AgreementStateSnapshot {
     /// Block number of the latest state change. Used as the pagination
     /// cursor for subsequent polls.
     pub last_state_change_block: u64,
+    /// Timestamp of when the agreement was accepted on-chain (`0` if never
+    /// accepted). Sourced from the subgraph's `acceptedAt`.
+    pub accepted_at: u64,
+    /// Transaction hash (0x hex) of the on-chain accept. 32-byte zero sentinel
+    /// if never accepted. Sourced from the subgraph's `acceptedAtTx`.
+    pub accepted_tx: String,
+    /// Timestamp of when the agreement was canceled (`0` if not canceled).
+    /// Sourced from the subgraph's `canceledAt`.
+    pub canceled_at: u64,
+    /// Transaction hash (0x hex) of the on-chain cancel. 32-byte zero sentinel
+    /// if not canceled. Sourced from the subgraph's `canceledAtTx`.
+    pub canceled_tx: String,
 }
 
 /// Errors that can occur when fetching snapshots.
@@ -248,6 +260,18 @@ struct IndexingAgreementEntity {
     canceled_by: String,
     /// Block number as string (BigInt in GraphQL)
     last_state_change_block: String,
+    /// Accept timestamp as string (BigInt in GraphQL); `"0"` if never accepted.
+    #[serde(default)]
+    accepted_at: String,
+    /// Hex-encoded tx hash of the on-chain accept (32-byte zero if never accepted).
+    #[serde(default)]
+    accepted_at_tx: String,
+    /// Cancel timestamp as string (BigInt in GraphQL); `"0"` if not canceled.
+    #[serde(default)]
+    canceled_at: String,
+    /// Hex-encoded tx hash of the on-chain cancel (32-byte zero if not canceled).
+    #[serde(default)]
+    canceled_at_tx: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -443,6 +467,10 @@ impl ChainEventSource for SubgraphEventSource {
                     state
                     canceledBy
                     lastStateChangeBlock
+                    acceptedAt
+                    acceptedAtTx
+                    canceledAt
+                    canceledAtTx
                 }}
                 {meta_clause} {{
                     block {{
@@ -693,7 +721,36 @@ fn parse_snapshot(entity: &IndexingAgreementEntity) -> Option<AgreementStateSnap
         state: parse_state(&entity.state)?,
         canceled_by: parse_address_or_zero(&entity.canceled_by)?,
         last_state_change_block: entity.last_state_change_block.parse().ok()?,
+        // Auxiliary audit fields (timestamps + tx hashes). These don't drive
+        // reconciliation, so a malformed value defaults rather than dropping the
+        // whole entity: BigInt timestamps fall back to 0 (a malformed value is
+        // logged), tx hashes pass through as the raw hex string from the subgraph
+        // (32-byte zero sentinel when unset).
+        accepted_at: parse_bigint_timestamp(&entity.accepted_at, "acceptedAt", &entity.id),
+        accepted_tx: entity.accepted_at_tx.clone(),
+        canceled_at: parse_bigint_timestamp(&entity.canceled_at, "canceledAt", &entity.id),
+        canceled_tx: entity.canceled_at_tx.clone(),
     })
+}
+
+/// Parse a BigInt timestamp field, defaulting to 0. `"0"`/absent is the expected
+/// "unset" encoding, so only a non-empty, unparseable value is flagged -- that
+/// signals a genuinely malformed upstream response rather than an unset field.
+fn parse_bigint_timestamp(raw: &str, field: &str, agreement_id: &str) -> u64 {
+    match raw.parse::<u64>() {
+        Ok(value) => value,
+        Err(_) => {
+            if !raw.is_empty() {
+                tracing::warn!(
+                    field,
+                    raw,
+                    agreement_id,
+                    "unparseable BigInt timestamp in subgraph response; defaulting to 0"
+                );
+            }
+            0
+        }
+    }
 }
 
 /// Parse the GraphQL state enum string into the Rust enum.
@@ -955,6 +1012,12 @@ mod tests {
             state: "Accepted".to_string(),
             canceled_by: "0x".to_string(),
             last_state_change_block: "150".to_string(),
+            accepted_at: "1700000001".to_string(),
+            accepted_at_tx: "0x1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
+            canceled_at: "0".to_string(),
+            canceled_at_tx: "0x0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
         }
     }
 
@@ -964,6 +1027,34 @@ mod tests {
         assert_eq!(snapshot.last_state_change_block, 150);
         assert_eq!(snapshot.state, AgreementState::Accepted);
         assert_eq!(snapshot.canceled_by, Address::ZERO);
+        // Phase 4 enrichment: audit fields parse from the entity.
+        assert_eq!(snapshot.accepted_at, 1_700_000_001);
+        assert_eq!(
+            snapshot.accepted_tx,
+            "0x1111111111111111111111111111111111111111111111111111111111111111"
+        );
+        assert_eq!(snapshot.canceled_at, 0);
+        assert_eq!(
+            snapshot.canceled_tx,
+            "0x0000000000000000000000000000000000000000000000000000000000000000"
+        );
+    }
+
+    #[test]
+    fn parse_bigint_timestamp_handles_valid_unset_and_malformed() {
+        // Valid number parses.
+        assert_eq!(
+            parse_bigint_timestamp("1700000001", "acceptedAt", "0xabc"),
+            1_700_000_001
+        );
+        // "0" / empty are the expected unset encodings -> 0 (and not flagged).
+        assert_eq!(parse_bigint_timestamp("0", "acceptedAt", "0xabc"), 0);
+        assert_eq!(parse_bigint_timestamp("", "acceptedAt", "0xabc"), 0);
+        // A genuinely malformed value defaults to 0 (and is logged as a warning).
+        assert_eq!(
+            parse_bigint_timestamp("not-a-number", "acceptedAt", "0xabc"),
+            0
+        );
     }
 
     #[test]
@@ -1109,6 +1200,10 @@ mod tests {
             state: AgreementState::Accepted,
             canceled_by: Address::ZERO,
             last_state_change_block: block,
+            accepted_at: 0,
+            accepted_tx: String::new(),
+            canceled_at: 0,
+            canceled_tx: String::new(),
         }
     }
 

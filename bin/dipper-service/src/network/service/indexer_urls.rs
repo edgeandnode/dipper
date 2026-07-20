@@ -40,6 +40,19 @@ impl Handle {
         self.rx_snapshot.borrow().get(id).cloned()
     }
 
+    /// Build a `Handle` directly from a seeded snapshot for tests. The stop
+    /// channel's receiver is dropped immediately; there is no background
+    /// service, the handle only serves `get_indexer_url` reads.
+    #[cfg(test)]
+    pub(crate) fn for_test(snapshot: Snapshot) -> Self {
+        let (tx_stop, _rx_stop) = mpsc::channel(1);
+        let (_tx_snapshot, rx_snapshot) = watch::channel(snapshot);
+        Self {
+            rx_snapshot,
+            tx_stop,
+        }
+    }
+
     /// Signal the service to stop and wait for it to shut down; returns
     /// immediately if it is already stopped.
     pub async fn stop(&self) {

@@ -1,0 +1,33 @@
+[package]
+name = "dipper-producer"
+description = "Provides a shareable message producer layer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait.workspace = true
+chrono = "0.4.45"
+fs-err = "3.3.0"
+prost = "0.14.4"
+rskafka = { version = "0.6.0", features = ["transport-tls"] }
+rustls = "0.23.41"
+rustls-pemfile = "2.2.0"
+serde.workspace = true
+thegraph-core.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid = { workspace = true, features = ["v7"] }
+webpki-roots = "1.0.8"
+
+# Protobuf code generation dependencies
+# Run with: RUSTFLAGS="--cfg gen_event_proto" cargo check -p dipper-producer
+[target.'cfg(gen_event_proto)'.build-dependencies]
+prost-build = "0.14.4"
+
+[lints.rust]
+# Allow the gen_event_proto cfg flag used for conditional protobuf code generation
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gen_event_proto)'] }
+
+[build-dependencies]
+prost-build = "0.14.4"

@@ -72,6 +72,7 @@ where
         unresponsive_breaker,
         dips_accepting_cache,
         concurrency,
+        subgraph_indexing_agreements_events_emitter,
     } = state.into();
 
     // A watch channel fans the stop signal out to every loop; a single mpsc
@@ -105,6 +106,7 @@ where
             reassess_lock,
             unresponsive_breaker,
             dips_accepting_cache,
+            subgraph_indexing_agreements_events_emitter,
         };
 
         let mut set = JoinSet::new();
@@ -253,7 +255,8 @@ where
         + AgreementRegistry
         + IndexerDenylistRegistry
         + PendingCancellationRegistry
-        + crate::network::service::chain_listener::ChainListenerStateRegistry,
+        + crate::network::service::chain_listener::ChainListenerStateRegistry
+        + Sync,
     W: WorkerQueue,
     C: IndexerClient,
     I: CandidateSelection,

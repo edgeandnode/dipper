@@ -295,6 +295,7 @@ mod tests {
                 ),
                 protocol_network: 1,
                 chain_id: 1,
+                proposed_at: 0,
             },
         };
         let nonce_uuid = uuid::Uuid::now_v7();

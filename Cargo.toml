@@ -7,6 +7,7 @@ members = [
     "dipper-iisa",
     "dipper-pgmq",
     "dipper-pgregistry",
+    "dipper-producer",
     "dipper-rpc",
 ]
 

@@ -2,12 +2,14 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    num::NonZeroUsize,
     path::Path,
     sync::Arc,
     time::Duration,
 };
 
 use dipper_core::config::{Hidden, HiddenSecretKeyAsHexStr};
+use dipper_producer::kafka::KafkaConfig;
 use serde_with::serde_as;
 use thegraph_core::alloy::{
     primitives::{Address, ChainId, U256},
@@ -80,6 +82,9 @@ pub struct Config {
     /// The chain client configuration (for sending on-chain transactions)
     #[serde(default)]
     pub chain_client: Option<ChainClientConfig>,
+    /// Events configuration for sending dipper events on the configured topic for streaming
+    #[serde(default)]
+    pub event_streaming_config: Option<EventStreamingConfig>,
     /// Number of concurrent worker loops draining the job queue (default: 8).
     /// Each loop can hold up to three pooled DB connections at once and shares
     /// the pool with the registry and background services; size accordingly.
@@ -275,6 +280,20 @@ pub struct ExpirationConfig {
     /// Maximum agreements to process per cycle (default: 100)
     #[serde(default = "default_expiration_batch_size")]
     pub batch_size: i64,
+
+    /// Grace period (chain seconds) held back past the deadline before an
+    /// agreement is marked `Expired` (default: 300s).
+    ///
+    /// The local `Created` row lags the chain, so an indexer's on-chain accept
+    /// within the deadline may not be reflected locally the instant the deadline
+    /// passes. Waiting this margin past the deadline lets the chain_listener sync
+    /// a within-deadline accept (flipping the row to `AcceptedOnChain`) before we
+    /// consider it expired -- preventing a premature `expired` event that would
+    /// contradict a subsequent `accepted`. Set to cover the worst-case subgraph
+    /// sync lag.
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    #[serde(default = "default_expiration_grace")]
+    pub grace: Duration,
 }
 
 fn default_expiration_enabled() -> bool {
@@ -289,6 +308,10 @@ fn default_expiration_batch_size() -> i64 {
     100
 }
 
+fn default_expiration_grace() -> Duration {
+    Duration::from_secs(300)
+}
+
 fn default_worker_concurrency() -> usize {
     8
 }
@@ -299,6 +322,7 @@ impl Default for ExpirationConfig {
             enabled: default_expiration_enabled(),
             interval: default_expiration_interval(),
             batch_size: default_expiration_batch_size(),
+            grace: default_expiration_grace(),
         }
     }
 }
@@ -1215,6 +1239,51 @@ impl From<DipsAgreementConfig>
     }
 }
 
+/// Runtime configuration for the event streaming.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct EventStreamingConfig {
+    /// Enable/disable event emission
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Maximum number of events to buffer before applying backpressure.
+    #[serde(default = "default_event_queue_capacity")]
+    pub event_queue_capacity: NonZeroUsize,
+
+    /// Kafka-specific configuration.
+    #[serde(default)]
+    pub kafka: Option<KafkaConfig>,
+}
+
+impl Default for EventStreamingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            event_queue_capacity: default_event_queue_capacity(),
+            kafka: None,
+        }
+    }
+}
+
+impl EventStreamingConfig {
+    /// Reject a configuration that says events are on but gives the emitter no
+    /// broker to send to. A disabled-emitter fallback would stamp every emission
+    /// marker as sent (durable emits no-op Ok), permanently consuming the events.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.enabled && self.kafka.is_none() {
+            return Err(
+                "event_streaming_config.enabled is true but no kafka section is configured"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+pub fn default_event_queue_capacity() -> NonZeroUsize {
+    NonZeroUsize::new(1024).expect("default event queue capacity is non-zero")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1676,5 +1745,174 @@ mod tests {
                 "error for {key_name} should name the unknown key, got: {err}"
             );
         }
+    }
+
+    /// Mirrors the `event_streaming_config` field on `Config`: `#[serde(default)]`
+    /// over `Option<EventStreamingConfig>`. Used to exercise the present/absent
+    /// behavior without constructing a full `Config`.
+    #[derive(serde::Deserialize)]
+    struct EventStreamingWrapper {
+        #[serde(default)]
+        event_streaming_config: Option<EventStreamingConfig>,
+    }
+
+    /// When the section is absent entirely, the optional field stays `None` so
+    /// event streaming is simply off rather than failing to parse.
+    #[test]
+    fn event_streaming_config_absent_is_none() {
+        let wrapper: EventStreamingWrapper =
+            serde_json::from_str("{}").expect("deserialization failed");
+        assert!(
+            wrapper.event_streaming_config.is_none(),
+            "absent event_streaming_config should deserialize to None"
+        );
+    }
+
+    /// A present-but-empty section falls back to every field default rather than
+    /// requiring operators to spell out keys they don't care about.
+    #[test]
+    fn event_streaming_config_present_empty_uses_defaults() {
+        let wrapper: EventStreamingWrapper =
+            serde_json::from_str(r#"{ "event_streaming_config": {} }"#)
+                .expect("deserialization failed");
+
+        let config = wrapper
+            .event_streaming_config
+            .expect("event_streaming_config should be Some");
+
+        assert!(!config.enabled, "enabled should default to false");
+        assert_eq!(
+            config.event_queue_capacity,
+            default_event_queue_capacity(),
+            "event_queue_capacity should default to 1024"
+        );
+        assert!(config.kafka.is_none(), "kafka should default to None");
+    }
+
+    /// A fully specified section round-trips every field, including the nested Kafka block.
+    #[test]
+    fn event_streaming_config_parses_full() {
+        let json = r#"{
+            "enabled": true,
+            "event_queue_capacity": 2048,
+            "kafka": {
+                "brokers": ["broker-1:9092", "broker-2:9092"],
+                "topic": "custom.topic",
+                "partitions": 8,
+                "sasl_mechanism": "PLAIN",
+                "sasl_username": "user",
+                "sasl_password": "pass",
+                "tls_enabled": true,
+                "tls_ca_cert_path": "/etc/ssl/ca.pem"
+            }
+        }"#;
+
+        let config: EventStreamingConfig =
+            serde_json::from_str(json).expect("deserialization failed");
+
+        assert!(config.enabled, "enabled mismatch");
+        assert_eq!(
+            config.event_queue_capacity,
+            NonZeroUsize::new(2048).unwrap(),
+            "event_queue_capacity mismatch"
+        );
+
+        let kafka = config.kafka.expect("kafka should be Some");
+        assert_eq!(
+            kafka.brokers,
+            vec!["broker-1:9092".to_string(), "broker-2:9092".to_string()],
+            "brokers mismatch"
+        );
+        assert_eq!(kafka.topic, "custom.topic", "topic mismatch");
+        assert_eq!(kafka.partitions, 8, "partitions mismatch");
+        assert_eq!(
+            kafka.sasl_mechanism.as_deref(),
+            Some("PLAIN"),
+            "sasl_mechanism mismatch"
+        );
+        assert_eq!(
+            kafka.sasl_username.as_deref(),
+            Some("user"),
+            "sasl_username mismatch"
+        );
+        assert_eq!(
+            kafka.sasl_password.as_deref(),
+            Some("pass"),
+            "sasl_password mismatch"
+        );
+        assert!(kafka.tls_enabled, "tls_enabled mismatch");
+        assert_eq!(
+            kafka.tls_ca_cert_path.as_deref(),
+            Some(std::path::Path::new("/etc/ssl/ca.pem")),
+            "tls_ca_cert_path mismatch"
+        );
+    }
+
+    /// Enabled-without-kafka must fail validation: the fallback would be a
+    /// disabled emitter whose no-op durable emits stamp markers, losing events.
+    #[test]
+    fn event_streaming_validate_rejects_enabled_without_kafka() {
+        let config: EventStreamingConfig =
+            serde_json::from_str(r#"{ "enabled": true }"#).expect("deserialization failed");
+        assert!(
+            config.validate().is_err(),
+            "enabled without a kafka section must be rejected"
+        );
+
+        let disabled: EventStreamingConfig =
+            serde_json::from_str(r#"{ "enabled": false }"#).expect("deserialization failed");
+        assert!(
+            disabled.validate().is_ok(),
+            "disabled without a kafka section is fine"
+        );
+
+        let complete: EventStreamingConfig =
+            serde_json::from_str(r#"{ "enabled": true, "kafka": { "brokers": ["broker:9092"] } }"#)
+                .expect("deserialization failed");
+        assert!(
+            complete.validate().is_ok(),
+            "enabled with a kafka section must pass"
+        );
+    }
+
+    /// A Kafka block with only the required `brokers` falls back to the topic
+    /// and partition defaults and leaves the optional auth/TLS fields unset.
+    #[test]
+    fn event_streaming_config_kafka_minimal_uses_defaults() {
+        let json = r#"{
+            "kafka": {
+                "brokers": ["broker:9092"]
+            }
+        }"#;
+
+        let config: EventStreamingConfig =
+            serde_json::from_str(json).expect("deserialization failed");
+
+        let kafka = config.kafka.expect("kafka should be Some");
+        assert_eq!(
+            kafka.topic, "dipper.subgraph.indexing.agreement.events",
+            "topic should fall back to default"
+        );
+        assert_eq!(
+            kafka.partitions, 16,
+            "partitions should fall back to default"
+        );
+        assert!(
+            kafka.sasl_mechanism.is_none(),
+            "sasl_mechanism should be None"
+        );
+        assert!(
+            kafka.sasl_username.is_none(),
+            "sasl_username should be None"
+        );
+        assert!(
+            kafka.sasl_password.is_none(),
+            "sasl_password should be None"
+        );
+        assert!(!kafka.tls_enabled, "tls_enabled should default to false");
+        assert!(
+            kafka.tls_ca_cert_path.is_none(),
+            "tls_ca_cert_path should be None"
+        );
     }
 }

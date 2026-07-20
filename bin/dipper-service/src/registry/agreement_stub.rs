@@ -13,7 +13,8 @@ use thegraph_core::{
 use super::{
     agreement::{
         AgreementFeeRate, AgreementRegistry, CancelKind, IndexingAgreement, NewAgreementParams,
-        ReconciliationItem, ReconciliationOutcome,
+        PendingAcceptedEvent, PendingExpiredEvent, PendingTerminatedEvent, ReconciliationItem,
+        ReconciliationOutcome,
     },
     result::Result,
 };
@@ -232,6 +233,70 @@ pub trait StubAgreementRegistry: Send + Sync {
     async fn get_agreement_fee_rates(&self) -> Result<Vec<AgreementFeeRate>> {
         unimplemented!("get_agreement_fee_rates")
     }
+
+    async fn count_accepted_agreements_by_deployment(
+        &self,
+        _deployment_id: &DeploymentId,
+    ) -> Result<i64> {
+        unimplemented!("count_accepted_agreements_by_deployment")
+    }
+
+    // The emission-sweep and audit methods mirror the real trait's defaults
+    // (empty batch / no-op) so only emission-focused mocks override them.
+    async fn get_agreements_pending_terminated_emission(
+        &self,
+        _limit: i64,
+    ) -> Result<Vec<PendingTerminatedEvent>> {
+        Ok(Vec::new())
+    }
+
+    async fn mark_terminated_event_emitted(
+        &self,
+        _agreement_id: &IndexingAgreementId,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn get_agreements_pending_accepted_emission(
+        &self,
+        _limit: i64,
+    ) -> Result<Vec<PendingAcceptedEvent>> {
+        Ok(Vec::new())
+    }
+
+    async fn mark_accepted_event_emitted(&self, _agreement_id: &IndexingAgreementId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn get_agreements_pending_expired_emission(
+        &self,
+        _limit: i64,
+    ) -> Result<Vec<PendingExpiredEvent>> {
+        Ok(Vec::new())
+    }
+
+    async fn mark_expired_event_emitted(&self, _agreement_id: &IndexingAgreementId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn record_accepted_audit(
+        &self,
+        _agreement_id: &IndexingAgreementId,
+        _accepted_at: u64,
+        _accepted_tx: &str,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn record_cancel_audit(
+        &self,
+        _agreement_id: &IndexingAgreementId,
+        _canceled_at: u64,
+        _canceled_by: &str,
+        _canceled_tx: Option<&str>,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 // Every stub is a full AgreementRegistry: each method delegates to the stub
@@ -444,5 +509,75 @@ impl<T: StubAgreementRegistry> AgreementRegistry for T {
 
     async fn get_agreement_fee_rates(&self) -> Result<Vec<AgreementFeeRate>> {
         StubAgreementRegistry::get_agreement_fee_rates(self).await
+    }
+
+    async fn count_accepted_agreements_by_deployment(
+        &self,
+        deployment_id: &DeploymentId,
+    ) -> Result<i64> {
+        StubAgreementRegistry::count_accepted_agreements_by_deployment(self, deployment_id).await
+    }
+
+    async fn get_agreements_pending_terminated_emission(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<PendingTerminatedEvent>> {
+        StubAgreementRegistry::get_agreements_pending_terminated_emission(self, limit).await
+    }
+
+    async fn mark_terminated_event_emitted(
+        &self,
+        agreement_id: &IndexingAgreementId,
+    ) -> Result<()> {
+        StubAgreementRegistry::mark_terminated_event_emitted(self, agreement_id).await
+    }
+
+    async fn get_agreements_pending_accepted_emission(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<PendingAcceptedEvent>> {
+        StubAgreementRegistry::get_agreements_pending_accepted_emission(self, limit).await
+    }
+
+    async fn mark_accepted_event_emitted(&self, agreement_id: &IndexingAgreementId) -> Result<()> {
+        StubAgreementRegistry::mark_accepted_event_emitted(self, agreement_id).await
+    }
+
+    async fn get_agreements_pending_expired_emission(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<PendingExpiredEvent>> {
+        StubAgreementRegistry::get_agreements_pending_expired_emission(self, limit).await
+    }
+
+    async fn mark_expired_event_emitted(&self, agreement_id: &IndexingAgreementId) -> Result<()> {
+        StubAgreementRegistry::mark_expired_event_emitted(self, agreement_id).await
+    }
+
+    async fn record_accepted_audit(
+        &self,
+        agreement_id: &IndexingAgreementId,
+        accepted_at: u64,
+        accepted_tx: &str,
+    ) -> Result<()> {
+        StubAgreementRegistry::record_accepted_audit(self, agreement_id, accepted_at, accepted_tx)
+            .await
+    }
+
+    async fn record_cancel_audit(
+        &self,
+        agreement_id: &IndexingAgreementId,
+        canceled_at: u64,
+        canceled_by: &str,
+        canceled_tx: Option<&str>,
+    ) -> Result<()> {
+        StubAgreementRegistry::record_cancel_audit(
+            self,
+            agreement_id,
+            canceled_at,
+            canceled_by,
+            canceled_tx,
+        )
+        .await
     }
 }
