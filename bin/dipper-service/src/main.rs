@@ -130,8 +130,7 @@ pub async fn main() -> anyhow::Result<()> {
             let cfg = cfg.clone();
             let rca_domain = Arc::clone(&rca_domain);
             let interval = cfg.domain_refresh_interval;
-            let (tx_stop, rx_stop) = tokio::sync::mpsc::channel(1);
-            let service = network::service::domain_refresh::run(interval, rx_stop, move || {
+            let (handle, service) = network::service::domain_refresh::new(interval, move || {
                 let cfg = cfg.clone();
                 let rca_domain = Arc::clone(&rca_domain);
                 async move {
@@ -144,7 +143,7 @@ pub async fn main() -> anyhow::Result<()> {
                     .await
                 }
             });
-            Some((tx_stop, service))
+            Some((handle, service))
         } else {
             None
         };
@@ -580,10 +579,10 @@ pub async fn main() -> anyhow::Result<()> {
     tracing::debug!(task_id=%worker_task_handle.id(), "Worker service started");
 
     // Spawn the RCA domain refresh if the chain client is enabled
-    let domain_refresh_stop_handle = if let Some((tx_stop, service)) = domain_refresh_handle {
+    let domain_refresh_stop_handle = if let Some((handle, service)) = domain_refresh_handle {
         let task_handle = task_tree.spawn(service);
         tracing::debug!(task_id=%task_handle.id(), "RCA domain refresh started");
-        Some(tx_stop)
+        Some(handle)
     } else {
         None
     };
@@ -695,13 +694,11 @@ pub async fn main() -> anyhow::Result<()> {
             tracing::trace!("stopped Entity count cache service");
         }
 
-        // Stop the RCA domain refresh: signal it, then wait for the loop to drop
-        // its receiver, so shutdown blocks until any in-flight refresh finishes,
-        // the same way every sibling service's stop() waits for real completion.
-        if let Some(tx_stop) = domain_refresh_stop_handle {
+        // Stop the RCA domain refresh. Its stop() waits for the loop to exit, so
+        // shutdown blocks until any in-flight refresh has finished.
+        if let Some(handle) = domain_refresh_stop_handle {
             tracing::trace!("stopping RCA domain refresh");
-            let _ = tx_stop.send(()).await;
-            tx_stop.closed().await;
+            handle.stop().await;
             tracing::trace!("stopped RCA domain refresh");
         }
 

@@ -8,10 +8,41 @@ use tokio::sync::mpsc;
 
 use crate::chain_client::ChainClientError;
 
-/// Runs the refresh until `stop_rx` fires, returning `Ok(())` on stop. Generic
-/// over the refresh action so the stop wiring is testable without a live chain.
-/// The first (immediate) tick is skipped; a failing `refresh` is logged only.
-pub async fn run<F, Fut>(
+/// Handle for controlling the domain refresh service.
+#[derive(Clone)]
+pub struct Handle {
+    tx_stop: mpsc::Sender<()>,
+}
+
+impl Handle {
+    /// Stop the service gracefully.
+    pub async fn stop(&self) {
+        if self.tx_stop.is_closed() {
+            return;
+        }
+        let _ = self.tx_stop.send(()).await;
+        self.tx_stop.closed().await;
+    }
+}
+
+/// Create a new domain refresh service, returning a handle for lifecycle
+/// control and a future to spawn. `refresh` is invoked on each tick of
+/// `interval`; it is generic so the wiring is testable without a live chain.
+pub fn new<F, Fut>(
+    interval: Duration,
+    refresh: F,
+) -> (Handle, impl Future<Output = anyhow::Result<()>>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<bool, ChainClientError>>,
+{
+    let (tx_stop, rx_stop) = mpsc::channel(1);
+    (Handle { tx_stop }, run(interval, rx_stop, refresh))
+}
+
+/// Runs the refresh until `stop_rx` fires, returning `Ok(())` on stop. The
+/// first (immediate) tick is skipped; a failing `refresh` is logged only.
+async fn run<F, Fut>(
     interval: Duration,
     mut stop_rx: mpsc::Receiver<()>,
     mut refresh: F,
@@ -51,22 +82,22 @@ mod tests {
     /// participates in graceful shutdown instead of being a detached task.
     #[tokio::test]
     async fn refresh_loop_stops_on_signal() {
-        let (tx, rx) = mpsc::channel(1);
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_in = calls.clone();
 
         // A long interval so no refresh tick fires during the test; the stop
         // arm is what must end the loop.
-        let handle = tokio::spawn(run(Duration::from_secs(3600), rx, move || {
+        let (handle, fut) = new(Duration::from_secs(3600), move || {
             let calls = calls_in.clone();
             async move {
                 calls.fetch_add(1, Ordering::SeqCst);
                 Ok(true)
             }
-        }));
+        });
+        let task = tokio::spawn(fut);
 
-        tx.send(()).await.unwrap();
-        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+        handle.stop().await;
+        let result = tokio::time::timeout(Duration::from_secs(5), task)
             .await
             .expect("refresh loop did not stop on signal")
             .expect("refresh task panicked");
