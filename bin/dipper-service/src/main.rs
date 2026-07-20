@@ -44,14 +44,14 @@ const RCA_DOMAIN_FETCH_MAX_RETRIES: u32 = 5;
 /// stalled subgraph would leave the pod hanging unready with no restart; exit visibly instead.
 const INDEXER_URLS_FETCH_MAX_RETRIES: u32 = 5;
 
-/// How long the supervisor waits for the next task to finish once shutdown is underway before
-/// calling the teardown stalled. It resets on each finish, and `STOP_STEP_TIMEOUT` caps how long
-/// any one service can hold the sequence up, so this only trips when the stop sequence is dead.
-const TEARDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+/// Total budget for the teardown, from shutdown being requested to the last task draining. The
+/// stop sequence's own ceiling is 65s (11 stop steps and the event flush and the DB pool close,
+/// each capped at `STOP_STEP_TIMEOUT`), so this sits above it and below the pod's 90s grace.
+const TEARDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(75);
 
-/// How long to wait for one service to stop before moving on without it. The whole sequence is
-/// bounded by this times the number of services, which is what keeps shutdown inside the pod's
-/// `terminationGracePeriodSeconds` and makes a SIGKILL mid-teardown effectively unreachable.
+/// How long to wait for one stop step before moving on without it. Every step of the sequence is
+/// capped by this, giving the whole sequence a ceiling that holds however badly a single service
+/// misbehaves, which is what keeps shutdown inside `TEARDOWN_GRACE`.
 const STOP_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[tokio::main]
@@ -775,13 +775,11 @@ pub async fn main() -> anyhow::Result<()> {
         subgraph_indexing_agreements_events_emitter.flush().await;
         tracing::trace!("flushed lifecycle event stream");
 
-        // Closing the pool waits for every checked-out connection back, so a service
-        // we gave up on would hang it and then take a confusing `PoolClosed`. Skipping
-        // costs nothing: Postgres rolls back anything open once the sockets drop.
+        // Closing the pool waits for every checked-out connection back, so a service we gave up
+        // on would hang it and then take a confusing `PoolClosed`. Skipping it, or giving up on
+        // it, costs nothing: Postgres rolls back anything open once the sockets drop.
         if all_stopped {
-            tracing::trace!("shutting down DB connection pool");
-            db_conn.close().await;
-            tracing::trace!("shut down DB connection pool");
+            stop_service("DB connection pool", db_conn.close()).await;
         } else {
             tracing::warn!(
                 "skipping the graceful DB pool close because a service did not stop in time"

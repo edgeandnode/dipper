@@ -55,9 +55,9 @@ impl Shutdown {
     }
 }
 
-/// Drains `task_tree`. A task finishing before shutdown was requested, and any
-/// failure or panic at all (a crash mid-teardown must never read as clean), is
-/// fatal: shutdown is requested, the drain continues, and the result is `Err`.
+/// Drains `task_tree`. A task finishing before shutdown was requested, and any failure or panic
+/// at all (a crash mid-teardown must never read as clean), is fatal: shutdown is requested, the
+/// drain continues, and the result is `Err`. `teardown_grace` bounds the whole teardown.
 pub async fn supervise(
     mut task_tree: JoinSet<anyhow::Result<()>>,
     shutdown: &Shutdown,
@@ -67,27 +67,46 @@ pub async fn supervise(
     // restart, so it names the task rather than just saying something died.
     let mut first_failure: Option<String> = None;
 
+    // Set on the first pass that sees shutdown requested, then reused. A per-wait
+    // timeout would restart on every task that finishes, so a long tail of slow
+    // stragglers could stretch the teardown past any bound we claimed to hold.
+    let mut teardown_deadline: Option<tokio::time::Instant> = None;
+
     loop {
         // Before shutdown, tasks are meant to run forever, so wait unbounded. Once
         // it starts, the stop sequence itself runs in one of these tasks, so if
         // that one died nobody stops the rest: bound the wait as a watchdog.
         let next = if shutdown.is_requested() {
-            match tokio::time::timeout(teardown_grace, task_tree.join_next_with_id()).await {
+            let deadline = *teardown_deadline
+                .get_or_insert_with(|| tokio::time::Instant::now() + teardown_grace);
+            match tokio::time::timeout_at(deadline, task_tree.join_next_with_id()).await {
                 Ok(next) => next,
                 Err(_elapsed) => {
+                    // Report only what the supervisor can see. Whether the stop sequence
+                    // got as far as flushing events or closing the DB pool is its own
+                    // business; all that is known here is which tasks are still running.
                     tracing::error!(
                         grace_secs = teardown_grace.as_secs(),
-                        "teardown stalled: no task finished within the grace period after \
-                         shutdown was requested. Aborting the remaining tasks and exiting \
-                         non-zero so the orchestrator restarts the process rather than hanging. \
-                         The stop sequence never reached its final steps, so buffered lifecycle \
-                         events were not flushed and the DB pool was not closed cleanly"
+                        tasks_remaining = task_tree.len(),
+                        first_failure = first_failure.as_deref().unwrap_or("none recorded"),
+                        "teardown exceeded its grace period: some tasks were still running \
+                         that long after shutdown was requested. Aborting them and exiting \
+                         non-zero so the orchestrator restarts the process rather than hanging"
                     );
+                    let remaining = task_tree.len();
                     task_tree.abort_all();
-                    anyhow::bail!(
-                        "teardown stalled: no task finished within {}s of shutdown being requested",
-                        teardown_grace.as_secs()
-                    );
+                    return Err(match first_failure {
+                        Some(cause) => anyhow::anyhow!(
+                            "teardown exceeded its {}s grace period with {remaining} task(s) \
+                             still running, after: {cause}",
+                            teardown_grace.as_secs()
+                        ),
+                        None => anyhow::anyhow!(
+                            "teardown exceeded its {}s grace period with {remaining} task(s) \
+                             still running",
+                            teardown_grace.as_secs()
+                        ),
+                    });
                 }
             }
         } else {
@@ -300,6 +319,76 @@ mod tests {
         assert!(
             result.is_err(),
             "a teardown that stalls before any task finishes must still be fatal"
+        );
+    }
+
+    /// The grace period is a budget for the whole teardown, not one that restarts
+    /// every time a task finishes. Stragglers that each land inside the grace but
+    /// together run well past it must not be able to stretch the drain.
+    #[tokio::test(start_paused = true)]
+    async fn teardown_grace_bounds_the_whole_drain_not_each_wait() {
+        let shutdown = Shutdown::new();
+        let mut task_tree: JoinSet<anyhow::Result<()>> = JoinSet::new();
+
+        let coordinator = shutdown.clone();
+        task_tree.spawn(async move {
+            coordinator.request();
+            Ok(())
+        });
+
+        // Each finishes within the grace of the one before it, so a per-wait timer
+        // would keep resetting and the drain would run to at least 650ms.
+        for step in 1..=3 {
+            task_tree.spawn(async move {
+                tokio::time::sleep(Duration::from_millis(150 * step)).await;
+                Ok(())
+            });
+        }
+
+        // And one that never stops, so the watchdog is what ends the drain.
+        task_tree.spawn(async {
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+
+        let start = tokio::time::Instant::now();
+        let result = supervise(task_tree, &shutdown, TEST_TEARDOWN_GRACE).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "an unbounded drain must be fatal");
+        assert!(
+            elapsed < TEST_TEARDOWN_GRACE * 2,
+            "the grace period restarted on each finish: the drain took {elapsed:?}, which is \
+             past the {TEST_TEARDOWN_GRACE:?} budget for the teardown as a whole"
+        );
+    }
+
+    /// When the watchdog fires after a task had already failed, the exit error has
+    /// to keep naming that failure. The timeout is the symptom; the earlier failure
+    /// is the thing an operator needs to read in the last line before a restart.
+    #[tokio::test(start_paused = true)]
+    async fn a_failure_before_the_stall_survives_into_the_exit_error() {
+        let shutdown = Shutdown::new();
+        let mut task_tree: JoinSet<anyhow::Result<()>> = JoinSet::new();
+
+        let coordinator = shutdown.clone();
+        task_tree.spawn(async move {
+            coordinator.request();
+            Err(anyhow::anyhow!("the stop sequence blew up"))
+        });
+
+        // Nobody is left to stop this, so the watchdog ends the drain.
+        task_tree.spawn(async {
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+
+        let result = supervise(task_tree, &shutdown, TEST_TEARDOWN_GRACE).await;
+
+        let err = result.expect_err("a stalled teardown must be fatal");
+        assert!(
+            err.to_string().contains("the stop sequence blew up"),
+            "the stall error dropped the failure that caused it: {err}"
         );
     }
 
