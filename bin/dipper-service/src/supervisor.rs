@@ -113,7 +113,9 @@ pub async fn supervise(
                         grace_secs = teardown_grace.as_secs(),
                         "teardown stalled: no task finished within the grace period after \
                          shutdown was requested. Aborting the remaining tasks and exiting \
-                         non-zero so the orchestrator restarts the process rather than hanging"
+                         non-zero so the orchestrator restarts the process rather than hanging. \
+                         The stop sequence never reached its final steps, so buffered lifecycle \
+                         events were not flushed and the DB pool was not closed cleanly"
                     );
                     task_tree.abort_all();
                     anyhow::bail!(

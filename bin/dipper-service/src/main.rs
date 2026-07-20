@@ -725,7 +725,8 @@ pub async fn main() -> anyhow::Result<()> {
         tracing::trace!("stopped indexer URLs service");
 
         // All event producers have stopped; flush buffered diagnostic events to
-        // the broker before exit (bounded by an internal timeout).
+        // the broker before exit (bounded by an internal timeout). A teardown
+        // that stalls earlier is aborted before here, dropping what is buffered.
         tracing::trace!("flushing lifecycle event stream");
         subgraph_indexing_agreements_events_emitter.flush().await;
         tracing::trace!("flushed lifecycle event stream");
