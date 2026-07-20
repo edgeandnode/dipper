@@ -125,7 +125,7 @@ pub async fn main() -> anyhow::Result<()> {
     // Background refresh so a running dipper follows an in-place contract upgrade
     // without a restart. Refresh failures keep the current domain and only warn.
     // Built here but spawned into the task tree below, with a stop handle, rather
-    // than detached — so it shares the same shutdown as every other long-running
+    // than detached, so it shares the same shutdown as every other long-running
     // task.
     let domain_refresh_handle =
         if let Some(cfg) = conf.chain_client.as_ref().filter(|cfg| cfg.enabled) {
@@ -697,10 +697,14 @@ pub async fn main() -> anyhow::Result<()> {
             tracing::trace!("stopped Entity count cache service");
         }
 
-        // Stop the RCA domain refresh (a background helper to the chain client)
+        // Stop the RCA domain refresh (a background helper to the chain client).
+        // Signal it, then wait for the loop to drop its receiver so shutdown
+        // blocks until any in-flight refresh has finished, matching how every
+        // sibling service's stop() waits for real completion.
         if let Some(tx_stop) = domain_refresh_stop_handle {
             tracing::trace!("stopping RCA domain refresh");
             let _ = tx_stop.send(()).await;
+            tx_stop.closed().await;
             tracing::trace!("stopped RCA domain refresh");
         }
 
