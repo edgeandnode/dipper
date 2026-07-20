@@ -210,6 +210,25 @@ mod tests {
     }
 
     #[test]
+    fn record_progress_refreshes_a_stale_watermark() {
+        // Exercises the call the worker loop actually makes, rather than writing the slot by hand.
+        let liveness = Liveness::new();
+        let ticker = liveness.register();
+        let threshold = Duration::from_secs(600);
+        ticker.slot.store(now_secs() - 10_000, Ordering::Relaxed);
+        assert!(
+            !liveness.is_healthy_at(now_secs(), threshold),
+            "a watermark 10000s old must report unhealthy before the tick"
+        );
+
+        ticker.record_progress();
+        assert!(
+            liveness.is_healthy_at(now_secs(), threshold),
+            "record_progress must advance the watermark back to now"
+        );
+    }
+
+    #[test]
     fn one_stale_loop_among_fresh_is_unhealthy() {
         // The headline case: one loop wedges while the others keep ticking. The
         // stale loop must trip the probe even though its siblings are fresh.
