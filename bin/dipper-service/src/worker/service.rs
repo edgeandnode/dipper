@@ -106,7 +106,7 @@ const RESUBSCRIBE_WARN_EVERY: u32 = 60;
 /// reading logs at the usual level. `consecutive_failures` counts the attempt
 /// that just failed.
 fn resubscribe_failure_is_loud(consecutive_failures: u32) -> bool {
-    consecutive_failures > 0 && consecutive_failures % RESUBSCRIBE_WARN_EVERY == 0
+    consecutive_failures > 0 && consecutive_failures.is_multiple_of(RESUBSCRIBE_WARN_EVERY)
 }
 
 /// Waits for the next trigger to attempt a queue poll: a stop signal, a
