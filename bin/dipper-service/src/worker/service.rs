@@ -179,27 +179,35 @@ const WARN_COOLDOWN: Duration = Duration::from_secs(60);
 struct WarnPacer {
     last_warned: Option<Instant>,
     announced: bool,
+    failures_since_warning: u32,
+    failures_since_success: u32,
 }
 
 impl WarnPacer {
-    /// Whether to warn now rather than log the same thing at debug.
-    fn should_warn(&mut self, now: Instant) -> bool {
+    /// Counts a failure, returning how many happened since the last warning
+    /// when it is time to warn again. The count tells a blip apart from a
+    /// connection failing dozens of times a minute, which otherwise look alike.
+    fn record_failure(&mut self, now: Instant) -> Option<u32> {
+        self.failures_since_warning = self.failures_since_warning.saturating_add(1);
+        self.failures_since_success = self.failures_since_success.saturating_add(1);
+
         let due = self
             .last_warned
             .is_none_or(|last| now.duration_since(last) >= WARN_COOLDOWN);
-        if due {
-            self.last_warned = Some(now);
-            self.announced = true;
+        if !due {
+            return None;
         }
-        due
+        self.last_warned = Some(now);
+        self.announced = true;
+        Some(std::mem::take(&mut self.failures_since_warning))
     }
 
-    /// Whether a warning is outstanding, clearing it so one recovery message
-    /// answers it. Deliberately leaves the cooldown alone: a connection that
-    /// recovers between every failure must not win back the right to warn on
-    /// every cycle.
-    fn take_announced(&mut self) -> bool {
-        std::mem::take(&mut self.announced)
+    /// How many attempts failed before this success, when a warning is
+    /// outstanding, clearing both so one recovery answers one warning. The
+    /// cooldown is left alone so a flap cannot warn on every single cycle.
+    fn take_announced(&mut self) -> Option<u32> {
+        let failures = std::mem::take(&mut self.failures_since_success);
+        std::mem::take(&mut self.announced).then_some(failures)
     }
 }
 
@@ -249,16 +257,16 @@ async fn await_next_tick<N: JobNotifications>(
                     match res {
                         Ok(()) => Tick::Poll { listener_failed: false },
                         Err(err) => {
-                            if warn_pacer.should_warn(Instant::now()) {
-                                tracing::warn!(
+                            match warn_pacer.record_failure(Instant::now()) {
+                                Some(failures) => tracing::warn!(
                                     error=?err,
+                                    failures_since_last_warning=failures,
                                     "job-available listener failed; degrading to poll-only until it can be re-established"
-                                );
-                            } else {
-                                tracing::debug!(
+                                ),
+                                None => tracing::debug!(
                                     error=?err,
                                     "job-available listener failed again; staying in poll-only mode"
-                                );
+                                ),
                             }
                             *listener = None;
                             Tick::Poll { listener_failed: true }
@@ -446,7 +454,7 @@ where
         }
         Err(err) => {
             backoff.record_failure(Instant::now());
-            warn_pacer.should_warn(Instant::now());
+            warn_pacer.record_failure(Instant::now());
             tracing::warn!(
                 error=?err,
                 "could not subscribe to job-available notifications at startup; starting in poll-only mode"
@@ -485,26 +493,26 @@ where
                     // Answer every warning exactly once, so a problem an
                     // operator was told about is also reported as over, while a
                     // flap nobody was told about stays quiet.
-                    if warn_pacer.take_announced() {
-                        tracing::info!("re-subscribed to job-available notifications");
-                    } else {
-                        tracing::debug!("re-subscribed to job-available notifications");
+                    match warn_pacer.take_announced() {
+                        Some(failed_attempts) => tracing::info!(
+                            failed_attempts,
+                            "re-subscribed to job-available notifications"
+                        ),
+                        None => tracing::debug!("re-subscribed to job-available notifications"),
                     }
                     listener = Some(l);
                 }
-                Err(err) => {
-                    if warn_pacer.should_warn(Instant::now()) {
-                        tracing::warn!(
-                            error=?err,
-                            "job-available listener still unavailable; jobs are running on the poll interval alone"
-                        );
-                    } else {
-                        tracing::debug!(
-                            error=?err,
-                            "job-available listener re-subscription failed; staying in poll-only mode"
-                        );
-                    }
-                }
+                Err(err) => match warn_pacer.record_failure(Instant::now()) {
+                    Some(failures) => tracing::warn!(
+                        error=?err,
+                        failures_since_last_warning=failures,
+                        "job-available listener still unavailable; jobs are running on the poll interval alone"
+                    ),
+                    None => tracing::debug!(
+                        error=?err,
+                        "job-available listener re-subscription failed; staying in poll-only mode"
+                    ),
+                },
             }
         }
 
@@ -820,18 +828,66 @@ mod tests {
         let mut pacer = WarnPacer::default();
         let start = Instant::now();
 
-        assert!(
-            pacer.should_warn(start),
+        assert_eq!(
+            pacer.record_failure(start),
+            Some(1),
             "the first failure is what an operator needs to see"
         );
-        assert!(
-            !pacer.should_warn(start + Duration::from_secs(1)),
+        assert_eq!(
+            pacer.record_failure(start + Duration::from_secs(1)),
+            None,
             "a continuing fault should not warn every cycle"
         );
-        assert!(!pacer.should_warn(start + WARN_COOLDOWN - Duration::from_secs(1)));
-        assert!(
-            pacer.should_warn(start + WARN_COOLDOWN),
-            "a fault that persists should resurface"
+        assert_eq!(
+            pacer.record_failure(start + WARN_COOLDOWN - Duration::from_secs(1)),
+            None
+        );
+        assert_eq!(
+            pacer.record_failure(start + WARN_COOLDOWN),
+            Some(3),
+            "a fault that persists should resurface, counting the quiet cycles"
+        );
+    }
+
+    /// The warning carries how many failures it stands for, so a steady flap
+    /// reads as the dozens of cycles it is rather than one recurring blip.
+    #[test]
+    fn a_warning_reports_the_failures_it_covers() {
+        let mut pacer = WarnPacer::default();
+        let start = Instant::now();
+
+        assert_eq!(pacer.record_failure(start), Some(1));
+        for i in 1..50 {
+            assert_eq!(pacer.record_failure(start + Duration::from_millis(i)), None);
+        }
+
+        assert_eq!(
+            pacer.record_failure(start + WARN_COOLDOWN),
+            Some(50),
+            "the 49 quiet failures plus this one should all be accounted for"
+        );
+        assert_eq!(
+            pacer.record_failure(start + WARN_COOLDOWN * 2),
+            Some(1),
+            "the count starts again from the last warning, not from the start"
+        );
+    }
+
+    /// The recovery message says how many attempts failed first, so a listener
+    /// that took 40 tries to come back does not read like a clean reconnect.
+    #[test]
+    fn a_recovery_reports_the_attempts_it_took() {
+        let mut pacer = WarnPacer::default();
+        let start = Instant::now();
+
+        for i in 0..5 {
+            pacer.record_failure(start + Duration::from_millis(i));
+        }
+
+        assert_eq!(
+            pacer.take_announced(),
+            Some(5),
+            "every failure since the last success should be reported"
         );
     }
 
@@ -842,11 +898,15 @@ mod tests {
         let mut pacer = WarnPacer::default();
         let start = Instant::now();
 
-        assert!(pacer.should_warn(start));
-        assert!(pacer.take_announced(), "the warning is outstanding");
-
+        assert!(pacer.record_failure(start).is_some());
         assert!(
-            !pacer.should_warn(start + Duration::from_secs(2)),
+            pacer.take_announced().is_some(),
+            "the warning is outstanding"
+        );
+
+        assert_eq!(
+            pacer.record_failure(start + Duration::from_secs(2)),
+            None,
             "recovering in between must not make the next failure loud"
         );
     }
@@ -858,15 +918,21 @@ mod tests {
         let mut pacer = WarnPacer::default();
         let start = Instant::now();
 
-        assert!(
-            !pacer.take_announced(),
+        assert_eq!(
+            pacer.take_announced(),
+            None,
             "nothing was announced, so nothing to resolve"
         );
 
-        pacer.should_warn(start);
-        assert!(pacer.take_announced(), "the warning deserves an answer");
-        assert!(
-            !pacer.take_announced(),
+        pacer.record_failure(start);
+        assert_eq!(
+            pacer.take_announced(),
+            Some(1),
+            "the warning deserves an answer"
+        );
+        assert_eq!(
+            pacer.take_announced(),
+            None,
             "but only one, not one per re-subscription"
         );
     }
