@@ -380,17 +380,20 @@ impl<N: JobNotifications> Subscription<N> {
                 }
                 self.listener = Some(l);
             }
-            Err(err) => match self.warn_pacer.record_failure(Instant::now()) {
-                Some(failures) => tracing::warn!(
-                    error=?err,
-                    failures_since_last_warning=failures,
-                    "job-available listener still unavailable; jobs are running on the poll interval alone"
-                ),
-                None => tracing::debug!(
-                    error=?err,
-                    "job-available listener re-subscription failed; staying in poll-only mode"
-                ),
-            },
+            Err(err) => {
+                self.backoff.record_failure(Instant::now());
+                match self.warn_pacer.record_failure(Instant::now()) {
+                    Some(failures) => tracing::warn!(
+                        error=?err,
+                        failures_since_last_warning=failures,
+                        "job-available listener still unavailable; jobs are running on the poll interval alone"
+                    ),
+                    None => tracing::debug!(
+                        error=?err,
+                        "job-available listener re-subscription failed; staying in poll-only mode"
+                    ),
+                }
+            }
         }
     }
 }
@@ -834,6 +837,54 @@ mod tests {
             queue.listener_waits(),
             1,
             "the re-opened subscription should be waited on, not ignored"
+        );
+    }
+
+    /// A database that refuses every new connection must be asked less and less
+    /// often. Without the backoff being told about a failed re-subscription, the
+    /// loop stays due on every tick and hammers it once a second forever.
+    #[tokio::test(start_paused = true)]
+    async fn a_subscribe_that_keeps_failing_is_retried_less_and_less_often() {
+        let queue = MockQueue::failing_first(usize::MAX);
+        let (_tx, mut rx) = watch::channel(false);
+        let mut subscription: Subscription<RecordingNotifier> = Subscription {
+            listener: None,
+            warn_pacer: WarnPacer::default(),
+            backoff: ResubscribeBackoff::default(),
+        };
+
+        for tick in 0..5 {
+            assert!(
+                subscription
+                    .next_tick(&queue, &mut rx, Duration::from_secs(1))
+                    .await,
+                "the loop should still be running on tick {tick}"
+            );
+        }
+        assert_eq!(
+            queue.subscribe_attempts(),
+            1,
+            "a failed attempt should hold off the next one, not retry every tick"
+        );
+        assert_eq!(
+            subscription.backoff.delay(),
+            RESUBSCRIBE_BASE_DELAY,
+            "one failed attempt should schedule the shortest wait"
+        );
+
+        // Stand in for the base delay elapsing, which a paused tokio clock does
+        // not do for the `std::time::Instant` the backoff reads.
+        subscription.backoff.next_attempt = None;
+        assert!(
+            subscription
+                .next_tick(&queue, &mut rx, Duration::from_secs(1))
+                .await
+        );
+        assert_eq!(queue.subscribe_attempts(), 2);
+        assert_eq!(
+            subscription.backoff.delay(),
+            RESUBSCRIBE_BASE_DELAY * 2,
+            "a second failed attempt should double the wait"
         );
     }
 
