@@ -26,6 +26,7 @@ mod indexer_rpc_client;
 mod network;
 mod registry;
 mod signing;
+mod supervisor;
 #[cfg(test)]
 mod test_support;
 mod worker;
@@ -42,6 +43,16 @@ const RCA_DOMAIN_FETCH_MAX_RETRIES: u32 = 5;
 /// before the admin RPC port (the readiness probe's target) opens, so retrying forever on a
 /// stalled subgraph would leave the pod hanging unready with no restart; exit visibly instead.
 const INDEXER_URLS_FETCH_MAX_RETRIES: u32 = 5;
+
+/// Total budget for the teardown, from shutdown being requested to the last task draining. The
+/// stop sequence's own ceiling is 65s (11 stop steps and the event flush and the DB pool close,
+/// each capped locally at `STOP_STEP_TIMEOUT`), so this sits above it and below the pod's 90s grace.
+const TEARDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(75);
+
+/// How long to wait for one stop step before moving on without it. Every step of the sequence is
+/// capped by this, giving the whole sequence a ceiling that holds however badly a single service
+/// misbehaves, which is what keeps shutdown inside `TEARDOWN_GRACE`.
+const STOP_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {
@@ -126,6 +137,10 @@ pub async fn main() -> anyhow::Result<()> {
         }
     };
     let rca_domain = Arc::new(std::sync::RwLock::new(rca_domain));
+
+    // Shared shutdown coordination. A signal or an unexpected task exit both drive
+    // the same graceful stop sequence below.
+    let shutdown = supervisor::Shutdown::new();
 
     // Background refresh so a running dipper follows an in-place contract upgrade
     // without a restart. Built here but spawned into the task tree below, with a
@@ -346,20 +361,18 @@ pub async fn main() -> anyhow::Result<()> {
 
     //- The entity count cache (shared with worker jobs for optimistic fee estimation)
     let entity_count_cache = network::service::entity_count_cache::new_cache();
-    let entity_count_handle = match conf.chain_listener {
-        Some(ref cl_conf) if cl_conf.enabled => {
-            let (handle, fut) = network::service::entity_count_cache::new(
-                network::service::entity_count_cache::Ctx {
-                    cache: entity_count_cache.clone(),
-                    endpoint: cl_conf.subgraph_endpoint.clone(),
-                    // Entity counts change slowly (once per collection epoch).
-                    // Refresh hourly to balance freshness and query cost.
-                    interval: std::time::Duration::from_secs(3600),
-                },
-            );
-            tokio::spawn(fut);
-            Some(handle)
-        }
+    // Spawned into the task tree below rather than detached, so a dead cache
+    // restarts the process instead of quietly serving stale entity counts.
+    let entity_count_service = match conf.chain_listener {
+        Some(ref cl_conf) if cl_conf.enabled => Some(network::service::entity_count_cache::new(
+            network::service::entity_count_cache::Ctx {
+                cache: entity_count_cache.clone(),
+                endpoint: cl_conf.subgraph_endpoint.clone(),
+                // Entity counts change slowly (once per collection epoch).
+                // Refresh hourly to balance freshness and query cost.
+                interval: std::time::Duration::from_secs(3600),
+            },
+        )),
         _ => None,
     };
 
@@ -602,6 +615,15 @@ pub async fn main() -> anyhow::Result<()> {
     // Construct the task tree
     let mut task_tree = JoinSet::new();
 
+    // Spawn the entity count cache if enabled
+    let entity_count_handle = if let Some((handle, service)) = entity_count_service {
+        let task_handle = task_tree.spawn(service);
+        tracing::debug!(task_id=%task_handle.id(), "Entity count cache service started");
+        Some(handle)
+    } else {
+        None
+    };
+
     let indexer_urls_task_handle = task_tree.spawn(indexer_urls_service);
     tracing::debug!(task_id=%indexer_urls_task_handle.id(), "Indexer URLs service started");
 
@@ -668,117 +690,122 @@ pub async fn main() -> anyhow::Result<()> {
     let admin_rpc_task_handle = task_tree.spawn(admin_rpc_service);
     tracing::debug!(task_id=%admin_rpc_task_handle.id(), "Admin RPC service started");
 
+    let shutdown_coordinator = shutdown.clone();
     let signal_handler_task_handle = task_tree.spawn(async move {
-        let signal = signal_task().await;
-        match signal {
-            Ok(AppSignal::Shutdown) => {
-                tracing::info!("shutting down");
-            }
-            Err(err) => {
-                tracing::error!(error=?err, "signal handler registration failed. shutting down");
+        // Set when we could not register the OS signal handlers at all. We still
+        // shut down cleanly, but report it so the process exits non-zero rather
+        // than looking like a healthy stop.
+        let mut registration_error = None;
+
+        // Wake on either an OS signal or an unexpected critical-task exit
+        // (the supervisor requests shutdown in the latter case).
+        tokio::select! {
+            signal = signal_task() => match signal {
+                Ok(AppSignal::Shutdown) => {
+                    tracing::info!("shutting down");
+                }
+                Err(err) => {
+                    tracing::error!(error=?err, "signal handler registration failed. shutting down");
+                    registration_error = Some(err);
+                }
+            },
+            _ = shutdown_coordinator.requested_signal() => {
+                tracing::warn!("shutting down due to an unexpected critical task exit");
             }
         }
+
+        // On the crash path `signal_task` is dropped here: the library unregisters its handlers
+        // without restoring the default, so a SIGTERM mid-teardown is swallowed. Accepted, as the
+        // supervisor still exits within TEARDOWN_GRACE and a later SIGKILL past the grace ends it.
+
+        // Ensure the flag is set on the signal path too, so the supervisor
+        // treats the resulting service completions as a deliberate shutdown.
+        shutdown_coordinator.request();
 
         // Stop all services in reverse dependency order, so a service is stopped before the
-        // services it depends on.
+        // services it depends on. Every step is capped, so the whole sequence has a ceiling
+        // that holds however badly an individual service misbehaves.
+        let mut all_stopped = true;
 
-        // Stop the health endpoint first; nothing depends on it.
-        if let Some(handle) = health_stop_handle {
-            tracing::trace!("stopping Health endpoint");
-            handle.stop().await;
-            tracing::trace!("stopped Health endpoint");
-        }
-
-        tracing::trace!("stopping Admin RPC service");
-        admin_rpc_handle.stop().await;
-        tracing::trace!("stopped Admin RPC service");
+        all_stopped &= stop_service("Admin RPC", admin_rpc_handle.stop()).await;
 
         // Stop reassignment service before worker (it depends on worker queue)
         if let Some(handle) = reassignment_stop_handle {
-            tracing::trace!("stopping Reassignment service");
-            handle.stop().await;
-            tracing::trace!("stopped Reassignment service");
+            all_stopped &= stop_service("Reassignment", handle.stop()).await;
         }
 
         // Stop expiration service before worker (it depends on worker queue)
         if let Some(handle) = expiration_stop_handle {
-            tracing::trace!("stopping Expiration service");
-            handle.stop().await;
-            tracing::trace!("stopped Expiration service");
+            all_stopped &= stop_service("Expiration", handle.stop()).await;
         }
 
         // Stop liveness checker service before worker (it depends on worker queue)
         if let Some(handle) = liveness_checker_stop_handle {
-            tracing::trace!("stopping Liveness checker service");
-            handle.stop().await;
-            tracing::trace!("stopped Liveness checker service");
+            all_stopped &= stop_service("Liveness checker", handle.stop()).await;
         }
 
         // Stop chain listener service before worker (it depends on worker queue)
         if let Some(handle) = chain_listener_stop_handle {
-            tracing::trace!("stopping Chain listener service");
-            handle.stop().await;
-            tracing::trace!("stopped Chain listener service");
+            all_stopped &= stop_service("Chain listener", handle.stop()).await;
         }
 
         // Stop escrow reconciler service before the DB pool closes
         if let Some(handle) = escrow_reconciler_stop_handle {
-            tracing::trace!("stopping Escrow reconciler service");
-            handle.stop().await;
-            tracing::trace!("stopped Escrow reconciler service");
+            all_stopped &= stop_service("Escrow reconciler", handle.stop()).await;
         }
 
         // Stop entity count cache service
         if let Some(handle) = entity_count_handle {
-            tracing::trace!("stopping Entity count cache service");
-            handle.stop().await;
-            tracing::trace!("stopped Entity count cache service");
+            all_stopped &= stop_service("Entity count cache", handle.stop()).await;
         }
 
         // Stop the RCA domain refresh. It drops any in-flight refresh rather
         // than waiting for it, so a wedged RPC provider cannot stall shutdown.
-        tracing::trace!("stopping RCA domain refresh");
-        domain_refresh_handle.stop().await;
-        tracing::trace!("stopped RCA domain refresh");
+        all_stopped &= stop_service("RCA domain refresh", domain_refresh_handle.stop()).await;
 
-        tracing::trace!("stopping Worker service");
-        worker_handle.stop().await;
-        tracing::trace!("stopped Worker service");
+        all_stopped &= stop_service("Worker", worker_handle.stop()).await;
+        all_stopped &= stop_service("indexer URLs", indexer_urls_handle.stop()).await;
 
-        tracing::trace!("stopping indexer URLs service");
-        indexer_urls_handle.stop().await;
-        tracing::trace!("stopped indexer URLs service");
+        // Stop the health endpoint last: Kubernetes probes /health for as long as the pod runs,
+        // so stopping it early makes every clean teardown look like a liveness failure. The
+        // worker watermark freezes here, but its staleness threshold dwarfs the teardown ceiling.
+        if let Some(handle) = health_stop_handle {
+            all_stopped &= stop_service("Health endpoint", handle.stop()).await;
+        }
 
-        // All event producers have stopped; flush buffered diagnostic events to
-        // the broker before exit (bounded by an internal timeout).
-        tracing::trace!("flushing lifecycle event stream");
-        subgraph_indexing_agreements_events_emitter.flush().await;
-        tracing::trace!("flushed lifecycle event stream");
+        // All event producers have stopped; flush buffered diagnostic events to the broker
+        // before exit, capped locally like every stop step so the teardown ceiling holds even
+        // if the producer's own flush timeout is later raised.
+        all_stopped &= stop_service(
+            "Lifecycle event flush",
+            subgraph_indexing_agreements_events_emitter.flush(),
+        )
+        .await;
 
-        tracing::trace!("shutting down DB connection pool");
-        db_conn.close().await;
-        tracing::trace!("shut down DB connection pool");
+        // Closing the pool waits for every checked-out connection back, so a service we gave up
+        // on would hang it and then take a confusing `PoolClosed`. Skipping it, or giving up on
+        // it, costs nothing: Postgres rolls back anything open once the sockets drop.
+        if all_stopped {
+            stop_service("DB connection pool", db_conn.close()).await;
+        } else {
+            tracing::warn!(
+                "skipping the graceful DB pool close because a service did not stop in time"
+            );
+        }
 
-        Ok(())
+        // Everything is stopped, so surface the registration failure now.
+        match registration_error {
+            Some(err) => Err(anyhow::Error::new(err)),
+            None => Ok(()),
+        }
     });
     tracing::debug!(task_id=%signal_handler_task_handle.id(), "signal handler registered");
 
-    // Block on the task tree. Wait for all tasks to complete
+    // Supervise the task tree. An unexpected task exit (one that happens before
+    // shutdown was requested) tears the rest of the tree down and returns an
+    // error so the process exits non-zero for the orchestrator to restart.
     tracing::info!("starting service");
-    while let Some(res) = task_tree.join_next_with_id().await {
-        match res {
-            Ok((id, Ok(()))) => {
-                tracing::debug!(task_id=%id, "task completed");
-            }
-            Ok((id, Err(err))) => {
-                tracing::error!(task_id=%id, error=?err, "task failed");
-            }
-            Err(err) => {
-                tracing::error!(task_id=%err.id(), error=?err, "task join error");
-            }
-        }
-    }
-    Ok(())
+    supervisor::supervise(task_tree, &shutdown, TEARDOWN_GRACE).await
 }
 
 /// Signals that the application can receive
@@ -794,6 +821,22 @@ enum SignalHandlerError {
 }
 
 // -------- Private app helpers --------
+
+/// Stop one service, giving up after [`STOP_STEP_TIMEOUT`]. Returns whether it stopped in time,
+/// naming the service when it did not so the errors it goes on to log are attributable.
+async fn stop_service(name: &str, stop: impl std::future::Future<Output = ()>) -> bool {
+    tracing::trace!(service = name, "stopping service");
+    if tokio::time::timeout(STOP_STEP_TIMEOUT, stop).await.is_err() {
+        tracing::warn!(
+            service = name,
+            timeout_secs = STOP_STEP_TIMEOUT.as_secs(),
+            "service did not stop in time; continuing teardown without it"
+        );
+        return false;
+    }
+    tracing::trace!(service = name, "stopped service");
+    true
+}
 
 /// Signal handler for the application
 async fn signal_task() -> Result<AppSignal, SignalHandlerError> {
@@ -843,4 +886,24 @@ async fn create_subgraph_indexing_agreements_events_emitter(
         kafka_config.clone(),
         event_streaming_conf.event_queue_capacity.get(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stop_service;
+
+    /// The normal path: a service that stops promptly reports success, which is
+    /// what lets the graceful DB pool close go ahead.
+    #[tokio::test(start_paused = true)]
+    async fn stop_service_reports_success_when_the_service_stops() {
+        assert!(stop_service("prompt", async {}).await);
+    }
+
+    /// A wedged service must not hold the sequence open. `stop_service` gives up
+    /// after the cap and reports the failure, which is what bounds the whole
+    /// teardown and keeps a SIGKILL out of reach.
+    #[tokio::test(start_paused = true)]
+    async fn stop_service_gives_up_on_a_wedged_service() {
+        assert!(!stop_service("wedged", std::future::pending::<()>()).await);
+    }
 }
