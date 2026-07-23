@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.8](https://github.com/edgeandnode/dipper/compare/v0.1.7...v0.1.8) (2026-07-23)
+
+
+### Added
+
+* report worker liveness on an HTTP health endpoint ([#680](https://github.com/edgeandnode/dipper/issues/680)) ([450c36d](https://github.com/edgeandnode/dipper/commit/450c36dd1feba96bd7ce5b1a5c1fda7ca8439f9d))
+* restart the process when a critical background task dies ([#678](https://github.com/edgeandnode/dipper/issues/678)) ([432b567](https://github.com/edgeandnode/dipper/commit/432b567b7aed591e4613dc583f582f8cbb4cfa58))
+* stream indexing agreement lifecycle events to Kafka ([#675](https://github.com/edgeandnode/dipper/issues/675)) ([c0db997](https://github.com/edgeandnode/dipper/commit/c0db9978e6345da38c8365af656ee253d620dad3))
+
+
+### Fixed
+
+* **config:** reject unknown keys so config typos fail at startup ([#682](https://github.com/edgeandnode/dipper/issues/682)) ([0c800e2](https://github.com/edgeandnode/dipper/commit/0c800e265adc86dbc7f8351271f5c54dcdac114c))
+* keep processing jobs when the notification listener fails ([#677](https://github.com/edgeandnode/dipper/issues/677)) ([0fbc686](https://github.com/edgeandnode/dipper/commit/0fbc6866a42ecdbacaf30dcf79bdfe42c6296939))
+* reschedule background jobs stuck past a 300 second timeout ([#681](https://github.com/edgeandnode/dipper/issues/681)) ([3c20be6](https://github.com/edgeandnode/dipper/commit/3c20be670417504faa196605696043daa29deaca))
+* wind down the signing domain refresh on shutdown ([#679](https://github.com/edgeandnode/dipper/issues/679)) ([81f0d12](https://github.com/edgeandnode/dipper/commit/81f0d124c3d186227babe2dc472064a3c4f50df1))
+
 ## [0.1.7](https://github.com/edgeandnode/dipper/compare/v0.1.6...v0.1.7) (2026-07-14)
 
 
