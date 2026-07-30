@@ -479,7 +479,7 @@ impl AlloyChainClient {
 
         self.inner
             .rpc_pool
-            .execute("send_transaction", |provider| {
+            .execute_trying_each_once("send_transaction", |provider| {
                 let raw = raw.clone();
                 async move {
                     match provider.send_raw_transaction(&raw).await {
@@ -1065,10 +1065,11 @@ mod tests {
         );
     }
 
-    /// A provider reporting overload in the JSON-RPC error rather than the HTTP status earns a
-    /// retry on that provider, while a chain rejection does not, since it will answer the same.
+    /// A submission moves on to the next endpoint rather than pressing a struggling one, even
+    /// when the complaint is the kind a retry would normally clear. Retries here are expensive:
+    /// they hold up every other submission and eat into the window an offer has to be accepted.
     #[tokio::test]
-    async fn json_rpc_errors_decide_whether_the_provider_is_retried() {
+    async fn send_transaction_tries_each_endpoint_once() {
         let overloaded =
             server_answering_rpc_error(-32005, "project ID request rate exceeded").await;
         let healthy = server_answering_with(B256::repeat_byte(0xcd)).await;
@@ -1077,7 +1078,7 @@ mod tests {
                 overloaded.uri().parse().expect("overloaded provider URL"),
                 healthy.uri().parse().expect("healthy provider URL"),
             ],
-            1,
+            3,
         );
         let tx = ready_to_send_tx(client.inner.signer.address());
 
@@ -1092,8 +1093,8 @@ mod tests {
                 .await
                 .unwrap_or_default()
                 .len(),
-            2,
-            "a rate-limited provider should be retried once before rotating"
+            1,
+            "a struggling endpoint should be left alone once it has refused"
         );
 
         let rejecting = server_answering_rpc_error(-32000, "nonce too low: next nonce 12").await;
@@ -1103,7 +1104,7 @@ mod tests {
                 rejecting.uri().parse().expect("rejecting provider URL"),
                 spare.uri().parse().expect("spare provider URL"),
             ],
-            1,
+            3,
         );
         let tx = ready_to_send_tx(client.inner.signer.address());
 
@@ -1116,7 +1117,7 @@ mod tests {
                 .unwrap_or_default()
                 .len(),
             1,
-            "a chain rejection should not be retried against the same provider"
+            "a chain rejection should not be retried against the same endpoint"
         );
     }
 

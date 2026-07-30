@@ -125,6 +125,35 @@ impl RpcProviderPool {
         F: Fn(HttpProvider) -> Fut,
         Fut: Future<Output = Result<T, TransportError>>,
     {
+        self.execute_with_retries(operation, self.max_retries, f)
+            .await
+    }
+
+    /// Run an RPC call, giving each endpoint a single attempt instead of several. Submitting
+    /// a transaction uses this: it holds a lock that every other submission queues behind,
+    /// and a different endpoint is likelier to help than asking a sick one four times.
+    pub async fn execute_trying_each_once<F, Fut, T>(
+        &self,
+        operation: &str,
+        f: F,
+    ) -> Result<T, ChainClientError>
+    where
+        F: Fn(HttpProvider) -> Fut,
+        Fut: Future<Output = Result<T, TransportError>>,
+    {
+        self.execute_with_retries(operation, 0, f).await
+    }
+
+    async fn execute_with_retries<F, Fut, T>(
+        &self,
+        operation: &str,
+        max_retries: u32,
+        f: F,
+    ) -> Result<T, ChainClientError>
+    where
+        F: Fn(HttpProvider) -> Fut,
+        Fut: Future<Output = Result<T, TransportError>>,
+    {
         // What each endpoint said, in the order they were tried. `sign_and_send` matches
         // this text to tell a stale nonce from a transport fault, so a rejection from the
         // first endpoint has to survive a different kind of failure on the next.
@@ -141,20 +170,20 @@ impl RpcProviderPool {
 
             // Retry loop for current provider
             let mut endpoint_error: Option<TransportError> = None;
-            for attempt in 0..=self.max_retries {
+            for attempt in 0..=max_retries {
                 let outcome = match build_provider(current_url.clone(), self.request_timeout) {
                     Ok(provider) => f(provider).await,
                     Err(e) => Err(TransportErrorKind::custom(e)),
                 };
                 match outcome {
                     Ok(result) => return Ok(result),
-                    Err(e) if Self::is_retryable(&e) && attempt < self.max_retries => {
+                    Err(e) if Self::is_retryable(&e) && attempt < max_retries => {
                         let delay = Self::backoff_delay(attempt);
                         tracing::warn!(
                             operation,
                             provider = %current_url,
                             attempt = attempt + 1,
-                            max_retries = self.max_retries,
+                            max_retries,
                             delay_ms = delay.as_millis(),
                             error = %e,
                             "Retryable RPC error, backing off"
