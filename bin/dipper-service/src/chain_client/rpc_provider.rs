@@ -155,7 +155,6 @@ impl RpcProviderPool {
         F: Fn(Url) -> Fut,
         Fut: Future<Output = Result<T, TransportError>>,
     {
-        let mut last_error: Option<TransportError> = None;
         // What each endpoint said, in the order they were tried. `sign_and_send` matches
         // this text to tell a stale nonce from a transport fault, so a rejection from the
         // first endpoint has to survive a different kind of failure on the next.
@@ -171,6 +170,7 @@ impl RpcProviderPool {
             let current_url = self.url_at(start + providers_tried).clone();
 
             // Retry loop for current provider
+            let mut endpoint_error: Option<TransportError> = None;
             for attempt in 0..=self.max_retries {
                 match f(current_url.clone()).await {
                     Ok(result) => return Ok(result),
@@ -186,33 +186,28 @@ impl RpcProviderPool {
                             "Retryable RPC error, backing off"
                         );
                         tokio::time::sleep(delay).await;
-                        last_error = Some(e);
+                        endpoint_error = Some(e);
                     }
                     Err(e) => {
-                        last_error = Some(e);
+                        endpoint_error = Some(e);
                         break;
                     }
                 }
             }
+            // Every attempt records why it failed before stopping, so the fallback only
+            // covers a configuration that somehow allows no attempt at all.
+            let endpoint_error = endpoint_error
+                .unwrap_or_else(|| TransportErrorKind::custom_str("no attempt was made"));
 
-            reasons.push(format!(
-                "{current_url}: {}",
-                last_error
-                    .as_ref()
-                    .map(|e| e.to_string())
-                    .unwrap_or_else(|| "unknown error".to_string())
-            ));
+            reasons.push(format!("{current_url}: {endpoint_error}"));
             providers_tried += 1;
 
             // Check if we've tried all providers
             if providers_tried >= self.providers.len() {
-                let final_err =
-                    last_error.unwrap_or_else(|| TransportErrorKind::custom_str("unknown error"));
-
                 // Preserve structured ChainClientError instances boxed in via
                 // TransportErrorKind::custom (e.g. ContractRevert from gas
                 // estimation). Otherwise fall back to the generic wrap.
-                if let Some(typed) = extract_chain_client_error(final_err) {
+                if let Some(typed) = extract_chain_client_error(endpoint_error) {
                     return Err(typed);
                 }
 
@@ -234,7 +229,7 @@ impl RpcProviderPool {
                 new_provider = %next_url,
                 providers_tried,
                 total_providers = self.providers.len(),
-                error = last_error.as_ref().map(|e| e.to_string()).unwrap_or_default(),
+                error = %endpoint_error,
                 "Rotating RPC provider after failures"
             );
         }
