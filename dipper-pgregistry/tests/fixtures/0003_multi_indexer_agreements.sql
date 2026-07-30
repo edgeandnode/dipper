@@ -61,12 +61,16 @@ VALUES ('\xbb000000000000000000000000000001'::bytea, '01930100-0002-7000-8000-00
         '{"payer": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "service_provider": "0x2222222222222222222222222222222222222222", "data_service": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "deadline": 1700000300, "ends_at": 1700086400, "max_initial_tokens": "1000", "max_ongoing_tokens_per_second": "100", "min_seconds_per_collection": 86400, "max_seconds_per_collection": 864000, "metadata": {"tokens_per_second": "10", "tokens_per_entity_per_second": "1", "subgraph_deployment_id": "QmDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD4d", "protocol_network": 1, "chain_id": 1}}'::json);
 
 -- Indexer C: 0x3333333333333333333333333333333333333333
--- Has NO active agreements (only expired)
-INSERT INTO dipper_reg_indexing_agreements (id, nonce_uuid, created_at, updated_at, status, indexing_request_id, deployment_id, indexer_id, indexer_url, terms)
+-- Has NO active agreements (only expired). The expiry carries an offer transaction, so it is an
+-- indexer who had an offer on chain and let the window close, which earns the standard exclusion.
+-- Leave the transaction set: without it the row reads as dipper failing to submit, and every test
+-- that expects this row on the standard window would silently move to the short one instead.
+INSERT INTO dipper_reg_indexing_agreements (id, nonce_uuid, created_at, updated_at, status, indexing_request_id, deployment_id, indexer_id, indexer_url, terms, offer_tx_hash)
 VALUES ('\xcc000000000000000000000000000001'::bytea, '01930100-0003-7000-8000-000000000001'::uuid, timezone('UTC', now()), timezone('UTC', now()),
         5, -- Expired
         '01930100-0000-7000-8000-000000000001'::uuid,
         'QmEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE5e',
         '\x3333333333333333333333333333333333333333'::bytea,
         'https://indexer-c.com',
-        '{"payer": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "service_provider": "0x3333333333333333333333333333333333333333", "data_service": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "deadline": 1700000300, "ends_at": 1700086400, "max_initial_tokens": "1000", "max_ongoing_tokens_per_second": "100", "min_seconds_per_collection": 86400, "max_seconds_per_collection": 864000, "metadata": {"tokens_per_second": "10", "tokens_per_entity_per_second": "1", "subgraph_deployment_id": "QmEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE5e", "protocol_network": 1, "chain_id": 1}}'::json);
+        '{"payer": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "service_provider": "0x3333333333333333333333333333333333333333", "data_service": "0x442a24985444cdc6a4db9503d354918d27b5ea97", "deadline": 1700000300, "ends_at": 1700086400, "max_initial_tokens": "1000", "max_ongoing_tokens_per_second": "100", "min_seconds_per_collection": 86400, "max_seconds_per_collection": 864000, "metadata": {"tokens_per_second": "10", "tokens_per_entity_per_second": "1", "subgraph_deployment_id": "QmEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE5e", "protocol_network": 1, "chain_id": 1}}'::json,
+        decode(repeat('cc', 32), 'hex'));
