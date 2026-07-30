@@ -53,6 +53,7 @@ const RETRYABLE_ERROR_PATTERNS: &[&str] = &[
     "too many requests",
     "service unavailable",
     "bad gateway",
+    "temporary internal error",
 ];
 
 /// Type alias for the provider with default fillers.
@@ -521,6 +522,22 @@ mod tests {
         assert!(
             RpcProviderPool::is_retryable(&err),
             "a reset described in the error body should be retryable"
+        );
+    }
+
+    /// The provider that stranded an accepted agreement on 2026-07-29 answered `code 19
+    /// Temporary internal error. Please retry`, a code alloy does not know. Sent under a 200
+    /// the status says nothing either, so the wording is the only thing left to read.
+    #[test]
+    fn a_temporary_internal_error_without_a_status_is_retryable() {
+        let payload = serde_json::from_str(
+            r#"{"code":19,"message":"Temporary internal error. Please retry"}"#,
+        )
+        .expect("JSON-RPC error payload");
+        let err: TransportError = RpcError::ErrorResp(payload);
+        assert!(
+            RpcProviderPool::is_retryable(&err),
+            "the fault behind the outage should be retryable however it is reported"
         );
     }
 
