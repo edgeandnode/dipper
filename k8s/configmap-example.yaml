@@ -94,7 +94,7 @@ data:
           "https://arb1.arbitrum.io/rpc",
           "https://arbitrum-one.publicnode.com"
         ],
-        "request_timeout": 30,
+        "request_timeout": 10,
         "max_retries": 3,
         "gas_price_multiplier": 1.2,
         "max_gas_price_gwei": 100,
