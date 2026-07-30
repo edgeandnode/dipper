@@ -12,14 +12,9 @@
 //!    via `RecurringCollector.offer()`. The indexer-agent then calls
 //!    `acceptIndexingAgreement` — the contract checks `rcaOffers`.
 //!
-//! Idempotency is gated on the indexing-payments-subgraph's `Offer` entity,
-//! not an RPC call. The `rcaOffers` mapping on `RecurringCollector` lives
-//! inside an ERC-7201 namespaced storage struct with no public getter, so
-//! dipper reuses the same subgraph indexer-rs queries to check whether a
-//! prior submission already landed. The subgraph handler is idempotent on
-//! duplicate `OfferStored` events, so a crashed restart that races the
-//! subgraph's indexing lag and re-submits will end up as a no-op at the
-//! entity level even if it costs a second on-chain transaction.
+//! Nothing here is idempotent across a crash: a re-run submits the offer again. The
+//! `rcaOffers` mapping on `RecurringCollector` sits in an ERC-7201 namespaced storage
+//! struct with no public getter, so the chain cannot cheaply be asked what already landed.
 
 use std::time::Duration;
 
@@ -118,9 +113,11 @@ where
     // through it rather than posting directly.
     match ctx.chain_client.offer_via_manager(&rca).await {
         Ok(None) => {
+            // The chain client reports nothing was submitted. The live client always
+            // submits, so this only fires for a client that skips the offer itself.
             tracing::info!(
                 agreement_id = %agreement_id,
-                "Offer already stored on-chain with matching hash, proceeding to dispatch"
+                "Offer needed no transaction, proceeding to dispatch"
             );
         }
         Ok(Some(tx_hash)) => {
