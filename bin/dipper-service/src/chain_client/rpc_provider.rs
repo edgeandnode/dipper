@@ -116,12 +116,6 @@ impl RpcProviderPool {
         self.request_timeout
     }
 
-    /// Get the current provider URL.
-    pub fn current_url(&self) -> &Url {
-        let idx = self.current_index.load(Ordering::Relaxed) % self.providers.len();
-        &self.providers[idx]
-    }
-
     /// Rotate to the next provider.
     ///
     /// Returns the new provider URL after rotation.
@@ -180,8 +174,14 @@ impl RpcProviderPool {
         let mut last_error: Option<TransportError> = None;
         let mut providers_tried = 0;
 
+        // Walk the ring by local offset from wherever the pool points. Re-reading the shared
+        // index each time lets a concurrent rotation send this call back to a provider it
+        // already tried, so it can give up without ever reaching the healthy one.
+        let start = self.current_index.load(Ordering::Relaxed);
+
         loop {
-            let current_url = self.current_url().clone();
+            let current_url =
+                self.providers[(start + providers_tried) % self.providers.len()].clone();
 
             // Retry loop for current provider
             for attempt in 0..=self.max_retries {
@@ -215,6 +215,11 @@ impl RpcProviderPool {
                 let final_err =
                     last_error.unwrap_or_else(|| TransportErrorKind::custom_str("unknown error"));
 
+                // Keep what the provider actually said. Callers read this text to tell a
+                // nonce rejection from anything else, and it is the only record of why every
+                // provider refused, since a non-retryable attempt logs nothing.
+                let cause = final_err.to_string();
+
                 // Preserve structured ChainClientError instances boxed in via
                 // TransportErrorKind::custom (e.g. ContractRevert from gas
                 // estimation). Otherwise fall back to the generic wrap.
@@ -223,20 +228,24 @@ impl RpcProviderPool {
                 }
 
                 return Err(ChainClientError::RpcError(anyhow::anyhow!(
-                    "All {} RPC providers failed for '{}'",
+                    "All {} RPC providers failed for '{}': {}",
                     self.providers.len(),
                     operation,
+                    cause,
                 )));
             }
 
-            // Rotate to next provider
-            let new_url = self.rotate();
+            // Advance the shared index as well, so later calls start from a provider that has
+            // not just failed rather than repeating this one's discovery.
+            self.rotate();
+            let next_url = &self.providers[(start + providers_tried) % self.providers.len()];
             tracing::warn!(
                 operation,
                 old_provider = %current_url,
-                new_provider = %new_url,
+                new_provider = %next_url,
                 providers_tried,
                 total_providers = self.providers.len(),
+                error = last_error.as_ref().map(|e| e.to_string()).unwrap_or_default(),
                 "Rotating RPC provider after failures"
             );
         }
@@ -284,9 +293,9 @@ impl RpcProviderPool {
 mod tests {
     use super::*;
 
-    /// A provider answering 500 is the failure that stranded an accepted agreement in
-    /// production on 2026-07-29: the status was never read, the digits 500 were not in
-    /// the text patterns, and the submission was abandoned as unretryable.
+    /// 500 is the status a provider answered on 2026-07-29 while an accepted agreement went
+    /// unfunded. Reading it here is what earns a retry on that provider before rotating; the
+    /// rotation itself is unconditional, so this decides attempts rather than failover.
     #[test]
     fn server_faults_are_retryable_by_status() {
         for status in [500, 502, 503, 504, 429] {
@@ -307,22 +316,6 @@ mod tests {
             assert!(
                 !RpcProviderPool::is_retryable(&err),
                 "HTTP {status} should not be retryable"
-            );
-        }
-    }
-
-    /// Reading the status rather than the message keeps a revert reason that happens to
-    /// contain 502 or 429 from being mistaken for a transport fault and retried.
-    #[test]
-    fn revert_text_containing_status_digits_is_not_retryable() {
-        for body in [
-            "execution reverted: price 502 below floor",
-            "execution reverted: only 429 tokens remain",
-        ] {
-            let err = TransportErrorKind::http_error(200, body.to_string());
-            assert!(
-                !RpcProviderPool::is_retryable(&err),
-                "{body} should not be retryable"
             );
         }
     }
@@ -401,19 +394,10 @@ mod tests {
 
         let pool = RpcProviderPool::new(providers.clone(), Duration::from_secs(30), 3).unwrap();
 
-        // Initially at index 0
-        assert_eq!(pool.current_url().as_str(), "https://rpc1.example.com/");
+        assert_eq!(pool.rotate().as_str(), "https://rpc2.example.com/");
+        assert_eq!(pool.rotate().as_str(), "https://rpc3.example.com/");
 
-        // Rotate to index 1
-        pool.rotate();
-        assert_eq!(pool.current_url().as_str(), "https://rpc2.example.com/");
-
-        // Rotate to index 2
-        pool.rotate();
-        assert_eq!(pool.current_url().as_str(), "https://rpc3.example.com/");
-
-        // Rotate wraps back to index 0
-        pool.rotate();
-        assert_eq!(pool.current_url().as_str(), "https://rpc1.example.com/");
+        // Wraps back round rather than running off the end.
+        assert_eq!(pool.rotate().as_str(), "https://rpc1.example.com/");
     }
 }

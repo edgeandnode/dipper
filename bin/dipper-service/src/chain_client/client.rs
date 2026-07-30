@@ -760,12 +760,32 @@ mod tests {
         server
     }
 
+    /// Answers HTTP 200 carrying a JSON-RPC error, which is how a chain reports a rejection
+    /// such as a stale nonce and how some providers report being overloaded.
+    async fn server_answering_rpc_error(code: i64, message: &str) -> MockServer {
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "id": 0,
+            "jsonrpc": "2.0",
+            "error": { "code": code, "message": message },
+        });
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        server
+    }
+
     fn client_over(providers: Vec<Url>) -> AlloyChainClient {
+        client_over_retrying(providers, 0)
+    }
+
+    fn client_over_retrying(providers: Vec<Url>, max_retries: u32) -> AlloyChainClient {
         let config = ChainClientConfig {
             enabled: true,
             providers,
             request_timeout: Duration::from_secs(5),
-            max_retries: 0,
+            max_retries,
             domain_refresh_interval: Duration::from_secs(3600),
             gas_price_multiplier: 1.2,
             max_gas_price_gwei: 100,
@@ -848,6 +868,82 @@ mod tests {
         let result = client.send_transaction(&tx).await;
 
         assert!(result.is_err(), "a 500 from the only provider must error");
+    }
+
+    /// What the chain said has to survive the pool, because `sign_and_send` reads this text to
+    /// recognise a stale nonce and resync from the chain. Routing the send through the pool
+    /// once replaced the reason with a generic summary, which silently disabled that recovery.
+    #[tokio::test]
+    async fn send_transaction_surfaces_what_the_provider_said() {
+        let rejecting = server_answering_rpc_error(-32000, "nonce too low: next nonce 12").await;
+        let client = client_over(vec![rejecting.uri().parse().expect("provider URL")]);
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        let err = client
+            .send_transaction(&tx)
+            .await
+            .expect_err("a rejected transaction must error");
+
+        let text = err.to_string();
+        assert!(
+            is_nonce_error(&text),
+            "the nonce reason must still be recognisable, got: {text}"
+        );
+    }
+
+    /// A provider reporting overload in the JSON-RPC error rather than the HTTP status earns a
+    /// retry on that provider, while a chain rejection does not, since it will answer the same.
+    #[tokio::test]
+    async fn json_rpc_errors_decide_whether_the_provider_is_retried() {
+        let overloaded =
+            server_answering_rpc_error(-32005, "project ID request rate exceeded").await;
+        let healthy = server_answering_with(B256::repeat_byte(0xcd)).await;
+        let client = client_over_retrying(
+            vec![
+                overloaded.uri().parse().expect("overloaded provider URL"),
+                healthy.uri().parse().expect("healthy provider URL"),
+            ],
+            1,
+        );
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        client
+            .send_transaction(&tx)
+            .await
+            .expect("send should succeed on the healthy provider");
+
+        assert_eq!(
+            overloaded
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .len(),
+            2,
+            "a rate-limited provider should be retried once before rotating"
+        );
+
+        let rejecting = server_answering_rpc_error(-32000, "nonce too low: next nonce 12").await;
+        let spare = server_answering_with(B256::repeat_byte(0xef)).await;
+        let client = client_over_retrying(
+            vec![
+                rejecting.uri().parse().expect("rejecting provider URL"),
+                spare.uri().parse().expect("spare provider URL"),
+            ],
+            1,
+        );
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        let _ = client.send_transaction(&tx).await;
+
+        assert_eq!(
+            rejecting
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .len(),
+            1,
+            "a chain rejection should not be retried against the same provider"
+        );
     }
 
     #[test]
