@@ -479,7 +479,10 @@ impl AlloyChainClient {
                 let raw = raw.clone();
                 async move {
                     match provider.send_raw_transaction(&raw).await {
-                        Ok(pending) => Ok(*pending.tx_hash()),
+                        // The hash follows from the bytes, so report the one we signed
+                        // instead of what this endpoint echoed back. A wrong hash sends the
+                        // receipt poll after a transaction that never mines.
+                        Ok(_) => Ok(signed_hash),
                         // This endpoint already holds these exact bytes, which is the
                         // outcome we were after. Answer with the hash we signed rather
                         // than reporting a failure that would send a second transaction.
@@ -837,14 +840,23 @@ mod tests {
             .with_nonce(7)
     }
 
+    /// The hash the signed bytes carry, which is what a send reports.
+    async fn signed_hash_of(client: &AlloyChainClient, tx: &TransactionRequest) -> B256 {
+        let wallet = EthereumWallet::from(client.inner.signer.clone());
+        *tx.clone()
+            .build(&wallet)
+            .await
+            .expect("sign the transaction")
+            .tx_hash()
+    }
+
     /// Submitting a transaction must fail over to the next provider, exactly as every read
     /// call does. On 2026-07-29 the send bypassed the pool, so one endpoint answering 500
     /// stranded an accepted agreement while a healthy second endpoint was never tried.
     #[tokio::test]
     async fn send_transaction_rotates_to_the_next_provider_on_server_fault() {
         let sick = server_answering_500().await;
-        let expected_hash = B256::repeat_byte(0xab);
-        let healthy = server_answering_with(expected_hash).await;
+        let healthy = server_answering_with(B256::repeat_byte(0xab)).await;
 
         let client = client_over(vec![
             sick.uri().parse().expect("sick provider URL"),
@@ -857,7 +869,11 @@ mod tests {
             .await
             .expect("send should succeed on the second provider");
 
-        assert_eq!(tx_hash, expected_hash);
+        assert_eq!(
+            tx_hash,
+            signed_hash_of(&client, &tx).await,
+            "the hash reported must be the one we signed, not the one the endpoint made up"
+        );
         assert!(
             !sick
                 .received_requests()
@@ -1062,11 +1078,9 @@ mod tests {
             .await
             .expect("a transaction already in a mempool is a successful broadcast");
 
-        let wallet = EthereumWallet::from(client.inner.signer.clone());
-        let signed = tx.clone().build(&wallet).await.expect("sign the same tx");
         assert_eq!(
             tx_hash,
-            *signed.tx_hash(),
+            signed_hash_of(&client, &tx).await,
             "the hash reported must be the one we signed"
         );
     }
