@@ -21,6 +21,7 @@ use thegraph_core::alloy::{
     rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
     sol_types::{SolCall, SolValue},
+    transports::TransportErrorKind,
 };
 use tokio::sync::Mutex;
 
@@ -455,29 +456,35 @@ impl AlloyChainClient {
         classify_fill_nonce_gap_outcome(nonce, self.send_transaction(&tx).await)
     }
 
+    /// Broadcast a transaction, retrying and rotating providers on transport faults the
+    /// way every read call already does. Rebroadcasting is safe because the caller fixed
+    /// the nonce, gas limit and both fees, so every endpoint sees one identical hash.
     async fn send_transaction(&self, tx: &TransactionRequest) -> Result<B256, ChainClientError> {
-        let wallet = EthereumWallet::from(self.inner.signer.clone());
-        let url = self.inner.rpc_pool.current_url().clone();
+        let request_timeout = self.inner.rpc_pool.request_timeout();
 
-        // Build HTTP client with timeout
-        let client = reqwest::Client::builder()
-            .timeout(self.inner.rpc_pool.request_timeout())
-            .build()
-            .map_err(|e| {
-                ChainClientError::ConfigError(format!("Failed to build HTTP client: {e}"))
-            })?;
+        self.inner
+            .rpc_pool
+            .execute_on_url("send_transaction", |url| {
+                let wallet = EthereumWallet::from(self.inner.signer.clone());
+                let tx = tx.clone();
+                async move {
+                    let client = reqwest::Client::builder()
+                        .timeout(request_timeout)
+                        .build()
+                        .map_err(|e| {
+                            TransportErrorKind::custom(ChainClientError::ConfigError(format!(
+                                "Failed to build HTTP client: {e}"
+                            )))
+                        })?;
 
-        // Build wallet-enabled provider
-        let provider = ProviderBuilder::new()
-            .wallet(wallet)
-            .connect_reqwest(client, url);
+                    let provider = ProviderBuilder::new()
+                        .wallet(wallet)
+                        .connect_reqwest(client, url);
 
-        let pending = provider
-            .send_transaction(tx.clone())
+                    Ok(*provider.send_transaction(tx).await?.tx_hash())
+                }
+            })
             .await
-            .map_err(|e| ChainClientError::SubmitFailed(anyhow::anyhow!("Send failed: {e}")))?;
-
-        Ok(*pending.tx_hash())
     }
 
     /// Poll `eth_getTransactionReceipt` until the tx has mined or the timeout
@@ -712,7 +719,138 @@ impl ChainClient for AlloyChainClient {
 
 #[cfg(test)]
 mod tests {
+    use url::Url;
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate, matchers::method};
+
     use super::*;
+
+    /// Answers every JSON-RPC call with a fixed transaction hash, echoing the request id
+    /// so alloy's transport accepts the response.
+    struct SendResponder {
+        tx_hash: B256,
+    }
+
+    impl Respond for SendResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("JSON-RPC request body");
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": format!("{tx_hash:#x}", tx_hash = self.tx_hash),
+            }))
+        }
+    }
+
+    async fn server_answering_with(tx_hash: B256) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(SendResponder { tx_hash })
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn server_answering_500() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500).set_body_string(
+                r#"{"id":0,"jsonrpc":"2.0","error":{"message":"Temporary internal error. Please retry","code":19}}"#,
+            ))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn client_over(providers: Vec<Url>) -> AlloyChainClient {
+        let config = ChainClientConfig {
+            enabled: true,
+            providers,
+            request_timeout: Duration::from_secs(5),
+            max_retries: 0,
+            domain_refresh_interval: Duration::from_secs(3600),
+            gas_price_multiplier: 1.2,
+            max_gas_price_gwei: 100,
+            gas_buffer_multiplier: 2.0,
+            gas_floor: 100_000,
+            gas_max_addition: 200_000,
+        };
+
+        AlloyChainClient::new(
+            &config,
+            1337,
+            Address::repeat_byte(0x11),
+            Address::repeat_byte(0x22),
+            &[0x42; 32],
+        )
+        .expect("chain client")
+    }
+
+    /// A transaction with everything filled, so no filler needs to reach the network and
+    /// the bytes signed are identical whichever provider receives them.
+    fn ready_to_send_tx(from: Address) -> TransactionRequest {
+        TransactionRequest::default()
+            .from(from)
+            .to(Address::repeat_byte(0x33))
+            .value(thegraph_core::alloy::primitives::U256::ZERO)
+            .with_gas_limit(21_000)
+            .with_max_fee_per_gas(2_000_000_000)
+            .with_max_priority_fee_per_gas(1_000_000_000)
+            .with_chain_id(1337)
+            .with_nonce(7)
+    }
+
+    /// Submitting a transaction must fail over to the next provider, exactly as every read
+    /// call does. On 2026-07-29 the send bypassed the pool, so one endpoint answering 500
+    /// stranded an accepted agreement while a healthy second endpoint was never tried.
+    #[tokio::test]
+    async fn send_transaction_rotates_to_the_next_provider_on_server_fault() {
+        let sick = server_answering_500().await;
+        let expected_hash = B256::repeat_byte(0xab);
+        let healthy = server_answering_with(expected_hash).await;
+
+        let client = client_over(vec![
+            sick.uri().parse().expect("sick provider URL"),
+            healthy.uri().parse().expect("healthy provider URL"),
+        ]);
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        let tx_hash = client
+            .send_transaction(&tx)
+            .await
+            .expect("send should succeed on the second provider");
+
+        assert_eq!(tx_hash, expected_hash);
+        assert!(
+            !sick
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty(),
+            "the failing provider should have been tried first"
+        );
+        assert!(
+            !healthy
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty(),
+            "the healthy provider should have been tried after rotation"
+        );
+    }
+
+    /// With a single provider there is nowhere to rotate to, so the fault must surface
+    /// rather than be retried forever or silently swallowed.
+    #[tokio::test]
+    async fn send_transaction_reports_failure_when_every_provider_is_sick() {
+        let sick = server_answering_500().await;
+        let client = client_over(vec![sick.uri().parse().expect("sick provider URL")]);
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        let result = client.send_transaction(&tx).await;
+
+        assert!(result.is_err(), "a 500 from the only provider must error");
+    }
 
     #[test]
     fn test_is_nonce_error() {

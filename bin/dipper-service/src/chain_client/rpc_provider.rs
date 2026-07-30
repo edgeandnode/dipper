@@ -31,9 +31,8 @@ fn extract_chain_client_error(err: TransportError) -> Option<ChainClientError> {
     }
 }
 
-/// Error patterns that indicate a transient failure worth retrying.
-///
-/// These patterns are matched case-insensitively against the error message.
+/// Error text that indicates a transient failure worth retrying, used only for faults
+/// that arrive as prose rather than as a status code or JSON-RPC error object.
 const RETRYABLE_ERROR_PATTERNS: &[&str] = &[
     "connection refused",
     "connection reset",
@@ -42,12 +41,19 @@ const RETRYABLE_ERROR_PATTERNS: &[&str] = &[
     "timed out",
     "rate limit",
     "too many requests",
-    "503",
-    "502",
-    "429",
     "service unavailable",
     "bad gateway",
 ];
+
+/// Build a read-only provider for one URL, with the pool's request timeout applied.
+fn build_provider(url: Url, request_timeout: Duration) -> Result<HttpProvider, ChainClientError> {
+    let client = reqwest::Client::builder()
+        .timeout(request_timeout)
+        .build()
+        .map_err(|e| ChainClientError::ConfigError(format!("Failed to build HTTP client: {e}")))?;
+
+    Ok(ProviderBuilder::new().connect_reqwest(client, url))
+}
 
 /// Type alias for the provider with default fillers.
 pub type HttpProvider = FillProvider<
@@ -116,24 +122,6 @@ impl RpcProviderPool {
         &self.providers[idx]
     }
 
-    /// Build a provider for the current URL.
-    pub fn get_provider(&self) -> Result<HttpProvider, ChainClientError> {
-        let url = self.current_url();
-
-        // Build HTTP client with timeout
-        let client = reqwest::Client::builder()
-            .timeout(self.request_timeout)
-            .build()
-            .map_err(|e| {
-                ChainClientError::ConfigError(format!("Failed to build HTTP client: {e}"))
-            })?;
-
-        // Build alloy provider using the connect_reqwest method
-        let provider = ProviderBuilder::new().connect_reqwest(client, url.clone());
-
-        Ok(provider)
-    }
-
     /// Rotate to the next provider.
     ///
     /// Returns the new provider URL after rotation.
@@ -164,17 +152,40 @@ impl RpcProviderPool {
         F: Fn(HttpProvider) -> Fut,
         Fut: Future<Output = Result<T, TransportError>>,
     {
+        let f = &f;
+        self.execute_on_url(operation, move |url| {
+            let provider = build_provider(url, self.request_timeout);
+            async move {
+                match provider {
+                    Ok(provider) => f(provider).await,
+                    Err(e) => Err(TransportErrorKind::custom(e)),
+                }
+            }
+        })
+        .await
+    }
+
+    /// Same retry and rotation as [`Self::execute`], but the closure receives the URL
+    /// rather than a provider, so a caller needing a wallet attached can build its own
+    /// without reimplementing the retry, backoff and rotation policy.
+    pub async fn execute_on_url<F, Fut, T>(
+        &self,
+        operation: &str,
+        f: F,
+    ) -> Result<T, ChainClientError>
+    where
+        F: Fn(Url) -> Fut,
+        Fut: Future<Output = Result<T, TransportError>>,
+    {
         let mut last_error: Option<TransportError> = None;
         let mut providers_tried = 0;
 
         loop {
-            // Get current provider
-            let provider = self.get_provider()?;
             let current_url = self.current_url().clone();
 
             // Retry loop for current provider
             for attempt in 0..=self.max_retries {
-                match f(provider.clone()).await {
+                match f(current_url.clone()).await {
                     Ok(result) => return Ok(result),
                     Err(e) if Self::is_retryable(&e) && attempt < self.max_retries => {
                         let delay = Self::backoff_delay(attempt);
@@ -231,8 +242,19 @@ impl RpcProviderPool {
         }
     }
 
-    /// Check if an error is retryable.
+    /// Whether an error is worth trying again rather than giving up on. Reads the HTTP
+    /// status where the transport reports one, since a status is unambiguous while the
+    /// same digits inside a revert reason are not, and matches text only without one.
     fn is_retryable(error: &TransportError) -> bool {
+        if let RpcError::Transport(kind) = error {
+            if let Some(http) = kind.as_http_error() {
+                // A 5xx is the server failing for its own reasons and 429 is it
+                // declining; either can succeed on a retry or another provider. Other
+                // 4xx means the request is wrong, so repeating it cannot help.
+                return http.status >= 500 || http.status == 429;
+            }
+        }
+
         let error_str = error.to_string().to_lowercase();
         RETRYABLE_ERROR_PATTERNS
             .iter()
@@ -254,6 +276,49 @@ impl RpcProviderPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A provider answering 500 is the failure that stranded an accepted agreement in
+    /// production on 2026-07-29: the status was never read, the digits 500 were not in
+    /// the text patterns, and the submission was abandoned as unretryable.
+    #[test]
+    fn server_faults_are_retryable_by_status() {
+        for status in [500, 502, 503, 504, 429] {
+            let err = TransportErrorKind::http_error(status, "provider fault".to_string());
+            assert!(
+                RpcProviderPool::is_retryable(&err),
+                "HTTP {status} should be retryable"
+            );
+        }
+    }
+
+    /// A 4xx other than 429 means the request itself is wrong, so resending it unchanged
+    /// to the same or another provider cannot succeed.
+    #[test]
+    fn client_faults_are_not_retryable_by_status() {
+        for status in [400, 401, 403, 404] {
+            let err = TransportErrorKind::http_error(status, "bad request".to_string());
+            assert!(
+                !RpcProviderPool::is_retryable(&err),
+                "HTTP {status} should not be retryable"
+            );
+        }
+    }
+
+    /// Reading the status rather than the message keeps a revert reason that happens to
+    /// contain 502 or 429 from being mistaken for a transport fault and retried.
+    #[test]
+    fn revert_text_containing_status_digits_is_not_retryable() {
+        for body in [
+            "execution reverted: price 502 below floor",
+            "execution reverted: only 429 tokens remain",
+        ] {
+            let err = TransportErrorKind::http_error(200, body.to_string());
+            assert!(
+                !RpcProviderPool::is_retryable(&err),
+                "{body} should not be retryable"
+            );
+        }
+    }
 
     #[test]
     fn test_backoff_delay_calculation() {
