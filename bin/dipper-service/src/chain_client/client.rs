@@ -1,9 +1,8 @@
-//! AlloyChainClient implementation.
-//!
-//! This is the production implementation of the `ChainClient` trait using
+//! AlloyChainClient: the production implementation of the `ChainClient` trait, using
 //! alloy for Ethereum interactions.
 
 use std::{
+    future::Future,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -14,13 +13,14 @@ use std::{
 use async_trait::async_trait;
 use dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement;
 use thegraph_core::alloy::{
-    eips::BlockNumberOrTag,
+    eips::{BlockNumberOrTag, eip2718::Encodable2718},
     network::{EthereumWallet, TransactionBuilder},
     primitives::{Address, B256, FixedBytes},
-    providers::{Provider, ProviderBuilder},
+    providers::Provider,
     rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
     sol_types::{SolCall, SolValue},
+    transports::TransportError,
 };
 use tokio::sync::Mutex;
 
@@ -32,19 +32,17 @@ use super::{
 use crate::{
     chain_client::{ChainClient, ChainClientError},
     config::ChainClientConfig,
+    worker::service::PROCESS_JOB_TIMEOUT,
 };
 
-/// OFFER_TYPE_NEW from `RecurringCollector.sol`. Used when submitting a new
-/// agreement offer on-chain. The contract defines OFFER_TYPE_NONE=0,
-/// OFFER_TYPE_NEW=1, OFFER_TYPE_UPDATE=2; passing 0 reverts with
+/// OFFER_TYPE_NEW from `RecurringCollector.sol`, used when submitting a new agreement
+/// offer on-chain. The contract defines NONE=0, NEW=1, UPDATE=2; passing 0 reverts with
 /// RecurringCollectorInvalidOfferType(0).
 const OFFER_TYPE_NEW: u8 = 1;
 
-/// Time to wait for a tx receipt to appear before declaring the tx dropped
-/// from the mempool. On hardhat this is ~15 blocks at 1s each; on Arbitrum
-/// at 0.25s block time this is 60 confirmations. Short enough that the
-/// pgmq retry budget can recover within the 300s RCA deadline, long enough
-/// to tolerate typical network glitches.
+/// Time to wait for a tx receipt before declaring the tx dropped from the mempool: ~15
+/// blocks on hardhat at 1s each, 60 confirmations on Arbitrum at 0.25s. Short enough that
+/// the pgmq retry budget recovers inside the RCA deadline `deadline_seconds` sets.
 const RECEIPT_POLL_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Interval between `eth_getTransactionReceipt` polls while waiting for a
@@ -70,6 +68,8 @@ const NONCE_ERROR_PATTERNS: &[&str] = &[
     "nonce is too low",
     "invalid nonce",
     "replacement transaction underpriced",
+    // A backstop only. `is_already_broadcast` claims this wording first and reports the
+    // broadcast as the success it is, so a send never reaches here saying it.
     "already known",
 ];
 
@@ -77,6 +77,60 @@ const NONCE_ERROR_PATTERNS: &[&str] = &[
 fn is_nonce_error(error: &str) -> bool {
     let lower = error.to_lowercase();
     NONCE_ERROR_PATTERNS.iter().any(|p| lower.contains(p))
+}
+
+/// Number of attempts `sign_and_send` makes at finding a nonce the chain will take.
+const MAX_NONCE_RETRIES: u32 = 2;
+
+/// How long one submission may hold `submit_lock` before giving up, derived from the retry
+/// schedule so the cut-off can never pre-empt a retry the config allows: each nonce attempt
+/// is at worst one full walk of the endpoint ring to read the nonce and another to send.
+fn derive_submit_deadline(pool: &RpcProviderPool) -> Duration {
+    let budget = pool.worst_case_walk() * (2 * MAX_NONCE_RETRIES);
+    // The rest of the worker job's budget stays reserved for what follows the broadcast:
+    // the receipt poll and the nonce-gap fill.
+    let cap = PROCESS_JOB_TIMEOUT / 5 * 4;
+    if budget > cap {
+        tracing::warn!(
+            budget_secs = budget.as_secs(),
+            cap_secs = cap.as_secs(),
+            "retry schedule wants more time than a worker job allows; submissions may give \
+             up before trying every endpoint"
+        );
+        return cap;
+    }
+    budget
+}
+
+/// Run a submission under `deadline`, reporting a failed submission if it runs over.
+/// Giving up releases the lock, and the caller re-runs the job rather than losing the work.
+async fn under_submit_deadline<F>(
+    deadline: Duration,
+    work: F,
+) -> Result<SubmittedTx, ChainClientError>
+where
+    F: Future<Output = Result<SubmittedTx, ChainClientError>>,
+{
+    tokio::time::timeout(deadline, work)
+        .await
+        .unwrap_or_else(|_| {
+            Err(ChainClientError::SubmitFailed(anyhow::anyhow!(
+                "gave up submitting after {}s holding the submission lock",
+                deadline.as_secs()
+            )))
+        })
+}
+
+/// How nodes say they are already holding the transaction being offered to them.
+const ALREADY_BROADCAST_PATTERNS: &[&str] =
+    &["already known", "already imported", "known transaction"];
+
+/// Whether a rejection means this exact transaction is already in a mempool. Offering the
+/// same signed bytes to a second endpoint is expected to land here, and it means the
+/// broadcast succeeded, so it must not be mistaken for a reason to send another.
+fn is_already_broadcast(error: &TransportError) -> bool {
+    let lower = error.to_string().to_lowercase();
+    ALREADY_BROADCAST_PATTERNS.iter().any(|p| lower.contains(p))
 }
 
 /// Classify the outcome of a nonce-gap fill submission. Pure so the
@@ -117,10 +171,8 @@ fn classify_fill_nonce_gap_outcome(
     }
 }
 
-/// Production implementation of `ChainClient` using alloy.
-///
-/// This struct is `Clone` via internal `Arc` wrapping, allowing it to be shared
-/// across async task contexts.
+/// Production implementation of `ChainClient` using alloy. `Clone` via internal `Arc`
+/// wrapping, so it can be shared across async task contexts.
 #[derive(Clone)]
 pub struct AlloyChainClient {
     /// Inner state wrapped in Arc for Clone support
@@ -158,26 +210,21 @@ struct AlloyChainClientInner {
     gas_price_multiplier: f64,
     /// Maximum gas price in gwei
     max_gas_price_gwei: u64,
-    /// In-memory nonce counter. Concurrent callers atomically increment this
-    /// to get unique nonces without querying the chain, avoiding
-    /// "replacement transaction underpriced" errors when multiple offer()
-    /// transactions are submitted in parallel.
+    /// The next nonce a submission should use. Read under `submit_lock` and advanced only
+    /// once a broadcast succeeds, so a failed submission cannot skip a slot the chain
+    /// would then sit waiting on while later transactions queue behind the gap.
     nonce: AtomicU64,
-    /// Serializes nonce reservation through mempool submission so the RPC
-    /// sees txs in nonce order and the wallet's queue can never strand a
-    /// higher-nonce tx behind an unfilled gap. Released before receipt
-    /// polling so multiple confirmations pipeline concurrently.
+    /// Serializes reading the nonce counter through committing it after the mempool
+    /// submission, so two submissions can never take the same slot. Released before
+    /// receipt polling so multiple confirmations pipeline concurrently.
     submit_lock: Mutex<()>,
+    /// How long one submission may hold `submit_lock`; see `derive_submit_deadline`.
+    submit_deadline: Duration,
 }
 
 impl AlloyChainClient {
-    /// Create a new AlloyChainClient from configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - No RPC providers are configured
-    /// - The signer cannot be constructed
+    /// Create a new AlloyChainClient from configuration. Errors if no RPC providers are
+    /// configured or the signer cannot be constructed.
     pub fn new(
         config: &ChainClientConfig,
         chain_id: u64,
@@ -208,6 +255,8 @@ impl AlloyChainClient {
             "AlloyChainClient initialized"
         );
 
+        let submit_deadline = derive_submit_deadline(&rpc_pool);
+
         Ok(Self {
             inner: Arc::new(AlloyChainClientInner {
                 rpc_pool,
@@ -220,14 +269,13 @@ impl AlloyChainClient {
                 max_gas_price_gwei: config.max_gas_price_gwei,
                 nonce: AtomicU64::new(NONCE_UNINITIALIZED),
                 submit_lock: Mutex::new(()),
+                submit_deadline,
             }),
         })
     }
 
-    /// Build, gas-estimate, and send a call to any contract.
-    ///
-    /// Shared entry point for the manager-routed offer and cancel calls.
-    /// `log_agreement_id` is used only for structured logging.
+    /// Build, gas-estimate, and send a call to any contract. Shared entry point for the
+    /// manager-routed offer and cancel calls; `log_agreement_id` is only for logging.
     async fn build_and_send_call(
         &self,
         to: Address,
@@ -240,12 +288,9 @@ impl AlloyChainClient {
             .to(to)
             .input(calldata.into());
 
-        // 2. Estimate gas with safety bounds.
-        //
-        // The estimator may surface a structured contract revert (e.g. an
-        // already-canceled agreement). Box the typed error through alloy's
-        // Custom transport variant so `rpc_pool.execute` can hand it back
-        // without losing the selector and revert payload.
+        // 2. Estimate gas with safety bounds. The estimator may surface a structured
+        // contract revert (e.g. an already-canceled agreement); box it through alloy's
+        // Custom transport variant so the pool hands back the selector and payload intact.
         let gas_limit = self
             .inner
             .rpc_pool
@@ -307,49 +352,36 @@ impl AlloyChainClient {
         self.sign_and_send(tx, log_agreement_id).await
     }
 
-    /// Get the next nonce, initializing from chain on first call.
-    ///
-    /// Concurrent callers each get a unique nonce via atomic
-    /// fetch-and-increment, avoiding the "replacement transaction
-    /// underpriced" race when multiple offer() calls fire in parallel.
+    /// The slot the next submission should use, read from the chain on first call. Only
+    /// `commit_nonce` moves the counter on, so a submission that never got a transaction
+    /// out leaves its slot to the next caller instead of leaving the chain waiting on it.
     async fn next_nonce(&self) -> Result<u64, ChainClientError> {
         let current = self.inner.nonce.load(Ordering::SeqCst);
-        if current == NONCE_UNINITIALIZED {
-            let chain_nonce = self.fetch_chain_nonce().await?;
-            // CAS: if another task already initialized, use its value
-            match self.inner.nonce.compare_exchange(
-                NONCE_UNINITIALIZED,
-                chain_nonce + 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return Ok(chain_nonce),
-                // Another task already initialized; get next unique nonce
-                Err(_) => return Ok(self.inner.nonce.fetch_add(1, Ordering::SeqCst)),
-            }
+        if current != NONCE_UNINITIALIZED {
+            return Ok(current);
         }
-        Ok(self.inner.nonce.fetch_add(1, Ordering::SeqCst))
+        let chain_nonce = self.fetch_chain_nonce().await?;
+        self.inner.nonce.store(chain_nonce, Ordering::SeqCst);
+        Ok(chain_nonce)
     }
 
-    /// Ratchet the in-memory nonce counter up to `chain_pending + 1`.
-    /// Never decreases the counter, so it is safe to call from any
-    /// context without `submit_lock` held: an in-flight reservation
-    /// from another caller cannot be invalidated. Callers needing a
-    /// reservation call `next_nonce()` after.
+    /// Record that `nonce` carried a successful broadcast, so the next submission moves on
+    /// to the following slot.
+    fn commit_nonce(&self, nonce: u64) {
+        self.inner.nonce.fetch_max(nonce + 1, Ordering::SeqCst);
+    }
+
+    /// Ratchet the in-memory counter up to the next slot the chain will accept. Never
+    /// decreases it, so an endpoint reporting a stale pending count cannot wind the
+    /// counter back onto a slot a broadcast has already spent.
     async fn resync_nonce(&self) -> Result<(), ChainClientError> {
         let chain_nonce = self.fetch_chain_nonce().await?;
-        self.inner
-            .nonce
-            .fetch_max(chain_nonce + 1, Ordering::SeqCst);
+        self.inner.nonce.fetch_max(chain_nonce, Ordering::SeqCst);
         Ok(())
     }
 
-    /// Fetch the pending transaction count from chain.
-    ///
-    /// Uses the "pending" block tag so the count includes transactions
-    /// sitting in the mempool from our wallet. Querying "latest" would
-    /// return a stale count when prior txs are awaiting confirmation,
-    /// causing the next tx to reuse a nonce that's already in-flight.
+    /// Fetch the pending transaction count from chain. The "pending" tag counts our own
+    /// mempool transactions too; "latest" would miss them and reuse an in-flight nonce.
     async fn fetch_chain_nonce(&self) -> Result<u64, ChainClientError> {
         self.inner
             .rpc_pool
@@ -360,21 +392,30 @@ impl AlloyChainClient {
             .await
     }
 
-    /// Sign and send a transaction with nonce error handling.
-    ///
-    /// Uses the in-memory nonce counter for the first attempt. On nonce
-    /// errors, re-syncs from chain and retries. `submit_lock` spans the
-    /// retry loop so concurrent reservations cannot interleave with each
-    /// other's submissions; released before receipt polling.
+    /// Sign and send a transaction, re-syncing the nonce from chain and retrying on nonce
+    /// errors. `submit_lock` spans the retry loop so two submissions can never interleave;
+    /// released before receipt polling so confirmations pipeline concurrently.
     async fn sign_and_send(
+        &self,
+        tx: TransactionRequest,
+        agreement_id: &[u8; 16],
+    ) -> Result<SubmittedTx, ChainClientError> {
+        let _submit_guard = self.inner.submit_lock.lock().await;
+        under_submit_deadline(
+            self.inner.submit_deadline,
+            self.sign_and_send_locked(tx, agreement_id),
+        )
+        .await
+    }
+
+    /// The work `sign_and_send` does while holding `submit_lock`, split out so the deadline
+    /// wraps the work rather than the wait for the lock: a caller queueing politely behind
+    /// someone else should not be charged for the time it spent waiting.
+    async fn sign_and_send_locked(
         &self,
         mut tx: TransactionRequest,
         agreement_id: &[u8; 16],
     ) -> Result<SubmittedTx, ChainClientError> {
-        const MAX_NONCE_RETRIES: u32 = 2;
-
-        let _submit_guard = self.inner.submit_lock.lock().await;
-
         for attempt in 0..MAX_NONCE_RETRIES {
             if attempt > 0 {
                 self.resync_nonce().await?;
@@ -387,6 +428,7 @@ impl AlloyChainClient {
 
             match result {
                 Ok(tx_hash) => {
+                    self.commit_nonce(nonce);
                     tracing::info!(
                         agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
                         tx_hash = %tx_hash,
@@ -418,12 +460,9 @@ impl AlloyChainClient {
         )))
     }
 
-    /// Submit a self-transfer of 0 wei at `nonce` so the chain has
-    /// something to mine in a slot left empty by an evicted tx,
-    /// releasing higher-nonce txs from the same wallet that were
-    /// stuck behind the gap. Best-effort: an `is_nonce_error`
-    /// rejection means the original is still in flight or the gap is
-    /// already filled, so we treat that as success.
+    /// Submit a self-transfer of 0 wei at `nonce` so the chain has something to mine in a
+    /// slot left empty by an evicted tx, releasing higher-nonce txs stuck behind the gap.
+    /// Best-effort: an `is_nonce_error` rejection means the slot is spoken for, so success.
     async fn fill_nonce_gap(&self, nonce: u64) -> Result<(), ChainClientError> {
         let _submit_guard = self.inner.submit_lock.lock().await;
 
@@ -455,35 +494,62 @@ impl AlloyChainClient {
         classify_fill_nonce_gap_outcome(nonce, self.send_transaction(&tx).await)
     }
 
+    /// Broadcast a transaction, retrying and rotating endpoints the way every read call
+    /// already does. Signing happens once, up front, so every endpoint is offered the same
+    /// bytes under one hash and the hash is known before anyone is asked to accept them.
     async fn send_transaction(&self, tx: &TransactionRequest) -> Result<B256, ChainClientError> {
+        // Nothing fills a field in on this path any more, and a request that names no chain is
+        // signed for chain 1 rather than refused, so check before the signature exists. Not a
+        // `ConfigError`: the cancel path reads that as the chain client being switched off.
+        if tx.chain_id() != Some(self.inner.chain_id) {
+            return Err(ChainClientError::SubmitFailed(anyhow::anyhow!(
+                "refusing to sign for chain {:?} while configured for chain {}",
+                tx.chain_id(),
+                self.inner.chain_id
+            )));
+        }
+
         let wallet = EthereumWallet::from(self.inner.signer.clone());
-        let url = self.inner.rpc_pool.current_url().clone();
+        // A caller leaving out a field fails here rather than having it filled in, so this is
+        // as likely to be an incomplete request as a signing fault. Alloy's own wording names
+        // which, so leave the reason to it.
+        let signed = tx.clone().build(&wallet).await.map_err(|e| {
+            ChainClientError::SubmitFailed(anyhow::anyhow!("Transaction not ready to send: {e}"))
+        })?;
+        let signed_hash = *signed.tx_hash();
+        let raw = signed.encoded_2718();
 
-        // Build HTTP client with timeout
-        let client = reqwest::Client::builder()
-            .timeout(self.inner.rpc_pool.request_timeout())
-            .build()
-            .map_err(|e| {
-                ChainClientError::ConfigError(format!("Failed to build HTTP client: {e}"))
-            })?;
-
-        // Build wallet-enabled provider
-        let provider = ProviderBuilder::new()
-            .wallet(wallet)
-            .connect_reqwest(client, url);
-
-        let pending = provider
-            .send_transaction(tx.clone())
+        self.inner
+            .rpc_pool
+            .execute("send_transaction", |provider| {
+                let raw = raw.clone();
+                async move {
+                    match provider.send_raw_transaction(&raw).await {
+                        // The hash follows from the bytes, so report the one we signed
+                        // instead of what this endpoint echoed back. A wrong hash sends the
+                        // receipt poll after a transaction that never mines.
+                        Ok(_) => Ok(signed_hash),
+                        // This endpoint already holds these exact bytes, which is the
+                        // outcome we were after. Answer with the hash we signed rather
+                        // than reporting a failure that would send a second transaction.
+                        Err(e) if is_already_broadcast(&e) => Ok(signed_hash),
+                        Err(e) => Err(e),
+                    }
+                }
+            })
             .await
-            .map_err(|e| ChainClientError::SubmitFailed(anyhow::anyhow!("Send failed: {e}")))?;
-
-        Ok(*pending.tx_hash())
+            .map_err(|e| match e {
+                // A submission that got nowhere is a failed submission, whatever the
+                // endpoints happened to say. Anything the pool could name precisely, such
+                // as a rejection from the contract, keeps the name it already has.
+                ChainClientError::RpcError(cause) => ChainClientError::SubmitFailed(cause),
+                other => other,
+            })
     }
 
-    /// Poll `eth_getTransactionReceipt` until the tx has mined or the timeout
-    /// elapses. `Ok(Some(status))` reports the receipt's success flag;
-    /// `Ok(None)` signals the tx never appeared in time (dropped from the
-    /// mempool). Transient RPC errors are retried silently until timeout.
+    /// Poll `eth_getTransactionReceipt` until the tx has mined or the timeout elapses.
+    /// `Ok(Some(status))` reports the receipt's success flag; `Ok(None)` says the tx never
+    /// appeared in time (dropped from the mempool). Transient RPC errors keep polling.
     async fn wait_for_receipt(
         &self,
         tx_hash: B256,
@@ -503,10 +569,8 @@ impl AlloyChainClient {
                 Ok(Some(r)) => return Ok(Some(r.status())),
                 Ok(None) => {} // not mined yet
                 Err(e) => {
-                    // Transient RPC error — log and keep polling. If the
-                    // error is persistent, the outer handler will see the
-                    // eventual timeout as `Ok(None)` and resubmit, which is
-                    // the safe default.
+                    // Transient RPC error: log and keep polling. If it persists, the outer
+                    // handler sees the timeout as `Ok(None)` and resubmits, the safe default.
                     tracing::debug!(
                         tx_hash = %tx_hash,
                         error = %e,
@@ -712,15 +776,652 @@ impl ChainClient for AlloyChainClient {
 
 #[cfg(test)]
 mod tests {
+    use url::Url;
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate, matchers::method};
+
     use super::*;
 
+    /// Answers a send with a fixed transaction hash, echoing the request id so alloy's
+    /// transport accepts the response. Any other call is a mistake in the test rather than
+    /// something to answer with a hash, so say so instead of returning nonsense.
+    struct SendResponder {
+        tx_hash: B256,
+    }
+
+    impl Respond for SendResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("JSON-RPC request body");
+            let method = body["method"].as_str().unwrap_or_default();
+            assert!(
+                method.starts_with("eth_send"),
+                "this mock only answers sends, got {method}"
+            );
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": format!("{tx_hash:#x}", tx_hash = self.tx_hash),
+            }))
+        }
+    }
+
+    async fn server_answering_with(tx_hash: B256) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(SendResponder { tx_hash })
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn server_answering_500() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500).set_body_string(
+                r#"{"id":0,"jsonrpc":"2.0","error":{"message":"Temporary internal error. Please retry","code":19}}"#,
+            ))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// Answers HTTP 200 carrying a JSON-RPC error, which is how a chain reports a rejection
+    /// such as a stale nonce and how some providers report being overloaded.
+    async fn server_answering_rpc_error(code: i64, message: &str) -> MockServer {
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "id": 0,
+            "jsonrpc": "2.0",
+            "error": { "code": code, "message": message },
+        });
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn client_over(providers: Vec<Url>) -> AlloyChainClient {
+        client_over_retrying(providers, 0)
+    }
+
+    fn client_over_retrying(providers: Vec<Url>, max_retries: u32) -> AlloyChainClient {
+        let config = ChainClientConfig {
+            enabled: true,
+            providers,
+            request_timeout: Duration::from_secs(5),
+            max_retries,
+            domain_refresh_interval: Duration::from_secs(3600),
+            gas_price_multiplier: 1.2,
+            max_gas_price_gwei: 100,
+            gas_buffer_multiplier: 2.0,
+            gas_floor: 100_000,
+            gas_max_addition: 200_000,
+        };
+
+        AlloyChainClient::new(
+            &config,
+            1337,
+            Address::repeat_byte(0x11),
+            Address::repeat_byte(0x22),
+            &[0x42; 32],
+        )
+        .expect("chain client")
+    }
+
+    /// A transaction with everything filled, so no filler needs to reach the network and
+    /// the bytes signed are identical whichever provider receives them.
+    fn ready_to_send_tx(from: Address) -> TransactionRequest {
+        TransactionRequest::default()
+            .from(from)
+            .to(Address::repeat_byte(0x33))
+            .value(thegraph_core::alloy::primitives::U256::ZERO)
+            .with_gas_limit(21_000)
+            .with_max_fee_per_gas(2_000_000_000)
+            .with_max_priority_fee_per_gas(1_000_000_000)
+            .with_chain_id(1337)
+            .with_nonce(7)
+    }
+
+    /// The hash the signed bytes carry, which is what a send reports.
+    async fn signed_hash_of(client: &AlloyChainClient, tx: &TransactionRequest) -> B256 {
+        let wallet = EthereumWallet::from(client.inner.signer.clone());
+        *tx.clone()
+            .build(&wallet)
+            .await
+            .expect("sign the transaction")
+            .tx_hash()
+    }
+
+    /// Submitting a transaction must fail over to the next provider, exactly as every read
+    /// call does. On 2026-07-29 the send bypassed the pool, so one endpoint answering 500
+    /// stranded an accepted agreement while a healthy second endpoint was never tried.
+    #[tokio::test]
+    async fn send_transaction_rotates_to_the_next_provider_on_server_fault() {
+        let sick = server_answering_500().await;
+        let healthy = server_answering_with(B256::repeat_byte(0xab)).await;
+
+        let client = client_over(vec![
+            sick.uri().parse().expect("sick provider URL"),
+            healthy.uri().parse().expect("healthy provider URL"),
+        ]);
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        let tx_hash = client
+            .send_transaction(&tx)
+            .await
+            .expect("send should succeed on the second provider");
+
+        assert_eq!(
+            tx_hash,
+            signed_hash_of(&client, &tx).await,
+            "the hash reported must be the one we signed, not the one the endpoint made up"
+        );
+        assert!(
+            !sick
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty(),
+            "the failing provider should have been tried first"
+        );
+        assert!(
+            !healthy
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty(),
+            "the healthy provider should have been tried after rotation"
+        );
+    }
+
+    /// With a single provider there is nowhere to rotate to, so the fault must surface rather
+    /// than be retried forever or silently swallowed. It surfaces as a failed submission rather
+    /// than the pool's generic RPC fault, which is what says the transaction went nowhere.
+    #[tokio::test]
+    async fn send_transaction_reports_failure_when_every_provider_is_sick() {
+        let sick = server_answering_500().await;
+        let client = client_over(vec![sick.uri().parse().expect("sick provider URL")]);
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        let err = client
+            .send_transaction(&tx)
+            .await
+            .expect_err("a 500 from the only provider must error");
+
+        assert!(
+            matches!(err, ChainClientError::SubmitFailed(_)),
+            "got {err}"
+        );
+    }
+
+    /// What the chain said has to survive the pool, because `sign_and_send` reads this text to
+    /// recognise a stale nonce and resync from the chain. Routing the send through the pool
+    /// once replaced the reason with a generic summary, which silently disabled that recovery.
+    #[tokio::test]
+    async fn send_transaction_surfaces_what_the_provider_said() {
+        let rejecting = server_answering_rpc_error(-32000, "nonce too low: next nonce 12").await;
+        let client = client_over(vec![rejecting.uri().parse().expect("provider URL")]);
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        let err = client
+            .send_transaction(&tx)
+            .await
+            .expect_err("a rejected transaction must error");
+
+        let text = err.to_string();
+        assert!(
+            is_nonce_error(&text),
+            "the nonce reason must still be recognisable, got: {text}"
+        );
+    }
+
+    /// Answers the nonce lookup that precedes a send, then reports every send as already
+    /// held. Counting the sends is how a duplicate submission shows up.
+    struct AlreadyHeldResponder {
+        pending_nonce: u64,
+    }
+
+    impl Respond for AlreadyHeldResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("JSON-RPC request body");
+            match body["method"].as_str().unwrap_or_default() {
+                "eth_getTransactionCount" => {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "result": format!("{:#x}", self.pending_nonce),
+                    }))
+                }
+                "eth_sendRawTransaction" => {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "error": { "code": -32000, "message": "already known" },
+                    }))
+                }
+                other => panic!("unexpected method {other}"),
+            }
+        }
+    }
+
+    fn sends_among(requests: &[wiremock::Request]) -> usize {
+        requests
+            .iter()
+            .filter(|r| {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&r.body).expect("JSON-RPC request body");
+                body["method"] == "eth_sendRawTransaction"
+            })
+            .count()
+    }
+
+    /// The raw transaction each endpoint was asked to accept.
+    fn broadcast_bytes(requests: &[wiremock::Request]) -> Vec<String> {
+        requests
+            .iter()
+            .filter_map(|r| {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&r.body).expect("JSON-RPC request body");
+                (body["method"] == "eth_sendRawTransaction")
+                    .then(|| body["params"][0].as_str().expect("raw tx").to_string())
+            })
+            .collect()
+    }
+
+    /// Rotating between endpoints is only safe while they are all offered the same bytes: two
+    /// different transactions would mean two chances of both being mined and paid for. This
+    /// is what makes a rebroadcast a retry of one transaction rather than a second one.
+    #[tokio::test]
+    async fn every_endpoint_is_offered_the_same_bytes() {
+        let sick = server_answering_500().await;
+        let healthy = server_answering_with(B256::repeat_byte(0xab)).await;
+        let client = client_over(vec![
+            sick.uri().parse().expect("sick provider URL"),
+            healthy.uri().parse().expect("healthy provider URL"),
+        ]);
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        client.send_transaction(&tx).await.expect("send");
+
+        let offered = [
+            broadcast_bytes(&sick.received_requests().await.unwrap_or_default()),
+            broadcast_bytes(&healthy.received_requests().await.unwrap_or_default()),
+        ]
+        .concat();
+        assert_eq!(offered.len(), 2, "both endpoints should have been asked");
+        assert_eq!(
+            offered[0], offered[1],
+            "the two endpoints were offered different transactions"
+        );
+    }
+
+    /// Recovering from a stale nonce has to land on the slot the chain will actually take.
+    /// Aiming one past it leaves that slot empty, and a transaction behind an empty slot never
+    /// gets mined, so a wallet could stay stuck until something else happened to fill it.
+    #[tokio::test]
+    async fn resync_lands_on_the_next_slot_the_chain_will_accept() {
+        let pending = Arc::new(AtomicU64::new(3));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(PendingNonceResponder {
+                pending: pending.clone(),
+            })
+            .mount(&server)
+            .await;
+        let client = client_over(vec![server.uri().parse().expect("provider URL")]);
+
+        assert_eq!(
+            client.next_nonce().await.expect("first reservation"),
+            3,
+            "the first reservation takes the slot the chain reports"
+        );
+
+        // Something else spent slots 3 to 9, so 10 is now the next one free.
+        pending.store(10, Ordering::SeqCst);
+        client.resync_nonce().await.expect("resync");
+
+        assert_eq!(
+            client.next_nonce().await.expect("reservation after resync"),
+            10,
+            "the reservation after a resync must not skip the free slot"
+        );
+    }
+
+    /// Reports whatever the pending count currently is, so a test can move the chain on.
+    struct PendingNonceResponder {
+        pending: Arc<AtomicU64>,
+    }
+
+    impl Respond for PendingNonceResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("JSON-RPC request body");
+            assert_eq!(
+                body["method"], "eth_getTransactionCount",
+                "this mock only answers nonce lookups"
+            );
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": format!("{:#x}", self.pending.load(Ordering::SeqCst)),
+            }))
+        }
+    }
+
+    /// The first endpoint takes the bytes but its reply is lost, so the same bytes go to the
+    /// second, which already holds them. That is the outcome we wanted, so it has to be
+    /// reported with the hash rather than as a failure.
+    #[tokio::test]
+    async fn send_transaction_accepts_a_transaction_already_in_a_mempool() {
+        let sick = server_answering_500().await;
+        let holding = server_answering_rpc_error(-32000, "already known").await;
+        let client = client_over(vec![
+            sick.uri().parse().expect("sick provider URL"),
+            holding.uri().parse().expect("holding provider URL"),
+        ]);
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        let tx_hash = client
+            .send_transaction(&tx)
+            .await
+            .expect("a transaction already in a mempool is a successful broadcast");
+
+        assert_eq!(
+            tx_hash,
+            signed_hash_of(&client, &tx).await,
+            "the hash reported must be the one we signed"
+        );
+    }
+
+    /// Treating "we already have it" as a stale nonce made the caller resync and send a
+    /// second transaction at a different nonce, which for an agreement offer means paying
+    /// twice for one offer. One broadcast has to stay one broadcast.
+    #[tokio::test]
+    async fn sign_and_send_does_not_resend_a_transaction_already_in_a_mempool() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(AlreadyHeldResponder { pending_nonce: 6 })
+            .mount(&server)
+            .await;
+        let client = client_over(vec![server.uri().parse().expect("provider URL")]);
+
+        client
+            .sign_and_send(ready_to_send_tx(client.inner.signer.address()), &[0u8; 16])
+            .await
+            .expect("a transaction already in a mempool is a successful broadcast");
+
+        let requests = server.received_requests().await.unwrap_or_default();
+        assert_eq!(
+            sends_among(&requests),
+            1,
+            "the transaction must be broadcast once, not resent at a new nonce"
+        );
+    }
+
+    /// Nothing fills a field in on the send path, and a request naming no chain is signed for
+    /// chain 1 rather than refused, so a transaction has to say which chain it is for. It has
+    /// to read as a failed submission: a config fault means "chain client off" to the caller.
+    #[tokio::test]
+    async fn send_transaction_refuses_a_transaction_that_names_another_chain() {
+        let server = server_answering_with(B256::repeat_byte(0xab)).await;
+        let client = client_over(vec![server.uri().parse().expect("provider URL")]);
+        let from = client.inner.signer.address();
+
+        let mut names_no_chain = ready_to_send_tx(from);
+        names_no_chain.chain_id = None;
+
+        for tx in [ready_to_send_tx(from).with_chain_id(1), names_no_chain] {
+            let err = client
+                .send_transaction(&tx)
+                .await
+                .expect_err("a transaction for another chain must not be signed");
+            assert!(
+                matches!(err, ChainClientError::SubmitFailed(_)),
+                "got {err}"
+            );
+        }
+
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty(),
+            "no endpoint should have been asked to accept either transaction"
+        );
+    }
+
+    /// A field a caller leaves out is no longer filled in for them, so the send stops rather
+    /// than putting an incomplete transaction on the wire. What it says has to name the field,
+    /// because a caller reading only "signing failed" would go looking at the wrong thing.
+    #[tokio::test]
+    async fn send_transaction_refuses_a_transaction_missing_a_field() {
+        let server = server_answering_with(B256::repeat_byte(0xab)).await;
+        let client = client_over(vec![server.uri().parse().expect("provider URL")]);
+
+        let mut no_gas_limit = ready_to_send_tx(client.inner.signer.address());
+        no_gas_limit.gas = None;
+
+        let err = client
+            .send_transaction(&no_gas_limit)
+            .await
+            .expect_err("a transaction with no gas limit must not be sent");
+
+        let text = err.to_string();
+        assert!(
+            text.contains("gas_limit"),
+            "the failure should name the missing field, got: {text}"
+        );
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty(),
+            "no endpoint should have been asked to accept it"
+        );
+    }
+
+    /// The nonce reason has to survive a second provider failing a different way. Reporting
+    /// only the last provider's reason hid the rejection behind a transport fault, and
+    /// `sign_and_send` then skipped the resync that would have unstuck the wallet.
+    #[tokio::test]
+    async fn send_transaction_surfaces_a_nonce_reason_from_any_provider() {
+        let rejecting = server_answering_rpc_error(-32000, "nonce too low: next nonce 12").await;
+        let sick = server_answering_500().await;
+        let client = client_over(vec![
+            rejecting.uri().parse().expect("rejecting provider URL"),
+            sick.uri().parse().expect("sick provider URL"),
+        ]);
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        let err = client
+            .send_transaction(&tx)
+            .await
+            .expect_err("both providers refused, so the send must error");
+
+        let text = err.to_string();
+        assert!(
+            is_nonce_error(&text),
+            "the nonce reason must survive the later transport fault, got: {text}"
+        );
+    }
+
+    /// An endpoint saying it is overloaded is asked again before the submission gives up on
+    /// it, because that complaint often clears on its own and rotating away costs a provider.
+    /// One retry rather than the usual several, to keep the backoff this waits out short.
+    #[tokio::test]
+    async fn send_transaction_retries_a_struggling_endpoint_before_rotating() {
+        let overloaded =
+            server_answering_rpc_error(-32005, "project ID request rate exceeded").await;
+        let healthy = server_answering_with(B256::repeat_byte(0xcd)).await;
+        let client = client_over_retrying(
+            vec![
+                overloaded.uri().parse().expect("overloaded provider URL"),
+                healthy.uri().parse().expect("healthy provider URL"),
+            ],
+            1,
+        );
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        client
+            .send_transaction(&tx)
+            .await
+            .expect("send should succeed on the healthy provider");
+
+        assert_eq!(
+            overloaded
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .len(),
+            2,
+            "the struggling endpoint should get its retry before the rotation"
+        );
+        assert_eq!(
+            healthy.received_requests().await.unwrap_or_default().len(),
+            1,
+            "the healthy endpoint should answer on the first ask"
+        );
+    }
+
+    /// Every other submission queues behind the one holding the lock, so a submission that
+    /// never finishes has to be cut off rather than waited out. Paused time so the deadline
+    /// is reached without the test spending it.
+    #[tokio::test(start_paused = true)]
+    async fn a_submission_that_never_finishes_is_given_up_on() {
+        let err = under_submit_deadline(Duration::from_secs(60), std::future::pending())
+            .await
+            .expect_err("a submission that never finishes must not be waited out");
+
+        assert!(
+            matches!(err, ChainClientError::SubmitFailed(_)),
+            "got {err}"
+        );
+        assert!(
+            err.to_string().contains("60"),
+            "the failure should say how long it waited, got: {err}"
+        );
+    }
+
+    /// A submission that finishes inside the deadline is left alone, so the cap only ever
+    /// catches the case it is there for.
+    #[tokio::test(start_paused = true)]
+    async fn a_submission_that_finishes_in_time_is_left_alone() {
+        let submitted = under_submit_deadline(Duration::from_secs(60), async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Ok(SubmittedTx {
+                hash: B256::repeat_byte(0x77),
+                nonce: 3,
+            })
+        })
+        .await
+        .expect("a submission inside the deadline should stand");
+
+        assert_eq!(submitted.hash, B256::repeat_byte(0x77));
+    }
+
+    /// The deadline exists to stop one submission starving the queue, not to cut off retries
+    /// the config asks for, so it is derived from the schedule: each nonce attempt walks the
+    /// whole ring twice, once reading the chain's nonce and once broadcasting.
     #[test]
-    fn test_is_nonce_error() {
+    fn the_submit_deadline_covers_the_retry_schedule() {
+        let client = client_over_retrying(
+            vec![
+                "http://one.invalid".parse().expect("first URL"),
+                "http://two.invalid".parse().expect("second URL"),
+            ],
+            1,
+        );
+
+        // Per endpoint: 2 attempts of 5s plus 1s of backoff; 2 endpoints make one walk of
+        // 22s; 2 walks for each of the 2 nonce attempts.
+        assert_eq!(client.inner.submit_deadline, Duration::from_secs(88));
+    }
+
+    /// A schedule that wants more time than a worker job has is capped rather than obeyed,
+    /// leaving room after the broadcast for the receipt poll and the nonce-gap fill.
+    #[test]
+    fn the_submit_deadline_stays_inside_a_worker_job() {
+        let providers = (0..20)
+            .map(|i| {
+                format!("http://rpc{i}.invalid")
+                    .parse()
+                    .expect("provider URL")
+            })
+            .collect();
+        let client = client_over_retrying(providers, 3);
+
+        assert_eq!(client.inner.submit_deadline, PROCESS_JOB_TIMEOUT / 5 * 4);
+    }
+
+    /// Offering the same bytes twice is what makes a retry safe: an endpoint that took them
+    /// and then failed to say so recognises them the second time, and reports the broadcast
+    /// that already happened rather than accepting a second transaction.
+    #[tokio::test]
+    async fn a_retry_that_lands_on_bytes_already_held_is_a_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(AlreadyHeldResponder { pending_nonce: 6 })
+            .mount(&server)
+            .await;
+        let client = client_over_retrying(vec![server.uri().parse().expect("provider URL")], 1);
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        let tx_hash = client
+            .send_transaction(&tx)
+            .await
+            .expect("bytes already held are a successful broadcast");
+
+        assert_eq!(tx_hash, signed_hash_of(&client, &tx).await);
+        assert_eq!(
+            sends_among(&server.received_requests().await.unwrap_or_default()),
+            1,
+            "an accepted broadcast should not be offered again"
+        );
+    }
+
+    /// A chain rejection is the chain's answer, not one endpoint's, so asking the same
+    /// endpoint again would only collect the same refusal at the cost of the delay.
+    #[tokio::test]
+    async fn send_transaction_does_not_repeat_a_chain_rejection() {
+        let rejecting = server_answering_rpc_error(-32000, "nonce too low: next nonce 12").await;
+        let spare = server_answering_with(B256::repeat_byte(0xef)).await;
+        let client = client_over_retrying(
+            vec![
+                rejecting.uri().parse().expect("rejecting provider URL"),
+                spare.uri().parse().expect("spare provider URL"),
+            ],
+            3,
+        );
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        client
+            .send_transaction(&tx)
+            .await
+            .expect("the spare endpoint accepts, so the send succeeds");
+
+        assert_eq!(
+            rejecting
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .len(),
+            1,
+            "a chain rejection should not be retried against the same endpoint"
+        );
+    }
+
+    #[test]
+    fn nonce_rejections_are_told_apart_from_other_refusals() {
         // Nonce errors
         assert!(is_nonce_error("nonce too low"));
         assert!(is_nonce_error("Nonce Too Low for account"));
         assert!(is_nonce_error("invalid nonce: expected 5, got 3"));
         assert!(is_nonce_error("replacement transaction underpriced"));
+        // A backstop, not a live path: a send reports this as the successful broadcast it is.
         assert!(is_nonce_error("transaction already known"));
 
         // Non-nonce errors
@@ -731,16 +1432,15 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_fill_nonce_gap_outcome_success_returns_ok() {
+    fn a_nonce_gap_fill_that_is_accepted_is_a_success() {
         let result = classify_fill_nonce_gap_outcome(42, Ok(B256::ZERO));
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_classify_fill_nonce_gap_outcome_swallows_nonce_error() {
-        // Each of these strings flips `is_nonce_error` to true; the gap
-        // fill must treat them as success because the original tx is
-        // either still in flight or the slot is already filled.
+    fn a_nonce_gap_fill_refused_on_the_nonce_is_still_a_success() {
+        // Each of these strings flips `is_nonce_error` to true; the gap fill must treat
+        // them as success because they all mean the slot is already spoken for.
         for msg in [
             "nonce too low",
             "replacement transaction underpriced",
@@ -757,7 +1457,7 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_fill_nonce_gap_outcome_propagates_other_error() {
+    fn a_nonce_gap_fill_that_fails_for_another_reason_is_reported() {
         // Errors that don't match `is_nonce_error` mean the noop tx itself
         // failed for a real reason (RPC down, gas estimation broken, etc.),
         // so the wallet may stay wedged. Surface to the caller.
@@ -769,84 +1469,75 @@ mod tests {
         );
     }
 
+    /// Answers nonce lookups with a fixed pending count, refuses the first send with a
+    /// server fault, and accepts every send after it: the shape of a submission failing
+    /// outright and the job being re-run.
+    struct FailsFirstSendResponder {
+        pending_nonce: u64,
+        sends: AtomicU64,
+    }
+
+    impl Respond for FailsFirstSendResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("JSON-RPC request body");
+            match body["method"].as_str().unwrap_or_default() {
+                "eth_getTransactionCount" => {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "result": format!("{:#x}", self.pending_nonce),
+                    }))
+                }
+                "eth_sendRawTransaction" if self.sends.fetch_add(1, Ordering::SeqCst) == 0 => {
+                    ResponseTemplate::new(500).set_body_string("Temporary internal error")
+                }
+                "eth_sendRawTransaction" => {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "result": format!("{:#x}", B256::repeat_byte(0xaa)),
+                    }))
+                }
+                other => panic!("unexpected method {other}"),
+            }
+        }
+    }
+
+    /// A submission that never got a transaction out must leave its nonce for the next one.
+    /// Spending it anyway left a slot the chain kept waiting on: every later transaction
+    /// queued behind the empty slot, and nothing filled it short of a restart.
     #[tokio::test]
-    async fn test_nonce_reservation_unique_under_concurrent_callers() {
-        use std::collections::HashSet;
+    async fn a_failed_submission_leaves_its_nonce_to_the_next() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(FailsFirstSendResponder {
+                pending_nonce: 5,
+                sends: AtomicU64::new(0),
+            })
+            .mount(&server)
+            .await;
+        let client = client_over(vec![server.uri().parse().expect("provider URL")]);
+        let tx = ready_to_send_tx(client.inner.signer.address());
 
-        let counter = Arc::new(AtomicU64::new(NONCE_UNINITIALIZED));
-        let lock = Arc::new(Mutex::new(()));
-        let chain_pending = Arc::new(AtomicU64::new(100));
-        let reserved: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
+        client
+            .sign_and_send(tx.clone(), &[0u8; 16])
+            .await
+            .expect_err("the only endpoint refused, so the submission fails");
 
-        const TASKS: usize = 50;
-        let mut handles = Vec::with_capacity(TASKS);
-        for i in 0..TASKS {
-            let counter = counter.clone();
-            let lock = lock.clone();
-            let chain_pending = chain_pending.clone();
-            let reserved = reserved.clone();
-
-            handles.push(tokio::spawn(async move {
-                let _guard = lock.lock().await;
-
-                // Mirror the entry shape of `next_nonce`/`resync_nonce`:
-                // - First caller initializes via fetch+CAS.
-                // - Every seventh subsequent caller hits a "nonce error"
-                //   path: ratchets the counter via fetch_max(chain + 1)
-                //   then reserves via fetch_add. The ratchet never lowers
-                //   the counter, so an in-flight reservation cannot be
-                //   invalidated even if the chain reports a lower pending.
-                // - Everyone else takes the next slot via fetch_add.
-                let nonce = if counter.load(Ordering::SeqCst) == NONCE_UNINITIALIZED {
-                    let chain_nonce = chain_pending.load(Ordering::SeqCst);
-                    match counter.compare_exchange(
-                        NONCE_UNINITIALIZED,
-                        chain_nonce + 1,
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
-                    ) {
-                        Ok(_) => chain_nonce,
-                        Err(_) => counter.fetch_add(1, Ordering::SeqCst),
-                    }
-                } else if i % 7 == 0 {
-                    let chain_nonce = chain_pending.load(Ordering::SeqCst);
-                    counter.fetch_max(chain_nonce + 1, Ordering::SeqCst);
-                    counter.fetch_add(1, Ordering::SeqCst)
-                } else {
-                    counter.fetch_add(1, Ordering::SeqCst)
-                };
-
-                // Simulate the time spent signing and submitting to the
-                // mempool while the lock is held; this is the window the
-                // bug exploited when the lock was missing.
-                tokio::time::sleep(Duration::from_micros(50)).await;
-
-                // Simulate the chain accepting the tx into pending: the
-                // pending count cannot decrease, so use fetch_max.
-                let _ = chain_pending.fetch_update(
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                    |cur| Some(cur.max(nonce + 1)),
-                );
-
-                let mut reserved = reserved.lock().await;
-                assert!(
-                    reserved.insert(nonce),
-                    "nonce {nonce} reissued to a concurrent caller (counter rewound past in-flight reservation)"
-                );
-            }));
-        }
-
-        for h in handles {
-            h.await.expect("worker task panicked");
-        }
-
-        let reserved = reserved.lock().await;
+        let retry = client
+            .sign_and_send(tx.clone(), &[0u8; 16])
+            .await
+            .expect("the endpoint accepts the re-run");
         assert_eq!(
-            reserved.len(),
-            TASKS,
-            "expected {TASKS} unique nonces, got {}",
-            reserved.len()
+            retry.nonce, 5,
+            "the re-run must take the slot the failure never spent"
         );
+
+        let next = client
+            .sign_and_send(tx, &[0u8; 16])
+            .await
+            .expect("a further submission succeeds");
+        assert_eq!(next.nonce, 6, "a successful broadcast spends its slot");
     }
 }
