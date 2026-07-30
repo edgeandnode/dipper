@@ -543,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn test_backoff_delay_calculation() {
+    fn each_retry_waits_twice_as_long_up_to_a_ceiling() {
         // 1s, 2s, 4s, 8s, 16s, 32s->30s
         assert_eq!(RpcProviderPool::backoff_delay(0), Duration::from_secs(1));
         assert_eq!(RpcProviderPool::backoff_delay(1), Duration::from_secs(2));
@@ -557,7 +557,7 @@ mod tests {
     /// Faults that arrive with no status and no error code, only a description, which is
     /// what a connection that never got a reply looks like.
     #[test]
-    fn test_retryable_error_detection() {
+    fn faults_described_only_in_words_are_read_from_the_text() {
         let retryable_errors = [
             "connection refused by remote host",
             "Connection Reset by peer",
@@ -593,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_pool_requires_at_least_one_provider() {
+    fn a_pool_with_no_endpoints_is_refused() {
         let result = RpcProviderPool::new(vec![], Duration::from_secs(30), 3);
         assert!(result.is_err());
 
@@ -607,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_pool_rotation() {
+    fn rotating_walks_the_endpoints_and_wraps_round() {
         let providers = vec![
             Url::parse("https://rpc1.example.com").unwrap(),
             Url::parse("https://rpc2.example.com").unwrap(),

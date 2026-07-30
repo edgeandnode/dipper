@@ -1246,7 +1246,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_nonce_error() {
+    fn nonce_rejections_are_told_apart_from_other_refusals() {
         // Nonce errors
         assert!(is_nonce_error("nonce too low"));
         assert!(is_nonce_error("Nonce Too Low for account"));
@@ -1262,13 +1262,13 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_fill_nonce_gap_outcome_success_returns_ok() {
+    fn a_nonce_gap_fill_that_is_accepted_is_a_success() {
         let result = classify_fill_nonce_gap_outcome(42, Ok(B256::ZERO));
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_classify_fill_nonce_gap_outcome_swallows_nonce_error() {
+    fn a_nonce_gap_fill_refused_on_the_nonce_is_still_a_success() {
         // Each of these strings flips `is_nonce_error` to true; the gap
         // fill must treat them as success because the original tx is
         // either still in flight or the slot is already filled.
@@ -1288,7 +1288,7 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_fill_nonce_gap_outcome_propagates_other_error() {
+    fn a_nonce_gap_fill_that_fails_for_another_reason_is_reported() {
         // Errors that don't match `is_nonce_error` mean the noop tx itself
         // failed for a real reason (RPC down, gas estimation broken, etc.),
         // so the wallet may stay wedged. Surface to the caller.
@@ -1301,7 +1301,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_nonce_reservation_unique_under_concurrent_callers() {
+    async fn concurrent_callers_each_reserve_a_different_nonce() {
         use std::collections::HashSet;
 
         let counter = Arc::new(AtomicU64::new(NONCE_UNINITIALIZED));
