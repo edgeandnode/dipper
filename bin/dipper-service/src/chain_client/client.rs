@@ -501,9 +501,10 @@ impl AlloyChainClient {
     /// bytes under one hash and the hash is known before anyone is asked to accept them.
     async fn send_transaction(&self, tx: &TransactionRequest) -> Result<B256, ChainClientError> {
         // Nothing fills a field in on this path any more, and a request that names no chain is
-        // signed for chain 1 rather than refused, so check before the signature exists.
+        // signed for chain 1 rather than refused, so check before the signature exists. Not a
+        // `ConfigError`: the cancel path reads that as the chain client being switched off.
         if tx.chain_id() != Some(self.inner.chain_id) {
-            return Err(ChainClientError::ConfigError(format!(
+            return Err(ChainClientError::SubmitFailed(anyhow::anyhow!(
                 "refusing to sign for chain {:?} while configured for chain {}",
                 tx.chain_id(),
                 self.inner.chain_id
@@ -1165,7 +1166,8 @@ mod tests {
     }
 
     /// Nothing fills a field in on the send path, and a request naming no chain is signed for
-    /// chain 1 rather than refused, so a transaction has to say which chain it is for.
+    /// chain 1 rather than refused, so a transaction has to say which chain it is for. It has
+    /// to read as a failed submission: a config fault means "chain client off" to the caller.
     #[tokio::test]
     async fn send_transaction_refuses_a_transaction_that_names_another_chain() {
         let server = server_answering_with(B256::repeat_byte(0xab)).await;
@@ -1180,7 +1182,10 @@ mod tests {
                 .send_transaction(&tx)
                 .await
                 .expect_err("a transaction for another chain must not be signed");
-            assert!(matches!(err, ChainClientError::ConfigError(_)), "got {err}");
+            assert!(
+                matches!(err, ChainClientError::SubmitFailed(_)),
+                "got {err}"
+            );
         }
 
         assert!(
