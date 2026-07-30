@@ -32,6 +32,7 @@ use super::{
 use crate::{
     chain_client::{ChainClient, ChainClientError},
     config::ChainClientConfig,
+    worker::service::PROCESS_JOB_TIMEOUT,
 };
 
 /// OFFER_TYPE_NEW from `RecurringCollector.sol`, used when submitting a new agreement
@@ -78,23 +79,44 @@ fn is_nonce_error(error: &str) -> bool {
     NONCE_ERROR_PATTERNS.iter().any(|p| lower.contains(p))
 }
 
-/// How long one submission may hold `submit_lock` before giving up. Every other submission
-/// queues behind it, so without a cap the wait grows with the endpoint count and the retry
-/// budget. Comfortably inside the 300s a worker job gets and the RCA acceptance deadline.
-const SUBMIT_DEADLINE: Duration = Duration::from_secs(60);
+/// Number of attempts `sign_and_send` makes at finding a nonce the chain will take.
+const MAX_NONCE_RETRIES: u32 = 2;
 
-/// Run a submission under [`SUBMIT_DEADLINE`], reporting a failed submission if it runs over.
+/// How long one submission may hold `submit_lock` before giving up, derived from the retry
+/// schedule so the cut-off can never pre-empt a retry the config allows: each nonce attempt
+/// is at worst one full walk of the endpoint ring to read the nonce and another to send.
+fn derive_submit_deadline(pool: &RpcProviderPool) -> Duration {
+    let budget = pool.worst_case_walk() * (2 * MAX_NONCE_RETRIES);
+    // The rest of the worker job's budget stays reserved for what follows the broadcast:
+    // the receipt poll and the nonce-gap fill.
+    let cap = PROCESS_JOB_TIMEOUT / 5 * 4;
+    if budget > cap {
+        tracing::warn!(
+            budget_secs = budget.as_secs(),
+            cap_secs = cap.as_secs(),
+            "retry schedule wants more time than a worker job allows; submissions may give \
+             up before trying every endpoint"
+        );
+        return cap;
+    }
+    budget
+}
+
+/// Run a submission under `deadline`, reporting a failed submission if it runs over.
 /// Giving up releases the lock, and the caller re-runs the job rather than losing the work.
-async fn under_submit_deadline<F>(work: F) -> Result<SubmittedTx, ChainClientError>
+async fn under_submit_deadline<F>(
+    deadline: Duration,
+    work: F,
+) -> Result<SubmittedTx, ChainClientError>
 where
     F: Future<Output = Result<SubmittedTx, ChainClientError>>,
 {
-    tokio::time::timeout(SUBMIT_DEADLINE, work)
+    tokio::time::timeout(deadline, work)
         .await
         .unwrap_or_else(|_| {
             Err(ChainClientError::SubmitFailed(anyhow::anyhow!(
                 "gave up submitting after {}s holding the submission lock",
-                SUBMIT_DEADLINE.as_secs()
+                deadline.as_secs()
             )))
         })
 }
@@ -196,6 +218,8 @@ struct AlloyChainClientInner {
     /// nonce order and the wallet's queue can never strand a higher-nonce tx behind an
     /// unfilled gap. Released before receipt polling so confirmations pipeline concurrently.
     submit_lock: Mutex<()>,
+    /// How long one submission may hold `submit_lock`; see `derive_submit_deadline`.
+    submit_deadline: Duration,
 }
 
 impl AlloyChainClient {
@@ -231,6 +255,8 @@ impl AlloyChainClient {
             "AlloyChainClient initialized"
         );
 
+        let submit_deadline = derive_submit_deadline(&rpc_pool);
+
         Ok(Self {
             inner: Arc::new(AlloyChainClientInner {
                 rpc_pool,
@@ -243,6 +269,7 @@ impl AlloyChainClient {
                 max_gas_price_gwei: config.max_gas_price_gwei,
                 nonce: AtomicU64::new(NONCE_UNINITIALIZED),
                 submit_lock: Mutex::new(()),
+                submit_deadline,
             }),
         })
     }
@@ -377,7 +404,11 @@ impl AlloyChainClient {
         agreement_id: &[u8; 16],
     ) -> Result<SubmittedTx, ChainClientError> {
         let _submit_guard = self.inner.submit_lock.lock().await;
-        under_submit_deadline(self.sign_and_send_locked(tx, agreement_id)).await
+        under_submit_deadline(
+            self.inner.submit_deadline,
+            self.sign_and_send_locked(tx, agreement_id),
+        )
+        .await
     }
 
     /// The work `sign_and_send` does while holding `submit_lock`, split out so the deadline
@@ -388,8 +419,6 @@ impl AlloyChainClient {
         mut tx: TransactionRequest,
         agreement_id: &[u8; 16],
     ) -> Result<SubmittedTx, ChainClientError> {
-        const MAX_NONCE_RETRIES: u32 = 2;
-
         for attempt in 0..MAX_NONCE_RETRIES {
             if attempt > 0 {
                 self.resync_nonce().await?;
@@ -1265,7 +1294,7 @@ mod tests {
     /// is reached without the test spending it.
     #[tokio::test(start_paused = true)]
     async fn a_submission_that_never_finishes_is_given_up_on() {
-        let err = under_submit_deadline(std::future::pending())
+        let err = under_submit_deadline(Duration::from_secs(60), std::future::pending())
             .await
             .expect_err("a submission that never finishes must not be waited out");
 
@@ -1283,8 +1312,8 @@ mod tests {
     /// catches the case it is there for.
     #[tokio::test(start_paused = true)]
     async fn a_submission_that_finishes_in_time_is_left_alone() {
-        let submitted = under_submit_deadline(async {
-            tokio::time::sleep(SUBMIT_DEADLINE / 2).await;
+        let submitted = under_submit_deadline(Duration::from_secs(60), async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
             Ok(SubmittedTx {
                 hash: B256::repeat_byte(0x77),
                 nonce: 3,
@@ -1294,6 +1323,40 @@ mod tests {
         .expect("a submission inside the deadline should stand");
 
         assert_eq!(submitted.hash, B256::repeat_byte(0x77));
+    }
+
+    /// The deadline exists to stop one submission starving the queue, not to cut off retries
+    /// the config asks for, so it is derived from the schedule: each nonce attempt walks the
+    /// whole ring twice, once reading the chain's nonce and once broadcasting.
+    #[test]
+    fn the_submit_deadline_covers_the_retry_schedule() {
+        let client = client_over_retrying(
+            vec![
+                "http://one.invalid".parse().expect("first URL"),
+                "http://two.invalid".parse().expect("second URL"),
+            ],
+            1,
+        );
+
+        // Per endpoint: 2 attempts of 5s plus 1s of backoff; 2 endpoints make one walk of
+        // 22s; 2 walks for each of the 2 nonce attempts.
+        assert_eq!(client.inner.submit_deadline, Duration::from_secs(88));
+    }
+
+    /// A schedule that wants more time than a worker job has is capped rather than obeyed,
+    /// leaving room after the broadcast for the receipt poll and the nonce-gap fill.
+    #[test]
+    fn the_submit_deadline_stays_inside_a_worker_job() {
+        let providers = (0..20)
+            .map(|i| {
+                format!("http://rpc{i}.invalid")
+                    .parse()
+                    .expect("provider URL")
+            })
+            .collect();
+        let client = client_over_retrying(providers, 3);
+
+        assert_eq!(client.inner.submit_deadline, PROCESS_JOB_TIMEOUT / 5 * 4);
     }
 
     /// Offering the same bytes twice is what makes a retry safe: an endpoint that took them

@@ -90,6 +90,9 @@ pub struct RpcProviderPool {
     http: reqwest::Client,
     /// Maximum retries per provider before rotating
     max_retries: u32,
+    /// The longest one walk of the ring can take; computed once here because the pool is
+    /// what knows the schedule. The submission deadline is derived from it.
+    worst_case_walk: Duration,
 }
 
 impl RpcProviderPool {
@@ -118,12 +121,25 @@ impl RpcProviderPool {
             "RPC provider pool initialized"
         );
 
+        // Every endpoint spending the full request timeout on every attempt, plus the
+        // backoff waited out between attempts, across one visit to each endpoint.
+        let backoff: Duration = (0..max_retries).map(Self::backoff_delay).sum();
+        let worst_case_walk =
+            (request_timeout * (max_retries + 1) + backoff) * providers.len() as u32;
+
         Ok(Self {
             providers,
             current_index: AtomicUsize::new(0),
             http,
             max_retries,
+            worst_case_walk,
         })
+    }
+
+    /// The longest [`execute`](Self::execute) can spend before giving up: every retry the
+    /// schedule allows, on every endpoint, with the backoff between them all waited out.
+    pub fn worst_case_walk(&self) -> Duration {
+        self.worst_case_walk
     }
 
     /// Rotate to the next provider.
@@ -675,6 +691,20 @@ mod tests {
             }
             _ => panic!("Expected ConfigError"),
         }
+    }
+
+    /// The submission deadline is derived from this figure, so it has to count every
+    /// attempt the schedule allows and the backoff waited out between them.
+    #[test]
+    fn the_worst_case_walk_counts_every_attempt_and_backoff() {
+        let providers = vec![
+            Url::parse("https://rpc1.example.com").unwrap(),
+            Url::parse("https://rpc2.example.com").unwrap(),
+        ];
+        let pool = RpcProviderPool::new(providers, Duration::from_secs(10), 3).unwrap();
+
+        // Per endpoint: 4 attempts of 10s plus 1+2+4s of backoff, across 2 endpoints.
+        assert_eq!(pool.worst_case_walk(), Duration::from_secs(94));
     }
 
     #[test]
