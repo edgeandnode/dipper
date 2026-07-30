@@ -342,16 +342,12 @@ impl AlloyChainClient {
         Ok(self.inner.nonce.fetch_add(1, Ordering::SeqCst))
     }
 
-    /// Ratchet the in-memory nonce counter up to `chain_pending + 1`.
-    /// Never decreases the counter, so it is safe to call from any
-    /// context without `submit_lock` held: an in-flight reservation
-    /// from another caller cannot be invalidated. Callers needing a
-    /// reservation call `next_nonce()` after.
+    /// Ratchet the in-memory counter up to the next slot the chain will accept. Never
+    /// decreases it, so a reservation another caller is still submitting cannot be handed out
+    /// again: that reservation has already pushed the counter past what the chain reports.
     async fn resync_nonce(&self) -> Result<(), ChainClientError> {
         let chain_nonce = self.fetch_chain_nonce().await?;
-        self.inner
-            .nonce
-            .fetch_max(chain_nonce + 1, Ordering::SeqCst);
+        self.inner.nonce.fetch_max(chain_nonce, Ordering::SeqCst);
         Ok(())
     }
 
@@ -993,6 +989,59 @@ mod tests {
             offered[0], offered[1],
             "the two endpoints were offered different transactions"
         );
+    }
+
+    /// Recovering from a stale nonce has to land on the slot the chain will actually take.
+    /// Aiming one past it leaves that slot empty, and a transaction behind an empty slot never
+    /// gets mined, so a wallet could stay stuck until something else happened to fill it.
+    #[tokio::test]
+    async fn resync_lands_on_the_next_slot_the_chain_will_accept() {
+        let pending = Arc::new(AtomicU64::new(3));
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(PendingNonceResponder {
+                pending: pending.clone(),
+            })
+            .mount(&server)
+            .await;
+        let client = client_over(vec![server.uri().parse().expect("provider URL")]);
+
+        assert_eq!(
+            client.next_nonce().await.expect("first reservation"),
+            3,
+            "the first reservation takes the slot the chain reports"
+        );
+
+        // Something else spent slots 3 to 9, so 10 is now the next one free.
+        pending.store(10, Ordering::SeqCst);
+        client.resync_nonce().await.expect("resync");
+
+        assert_eq!(
+            client.next_nonce().await.expect("reservation after resync"),
+            10,
+            "the reservation after a resync must not skip the free slot"
+        );
+    }
+
+    /// Reports whatever the pending count currently is, so a test can move the chain on.
+    struct PendingNonceResponder {
+        pending: Arc<AtomicU64>,
+    }
+
+    impl Respond for PendingNonceResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("JSON-RPC request body");
+            assert_eq!(
+                body["method"], "eth_getTransactionCount",
+                "this mock only answers nonce lookups"
+            );
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": format!("{:#x}", self.pending.load(Ordering::SeqCst)),
+            }))
+        }
     }
 
     /// The first endpoint takes the bytes but its reply is lost, so the same bytes go to the
