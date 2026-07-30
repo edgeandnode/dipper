@@ -436,6 +436,41 @@ mod tests {
         );
     }
 
+    /// Reporting only the last endpoint's reason hid what the earlier ones said, and a caller
+    /// reading this text to tell a chain rejection from a transport fault would then miss the
+    /// rejection and skip the recovery it calls for.
+    #[tokio::test]
+    async fn a_failure_names_every_endpoint_that_was_tried() {
+        let servers = [server_refusing().await, server_refusing().await];
+        let pool = RpcProviderPool::new(
+            servers
+                .iter()
+                .map(|s| s.uri().parse().expect("server URL"))
+                .collect(),
+            Duration::from_secs(5),
+            0,
+        )
+        .expect("pool");
+
+        let err = pool
+            .execute("probe", |provider| async move {
+                provider.get_block_number().await
+            })
+            .await
+            .expect_err("every endpoint refused, so the call fails");
+
+        let text = err.to_string();
+        for server in &servers {
+            let named = endpoint_name(&server.uri().parse().expect("server URL"));
+            assert!(text.contains(&named), "{named} is missing from: {text}");
+        }
+        assert_eq!(
+            text.matches("refused").count(),
+            servers.len(),
+            "every endpoint's own reason should appear: {text}"
+        );
+    }
+
     /// 500 is the status a provider answered on 2026-07-29 while an accepted agreement went
     /// unfunded. Reading it here is what earns a retry on that provider before rotating; the
     /// rotation itself is unconditional, so this decides attempts rather than failover.
