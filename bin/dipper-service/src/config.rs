@@ -794,9 +794,9 @@ pub struct DipsAgreementConfig {
     #[serde(default = "default_max_grt_per_billion_entities_per_30_days")]
     pub max_grt_per_billion_entities_per_30_days: f64,
 
-    /// Number of days to look back for declined indexers (standard exclusion).
-    /// Covers CanceledByIndexer/Expired agreements and structurally persistent
-    /// rejections (UNSUPPORTED_NETWORK, MANIFEST_TOO_LARGE). Default: 30 days.
+    /// Number of days to look back for declined indexers (standard exclusion). Covers
+    /// CanceledByIndexer, expiries whose offer reached the chain, and structurally
+    /// persistent rejections (UNSUPPORTED_NETWORK, MANIFEST_TOO_LARGE). Default: 30 days.
     #[serde(default = "default_declined_indexer_lookback_days")]
     pub declined_indexer_lookback_days: i32,
 

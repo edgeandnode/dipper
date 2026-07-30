@@ -2095,6 +2095,186 @@ async fn get_declined_indexers_other_reason_excluded_after_30_days() {
     );
 }
 
+/// A dipper-caused expiry moves to the 5 minute window rather than out of the query entirely,
+/// so inside that window the indexer still counts as declined and a reassessment seconds later
+/// does not hand them the same deployment while our submission path is still failing.
+#[tokio::test]
+async fn get_declined_indexers_expiry_without_offer_tx_included_within_5_minutes() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // Age everything the fixture provides out of every window, so only the row under test
+    // can appear in the result.
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET updated_at = timezone('UTC', now()) - interval '31 days'
+        "#,
+    )
+    .execute(&db)
+    .await
+    .expect("Failed to age the fixture agreements");
+
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = 5, rejection_reason = NULL, offer_tx_hash = NULL,
+            updated_at = timezone('UTC', now()) - interval '1 minute'
+        WHERE id = $1
+        "#,
+    )
+    .bind(agreement_id)
+    .execute(&db)
+    .await
+    .expect("Failed to update agreement");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
+        .await
+        .expect("Failed to get declined indexers");
+
+    //* Then
+    let deployment_1a: DeploymentId = "QmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1a"
+        .parse()
+        .unwrap();
+    let indexer_a = indexer_id!("1111111111111111111111111111111111111111");
+    let declined = result
+        .get(&deployment_1a)
+        .expect("Deployment 1a should be in the declined list");
+    assert!(
+        declined.contains(&indexer_a),
+        "an expiry we caused should still count within the 5 minute window, got {declined:?}"
+    );
+}
+
+/// An expiry with no offer transaction means we never landed the offer, so the indexer never
+/// had one to accept and must not be benched for a month over it. On 2026-07-29 exactly this
+/// benched a willing indexer for 30 days because our RPC provider answered HTTP 500.
+#[tokio::test]
+async fn get_declined_indexers_expiry_without_offer_tx_excluded_after_5_minutes() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    // Age everything the fixture provides out of every window, so only the row under test
+    // can appear in the result.
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET updated_at = timezone('UTC', now()) - interval '31 days'
+        "#,
+    )
+    .execute(&db)
+    .await
+    .expect("Failed to age the fixture agreements");
+
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = 5, rejection_reason = NULL, offer_tx_hash = NULL,
+            updated_at = timezone('UTC', now()) - interval '1 hour'
+        WHERE id = $1
+        "#,
+    )
+    .bind(agreement_id)
+    .execute(&db)
+    .await
+    .expect("Failed to update agreement");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
+        .await
+        .expect("Failed to get declined indexers");
+
+    //* Then
+    assert!(
+        result.is_empty(),
+        "an expiry we caused must not bench the indexer, got {result:?}"
+    );
+}
+
+/// The mirror case: the offer did land, so the indexer had one on chain and let the window
+/// close, which is their decision and does earn the standard bench.
+#[tokio::test]
+async fn get_declined_indexers_expiry_with_offer_tx_included_within_30_days() {
+    //* Given
+    let (db, _temp_db) = temp_registry_db().await;
+    run_fixture(
+        &db,
+        include_str!("fixtures/0003_multi_indexer_agreements.sql"),
+    )
+    .await
+    .expect("Failed to run fixture");
+
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET updated_at = timezone('UTC', now()) - interval '31 days'
+        "#,
+    )
+    .execute(&db)
+    .await
+    .expect("Failed to age the fixture agreements");
+
+    let agreement_id =
+        IndexingAgreementId::from_bytes([0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    sqlx::query(
+        r#"
+        UPDATE dipper_reg_indexing_agreements
+        SET status = 5, rejection_reason = NULL,
+            offer_tx_hash = decode(repeat('11', 32), 'hex'),
+            updated_at = timezone('UTC', now()) - interval '1 hour'
+        WHERE id = $1
+        "#,
+    )
+    .bind(agreement_id)
+    .execute(&db)
+    .await
+    .expect("Failed to update agreement");
+
+    let registry = PgRegistry::new(db);
+
+    //* When
+    let result = registry
+        .get_declined_indexers_by_deployment(30, 1, 5, 1)
+        .await
+        .expect("Failed to get declined indexers");
+
+    //* Then
+    let deployment_1a: DeploymentId = "QmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1a"
+        .parse()
+        .unwrap();
+    let indexer_a = indexer_id!("1111111111111111111111111111111111111111");
+    let declined = result
+        .get(&deployment_1a)
+        .expect("Deployment 1a should be in the declined list");
+    assert!(
+        declined.contains(&indexer_a),
+        "an expiry after the offer landed should still bench the indexer, got {declined:?}"
+    );
+}
+
 #[tokio::test]
 async fn get_declined_indexers_capacity_exceeded_included_within_5_minutes() {
     //* Given

@@ -173,8 +173,8 @@ pub trait AgreementRegistry {
     ) -> RegistryResult<std::collections::HashMap<DeploymentId, Vec<IndexerId>>>;
 
     /// Get declined `CanceledByIndexer`/`Expired`/`Rejected` indexers grouped by
-    /// deployment. Each rejection reason gets its own exclusion window (price,
-    /// transient, uncertain, or default); see the `rejection_reason` constants.
+    /// deployment. Each rejection reason gets its own exclusion window, as does an
+    /// expiry that never had an offer transaction; see the query for the details.
     async fn get_declined_indexers_by_deployment(
         &self,
         default_lookback_days: i32,

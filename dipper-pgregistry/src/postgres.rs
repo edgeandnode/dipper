@@ -689,7 +689,7 @@ impl PgRegistry {
 
     /// Get declined `CanceledByIndexer`/`Expired`/`Rejected` indexers grouped by
     /// deployment (deployment id -> indexer ids). Each rejection reason gets its own
-    /// exclusion window (price, transient, uncertain, default); see the constants.
+    /// exclusion window, as does an expiry that never had an offer transaction.
     pub async fn get_declined_indexers_by_deployment(
         &self,
         default_lookback_days: i32,
@@ -726,8 +726,21 @@ impl PgRegistry {
                 (rejection_reason IN ($18, $19)
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $17))
                 OR
+                -- An expiry with no offer transaction and no rejection reason means we never
+                -- landed the offer, so the indexer never had one to accept: our fault, so it
+                -- gets the short dipper-side lookback. An expiry that does carry a reason keeps
+                -- the window that reason earns. The catch-all below excludes exactly this set.
+                -- Read the empty hash as strong evidence, not proof. It is also empty when the
+                -- write recording it failed, and when the transaction confirmed after this row
+                -- had already expired, which both let off an indexer that could have accepted:
+                -- the harmless direction. The column's own migration calls it observability
+                -- only, so note that this query is what makes it load-bearing.
+                (status = $2 AND offer_tx_hash IS NULL AND rejection_reason IS NULL
+                 AND updated_at >= timezone('UTC', now()) - make_interval(mins => $7))
+                OR
                 -- All other rejections/expirations/cancellations: standard lookback
                 (COALESCE(rejection_reason, '') NOT IN ($6, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18, $19)
+                 AND NOT (status = $2 AND offer_tx_hash IS NULL AND rejection_reason IS NULL)
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $5))
               )
             GROUP BY deployment_id
