@@ -233,8 +233,9 @@ impl RpcProviderPool {
                 )));
             }
 
-            // Advance the shared index as well, so later calls start from a provider that has
-            // not just failed rather than repeating this one's discovery.
+            // Move the shared start on too, so a call beginning after this one skips the
+            // endpoint that just failed. A call already under way keeps its own start, and a
+            // sweep that fails everywhere lands back where it began.
             self.rotate();
             let next_url = self.url_at(start + providers_tried);
             tracing::warn!(
