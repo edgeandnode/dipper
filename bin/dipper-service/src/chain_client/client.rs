@@ -4,6 +4,7 @@
 //! alloy for Ethereum interactions.
 
 use std::{
+    future::Future,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -78,6 +79,27 @@ const NONCE_ERROR_PATTERNS: &[&str] = &[
 fn is_nonce_error(error: &str) -> bool {
     let lower = error.to_lowercase();
     NONCE_ERROR_PATTERNS.iter().any(|p| lower.contains(p))
+}
+
+/// How long one submission may hold `submit_lock` before giving up. Every other submission
+/// queues behind it, so without a cap the wait grows with the endpoint count and the retry
+/// budget. Comfortably inside the 300s a worker job gets and the RCA acceptance deadline.
+const SUBMIT_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Run a submission under [`SUBMIT_DEADLINE`], reporting a failed submission if it runs over.
+/// Giving up releases the lock, and the caller re-runs the job rather than losing the work.
+async fn under_submit_deadline<F>(work: F) -> Result<SubmittedTx, ChainClientError>
+where
+    F: Future<Output = Result<SubmittedTx, ChainClientError>>,
+{
+    tokio::time::timeout(SUBMIT_DEADLINE, work)
+        .await
+        .unwrap_or_else(|_| {
+            Err(ChainClientError::SubmitFailed(anyhow::anyhow!(
+                "gave up submitting after {}s holding the submission lock",
+                SUBMIT_DEADLINE.as_secs()
+            )))
+        })
 }
 
 /// How nodes say they are already holding the transaction being offered to them.
@@ -377,12 +399,22 @@ impl AlloyChainClient {
     /// other's submissions; released before receipt polling.
     async fn sign_and_send(
         &self,
+        tx: TransactionRequest,
+        agreement_id: &[u8; 16],
+    ) -> Result<SubmittedTx, ChainClientError> {
+        let _submit_guard = self.inner.submit_lock.lock().await;
+        under_submit_deadline(self.sign_and_send_locked(tx, agreement_id)).await
+    }
+
+    /// The work `sign_and_send` does while holding `submit_lock`, split out so the deadline
+    /// wraps the work rather than the wait for the lock: a caller queueing politely behind
+    /// someone else should not be charged for the time it spent waiting.
+    async fn sign_and_send_locked(
+        &self,
         mut tx: TransactionRequest,
         agreement_id: &[u8; 16],
     ) -> Result<SubmittedTx, ChainClientError> {
         const MAX_NONCE_RETRIES: u32 = 2;
-
-        let _submit_guard = self.inner.submit_lock.lock().await;
 
         for attempt in 0..MAX_NONCE_RETRIES {
             if attempt > 0 {
@@ -1253,6 +1285,42 @@ mod tests {
             1,
             "the healthy endpoint should answer on the first ask"
         );
+    }
+
+    /// Every other submission queues behind the one holding the lock, so a submission that
+    /// never finishes has to be cut off rather than waited out. Paused time so the deadline
+    /// is reached without the test spending it.
+    #[tokio::test(start_paused = true)]
+    async fn a_submission_that_never_finishes_is_given_up_on() {
+        let err = under_submit_deadline(std::future::pending())
+            .await
+            .expect_err("a submission that never finishes must not be waited out");
+
+        assert!(
+            matches!(err, ChainClientError::SubmitFailed(_)),
+            "got {err}"
+        );
+        assert!(
+            err.to_string().contains("60"),
+            "the failure should say how long it waited, got: {err}"
+        );
+    }
+
+    /// A submission that finishes inside the deadline is left alone, so the cap only ever
+    /// catches the case it is there for.
+    #[tokio::test(start_paused = true)]
+    async fn a_submission_that_finishes_in_time_is_left_alone() {
+        let submitted = under_submit_deadline(async {
+            tokio::time::sleep(SUBMIT_DEADLINE / 2).await;
+            Ok(SubmittedTx {
+                hash: B256::repeat_byte(0x77),
+                nonce: 3,
+            })
+        })
+        .await
+        .expect("a submission inside the deadline should stand");
+
+        assert_eq!(submitted.hash, B256::repeat_byte(0x77));
     }
 
     /// Offering the same bytes twice is what makes a retry safe: an endpoint that took them
