@@ -325,9 +325,9 @@ mod tests {
         server
     }
 
-    /// Every read the service makes goes through this path, so a read has to fail over the same
-    /// way a submission does, and a fault worth another go has to earn one before it rotates.
-    /// One retry rather than the usual several, to keep the backoff this waits out short.
+    /// Every read goes through this path, so a read has to fail over the way a submission does,
+    /// and a fault worth another go has to earn one before it rotates. One retry keeps the
+    /// backoff short; real time, since pausing it jumps the clock to the request timeout.
     #[tokio::test]
     async fn a_read_retries_a_sick_endpoint_then_rotates() {
         let sick = MockServer::start().await;
