@@ -722,8 +722,9 @@ mod tests {
 
     use super::*;
 
-    /// Answers every JSON-RPC call with a fixed transaction hash, echoing the request id
-    /// so alloy's transport accepts the response.
+    /// Answers a send with a fixed transaction hash, echoing the request id so alloy's
+    /// transport accepts the response. Any other call is a mistake in the test rather than
+    /// something to answer with a hash, so say so instead of returning nonsense.
     struct SendResponder {
         tx_hash: B256,
     }
@@ -732,6 +733,11 @@ mod tests {
         fn respond(&self, request: &Request) -> ResponseTemplate {
             let body: serde_json::Value =
                 serde_json::from_slice(&request.body).expect("JSON-RPC request body");
+            let method = body["method"].as_str().unwrap_or_default();
+            assert!(
+                method.starts_with("eth_send"),
+                "this mock only answers sends, got {method}"
+            );
             ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": body["id"],
