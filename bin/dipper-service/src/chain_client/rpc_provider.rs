@@ -279,7 +279,66 @@ impl RpcProviderPool {
 
 #[cfg(test)]
 mod tests {
+    use thegraph_core::alloy::providers::Provider;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
     use super::*;
+
+    /// Refuses every call for a reason no retry would clear, so the pool moves straight on.
+    async fn server_refusing() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "error": { "code": -32000, "message": "refused" },
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// A call walks its own way round the ring, so it reaches every endpoint even while other
+    /// calls move the shared starting point underneath it. Reading that shared point afresh
+    /// each time let a call revisit one endpoint and give up without trying another.
+    #[tokio::test]
+    async fn a_call_reaches_every_endpoint_even_while_others_rotate() {
+        let servers = [
+            server_refusing().await,
+            server_refusing().await,
+            server_refusing().await,
+        ];
+        let pool = RpcProviderPool::new(
+            servers
+                .iter()
+                .map(|s| s.uri().parse().expect("server URL"))
+                .collect(),
+            Duration::from_secs(5),
+            0,
+        )
+        .expect("pool");
+
+        let call = pool.execute("probe", |provider| async move {
+            tokio::task::yield_now().await;
+            provider.get_block_number().await
+        });
+        let others_rotating = async {
+            for _ in 0..64 {
+                pool.rotate();
+                tokio::task::yield_now().await;
+            }
+        };
+        let (result, ()) = tokio::join!(call, others_rotating);
+
+        assert!(result.is_err(), "every endpoint refused, so the call fails");
+        for (i, server) in servers.iter().enumerate() {
+            assert_eq!(
+                server.received_requests().await.unwrap_or_default().len(),
+                1,
+                "endpoint {i} should have been tried exactly once"
+            );
+        }
+    }
 
     /// 500 is the status a provider answered on 2026-07-29 while an accepted agreement went
     /// unfunded. Reading it here is what earns a retry on that provider before rotating; the
