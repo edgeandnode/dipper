@@ -298,6 +298,62 @@ mod tests {
         server
     }
 
+    /// Answers a block-number lookup, which is the shape of the read calls the service makes.
+    async fn server_answering_block(number: u64) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "result": format!("{number:#x}"),
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// Every read the service makes goes through this path, so a read has to fail over the same
+    /// way a submission does, and a fault worth another go has to earn one before it rotates.
+    /// One retry rather than the usual several, to keep the backoff this waits out short.
+    #[tokio::test]
+    async fn a_read_retries_a_sick_endpoint_then_rotates() {
+        let sick = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("service unavailable"))
+            .mount(&sick)
+            .await;
+        let healthy = server_answering_block(0x2a).await;
+
+        let pool = RpcProviderPool::new(
+            vec![
+                sick.uri().parse().expect("sick URL"),
+                healthy.uri().parse().expect("healthy URL"),
+            ],
+            Duration::from_secs(5),
+            1,
+        )
+        .expect("pool");
+
+        let block = pool
+            .execute("get_block_number", |provider| async move {
+                provider.get_block_number().await
+            })
+            .await
+            .expect("the read should succeed on the second endpoint");
+
+        assert_eq!(block, 0x2a);
+        assert_eq!(
+            sick.received_requests().await.unwrap_or_default().len(),
+            2,
+            "a read should use its retry budget before rotating"
+        );
+        assert_eq!(
+            healthy.received_requests().await.unwrap_or_default().len(),
+            1,
+            "the healthy endpoint should answer on the first ask"
+        );
+    }
+
     /// A call walks its own way round the ring, so it reaches every endpoint even while other
     /// calls move the shared starting point underneath it. Reading that shared point afresh
     /// each time let a call revisit one endpoint and give up without trying another.
