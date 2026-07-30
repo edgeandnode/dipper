@@ -69,6 +69,8 @@ const NONCE_ERROR_PATTERNS: &[&str] = &[
     "nonce is too low",
     "invalid nonce",
     "replacement transaction underpriced",
+    // A backstop only. `is_already_broadcast` claims this wording first and reports the
+    // broadcast as the success it is, so a send never reaches here saying it.
     "already known",
 ];
 
@@ -1252,6 +1254,7 @@ mod tests {
         assert!(is_nonce_error("Nonce Too Low for account"));
         assert!(is_nonce_error("invalid nonce: expected 5, got 3"));
         assert!(is_nonce_error("replacement transaction underpriced"));
+        // A backstop, not a live path: a send reports this as the successful broadcast it is.
         assert!(is_nonce_error("transaction already known"));
 
         // Non-nonce errors
