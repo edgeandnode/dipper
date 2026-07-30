@@ -156,6 +156,10 @@ impl RpcProviderPool {
         Fut: Future<Output = Result<T, TransportError>>,
     {
         let mut last_error: Option<TransportError> = None;
+        // What each endpoint said, in the order they were tried. `sign_and_send` matches
+        // this text to tell a stale nonce from a transport fault, so a rejection from the
+        // first endpoint has to survive a different kind of failure on the next.
+        let mut reasons: Vec<String> = Vec::with_capacity(self.providers.len());
         let mut providers_tried = 0;
 
         // Walk the ring by local offset from wherever the pool points. Re-reading the shared
@@ -191,17 +195,19 @@ impl RpcProviderPool {
                 }
             }
 
+            reasons.push(format!(
+                "{current_url}: {}",
+                last_error
+                    .as_ref()
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "unknown error".to_string())
+            ));
             providers_tried += 1;
 
             // Check if we've tried all providers
             if providers_tried >= self.providers.len() {
                 let final_err =
                     last_error.unwrap_or_else(|| TransportErrorKind::custom_str("unknown error"));
-
-                // Keep what the provider actually said, because callers read this text to
-                // tell a nonce rejection from anything else. The rotation warning below
-                // carries each earlier provider's reason; this one carries the last.
-                let cause = final_err.to_string();
 
                 // Preserve structured ChainClientError instances boxed in via
                 // TransportErrorKind::custom (e.g. ContractRevert from gas
@@ -214,7 +220,7 @@ impl RpcProviderPool {
                     "All {} RPC providers failed for '{}': {}",
                     self.providers.len(),
                     operation,
-                    cause,
+                    reasons.join("; "),
                 )));
             }
 
