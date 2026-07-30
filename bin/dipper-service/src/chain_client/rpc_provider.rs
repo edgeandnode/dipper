@@ -115,8 +115,12 @@ impl RpcProviderPool {
     /// Returns the new provider URL after rotation.
     pub fn rotate(&self) -> &Url {
         let old_idx = self.current_index.fetch_add(1, Ordering::Relaxed);
-        let new_idx = (old_idx + 1) % self.providers.len();
-        &self.providers[new_idx]
+        self.url_at(old_idx + 1)
+    }
+
+    /// The endpoint an unbounded ring position lands on.
+    fn url_at(&self, position: usize) -> &Url {
+        &self.providers[position % self.providers.len()]
     }
 
     /// Run an RPC call, retrying the current endpoint with backoff and then rotating on to
@@ -160,8 +164,7 @@ impl RpcProviderPool {
         let start = self.current_index.load(Ordering::Relaxed);
 
         loop {
-            let current_url =
-                self.providers[(start + providers_tried) % self.providers.len()].clone();
+            let current_url = self.url_at(start + providers_tried).clone();
 
             // Retry loop for current provider
             for attempt in 0..=self.max_retries {
@@ -218,7 +221,7 @@ impl RpcProviderPool {
             // Advance the shared index as well, so later calls start from a provider that has
             // not just failed rather than repeating this one's discovery.
             self.rotate();
-            let next_url = &self.providers[(start + providers_tried) % self.providers.len()];
+            let next_url = self.url_at(start + providers_tried);
             tracing::warn!(
                 operation,
                 old_provider = %current_url,
