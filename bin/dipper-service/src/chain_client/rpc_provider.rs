@@ -344,29 +344,28 @@ mod tests {
         assert_eq!(RpcProviderPool::backoff_delay(10), Duration::from_secs(30)); // stays capped
     }
 
+    /// Faults that arrive with no status and no error code, only a description, which is
+    /// what a connection that never got a reply looks like.
     #[test]
     fn test_retryable_error_detection() {
-        // Test retryable patterns
         let retryable_errors = [
             "connection refused by remote host",
             "Connection Reset by peer",
             "request TIMEOUT exceeded",
-            "HTTP 429 Too Many Requests",
-            "503 Service Unavailable",
-            "502 Bad Gateway",
+            "Service Unavailable",
+            "Bad Gateway",
             "rate limit exceeded",
+            "too many requests, slow down",
         ];
 
         for err_str in retryable_errors {
-            // Create a mock transport error by using the error message
-            // In practice, TransportError wraps various error types
-            let is_match = RETRYABLE_ERROR_PATTERNS
-                .iter()
-                .any(|p| err_str.to_lowercase().contains(p));
-            assert!(is_match, "Expected '{}' to be retryable", err_str);
+            let err = TransportErrorKind::custom_str(err_str);
+            assert!(
+                RpcProviderPool::is_retryable(&err),
+                "expected '{err_str}' to be retryable"
+            );
         }
 
-        // Test non-retryable patterns
         let non_retryable_errors = [
             "nonce too low",
             "insufficient funds",
@@ -375,10 +374,11 @@ mod tests {
         ];
 
         for err_str in non_retryable_errors {
-            let is_match = RETRYABLE_ERROR_PATTERNS
-                .iter()
-                .any(|p| err_str.to_lowercase().contains(p));
-            assert!(!is_match, "Expected '{}' to NOT be retryable", err_str);
+            let err = TransportErrorKind::custom_str(err_str);
+            assert!(
+                !RpcProviderPool::is_retryable(&err),
+                "expected '{err_str}' to not be retryable"
+            );
         }
     }
 
