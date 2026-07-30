@@ -479,8 +479,11 @@ impl AlloyChainClient {
         }
 
         let wallet = EthereumWallet::from(self.inner.signer.clone());
+        // A caller leaving out a field fails here rather than having it filled in, so this is
+        // as likely to be an incomplete request as a signing fault. Alloy's own wording names
+        // which, so leave the reason to it.
         let signed = tx.clone().build(&wallet).await.map_err(|e| {
-            ChainClientError::SubmitFailed(anyhow::anyhow!("Failed to sign transaction: {e}"))
+            ChainClientError::SubmitFailed(anyhow::anyhow!("Transaction not ready to send: {e}"))
         })?;
         let signed_hash = *signed.tx_hash();
         let raw = signed.encoded_2718();
@@ -1155,6 +1158,37 @@ mod tests {
                 .unwrap_or_default()
                 .is_empty(),
             "no endpoint should have been asked to accept either transaction"
+        );
+    }
+
+    /// A field a caller leaves out is no longer filled in for them, so the send stops rather
+    /// than putting an incomplete transaction on the wire. What it says has to name the field,
+    /// because a caller reading only "signing failed" would go looking at the wrong thing.
+    #[tokio::test]
+    async fn send_transaction_refuses_a_transaction_missing_a_field() {
+        let server = server_answering_with(B256::repeat_byte(0xab)).await;
+        let client = client_over(vec![server.uri().parse().expect("provider URL")]);
+
+        let mut no_gas_limit = ready_to_send_tx(client.inner.signer.address());
+        no_gas_limit.gas = None;
+
+        let err = client
+            .send_transaction(&no_gas_limit)
+            .await
+            .expect_err("a transaction with no gas limit must not be sent");
+
+        let text = err.to_string();
+        assert!(
+            text.contains("gas_limit"),
+            "the failure should name the missing field, got: {text}"
+        );
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty(),
+            "no endpoint should have been asked to accept it"
         );
     }
 
