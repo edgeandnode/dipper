@@ -255,6 +255,13 @@ impl RpcProviderPool {
             return http.status >= 500 || http.status == 429;
         }
 
+        // Some providers answer 200 and report being overloaded in the JSON-RPC error
+        // instead, each with its own code. Alloy knows those codes, and reports a genuine
+        // execution error such as a revert as not worth retrying.
+        if let RpcError::ErrorResp(payload) = error {
+            return payload.is_retry_err();
+        }
+
         let error_str = error.to_string().to_lowercase();
         RETRYABLE_ERROR_PATTERNS
             .iter()
