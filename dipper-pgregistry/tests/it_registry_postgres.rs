@@ -2262,9 +2262,16 @@ async fn get_declined_indexers_expiry_with_an_offer_tx_still_benches() {
         .expect("Failed to get declined indexers");
 
     //* Then
+    let deployment_1a: DeploymentId = "QmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1a"
+        .parse()
+        .unwrap();
+    let indexer_a = indexer_id!("1111111111111111111111111111111111111111");
+    let declined = result
+        .get(&deployment_1a)
+        .expect("Deployment 1a should be in the declined list");
     assert!(
-        !result.is_empty(),
-        "an expiry after the offer landed should still bench the indexer"
+        declined.contains(&indexer_a),
+        "an expiry after the offer landed should still bench the indexer, got {declined:?}"
     );
 }
 
