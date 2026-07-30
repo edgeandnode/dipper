@@ -64,10 +64,8 @@ pub type HttpProvider = FillProvider<
     RootProvider,
 >;
 
-/// RPC provider pool with automatic rotation and retry.
-///
-/// Manages multiple RPC provider URLs and automatically rotates between them
-/// on failure. Uses exponential backoff for retries within a single provider.
+/// Several RPC endpoints treated as one, retried with exponential backoff on the current
+/// endpoint and rotated through on failure.
 #[derive(Debug)]
 pub struct RpcProviderPool {
     /// Provider URLs (primary first, then fallbacks)
@@ -81,11 +79,7 @@ pub struct RpcProviderPool {
 }
 
 impl RpcProviderPool {
-    /// Create a new RPC provider pool.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no providers are configured.
+    /// Create a new RPC provider pool. Errors if no providers are configured.
     pub fn new(
         providers: Vec<Url>,
         request_timeout: Duration,
@@ -125,22 +119,8 @@ impl RpcProviderPool {
         &self.providers[new_idx]
     }
 
-    /// Execute an RPC operation with retry and provider rotation.
-    ///
-    /// The closure receives a provider and should return a `Result`. On retryable
-    /// errors, the operation is retried with exponential backoff. After exhausting
-    /// retries, the pool rotates to the next provider and continues.
-    ///
-    /// # Arguments
-    ///
-    /// * `operation` - Name of the operation (for logging)
-    /// * `f` - Closure that performs the RPC call
-    ///
-    /// # Type Parameters
-    ///
-    /// * `F` - Closure type
-    /// * `Fut` - Future type returned by the closure
-    /// * `T` - Success type
+    /// Run an RPC call, retrying the current endpoint with backoff and then rotating on to
+    /// the next. `operation` names the call for logging.
     pub async fn execute<F, Fut, T>(&self, operation: &str, f: F) -> Result<T, ChainClientError>
     where
         F: Fn(HttpProvider) -> Fut,
@@ -215,9 +195,9 @@ impl RpcProviderPool {
                 let final_err =
                     last_error.unwrap_or_else(|| TransportErrorKind::custom_str("unknown error"));
 
-                // Keep what the provider actually said. Callers read this text to tell a
-                // nonce rejection from anything else, and it is the only record of why every
-                // provider refused, since a non-retryable attempt logs nothing.
+                // Keep what the provider actually said, because callers read this text to
+                // tell a nonce rejection from anything else. The rotation warning below
+                // carries each earlier provider's reason; this one carries the last.
                 let cause = final_err.to_string();
 
                 // Preserve structured ChainClientError instances boxed in via
