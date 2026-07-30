@@ -2162,7 +2162,7 @@ async fn get_declined_indexers_expiry_without_offer_tx_included_within_5_minutes
 /// had one to accept and must not be benched for a month over it. On 2026-07-29 exactly this
 /// benched a willing indexer for 30 days because our RPC provider answered HTTP 500.
 #[tokio::test]
-async fn get_declined_indexers_expiry_without_an_offer_tx_is_our_fault() {
+async fn get_declined_indexers_expiry_without_offer_tx_excluded_after_5_minutes() {
     //* Given
     let (db, _temp_db) = temp_registry_db().await;
     run_fixture(
@@ -2217,7 +2217,7 @@ async fn get_declined_indexers_expiry_without_an_offer_tx_is_our_fault() {
 /// The mirror case: the offer did land, so the indexer had one on chain and let the window
 /// close, which is their decision and does earn the standard bench.
 #[tokio::test]
-async fn get_declined_indexers_expiry_with_an_offer_tx_still_benches() {
+async fn get_declined_indexers_expiry_with_offer_tx_included_within_30_days() {
     //* Given
     let (db, _temp_db) = temp_registry_db().await;
     run_fixture(
