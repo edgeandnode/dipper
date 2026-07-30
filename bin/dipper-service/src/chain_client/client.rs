@@ -1,6 +1,4 @@
-//! AlloyChainClient implementation.
-//!
-//! This is the production implementation of the `ChainClient` trait using
+//! AlloyChainClient: the production implementation of the `ChainClient` trait, using
 //! alloy for Ethereum interactions.
 
 use std::{
@@ -36,9 +34,8 @@ use crate::{
     config::ChainClientConfig,
 };
 
-/// OFFER_TYPE_NEW from `RecurringCollector.sol`. Used when submitting a new
-/// agreement offer on-chain. The contract defines OFFER_TYPE_NONE=0,
-/// OFFER_TYPE_NEW=1, OFFER_TYPE_UPDATE=2; passing 0 reverts with
+/// OFFER_TYPE_NEW from `RecurringCollector.sol`, used when submitting a new agreement
+/// offer on-chain. The contract defines NONE=0, NEW=1, UPDATE=2; passing 0 reverts with
 /// RecurringCollectorInvalidOfferType(0).
 const OFFER_TYPE_NEW: u8 = 1;
 
@@ -152,10 +149,8 @@ fn classify_fill_nonce_gap_outcome(
     }
 }
 
-/// Production implementation of `ChainClient` using alloy.
-///
-/// This struct is `Clone` via internal `Arc` wrapping, allowing it to be shared
-/// across async task contexts.
+/// Production implementation of `ChainClient` using alloy. `Clone` via internal `Arc`
+/// wrapping, so it can be shared across async task contexts.
 #[derive(Clone)]
 pub struct AlloyChainClient {
     /// Inner state wrapped in Arc for Clone support
@@ -193,26 +188,19 @@ struct AlloyChainClientInner {
     gas_price_multiplier: f64,
     /// Maximum gas price in gwei
     max_gas_price_gwei: u64,
-    /// In-memory nonce counter. Concurrent callers atomically increment this
-    /// to get unique nonces without querying the chain, avoiding
-    /// "replacement transaction underpriced" errors when multiple offer()
-    /// transactions are submitted in parallel.
+    /// In-memory nonce counter. Concurrent callers atomically increment this to get
+    /// unique nonces without querying the chain, avoiding "replacement transaction
+    /// underpriced" errors when multiple offer() transactions are submitted in parallel.
     nonce: AtomicU64,
-    /// Serializes nonce reservation through mempool submission so the RPC
-    /// sees txs in nonce order and the wallet's queue can never strand a
-    /// higher-nonce tx behind an unfilled gap. Released before receipt
-    /// polling so multiple confirmations pipeline concurrently.
+    /// Serializes nonce reservation through mempool submission so the RPC sees txs in
+    /// nonce order and the wallet's queue can never strand a higher-nonce tx behind an
+    /// unfilled gap. Released before receipt polling so confirmations pipeline concurrently.
     submit_lock: Mutex<()>,
 }
 
 impl AlloyChainClient {
-    /// Create a new AlloyChainClient from configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - No RPC providers are configured
-    /// - The signer cannot be constructed
+    /// Create a new AlloyChainClient from configuration. Errors if no RPC providers are
+    /// configured or the signer cannot be constructed.
     pub fn new(
         config: &ChainClientConfig,
         chain_id: u64,
@@ -259,10 +247,8 @@ impl AlloyChainClient {
         })
     }
 
-    /// Build, gas-estimate, and send a call to any contract.
-    ///
-    /// Shared entry point for the manager-routed offer and cancel calls.
-    /// `log_agreement_id` is used only for structured logging.
+    /// Build, gas-estimate, and send a call to any contract. Shared entry point for the
+    /// manager-routed offer and cancel calls; `log_agreement_id` is only for logging.
     async fn build_and_send_call(
         &self,
         to: Address,
@@ -275,12 +261,9 @@ impl AlloyChainClient {
             .to(to)
             .input(calldata.into());
 
-        // 2. Estimate gas with safety bounds.
-        //
-        // The estimator may surface a structured contract revert (e.g. an
-        // already-canceled agreement). Box the typed error through alloy's
-        // Custom transport variant so `rpc_pool.execute` can hand it back
-        // without losing the selector and revert payload.
+        // 2. Estimate gas with safety bounds. The estimator may surface a structured
+        // contract revert (e.g. an already-canceled agreement); box it through alloy's
+        // Custom transport variant so the pool hands back the selector and payload intact.
         let gas_limit = self
             .inner
             .rpc_pool
@@ -342,11 +325,9 @@ impl AlloyChainClient {
         self.sign_and_send(tx, log_agreement_id).await
     }
 
-    /// Get the next nonce, initializing from chain on first call.
-    ///
-    /// Concurrent callers each get a unique nonce via atomic
-    /// fetch-and-increment, avoiding the "replacement transaction
-    /// underpriced" race when multiple offer() calls fire in parallel.
+    /// Get the next nonce, initializing from chain on first call. Concurrent callers each
+    /// get a unique nonce via atomic fetch-and-increment, avoiding the "replacement
+    /// transaction underpriced" race when multiple offer() calls fire in parallel.
     async fn next_nonce(&self) -> Result<u64, ChainClientError> {
         let current = self.inner.nonce.load(Ordering::SeqCst);
         if current == NONCE_UNINITIALIZED {
@@ -375,12 +356,8 @@ impl AlloyChainClient {
         Ok(())
     }
 
-    /// Fetch the pending transaction count from chain.
-    ///
-    /// Uses the "pending" block tag so the count includes transactions
-    /// sitting in the mempool from our wallet. Querying "latest" would
-    /// return a stale count when prior txs are awaiting confirmation,
-    /// causing the next tx to reuse a nonce that's already in-flight.
+    /// Fetch the pending transaction count from chain. The "pending" tag counts our own
+    /// mempool transactions too; "latest" would miss them and reuse an in-flight nonce.
     async fn fetch_chain_nonce(&self) -> Result<u64, ChainClientError> {
         self.inner
             .rpc_pool
@@ -391,12 +368,9 @@ impl AlloyChainClient {
             .await
     }
 
-    /// Sign and send a transaction with nonce error handling.
-    ///
-    /// Uses the in-memory nonce counter for the first attempt. On nonce
-    /// errors, re-syncs from chain and retries. `submit_lock` spans the
-    /// retry loop so concurrent reservations cannot interleave with each
-    /// other's submissions; released before receipt polling.
+    /// Sign and send a transaction, re-syncing the nonce from chain and retrying on nonce
+    /// errors. `submit_lock` spans the retry loop so concurrent reservations cannot
+    /// interleave with each other's submissions; released before receipt polling.
     async fn sign_and_send(
         &self,
         tx: TransactionRequest,
@@ -459,12 +433,9 @@ impl AlloyChainClient {
         )))
     }
 
-    /// Submit a self-transfer of 0 wei at `nonce` so the chain has
-    /// something to mine in a slot left empty by an evicted tx,
-    /// releasing higher-nonce txs from the same wallet that were
-    /// stuck behind the gap. Best-effort: an `is_nonce_error`
-    /// rejection means the original is still in flight or the gap is
-    /// already filled, so we treat that as success.
+    /// Submit a self-transfer of 0 wei at `nonce` so the chain has something to mine in a
+    /// slot left empty by an evicted tx, releasing higher-nonce txs stuck behind the gap.
+    /// Best-effort: an `is_nonce_error` rejection means the slot is spoken for, so success.
     async fn fill_nonce_gap(&self, nonce: u64) -> Result<(), ChainClientError> {
         let _submit_guard = self.inner.submit_lock.lock().await;
 
@@ -549,10 +520,9 @@ impl AlloyChainClient {
             })
     }
 
-    /// Poll `eth_getTransactionReceipt` until the tx has mined or the timeout
-    /// elapses. `Ok(Some(status))` reports the receipt's success flag;
-    /// `Ok(None)` signals the tx never appeared in time (dropped from the
-    /// mempool). Transient RPC errors are retried silently until timeout.
+    /// Poll `eth_getTransactionReceipt` until the tx has mined or the timeout elapses.
+    /// `Ok(Some(status))` reports the receipt's success flag; `Ok(None)` says the tx never
+    /// appeared in time (dropped from the mempool). Transient RPC errors keep polling.
     async fn wait_for_receipt(
         &self,
         tx_hash: B256,
@@ -572,10 +542,8 @@ impl AlloyChainClient {
                 Ok(Some(r)) => return Ok(Some(r.status())),
                 Ok(None) => {} // not mined yet
                 Err(e) => {
-                    // Transient RPC error — log and keep polling. If the
-                    // error is persistent, the outer handler will see the
-                    // eventual timeout as `Ok(None)` and resubmit, which is
-                    // the safe default.
+                    // Transient RPC error: log and keep polling. If it persists, the outer
+                    // handler sees the timeout as `Ok(None)` and resubmits, the safe default.
                     tracing::debug!(
                         tx_hash = %tx_hash,
                         error = %e,
@@ -1410,9 +1378,8 @@ mod tests {
 
     #[test]
     fn a_nonce_gap_fill_refused_on_the_nonce_is_still_a_success() {
-        // Each of these strings flips `is_nonce_error` to true; the gap
-        // fill must treat them as success because the original tx is
-        // either still in flight or the slot is already filled.
+        // Each of these strings flips `is_nonce_error` to true; the gap fill must treat
+        // them as success because they all mean the slot is already spoken for.
         for msg in [
             "nonce too low",
             "replacement transaction underpriced",
@@ -1461,14 +1428,9 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 let _guard = lock.lock().await;
 
-                // Mirror the entry shape of `next_nonce`/`resync_nonce`:
-                // - First caller initializes via fetch+CAS.
-                // - Every seventh subsequent caller hits a "nonce error"
-                //   path: ratchets the counter via fetch_max(chain + 1)
-                //   then reserves via fetch_add. The ratchet never lowers
-                //   the counter, so an in-flight reservation cannot be
-                //   invalidated even if the chain reports a lower pending.
-                // - Everyone else takes the next slot via fetch_add.
+                // Mirror the entry shape of `next_nonce`/`resync_nonce`: the first caller
+                // initializes via fetch+CAS, every seventh ratchets via fetch_max(chain + 1)
+                // before reserving via fetch_add, and the rest reserve via fetch_add.
                 let nonce = if counter.load(Ordering::SeqCst) == NONCE_UNINITIALIZED {
                     let chain_nonce = chain_pending.load(Ordering::SeqCst);
                     match counter.compare_exchange(
