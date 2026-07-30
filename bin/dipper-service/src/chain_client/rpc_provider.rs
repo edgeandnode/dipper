@@ -45,16 +45,6 @@ const RETRYABLE_ERROR_PATTERNS: &[&str] = &[
     "bad gateway",
 ];
 
-/// Build a read-only provider for one URL, with the pool's request timeout applied.
-fn build_provider(url: Url, request_timeout: Duration) -> Result<HttpProvider, ChainClientError> {
-    let client = reqwest::Client::builder()
-        .timeout(request_timeout)
-        .build()
-        .map_err(|e| ChainClientError::ConfigError(format!("Failed to build HTTP client: {e}")))?;
-
-    Ok(ProviderBuilder::new().connect_reqwest(client, url))
-}
-
 /// Type alias for the provider with default fillers.
 pub type HttpProvider = FillProvider<
     JoinFill<
@@ -72,8 +62,9 @@ pub struct RpcProviderPool {
     providers: Vec<Url>,
     /// Current provider index (atomic for thread-safety)
     current_index: AtomicUsize,
-    /// Request timeout per RPC call
-    request_timeout: Duration,
+    /// Shared across every endpoint, which is what lets connections be pooled and reused
+    /// rather than reopened per call. Built once, so a call can never fail for lack of one.
+    http: reqwest::Client,
     /// Maximum retries per provider before rotating
     max_retries: u32,
 }
@@ -91,6 +82,13 @@ impl RpcProviderPool {
             ));
         }
 
+        let http = reqwest::Client::builder()
+            .timeout(request_timeout)
+            .build()
+            .map_err(|e| {
+                ChainClientError::ConfigError(format!("Failed to build HTTP client: {e}"))
+            })?;
+
         tracing::info!(
             provider_count = providers.len(),
             primary = %providers[0],
@@ -100,7 +98,7 @@ impl RpcProviderPool {
         Ok(Self {
             providers,
             current_index: AtomicUsize::new(0),
-            request_timeout,
+            http,
             max_retries,
         })
     }
@@ -168,20 +166,15 @@ impl RpcProviderPool {
         loop {
             let current_url = self.url_at(start + providers_tried).clone();
 
-            // One connection per endpoint, reused across its attempts, so a retry does not
-            // pay for a fresh TLS handshake on the path that is already running out of time.
-            let provider = build_provider(current_url.clone(), self.request_timeout);
+            // Reused across this endpoint's attempts, so a retry does not pay for a fresh
+            // TLS handshake on the path that is already running out of time.
+            let provider =
+                ProviderBuilder::new().connect_reqwest(self.http.clone(), current_url.clone());
 
             // Retry loop for current provider
             let mut endpoint_error: Option<TransportError> = None;
             for attempt in 0..=max_retries {
-                let outcome = match &provider {
-                    Ok(provider) => f(provider.clone()).await,
-                    Err(e) => Err(TransportErrorKind::custom(ChainClientError::ConfigError(
-                        e.to_string(),
-                    ))),
-                };
-                match outcome {
+                match f(provider.clone()).await {
                     Ok(result) => return Ok(result),
                     Err(e) if Self::is_retryable(&e) && attempt < max_retries => {
                         let delay = Self::backoff_delay(attempt);
