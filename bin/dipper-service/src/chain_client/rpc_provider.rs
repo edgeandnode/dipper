@@ -306,6 +306,18 @@ mod tests {
         }
     }
 
+    /// Some providers and the proxies in front of them report throttling under a 4xx rather
+    /// than a 429. The status alone reads as "your request is wrong", so the wording is what
+    /// tells this apart from a request that will be refused however often it is sent.
+    #[test]
+    fn throttling_described_in_a_client_fault_body_is_retryable() {
+        let err = TransportErrorKind::http_error(403, "rate limit exceeded".to_string());
+        assert!(
+            RpcProviderPool::is_retryable(&err),
+            "a 403 that explains it is throttling should be retryable"
+        );
+    }
+
     #[test]
     fn test_backoff_delay_calculation() {
         // 1s, 2s, 4s, 8s, 16s, 32s->30s
