@@ -210,13 +210,13 @@ struct AlloyChainClientInner {
     gas_price_multiplier: f64,
     /// Maximum gas price in gwei
     max_gas_price_gwei: u64,
-    /// In-memory nonce counter. Concurrent callers atomically increment this to get
-    /// unique nonces without querying the chain, avoiding "replacement transaction
-    /// underpriced" errors when multiple offer() transactions are submitted in parallel.
+    /// The next nonce a submission should use. Read under `submit_lock` and advanced only
+    /// once a broadcast succeeds, so a failed submission cannot skip a slot the chain
+    /// would then sit waiting on while later transactions queue behind the gap.
     nonce: AtomicU64,
-    /// Serializes nonce reservation through mempool submission so the RPC sees txs in
-    /// nonce order and the wallet's queue can never strand a higher-nonce tx behind an
-    /// unfilled gap. Released before receipt polling so confirmations pipeline concurrently.
+    /// Serializes reading the nonce counter through committing it after the mempool
+    /// submission, so two submissions can never take the same slot. Released before
+    /// receipt polling so multiple confirmations pipeline concurrently.
     submit_lock: Mutex<()>,
     /// How long one submission may hold `submit_lock`; see `derive_submit_deadline`.
     submit_deadline: Duration,
@@ -352,31 +352,28 @@ impl AlloyChainClient {
         self.sign_and_send(tx, log_agreement_id).await
     }
 
-    /// Get the next nonce, initializing from chain on first call. Concurrent callers each
-    /// get a unique nonce via atomic fetch-and-increment, avoiding the "replacement
-    /// transaction underpriced" race when multiple offer() calls fire in parallel.
+    /// The slot the next submission should use, read from the chain on first call. Only
+    /// `commit_nonce` moves the counter on, so a submission that never got a transaction
+    /// out leaves its slot to the next caller instead of leaving the chain waiting on it.
     async fn next_nonce(&self) -> Result<u64, ChainClientError> {
         let current = self.inner.nonce.load(Ordering::SeqCst);
-        if current == NONCE_UNINITIALIZED {
-            let chain_nonce = self.fetch_chain_nonce().await?;
-            // CAS: if another task already initialized, use its value
-            match self.inner.nonce.compare_exchange(
-                NONCE_UNINITIALIZED,
-                chain_nonce + 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return Ok(chain_nonce),
-                // Another task already initialized; get next unique nonce
-                Err(_) => return Ok(self.inner.nonce.fetch_add(1, Ordering::SeqCst)),
-            }
+        if current != NONCE_UNINITIALIZED {
+            return Ok(current);
         }
-        Ok(self.inner.nonce.fetch_add(1, Ordering::SeqCst))
+        let chain_nonce = self.fetch_chain_nonce().await?;
+        self.inner.nonce.store(chain_nonce, Ordering::SeqCst);
+        Ok(chain_nonce)
+    }
+
+    /// Record that `nonce` carried a successful broadcast, so the next submission moves on
+    /// to the following slot.
+    fn commit_nonce(&self, nonce: u64) {
+        self.inner.nonce.fetch_max(nonce + 1, Ordering::SeqCst);
     }
 
     /// Ratchet the in-memory counter up to the next slot the chain will accept. Never
-    /// decreases it, so a reservation another caller is still submitting cannot be handed out
-    /// again: that reservation has already pushed the counter past what the chain reports.
+    /// decreases it, so an endpoint reporting a stale pending count cannot wind the
+    /// counter back onto a slot a broadcast has already spent.
     async fn resync_nonce(&self) -> Result<(), ChainClientError> {
         let chain_nonce = self.fetch_chain_nonce().await?;
         self.inner.nonce.fetch_max(chain_nonce, Ordering::SeqCst);
@@ -396,8 +393,8 @@ impl AlloyChainClient {
     }
 
     /// Sign and send a transaction, re-syncing the nonce from chain and retrying on nonce
-    /// errors. `submit_lock` spans the retry loop so concurrent reservations cannot
-    /// interleave with each other's submissions; released before receipt polling.
+    /// errors. `submit_lock` spans the retry loop so two submissions can never interleave;
+    /// released before receipt polling so confirmations pipeline concurrently.
     async fn sign_and_send(
         &self,
         tx: TransactionRequest,
@@ -431,6 +428,7 @@ impl AlloyChainClient {
 
             match result {
                 Ok(tx_hash) => {
+                    self.commit_nonce(nonce);
                     tracing::info!(
                         agreement_id = %format_args!("0x{}", agreement_id.iter().map(|b| format!("{b:02x}")).collect::<String>()),
                         tx_hash = %tx_hash,
@@ -1471,79 +1469,75 @@ mod tests {
         );
     }
 
+    /// Answers nonce lookups with a fixed pending count, refuses the first send with a
+    /// server fault, and accepts every send after it: the shape of a submission failing
+    /// outright and the job being re-run.
+    struct FailsFirstSendResponder {
+        pending_nonce: u64,
+        sends: AtomicU64,
+    }
+
+    impl Respond for FailsFirstSendResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("JSON-RPC request body");
+            match body["method"].as_str().unwrap_or_default() {
+                "eth_getTransactionCount" => {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "result": format!("{:#x}", self.pending_nonce),
+                    }))
+                }
+                "eth_sendRawTransaction" if self.sends.fetch_add(1, Ordering::SeqCst) == 0 => {
+                    ResponseTemplate::new(500).set_body_string("Temporary internal error")
+                }
+                "eth_sendRawTransaction" => {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "result": format!("{:#x}", B256::repeat_byte(0xaa)),
+                    }))
+                }
+                other => panic!("unexpected method {other}"),
+            }
+        }
+    }
+
+    /// A submission that never got a transaction out must leave its nonce for the next one.
+    /// Spending it anyway left a slot the chain kept waiting on: every later transaction
+    /// queued behind the empty slot, and nothing filled it short of a restart.
     #[tokio::test]
-    async fn concurrent_callers_each_reserve_a_different_nonce() {
-        use std::collections::HashSet;
+    async fn a_failed_submission_leaves_its_nonce_to_the_next() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(FailsFirstSendResponder {
+                pending_nonce: 5,
+                sends: AtomicU64::new(0),
+            })
+            .mount(&server)
+            .await;
+        let client = client_over(vec![server.uri().parse().expect("provider URL")]);
+        let tx = ready_to_send_tx(client.inner.signer.address());
 
-        let counter = Arc::new(AtomicU64::new(NONCE_UNINITIALIZED));
-        let lock = Arc::new(Mutex::new(()));
-        let chain_pending = Arc::new(AtomicU64::new(100));
-        let reserved: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
+        client
+            .sign_and_send(tx.clone(), &[0u8; 16])
+            .await
+            .expect_err("the only endpoint refused, so the submission fails");
 
-        const TASKS: usize = 50;
-        let mut handles = Vec::with_capacity(TASKS);
-        for i in 0..TASKS {
-            let counter = counter.clone();
-            let lock = lock.clone();
-            let chain_pending = chain_pending.clone();
-            let reserved = reserved.clone();
-
-            handles.push(tokio::spawn(async move {
-                let _guard = lock.lock().await;
-
-                // Mirror the entry shape of `next_nonce`/`resync_nonce`: the first caller
-                // initializes via fetch+CAS, every seventh ratchets via fetch_max(chain + 1)
-                // before reserving via fetch_add, and the rest reserve via fetch_add.
-                let nonce = if counter.load(Ordering::SeqCst) == NONCE_UNINITIALIZED {
-                    let chain_nonce = chain_pending.load(Ordering::SeqCst);
-                    match counter.compare_exchange(
-                        NONCE_UNINITIALIZED,
-                        chain_nonce + 1,
-                        Ordering::SeqCst,
-                        Ordering::SeqCst,
-                    ) {
-                        Ok(_) => chain_nonce,
-                        Err(_) => counter.fetch_add(1, Ordering::SeqCst),
-                    }
-                } else if i % 7 == 0 {
-                    let chain_nonce = chain_pending.load(Ordering::SeqCst);
-                    counter.fetch_max(chain_nonce + 1, Ordering::SeqCst);
-                    counter.fetch_add(1, Ordering::SeqCst)
-                } else {
-                    counter.fetch_add(1, Ordering::SeqCst)
-                };
-
-                // Simulate the time spent signing and submitting to the
-                // mempool while the lock is held; this is the window the
-                // bug exploited when the lock was missing.
-                tokio::time::sleep(Duration::from_micros(50)).await;
-
-                // Simulate the chain accepting the tx into pending: the
-                // pending count cannot decrease, so use fetch_max.
-                let _ = chain_pending.fetch_update(
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                    |cur| Some(cur.max(nonce + 1)),
-                );
-
-                let mut reserved = reserved.lock().await;
-                assert!(
-                    reserved.insert(nonce),
-                    "nonce {nonce} reissued to a concurrent caller (counter rewound past in-flight reservation)"
-                );
-            }));
-        }
-
-        for h in handles {
-            h.await.expect("worker task panicked");
-        }
-
-        let reserved = reserved.lock().await;
+        let retry = client
+            .sign_and_send(tx.clone(), &[0u8; 16])
+            .await
+            .expect("the endpoint accepts the re-run");
         assert_eq!(
-            reserved.len(),
-            TASKS,
-            "expected {TASKS} unique nonces, got {}",
-            reserved.len()
+            retry.nonce, 5,
+            "the re-run must take the slot the failure never spent"
         );
+
+        let next = client
+            .sign_and_send(tx, &[0u8; 16])
+            .await
+            .expect("a further submission succeeds");
+        assert_eq!(next.nonce, 6, "a successful broadcast spends its slot");
     }
 }
