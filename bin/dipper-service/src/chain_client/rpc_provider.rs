@@ -150,21 +150,6 @@ impl RpcProviderPool {
             .await
     }
 
-    /// Run an RPC call, giving each endpoint a single attempt instead of several. Submitting
-    /// a transaction uses this: it holds a lock that every other submission queues behind,
-    /// and a different endpoint is likelier to help than asking a sick one four times.
-    pub async fn execute_trying_each_once<F, Fut, T>(
-        &self,
-        operation: &str,
-        f: F,
-    ) -> Result<T, ChainClientError>
-    where
-        F: Fn(HttpProvider) -> Fut,
-        Fut: Future<Output = Result<T, TransportError>>,
-    {
-        self.execute_with_retries(operation, 0, f).await
-    }
-
     async fn execute_with_retries<F, Fut, T>(
         &self,
         operation: &str,

@@ -490,7 +490,7 @@ impl AlloyChainClient {
 
         self.inner
             .rpc_pool
-            .execute_trying_each_once("send_transaction", |provider| {
+            .execute("send_transaction", |provider| {
                 let raw = raw.clone();
                 async move {
                     match provider.send_raw_transaction(&raw).await {
@@ -1217,11 +1217,11 @@ mod tests {
         );
     }
 
-    /// A submission moves on to the next endpoint rather than pressing a struggling one, even
-    /// when the complaint is the kind a retry would normally clear. Retries here are expensive:
-    /// they hold up every other submission and eat into the window an offer has to be accepted.
+    /// An endpoint saying it is overloaded is asked again before the submission gives up on
+    /// it, because that complaint often clears on its own and rotating away costs a provider.
+    /// One retry rather than the usual several, to keep the backoff this waits out short.
     #[tokio::test]
-    async fn send_transaction_leaves_a_struggling_endpoint_alone() {
+    async fn send_transaction_retries_a_struggling_endpoint_before_rotating() {
         let overloaded =
             server_answering_rpc_error(-32005, "project ID request rate exceeded").await;
         let healthy = server_answering_with(B256::repeat_byte(0xcd)).await;
@@ -1230,7 +1230,7 @@ mod tests {
                 overloaded.uri().parse().expect("overloaded provider URL"),
                 healthy.uri().parse().expect("healthy provider URL"),
             ],
-            3,
+            1,
         );
         let tx = ready_to_send_tx(client.inner.signer.address());
 
@@ -1245,8 +1245,39 @@ mod tests {
                 .await
                 .unwrap_or_default()
                 .len(),
+            2,
+            "the struggling endpoint should get its retry before the rotation"
+        );
+        assert_eq!(
+            healthy.received_requests().await.unwrap_or_default().len(),
             1,
-            "a struggling endpoint should be left alone once it has refused"
+            "the healthy endpoint should answer on the first ask"
+        );
+    }
+
+    /// Offering the same bytes twice is what makes a retry safe: an endpoint that took them
+    /// and then failed to say so recognises them the second time, and reports the broadcast
+    /// that already happened rather than accepting a second transaction.
+    #[tokio::test]
+    async fn a_retry_that_lands_on_bytes_already_held_is_a_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(AlreadyHeldResponder { pending_nonce: 6 })
+            .mount(&server)
+            .await;
+        let client = client_over_retrying(vec![server.uri().parse().expect("provider URL")], 1);
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        let tx_hash = client
+            .send_transaction(&tx)
+            .await
+            .expect("bytes already held are a successful broadcast");
+
+        assert_eq!(tx_hash, signed_hash_of(&client, &tx).await);
+        assert_eq!(
+            sends_among(&server.received_requests().await.unwrap_or_default()),
+            1,
+            "an accepted broadcast should not be offered again"
         );
     }
 
