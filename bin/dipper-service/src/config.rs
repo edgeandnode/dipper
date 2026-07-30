@@ -663,7 +663,8 @@ pub struct ChainClientConfig {
     /// rotating to the next on persistent failures.
     pub providers: Vec<Url>,
 
-    /// Request timeout per RPC call in seconds (default: 30s)
+    /// Request timeout per RPC call in seconds (default: 10s). Every call here is a small one,
+    /// so this is headroom rather than a working limit, and it multiplies with `max_retries`.
     #[serde(default = "default_chain_client_request_timeout")]
     #[serde_as(as = "serde_with::DurationSeconds")]
     pub request_timeout: Duration,
@@ -717,7 +718,7 @@ fn default_chain_client_enabled() -> bool {
 }
 
 fn default_chain_client_request_timeout() -> Duration {
-    Duration::from_secs(30)
+    Duration::from_secs(10)
 }
 
 fn default_domain_refresh_interval() -> Duration {
