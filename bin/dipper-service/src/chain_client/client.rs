@@ -41,11 +41,9 @@ use crate::{
 /// RecurringCollectorInvalidOfferType(0).
 const OFFER_TYPE_NEW: u8 = 1;
 
-/// Time to wait for a tx receipt to appear before declaring the tx dropped
-/// from the mempool. On hardhat this is ~15 blocks at 1s each; on Arbitrum
-/// at 0.25s block time this is 60 confirmations. Short enough that the
-/// pgmq retry budget can recover within the 300s RCA deadline, long enough
-/// to tolerate typical network glitches.
+/// Time to wait for a tx receipt before declaring the tx dropped from the mempool: ~15
+/// blocks on hardhat at 1s each, 60 confirmations on Arbitrum at 0.25s. Short enough that
+/// the pgmq retry budget recovers inside the RCA deadline `deadline_seconds` sets.
 const RECEIPT_POLL_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Interval between `eth_getTransactionReceipt` polls while waiting for a
