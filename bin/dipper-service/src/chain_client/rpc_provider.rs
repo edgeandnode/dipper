@@ -179,6 +179,10 @@ impl RpcProviderPool {
         // this text to tell a stale nonce from a transport fault, so a rejection from the
         // first endpoint has to survive a different kind of failure on the next.
         let mut reasons: Vec<String> = Vec::with_capacity(self.providers.len());
+        // The first endpoint to name its refusal precisely, such as a contract rejecting the
+        // call during gas estimation. Callers act on a named refusal and only log a generic
+        // one, so a later endpoint merely being unreachable must not bury it.
+        let mut named_refusal: Option<ChainClientError> = None;
         let mut providers_tried = 0;
 
         // Walk the ring by local offset from wherever the pool points. Re-reading the shared
@@ -229,13 +233,14 @@ impl RpcProviderPool {
             reasons.push(format!("{endpoint}: {reason}"));
             providers_tried += 1;
 
+            // Structured errors reach us boxed in through `TransportErrorKind::custom`, which
+            // is how gas estimation hands back a contract rejection. Keep the first one.
+            named_refusal = named_refusal.or_else(|| extract_chain_client_error(endpoint_error));
+
             // Check if we've tried all providers
             if providers_tried >= self.providers.len() {
-                // Preserve structured ChainClientError instances boxed in via
-                // TransportErrorKind::custom (e.g. ContractRevert from gas
-                // estimation). Otherwise fall back to the generic wrap.
-                if let Some(typed) = extract_chain_client_error(endpoint_error) {
-                    return Err(typed);
+                if let Some(named) = named_refusal {
+                    return Err(named);
                 }
 
                 return Err(ChainClientError::RpcError(anyhow::anyhow!(
