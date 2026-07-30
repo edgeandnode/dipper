@@ -41,6 +41,18 @@ fn endpoint_name(url: &Url) -> String {
     }
 }
 
+/// How a failure reads once the endpoint's URL is taken out of it. A connection that never
+/// got a reply is described by the HTTP client, which names the URL it was reaching for, and
+/// that is where a hosted endpoint carries the API key that gets us in.
+fn describe_failure(url: &Url, error: &TransportError) -> String {
+    let name = endpoint_name(url);
+    // A URL is as likely to be printed with its trailing slash as without, so take out both.
+    error
+        .to_string()
+        .replace(url.as_str(), &name)
+        .replace(url.as_str().trim_end_matches('/'), &name)
+}
+
 /// Error text that indicates a transient failure worth retrying, used only for faults
 /// that arrive as prose rather than as a status code or JSON-RPC error object.
 const RETRYABLE_ERROR_PATTERNS: &[&str] = &[
@@ -196,7 +208,7 @@ impl RpcProviderPool {
                             attempt = attempt + 1,
                             max_retries,
                             delay_ms = delay.as_millis(),
-                            error = %e,
+                            error = %describe_failure(&current_url, &e),
                             "Retryable RPC error, backing off"
                         );
                         tokio::time::sleep(delay).await;
@@ -213,7 +225,8 @@ impl RpcProviderPool {
             let endpoint_error = endpoint_error
                 .unwrap_or_else(|| TransportErrorKind::custom_str("no attempt was made"));
 
-            reasons.push(format!("{endpoint}: {endpoint_error}"));
+            let reason = describe_failure(&current_url, &endpoint_error);
+            reasons.push(format!("{endpoint}: {reason}"));
             providers_tried += 1;
 
             // Check if we've tried all providers
@@ -244,7 +257,7 @@ impl RpcProviderPool {
                 new_provider = %endpoint_name(next_url),
                 providers_tried,
                 total_providers = self.providers.len(),
-                error = %endpoint_error,
+                error = %reason,
                 "Rotating RPC provider after failures"
             );
         }
