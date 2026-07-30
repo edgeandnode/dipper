@@ -456,6 +456,46 @@ mod tests {
         );
     }
 
+    /// A contract refusing the call is the chain's answer, not one endpoint's, and the caller
+    /// reads it to decide whether to give up rather than retry. A later endpoint being merely
+    /// unreachable must not turn that into a generic fault that reads as worth another go.
+    #[tokio::test]
+    async fn a_named_refusal_outlives_a_later_endpoint_going_dark() {
+        let pool = RpcProviderPool::new(
+            vec![
+                Url::parse("http://refusing.invalid").expect("refusing endpoint URL"),
+                Url::parse("http://dark.invalid").expect("dark endpoint URL"),
+            ],
+            Duration::from_secs(5),
+            0,
+        )
+        .expect("pool");
+
+        let calls = AtomicUsize::new(0);
+        let err = pool
+            .execute("probe", |_provider| {
+                let refusing = calls.fetch_add(1, Ordering::Relaxed) == 0;
+                async move {
+                    let outcome: Result<(), TransportError> = Err(if refusing {
+                        TransportErrorKind::custom(ChainClientError::ContractRevert {
+                            selector: [0xde, 0xad, 0xbe, 0xef],
+                            data: Default::default(),
+                        })
+                    } else {
+                        TransportErrorKind::custom_str("connection refused")
+                    });
+                    outcome
+                }
+            })
+            .await
+            .expect_err("both endpoints failed, so the call fails");
+
+        assert!(
+            matches!(err, ChainClientError::ContractRevert { .. }),
+            "the contract's refusal should have survived, got {err}"
+        );
+    }
+
     /// An endpoint that answers can only describe its own refusal, so it never repeats the
     /// URL. One that never answers is described by the HTTP client instead, which says which
     /// URL it was reaching for, and that is where the key sits. Nothing listens on port 1.
