@@ -246,13 +246,13 @@ impl RpcProviderPool {
     /// status where the transport reports one, since a status is unambiguous while the
     /// same digits inside a revert reason are not, and matches text only without one.
     fn is_retryable(error: &TransportError) -> bool {
-        if let RpcError::Transport(kind) = error {
-            if let Some(http) = kind.as_http_error() {
-                // A 5xx is the server failing for its own reasons and 429 is it
-                // declining; either can succeed on a retry or another provider. Other
-                // 4xx means the request is wrong, so repeating it cannot help.
-                return http.status >= 500 || http.status == 429;
-            }
+        if let RpcError::Transport(kind) = error
+            && let Some(http) = kind.as_http_error()
+        {
+            // A 5xx is the server failing for its own reasons and 429 is it declining;
+            // either can succeed on a retry or another provider. Other 4xx means the
+            // request is wrong, so repeating it unchanged cannot help.
+            return http.status >= 500 || http.status == 429;
         }
 
         let error_str = error.to_string().to_lowercase();
