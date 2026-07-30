@@ -168,12 +168,18 @@ impl RpcProviderPool {
         loop {
             let current_url = self.url_at(start + providers_tried).clone();
 
+            // One connection per endpoint, reused across its attempts, so a retry does not
+            // pay for a fresh TLS handshake on the path that is already running out of time.
+            let provider = build_provider(current_url.clone(), self.request_timeout);
+
             // Retry loop for current provider
             let mut endpoint_error: Option<TransportError> = None;
             for attempt in 0..=max_retries {
-                let outcome = match build_provider(current_url.clone(), self.request_timeout) {
-                    Ok(provider) => f(provider).await,
-                    Err(e) => Err(TransportErrorKind::custom(e)),
+                let outcome = match &provider {
+                    Ok(provider) => f(provider.clone()).await,
+                    Err(e) => Err(TransportErrorKind::custom(ChainClientError::ConfigError(
+                        e.to_string(),
+                    ))),
                 };
                 match outcome {
                     Ok(result) => return Ok(result),
