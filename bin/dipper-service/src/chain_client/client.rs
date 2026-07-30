@@ -466,6 +466,16 @@ impl AlloyChainClient {
     /// already does. Signing happens once, up front, so every endpoint is offered the same
     /// bytes under one hash and the hash is known before anyone is asked to accept them.
     async fn send_transaction(&self, tx: &TransactionRequest) -> Result<B256, ChainClientError> {
+        // Nothing fills a field in on this path any more, and a request that names no chain is
+        // signed for chain 1 rather than refused, so check before the signature exists.
+        if tx.chain_id() != Some(self.inner.chain_id) {
+            return Err(ChainClientError::ConfigError(format!(
+                "refusing to sign for chain {:?} while configured for chain {}",
+                tx.chain_id(),
+                self.inner.chain_id
+            )));
+        }
+
         let wallet = EthereumWallet::from(self.inner.signer.clone());
         let signed = tx.clone().build(&wallet).await.map_err(|e| {
             ChainClientError::SubmitFailed(anyhow::anyhow!("Failed to sign transaction: {e}"))
@@ -1107,6 +1117,35 @@ mod tests {
             sends_among(&requests),
             1,
             "the transaction must be broadcast once, not resent at a new nonce"
+        );
+    }
+
+    /// Nothing fills a field in on the send path, and a request naming no chain is signed for
+    /// chain 1 rather than refused, so a transaction has to say which chain it is for.
+    #[tokio::test]
+    async fn send_transaction_refuses_a_transaction_that_names_another_chain() {
+        let server = server_answering_with(B256::repeat_byte(0xab)).await;
+        let client = client_over(vec![server.uri().parse().expect("provider URL")]);
+        let from = client.inner.signer.address();
+
+        let mut names_no_chain = ready_to_send_tx(from);
+        names_no_chain.chain_id = None;
+
+        for tx in [ready_to_send_tx(from).with_chain_id(1), names_no_chain] {
+            let err = client
+                .send_transaction(&tx)
+                .await
+                .expect_err("a transaction for another chain must not be signed");
+            assert!(matches!(err, ChainClientError::ConfigError(_)), "got {err}");
+        }
+
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty(),
+            "no endpoint should have been asked to accept either transaction"
         );
     }
 
