@@ -31,6 +31,16 @@ fn extract_chain_client_error(err: TransportError) -> Option<ChainClientError> {
     }
 }
 
+/// How an endpoint is named in logs and errors. Hosted RPC endpoints carry their API key in
+/// the path or the query, so naming one by host says which endpoint it was without the key.
+fn endpoint_name(url: &Url) -> String {
+    match (url.host_str(), url.port()) {
+        (Some(host), Some(port)) => format!("{host}:{port}"),
+        (Some(host), None) => host.to_string(),
+        (None, _) => "unnamed endpoint".to_string(),
+    }
+}
+
 /// Error text that indicates a transient failure worth retrying, used only for faults
 /// that arrive as prose rather than as a status code or JSON-RPC error object.
 const RETRYABLE_ERROR_PATTERNS: &[&str] = &[
@@ -91,7 +101,7 @@ impl RpcProviderPool {
 
         tracing::info!(
             provider_count = providers.len(),
-            primary = %providers[0],
+            primary = %endpoint_name(&providers[0]),
             "RPC provider pool initialized"
         );
 
@@ -165,6 +175,7 @@ impl RpcProviderPool {
 
         loop {
             let current_url = self.url_at(start + providers_tried).clone();
+            let endpoint = endpoint_name(&current_url);
 
             // Reused across this endpoint's attempts, so a retry does not pay for a fresh
             // TLS handshake on the path that is already running out of time.
@@ -180,7 +191,7 @@ impl RpcProviderPool {
                         let delay = Self::backoff_delay(attempt);
                         tracing::warn!(
                             operation,
-                            provider = %current_url,
+                            provider = %endpoint,
                             attempt = attempt + 1,
                             max_retries,
                             delay_ms = delay.as_millis(),
@@ -201,7 +212,7 @@ impl RpcProviderPool {
             let endpoint_error = endpoint_error
                 .unwrap_or_else(|| TransportErrorKind::custom_str("no attempt was made"));
 
-            reasons.push(format!("{current_url}: {endpoint_error}"));
+            reasons.push(format!("{endpoint}: {endpoint_error}"));
             providers_tried += 1;
 
             // Check if we've tried all providers
@@ -227,8 +238,8 @@ impl RpcProviderPool {
             let next_url = self.url_at(start + providers_tried);
             tracing::warn!(
                 operation,
-                old_provider = %current_url,
-                new_provider = %next_url,
+                old_provider = %endpoint,
+                new_provider = %endpoint_name(next_url),
                 providers_tried,
                 total_providers = self.providers.len(),
                 error = %endpoint_error,
@@ -394,6 +405,35 @@ mod tests {
                 "endpoint {i} should have been tried exactly once"
             );
         }
+    }
+
+    /// Hosted RPC endpoints carry their API key in the path, and this failure text reaches the
+    /// logs and every error built from it, so it has to say which endpoint refused without
+    /// repeating the key that gets it in.
+    #[tokio::test]
+    async fn a_failure_names_the_endpoint_without_its_api_key() {
+        let refusing = server_refusing().await;
+        let keyed: Url = format!("{}/v2/super-secret-key", refusing.uri())
+            .parse()
+            .expect("keyed endpoint URL");
+
+        let pool = RpcProviderPool::new(vec![keyed], Duration::from_secs(5), 0).expect("pool");
+        let err = pool
+            .execute("probe", |provider| async move {
+                provider.get_block_number().await
+            })
+            .await
+            .expect_err("the endpoint refused, so the call fails");
+
+        let text = err.to_string();
+        assert!(
+            !text.contains("super-secret-key"),
+            "the API key must not appear in the failure: {text}"
+        );
+        assert!(
+            text.contains("127.0.0.1"),
+            "the failure should still say which endpoint refused: {text}"
+        );
     }
 
     /// 500 is the status a provider answered on 2026-07-29 while an accepted agreement went
