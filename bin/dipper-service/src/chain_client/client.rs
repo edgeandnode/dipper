@@ -1113,7 +1113,10 @@ mod tests {
         );
         let tx = ready_to_send_tx(client.inner.signer.address());
 
-        let _ = client.send_transaction(&tx).await;
+        client
+            .send_transaction(&tx)
+            .await
+            .expect("the spare endpoint accepts, so the send succeeds");
 
         assert_eq!(
             rejecting
