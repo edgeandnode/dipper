@@ -14,14 +14,14 @@ use std::{
 use async_trait::async_trait;
 use dipper_rpc::indexer::indexer_client::sol::RecurringCollectionAgreement;
 use thegraph_core::alloy::{
-    eips::BlockNumberOrTag,
+    eips::{BlockNumberOrTag, eip2718::Encodable2718},
     network::{EthereumWallet, TransactionBuilder},
     primitives::{Address, B256, FixedBytes},
-    providers::{Provider, ProviderBuilder},
+    providers::Provider,
     rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
     sol_types::{SolCall, SolValue},
-    transports::TransportErrorKind,
+    transports::TransportError,
 };
 use tokio::sync::Mutex;
 
@@ -76,6 +76,18 @@ const NONCE_ERROR_PATTERNS: &[&str] = &[
 fn is_nonce_error(error: &str) -> bool {
     let lower = error.to_lowercase();
     NONCE_ERROR_PATTERNS.iter().any(|p| lower.contains(p))
+}
+
+/// How nodes say they are already holding the transaction being offered to them.
+const ALREADY_BROADCAST_PATTERNS: &[&str] =
+    &["already known", "already imported", "known transaction"];
+
+/// Whether a rejection means this exact transaction is already in a mempool. Offering the
+/// same signed bytes to a second endpoint is expected to land here, and it means the
+/// broadcast succeeded, so it must not be mistaken for a reason to send another.
+fn is_already_broadcast(error: &TransportError) -> bool {
+    let lower = error.to_string().to_lowercase();
+    ALREADY_BROADCAST_PATTERNS.iter().any(|p| lower.contains(p))
 }
 
 /// Classify the outcome of a nonce-gap fill submission. Pure so the
@@ -454,32 +466,30 @@ impl AlloyChainClient {
         classify_fill_nonce_gap_outcome(nonce, self.send_transaction(&tx).await)
     }
 
-    /// Broadcast a transaction, retrying and rotating providers on transport faults the
-    /// way every read call already does. Rebroadcasting is safe because the caller fixed
-    /// the nonce, gas limit and both fees, so every endpoint sees one identical hash.
+    /// Broadcast a transaction, retrying and rotating endpoints the way every read call
+    /// already does. Signing happens once, up front, so every endpoint is offered the same
+    /// bytes under one hash and the hash is known before anyone is asked to accept them.
     async fn send_transaction(&self, tx: &TransactionRequest) -> Result<B256, ChainClientError> {
-        let request_timeout = self.inner.rpc_pool.request_timeout();
+        let wallet = EthereumWallet::from(self.inner.signer.clone());
+        let signed = tx.clone().build(&wallet).await.map_err(|e| {
+            ChainClientError::SubmitFailed(anyhow::anyhow!("Failed to sign transaction: {e}"))
+        })?;
+        let signed_hash = *signed.tx_hash();
+        let raw = signed.encoded_2718();
 
         self.inner
             .rpc_pool
-            .execute_on_url("send_transaction", |url| {
-                let wallet = EthereumWallet::from(self.inner.signer.clone());
-                let tx = tx.clone();
+            .execute("send_transaction", |provider| {
+                let raw = raw.clone();
                 async move {
-                    let client = reqwest::Client::builder()
-                        .timeout(request_timeout)
-                        .build()
-                        .map_err(|e| {
-                            TransportErrorKind::custom(ChainClientError::ConfigError(format!(
-                                "Failed to build HTTP client: {e}"
-                            )))
-                        })?;
-
-                    let provider = ProviderBuilder::new()
-                        .wallet(wallet)
-                        .connect_reqwest(client, url);
-
-                    Ok(*provider.send_transaction(tx).await?.tx_hash())
+                    match provider.send_raw_transaction(&raw).await {
+                        Ok(pending) => Ok(*pending.tx_hash()),
+                        // This endpoint already holds these exact bytes, which is the
+                        // outcome we were after. Answer with the hash we signed rather
+                        // than reporting a failure that would send a second transaction.
+                        Err(e) if is_already_broadcast(&e) => Ok(signed_hash),
+                        Err(e) => Err(e),
+                    }
                 }
             })
             .await
@@ -894,6 +904,99 @@ mod tests {
         assert!(
             is_nonce_error(&text),
             "the nonce reason must still be recognisable, got: {text}"
+        );
+    }
+
+    /// Answers the nonce lookup that precedes a send, then reports every send as already
+    /// held. Counting the sends is how a duplicate submission shows up.
+    struct AlreadyHeldResponder {
+        pending_nonce: u64,
+    }
+
+    impl Respond for AlreadyHeldResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("JSON-RPC request body");
+            match body["method"].as_str().unwrap_or_default() {
+                "eth_getTransactionCount" => {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "result": format!("{:#x}", self.pending_nonce),
+                    }))
+                }
+                "eth_sendRawTransaction" => {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "error": { "code": -32000, "message": "already known" },
+                    }))
+                }
+                other => panic!("unexpected method {other}"),
+            }
+        }
+    }
+
+    fn sends_among(requests: &[wiremock::Request]) -> usize {
+        requests
+            .iter()
+            .filter(|r| {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&r.body).expect("JSON-RPC request body");
+                body["method"] == "eth_sendRawTransaction"
+            })
+            .count()
+    }
+
+    /// The first endpoint takes the bytes but its reply is lost, so the same bytes go to the
+    /// second, which already holds them. That is the outcome we wanted, so it has to be
+    /// reported with the hash rather than as a failure.
+    #[tokio::test]
+    async fn send_transaction_accepts_a_transaction_already_in_a_mempool() {
+        let sick = server_answering_500().await;
+        let holding = server_answering_rpc_error(-32000, "already known").await;
+        let client = client_over(vec![
+            sick.uri().parse().expect("sick provider URL"),
+            holding.uri().parse().expect("holding provider URL"),
+        ]);
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        let tx_hash = client
+            .send_transaction(&tx)
+            .await
+            .expect("a transaction already in a mempool is a successful broadcast");
+
+        let wallet = EthereumWallet::from(client.inner.signer.clone());
+        let signed = tx.clone().build(&wallet).await.expect("sign the same tx");
+        assert_eq!(
+            tx_hash,
+            *signed.tx_hash(),
+            "the hash reported must be the one we signed"
+        );
+    }
+
+    /// Treating "we already have it" as a stale nonce made the caller resync and send a
+    /// second transaction at a different nonce, which for an agreement offer means paying
+    /// twice for one offer. One broadcast has to stay one broadcast.
+    #[tokio::test]
+    async fn sign_and_send_does_not_resend_a_transaction_already_in_a_mempool() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(AlreadyHeldResponder { pending_nonce: 6 })
+            .mount(&server)
+            .await;
+        let client = client_over(vec![server.uri().parse().expect("provider URL")]);
+
+        client
+            .sign_and_send(ready_to_send_tx(client.inner.signer.address()), &[0u8; 16])
+            .await
+            .expect("a transaction already in a mempool is a successful broadcast");
+
+        let requests = server.received_requests().await.unwrap_or_default();
+        assert_eq!(
+            sends_among(&requests),
+            1,
+            "the transaction must be broadcast once, not resent at a new nonce"
         );
     }
 

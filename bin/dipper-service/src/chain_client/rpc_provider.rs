@@ -105,11 +105,6 @@ impl RpcProviderPool {
         })
     }
 
-    /// Get the configured request timeout.
-    pub fn request_timeout(&self) -> Duration {
-        self.request_timeout
-    }
-
     /// Rotate to the next provider.
     ///
     /// Returns the new provider URL after rotation.
@@ -130,31 +125,6 @@ impl RpcProviderPool {
         F: Fn(HttpProvider) -> Fut,
         Fut: Future<Output = Result<T, TransportError>>,
     {
-        let f = &f;
-        self.execute_on_url(operation, move |url| {
-            let provider = build_provider(url, self.request_timeout);
-            async move {
-                match provider {
-                    Ok(provider) => f(provider).await,
-                    Err(e) => Err(TransportErrorKind::custom(e)),
-                }
-            }
-        })
-        .await
-    }
-
-    /// Same retry and rotation as [`Self::execute`], but the closure receives the URL
-    /// rather than a provider, so a caller needing a wallet attached can build its own
-    /// without reimplementing the retry, backoff and rotation policy.
-    pub async fn execute_on_url<F, Fut, T>(
-        &self,
-        operation: &str,
-        f: F,
-    ) -> Result<T, ChainClientError>
-    where
-        F: Fn(Url) -> Fut,
-        Fut: Future<Output = Result<T, TransportError>>,
-    {
         // What each endpoint said, in the order they were tried. `sign_and_send` matches
         // this text to tell a stale nonce from a transport fault, so a rejection from the
         // first endpoint has to survive a different kind of failure on the next.
@@ -172,7 +142,11 @@ impl RpcProviderPool {
             // Retry loop for current provider
             let mut endpoint_error: Option<TransportError> = None;
             for attempt in 0..=self.max_retries {
-                match f(current_url.clone()).await {
+                let outcome = match build_provider(current_url.clone(), self.request_timeout) {
+                    Ok(provider) => f(provider).await,
+                    Err(e) => Err(TransportErrorKind::custom(e)),
+                };
+                match outcome {
                     Ok(result) => return Ok(result),
                     Err(e) if Self::is_retryable(&e) && attempt < self.max_retries => {
                         let delay = Self::backoff_delay(attempt);
