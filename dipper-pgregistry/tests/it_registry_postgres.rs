@@ -2243,7 +2243,7 @@ async fn get_declined_indexers_expiry_with_an_offer_tx_still_benches() {
         r#"
         UPDATE dipper_reg_indexing_agreements
         SET status = 5, rejection_reason = NULL,
-            offer_tx_hash = decode('11', 'hex'),
+            offer_tx_hash = decode(repeat('11', 32), 'hex'),
             updated_at = timezone('UTC', now()) - interval '1 hour'
         WHERE id = $1
         "#,
