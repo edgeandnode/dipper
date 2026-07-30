@@ -726,8 +726,15 @@ impl PgRegistry {
                 (rejection_reason IN ($18, $19)
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $17))
                 OR
+                -- An expiry with no offer transaction means we never landed the offer, so
+                -- the indexer never had one to accept. Our fault, so it gets the same short
+                -- lookback as the other dipper-side faults above.
+                (status = $2 AND offer_tx_hash IS NULL
+                 AND updated_at >= timezone('UTC', now()) - make_interval(mins => $7))
+                OR
                 -- All other rejections/expirations/cancellations: standard lookback
                 (COALESCE(rejection_reason, '') NOT IN ($6, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18, $19)
+                 AND NOT (status = $2 AND offer_tx_hash IS NULL)
                  AND updated_at >= timezone('UTC', now()) - make_interval(days => $5))
               )
             GROUP BY deployment_id
