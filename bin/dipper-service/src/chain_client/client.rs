@@ -891,6 +891,31 @@ mod tests {
         );
     }
 
+    /// The nonce reason has to survive a second provider failing a different way. Reporting
+    /// only the last provider's reason hid the rejection behind a transport fault, and
+    /// `sign_and_send` then skipped the resync that would have unstuck the wallet.
+    #[tokio::test]
+    async fn send_transaction_surfaces_a_nonce_reason_from_any_provider() {
+        let rejecting = server_answering_rpc_error(-32000, "nonce too low: next nonce 12").await;
+        let sick = server_answering_500().await;
+        let client = client_over(vec![
+            rejecting.uri().parse().expect("rejecting provider URL"),
+            sick.uri().parse().expect("sick provider URL"),
+        ]);
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        let err = client
+            .send_transaction(&tx)
+            .await
+            .expect_err("both providers refused, so the send must error");
+
+        let text = err.to_string();
+        assert!(
+            is_nonce_error(&text),
+            "the nonce reason must survive the later transport fault, got: {text}"
+        );
+    }
+
     /// A provider reporting overload in the JSON-RPC error rather than the HTTP status earns a
     /// retry on that provider, while a chain rejection does not, since it will answer the same.
     #[tokio::test]
