@@ -318,6 +318,20 @@ mod tests {
         );
     }
 
+    /// Alloy recognises the error codes providers use for throttling, but not every
+    /// transient fault has one. A gateway that describes a timeout in an otherwise ordinary
+    /// response is still worth another go, and only the wording says so.
+    #[test]
+    fn transient_faults_described_in_a_json_rpc_error_are_retryable() {
+        let payload = serde_json::from_str(r#"{"code":-32603,"message":"connection reset"}"#)
+            .expect("JSON-RPC error payload");
+        let err: TransportError = RpcError::ErrorResp(payload);
+        assert!(
+            RpcProviderPool::is_retryable(&err),
+            "a reset described in the error body should be retryable"
+        );
+    }
+
     #[test]
     fn test_backoff_delay_calculation() {
         // 1s, 2s, 4s, 8s, 16s, 32s->30s
