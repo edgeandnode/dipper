@@ -235,24 +235,26 @@ impl RpcProviderPool {
         }
     }
 
-    /// Whether an error is worth trying again rather than giving up on. Reads the HTTP
-    /// status where the transport reports one, since a status is unambiguous while the
-    /// same digits inside a revert reason are not, and matches text only without one.
+    /// Whether an error is worth trying again rather than giving up on. Each check can only
+    /// say yes, so a fault the status and the error code both miss still gets read as text.
     fn is_retryable(error: &TransportError) -> bool {
+        // A 5xx is the server failing for its own reasons and 429 is it declining; either
+        // can succeed on a retry or another endpoint. A status is worth reading before the
+        // text, because the same digits inside a revert reason mean nothing.
         if let RpcError::Transport(kind) = error
             && let Some(http) = kind.as_http_error()
+            && (http.status >= 500 || http.status == 429)
         {
-            // A 5xx is the server failing for its own reasons and 429 is it declining;
-            // either can succeed on a retry or another provider. Other 4xx means the
-            // request is wrong, so repeating it unchanged cannot help.
-            return http.status >= 500 || http.status == 429;
+            return true;
         }
 
         // Some providers answer 200 and report being overloaded in the JSON-RPC error
         // instead, each with its own code. Alloy knows those codes, and reports a genuine
         // execution error such as a revert as not worth retrying.
-        if let RpcError::ErrorResp(payload) = error {
-            return payload.is_retry_err();
+        if let RpcError::ErrorResp(payload) = error
+            && payload.is_retry_err()
+        {
+            return true;
         }
 
         let error_str = error.to_string().to_lowercase();
