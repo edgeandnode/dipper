@@ -1069,7 +1069,7 @@ mod tests {
     /// when the complaint is the kind a retry would normally clear. Retries here are expensive:
     /// they hold up every other submission and eat into the window an offer has to be accepted.
     #[tokio::test]
-    async fn send_transaction_tries_each_endpoint_once() {
+    async fn send_transaction_leaves_a_struggling_endpoint_alone() {
         let overloaded =
             server_answering_rpc_error(-32005, "project ID request rate exceeded").await;
         let healthy = server_answering_with(B256::repeat_byte(0xcd)).await;
@@ -1096,7 +1096,12 @@ mod tests {
             1,
             "a struggling endpoint should be left alone once it has refused"
         );
+    }
 
+    /// A chain rejection is the chain's answer, not one endpoint's, so asking the same
+    /// endpoint again would only collect the same refusal at the cost of the delay.
+    #[tokio::test]
+    async fn send_transaction_does_not_repeat_a_chain_rejection() {
         let rejecting = server_answering_rpc_error(-32000, "nonce too low: next nonce 12").await;
         let spare = server_answering_with(B256::repeat_byte(0xef)).await;
         let client = client_over_retrying(
