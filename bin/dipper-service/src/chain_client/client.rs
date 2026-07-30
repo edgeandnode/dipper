@@ -948,6 +948,46 @@ mod tests {
             .count()
     }
 
+    /// The raw transaction each endpoint was asked to accept.
+    fn broadcast_bytes(requests: &[wiremock::Request]) -> Vec<String> {
+        requests
+            .iter()
+            .filter_map(|r| {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&r.body).expect("JSON-RPC request body");
+                (body["method"] == "eth_sendRawTransaction")
+                    .then(|| body["params"][0].as_str().expect("raw tx").to_string())
+            })
+            .collect()
+    }
+
+    /// Rotating between endpoints is only safe while they are all offered the same bytes: two
+    /// different transactions would mean two chances of both being mined and paid for. This
+    /// is what makes a rebroadcast a retry of one transaction rather than a second one.
+    #[tokio::test]
+    async fn every_endpoint_is_offered_the_same_bytes() {
+        let sick = server_answering_500().await;
+        let healthy = server_answering_with(B256::repeat_byte(0xab)).await;
+        let client = client_over(vec![
+            sick.uri().parse().expect("sick provider URL"),
+            healthy.uri().parse().expect("healthy provider URL"),
+        ]);
+        let tx = ready_to_send_tx(client.inner.signer.address());
+
+        client.send_transaction(&tx).await.expect("send");
+
+        let offered = [
+            broadcast_bytes(&sick.received_requests().await.unwrap_or_default()),
+            broadcast_bytes(&healthy.received_requests().await.unwrap_or_default()),
+        ]
+        .concat();
+        assert_eq!(offered.len(), 2, "both endpoints should have been asked");
+        assert_eq!(
+            offered[0], offered[1],
+            "the two endpoints were offered different transactions"
+        );
+    }
+
     /// The first endpoint takes the bytes but its reply is lost, so the same bytes go to the
     /// second, which already holds them. That is the outcome we wanted, so it has to be
     /// reported with the hash rather than as a failure.
