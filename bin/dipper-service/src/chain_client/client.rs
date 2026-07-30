@@ -902,17 +902,24 @@ mod tests {
         );
     }
 
-    /// With a single provider there is nowhere to rotate to, so the fault must surface
-    /// rather than be retried forever or silently swallowed.
+    /// With a single provider there is nowhere to rotate to, so the fault must surface rather
+    /// than be retried forever or silently swallowed. It surfaces as a failed submission rather
+    /// than the pool's generic RPC fault, which is what says the transaction went nowhere.
     #[tokio::test]
     async fn send_transaction_reports_failure_when_every_provider_is_sick() {
         let sick = server_answering_500().await;
         let client = client_over(vec![sick.uri().parse().expect("sick provider URL")]);
         let tx = ready_to_send_tx(client.inner.signer.address());
 
-        let result = client.send_transaction(&tx).await;
+        let err = client
+            .send_transaction(&tx)
+            .await
+            .expect_err("a 500 from the only provider must error");
 
-        assert!(result.is_err(), "a 500 from the only provider must error");
+        assert!(
+            matches!(err, ChainClientError::SubmitFailed(_)),
+            "got {err}"
+        );
     }
 
     /// What the chain said has to survive the pool, because `sign_and_send` reads this text to
