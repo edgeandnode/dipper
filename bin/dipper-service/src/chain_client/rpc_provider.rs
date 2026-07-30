@@ -451,6 +451,34 @@ mod tests {
         );
     }
 
+    /// An endpoint that answers can only describe its own refusal, so it never repeats the
+    /// URL. One that never answers is described by the HTTP client instead, which says which
+    /// URL it was reaching for, and that is where the key sits. Nothing listens on port 1.
+    #[tokio::test]
+    async fn a_connection_that_gets_no_answer_hides_the_api_key() {
+        let keyed: Url = "http://127.0.0.1:1/v2/super-secret-key"
+            .parse()
+            .expect("keyed endpoint URL");
+
+        let pool = RpcProviderPool::new(vec![keyed], Duration::from_secs(5), 0).expect("pool");
+        let err = pool
+            .execute("probe", |provider| async move {
+                provider.get_block_number().await
+            })
+            .await
+            .expect_err("nothing is listening, so the call fails");
+
+        let text = err.to_string();
+        assert!(
+            !text.contains("super-secret-key"),
+            "the API key must not appear in the failure: {text}"
+        );
+        assert!(
+            text.contains("127.0.0.1:1"),
+            "the failure should still say which endpoint was unreachable: {text}"
+        );
+    }
+
     /// Reporting only the last endpoint's reason hid what the earlier ones said, and a caller
     /// reading this text to tell a chain rejection from a transport fault would then miss the
     /// rejection and skip the recovery it calls for.
