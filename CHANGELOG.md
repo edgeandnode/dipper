@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.9](https://github.com/edgeandnode/dipper/compare/v0.1.8...v0.1.9) (2026-07-30)
+
+
+### Fixed
+
+* retry transaction sends across every RPC provider ([#683](https://github.com/edgeandnode/dipper/issues/683)) ([da9de2f](https://github.com/edgeandnode/dipper/commit/da9de2f33ea219360804011db83cfd277d83a21b))
+* stop benching indexers for offers we never landed ([#684](https://github.com/edgeandnode/dipper/issues/684)) ([26272f5](https://github.com/edgeandnode/dipper/commit/26272f5a24a5d046543d648e7bb08f97c8f068a9))
+
 ## [0.1.8](https://github.com/edgeandnode/dipper/compare/v0.1.7...v0.1.8) (2026-07-23)
 
 
