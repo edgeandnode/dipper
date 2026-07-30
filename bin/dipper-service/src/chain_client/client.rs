@@ -493,6 +493,13 @@ impl AlloyChainClient {
                 }
             })
             .await
+            .map_err(|e| match e {
+                // A submission that got nowhere is a failed submission, whatever the
+                // endpoints happened to say. Anything the pool could name precisely, such
+                // as a rejection from the contract, keeps the name it already has.
+                ChainClientError::RpcError(cause) => ChainClientError::SubmitFailed(cause),
+                other => other,
+            })
     }
 
     /// Poll `eth_getTransactionReceipt` until the tx has mined or the timeout
