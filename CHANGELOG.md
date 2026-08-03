@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.10](https://github.com/edgeandnode/dipper/compare/v0.1.9...v0.1.10) (2026-08-03)
+
+
+### Fixed
+
+* **worker:** size offer retries from the indexer's acceptance window ([#686](https://github.com/edgeandnode/dipper/issues/686)) ([7803ce7](https://github.com/edgeandnode/dipper/commit/7803ce714c1653910c936d41f46095d1da251596))
+
 ## [0.1.9](https://github.com/edgeandnode/dipper/compare/v0.1.8...v0.1.9) (2026-07-30)
 
 
