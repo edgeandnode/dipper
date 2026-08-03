@@ -12,11 +12,12 @@ use super::{
     context::{Ctx, InnerCtx},
     handlers::{
         self, CancelRejectedAgreementOnChainCtx, ReassessIndexingRequestCtx,
+        SUBMIT_OFFER_DROPPED_TX_RETRY_BASE, SUBMIT_OFFER_TRANSIENT_RETRY_BASE,
         SendIndexingAgreementProposalCtx, SubmitOfferCtx,
     },
     messages::Message,
     queue::{JobNotifications, Queue},
-    result::{JobError, JobResult, calculate_backoff_delay},
+    result::{JobError, JobResult, calculate_backoff_delay, retries_within_window},
 };
 pub use super::{
     queue::JobPriority,
@@ -447,9 +448,17 @@ where
     // receiver could only wake one of them.
     let (stop_tx, stop_rx) = watch::channel(false);
 
+    // An offer is worth resubmitting for as long as the indexer can still accept
+    // it, so the budget comes from that window. Sized on the shorter of the two
+    // backoffs, it cannot run out early whichever failure the job keeps hitting.
+    let submit_offer_max_retries = retries_within_window(
+        Duration::from_secs(agreement_conf.deadline_seconds()),
+        SUBMIT_OFFER_DROPPED_TX_RETRY_BASE.min(SUBMIT_OFFER_TRANSIENT_RETRY_BASE),
+    );
+
     let handle = Handle {
         stop_tx: stop_tx.clone(),
-        worker_queue_handle: WorkerQueueHandle::new(queue.clone()),
+        worker_queue_handle: WorkerQueueHandle::new(queue.clone(), submit_offer_max_retries),
     };
     let fut = async move {
         // Built once, cloned per loop. Every field is Arc/Clone, so the clones
@@ -468,7 +477,7 @@ where
             additional_networks,
             entity_count_cache,
             chain_listener_notify,
-            worker: WorkerQueueHandle::new(queue.clone()),
+            worker: WorkerQueueHandle::new(queue.clone(), submit_offer_max_retries),
             bypass_chain_clock_defenses,
             chain_listener_chain_id,
             reassess_lock,
@@ -762,6 +771,15 @@ mod tests {
         type Listener = RecordingNotifier;
 
         async fn push(&self, _msg: Message, _priority: JobPriority) -> anyhow::Result<JobId> {
+            anyhow::bail!("these tests never push")
+        }
+
+        async fn push_with_max_retries(
+            &self,
+            _msg: Message,
+            _priority: JobPriority,
+            _max_retries: u32,
+        ) -> anyhow::Result<JobId> {
             anyhow::bail!("these tests never push")
         }
 

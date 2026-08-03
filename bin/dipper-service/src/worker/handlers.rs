@@ -17,4 +17,8 @@ pub use send_indexing_agreement_proposal::{
     Ctx as SendIndexingAgreementProposalCtx, Message as SendIndexingAgreementProposal,
     handle as send_indexing_agreement_proposal,
 };
-pub use submit_offer::{Ctx as SubmitOfferCtx, Message as SubmitOffer, handle as submit_offer};
+pub use submit_offer::{
+    Ctx as SubmitOfferCtx, DROPPED_TX_RETRY_BASE as SUBMIT_OFFER_DROPPED_TX_RETRY_BASE,
+    Message as SubmitOffer, TRANSIENT_RETRY_BASE as SUBMIT_OFFER_TRANSIENT_RETRY_BASE,
+    handle as submit_offer,
+};

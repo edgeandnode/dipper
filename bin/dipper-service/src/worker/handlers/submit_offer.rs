@@ -29,6 +29,12 @@ use crate::{
     worker::result::{JobError, JobResult},
 };
 
+/// Backoff base for a tx the RPC accepted and then dropped from the mempool.
+pub const DROPPED_TX_RETRY_BASE: Duration = Duration::from_secs(5);
+
+/// Backoff base for a transient submission failure: RPC, gas or nonce.
+pub const TRANSIENT_RETRY_BASE: Duration = Duration::from_secs(30);
+
 pub struct Ctx<R, T> {
     pub registry: R,
     pub chain_client: T,
@@ -150,7 +156,7 @@ where
                 error = %err,
                 "Offer tx dropped from mempool, will retry with fresh nonce"
             );
-            return Err(JobError::Retryable(err.into(), Duration::from_secs(5)));
+            return Err(JobError::Retryable(err.into(), DROPPED_TX_RETRY_BASE));
         }
         Err(ChainClientError::ContractRevert { selector, data }) => {
             // A gas-estimation revert won't clear on a quick retry: bad terms
@@ -175,7 +181,7 @@ where
                 error = %err,
                 "Failed to submit offer on-chain, will retry"
             );
-            return Err(JobError::Retryable(err.into(), Duration::from_secs(30)));
+            return Err(JobError::Retryable(err.into(), TRANSIENT_RETRY_BASE));
         }
     }
 
