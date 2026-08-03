@@ -18,6 +18,16 @@ where
     /// Pushes a message to the queue for immediate processing at `priority`.
     async fn push(&self, msg: M, priority: JobPriority) -> anyhow::Result<JobId>;
 
+    /// Same as [`Queue::push`], but with a retry budget of this job's own
+    /// rather than the queue-wide default, for work whose deadline decides how
+    /// many attempts are worth making.
+    async fn push_with_max_retries(
+        &self,
+        msg: M,
+        priority: JobPriority,
+        max_retries: u32,
+    ) -> anyhow::Result<JobId>;
+
     /// Pulls a job from the queue
     async fn pop(&self) -> anyhow::Result<Option<JobGuard<'_, M>>>;
 
@@ -51,6 +61,21 @@ where
             .await
     }
 
+    async fn push_with_max_retries(
+        &self,
+        msg: M,
+        priority: JobPriority,
+        max_retries: u32,
+    ) -> anyhow::Result<JobId> {
+        self.inner
+            .push(
+                JobBuilder::new(msg)
+                    .priority(priority)
+                    .max_retries(max_retries),
+            )
+            .await
+    }
+
     async fn pop(&self) -> anyhow::Result<Option<JobGuard<'_, M>>> {
         self.inner.pop().await
     }
@@ -63,10 +88,9 @@ where
 /// A listener for the queue job available notification
 pub struct QueueImplListener(PgQueueListener);
 
-/// A source of "a job may be available" notifications.
-///
-/// Abstracted behind a trait so the worker loop's degrade-to-polling behaviour
-/// can be unit tested without a live Postgres `LISTEN`/`NOTIFY` connection.
+/// A source of "a job may be available" notifications. Abstracted behind a
+/// trait so the worker loop's degrade-to-polling behaviour can be unit tested
+/// without a live Postgres `LISTEN`/`NOTIFY` connection.
 #[async_trait]
 pub trait JobNotifications: Send {
     /// Waits for the next job-available notification.
