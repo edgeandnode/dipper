@@ -7,6 +7,18 @@ metadata:
 data:
   config.json: |
     {
+      "event_streaming_config": {
+        "enabled": true,
+        "kafka": {
+          "brokers": ["<REPLACE_ME>"],
+          "topic": "dipper.subgraph.indexing.agreement.events",
+          "partitions": 3,
+          "sasl_mechanism": "<REPLACE_ME>",
+          "sasl_username": "<REPLACE_ME>",
+          "sasl_password": "<REPLACE_ME>",
+          "tls_enabled": true
+        }
+      },
       "dips": {
         "data_service": "0xb2Bb92d0DE618878E438b55D5846cfecD9301105",
         "recurring_collector": "NOT_YET_DEPLOYED_ON_ARBITRUM_ONE",

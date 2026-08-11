@@ -36,7 +36,7 @@ If you run an indexer, this repository is where you find out how offers reach yo
 
 A requester registers an indexing request with dipper naming a subgraph deployment and how many indexers it needs. Dipper asks the [IISA service](https://github.com/edgeandnode/subgraph-dips-indexer-selection) for the best candidates, compares that recommendation against the agreements that already exist, and prepares an offer for each new pick.
 
-The offer is a recurring collection agreement signed by dipper. It is first delivered to your indexer software, which can accept or decline it off-chain. If it accepts, dipper posts the offer on-chain so the contract can verify it, and from there the deadline applies: the agreement must be accepted on-chain before it expires, 10 minutes after signing by default.
+The offer is a recurring collection agreement signed by dipper. It is first delivered to your indexer software, which can accept or decline it off-chain. If it accepts, dipper posts the offer on-chain so the contract can verify it, and from there the deadline applies: the agreement must be accepted on-chain before it expires.
 
 ```mermaid
 flowchart LR
