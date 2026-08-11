@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.11](https://github.com/edgeandnode/dipper/compare/v0.1.10...v0.1.11) (2026-08-11)
+
+
+### Documentation
+
+* rewrite the README around the agreement lifecycle ([#688](https://github.com/edgeandnode/dipper/issues/688)) ([38f86ae](https://github.com/edgeandnode/dipper/commit/38f86ae44b9067877f121fdf7c86e9f03fb316b1))
+
 ## [0.1.10](https://github.com/edgeandnode/dipper/compare/v0.1.9...v0.1.10) (2026-08-03)
 
 
