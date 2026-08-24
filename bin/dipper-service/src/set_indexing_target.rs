@@ -39,8 +39,9 @@ pub enum ApplyError {
     #[error("failed to set indexing target candidates")]
     Registry(#[source] crate::registry::Error),
 
-    /// The row changed but the reassessment job could not be queued; a later
-    /// call with the same target is a registry no-op yet queues the job again.
+    /// The row change is committed but the reassessment job was not queued.
+    /// Retry the queue push itself, not the whole apply: a repeated apply
+    /// lands on the registry's no-op path and never queues the job.
     #[error("failed to queue reassessment for indexing request {id}")]
     QueueReassess {
         id: IndexingRequestId,

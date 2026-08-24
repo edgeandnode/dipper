@@ -1429,9 +1429,11 @@ impl IndexingRequestConsumerConfig {
                 "indexing_request_consumer.requested_by must be a non-zero address".to_string(),
             );
         }
-        if self.fetch_max_bytes <= 0 {
+        // Below ~1 KB a fetch cannot hold a whole record, so the consumer
+        // would poll forever without ever making progress.
+        if self.fetch_max_bytes < 1_024 {
             return Err(format!(
-                "indexing_request_consumer.fetch_max_bytes ({}) must be positive",
+                "indexing_request_consumer.fetch_max_bytes ({}) must be at least 1024",
                 self.fetch_max_bytes
             ));
         }

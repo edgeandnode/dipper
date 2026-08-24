@@ -23,7 +23,7 @@ use tokio::{
 use crate::{
     config::IndexingRequestConsumerConfig,
     registry::IndexingRequestRegistry,
-    set_indexing_target::{SetIndexingTarget, apply_set_indexing_target},
+    set_indexing_target::{ApplyError, SetIndexingTarget, apply_set_indexing_target},
     worker::service::{JobPriority, WorkerQueue},
 };
 
@@ -294,38 +294,39 @@ async fn partition_loop<R, W>(
 
         for record_and_offset in records {
             let offset = record_and_offset.offset;
-            // Apply failures (registry or queue down) retry the same record
-            // rather than skip it: a propose must eventually take effect.
-            loop {
-                let disposition = handle_record(
-                    &registry,
-                    &worker_queue,
-                    &events,
-                    protocol_chain_id,
-                    config.requested_by,
-                    &expected_network,
-                    record_and_offset.record.value.as_deref(),
-                )
-                .await;
-
-                match disposition {
-                    Ok(Disposition::Applied) => break,
-                    Ok(Disposition::Skipped(reason)) => {
-                        tracing::warn!(
-                            topic,
-                            partition,
-                            offset,
-                            reason,
-                            key = ?record_and_offset.record.key.as_deref().map(String::from_utf8_lossy),
-                            "skipping unprocessable indexing request record"
-                        );
-                        break;
-                    }
-                    Err(err) => {
-                        tracing::error!(partition, offset, error = %err, "failed to apply indexing request, retrying");
-                        if sleep_or_shutdown(&mut shutdown_rx, RETRY_BACKOFF).await {
-                            return;
-                        }
+            match decode_propose(record_and_offset.record.value.as_deref(), &expected_network) {
+                Err(reason) => {
+                    tracing::warn!(
+                        topic,
+                        partition,
+                        offset,
+                        reason,
+                        key = ?record_and_offset.record.key.as_deref().map(String::from_utf8_lossy),
+                        "skipping unprocessable indexing request record"
+                    );
+                }
+                Ok(target) => {
+                    tracing::debug!(
+                        event_id = %target.event_id,
+                        deployment_id = %target.deployment_id,
+                        deployment_chain_id = target.deployment_chain_id,
+                        num_candidates = target.num_candidates,
+                        "consumed indexing request propose event"
+                    );
+                    let applied = apply_target_with_retries(
+                        &registry,
+                        &worker_queue,
+                        &events,
+                        protocol_chain_id,
+                        config.requested_by,
+                        &target,
+                        &mut shutdown_rx,
+                    )
+                    .await;
+                    if !applied {
+                        // Shutdown arrived before the record took effect; the
+                        // unadvanced offset redelivers it on the next run.
+                        return;
                     }
                 }
             }
@@ -367,60 +368,76 @@ async fn sleep_or_shutdown(shutdown_rx: &mut watch::Receiver<bool>, delay: Durat
     }
 }
 
-/// What became of one record.
-#[derive(Debug, PartialEq, Eq)]
-enum Disposition {
-    /// The propose was applied through the shared set-indexing-target path.
-    Applied,
-    /// The record cannot be processed and was deliberately skipped.
-    Skipped(&'static str),
-}
-
-/// Decode and apply a single record. `Err` means a transient processing
-/// failure the caller should retry; skips are a successful `Disposition`.
-async fn handle_record<R, W>(
+/// Apply a decoded propose until it fully takes effect, returning `false` if
+/// shutdown was requested first. A registry failure retries the whole apply
+/// (nothing was committed); a queue failure retries only the job push, because
+/// the row change is already committed and re-running the apply would land on
+/// the registry's no-op path and silently drop the reassessment.
+async fn apply_target_with_retries<R, W>(
     registry: &R,
     worker_queue: &W,
     events: &Arc<dyn SubgraphIndexingAgreementEventsProducer>,
     protocol_chain_id: ChainId,
     requested_by: Address,
-    expected_network: &str,
-    value: Option<&[u8]>,
-) -> Result<Disposition, crate::set_indexing_target::ApplyError>
+    target: &ProposedTarget,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> bool
 where
     R: IndexingRequestRegistry + Send + Sync,
     W: WorkerQueue + Send + Sync,
 {
-    let target = match decode_propose(value, expected_network) {
-        Ok(target) => target,
-        Err(reason) => return Ok(Disposition::Skipped(reason)),
+    let queue_retry_id = loop {
+        let result = apply_set_indexing_target(
+            registry,
+            worker_queue,
+            events,
+            protocol_chain_id,
+            SetIndexingTarget {
+                requested_by,
+                deployment_id: target.deployment_id,
+                deployment_chain_id: target.deployment_chain_id,
+                num_candidates: target.num_candidates,
+                // Interactive: a developer just asked for this in Studio.
+                priority: JobPriority::Interactive,
+            },
+        )
+        .await;
+
+        match result {
+            Ok(_) => return true,
+            Err(ApplyError::Registry(_)) => {
+                if sleep_or_shutdown(shutdown_rx, RETRY_BACKOFF).await {
+                    return false;
+                }
+            }
+            Err(ApplyError::QueueReassess { id, .. }) => break id,
+        }
     };
 
-    tracing::debug!(
-        event_id = %target.event_id,
-        deployment_id = %target.deployment_id,
-        deployment_chain_id = target.deployment_chain_id,
-        num_candidates = target.num_candidates,
-        "consumed indexing request propose event"
-    );
-
-    apply_set_indexing_target(
-        registry,
-        worker_queue,
-        events,
-        protocol_chain_id,
-        SetIndexingTarget {
-            requested_by,
-            deployment_id: target.deployment_id,
-            deployment_chain_id: target.deployment_chain_id,
-            num_candidates: target.num_candidates,
-            // Interactive: a developer just asked for this in Studio.
-            priority: JobPriority::Interactive,
-        },
-    )
-    .await?;
-
-    Ok(Disposition::Applied)
+    loop {
+        if sleep_or_shutdown(shutdown_rx, RETRY_BACKOFF).await {
+            return false;
+        }
+        match worker_queue
+            .reassess_indexing_request(
+                queue_retry_id,
+                target.deployment_id,
+                target.deployment_chain_id,
+                target.num_candidates,
+                JobPriority::Interactive,
+            )
+            .await
+        {
+            Ok(_) => return true,
+            Err(err) => {
+                tracing::error!(
+                    indexing_request_id = %queue_retry_id,
+                    error = ?err,
+                    "retrying the reassessment job push"
+                );
+            }
+        }
+    }
 }
 
 /// A validated propose event, reduced to what the registry call needs.
@@ -716,27 +733,25 @@ mod tests {
     type SetTargetCall = (Address, DeploymentId, ChainId, usize);
     type ReassessCall = (IndexingRequestId, DeploymentId, ChainId, usize);
 
-    /// A registry whose `set_indexing_target_candidates` returns a configured
-    /// outcome (or errors) and records the arguments it was called with.
+    /// A registry whose `set_indexing_target_candidates` pops the next scripted
+    /// response (erroring once the script runs out) and records its arguments.
     #[derive(Clone)]
     struct MockRegistry {
-        outcome: Option<SetTargetOutcome>,
+        script: Arc<Mutex<Vec<Option<SetTargetOutcome>>>>,
         calls: Arc<Mutex<Vec<SetTargetCall>>>,
     }
 
     impl MockRegistry {
-        fn returning(outcome: SetTargetOutcome) -> Self {
+        /// `None` entries are errors; after the script is exhausted every call errors.
+        fn scripted(script: Vec<Option<SetTargetOutcome>>) -> Self {
             Self {
-                outcome: Some(outcome),
+                script: Arc::new(Mutex::new(script)),
                 calls: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
-        fn erroring() -> Self {
-            Self {
-                outcome: None,
-                calls: Arc::new(Mutex::new(Vec::new())),
-            }
+        fn returning(outcome: SetTargetOutcome) -> Self {
+            Self::scripted(vec![Some(outcome)])
         }
 
         fn calls(&self) -> Vec<SetTargetCall> {
@@ -759,8 +774,13 @@ mod tests {
                 deployment_chain_id,
                 num_candidates,
             ));
-            match &self.outcome {
-                Some(outcome) => Ok(outcome.clone()),
+            let mut script = self.script.lock().expect("poisoned");
+            match if script.is_empty() {
+                None
+            } else {
+                script.remove(0)
+            } {
+                Some(outcome) => Ok(outcome),
                 None => Err(crate::registry::Error::NoRecordsUpdated),
             }
         }
@@ -792,16 +812,23 @@ mod tests {
         }
     }
 
-    /// A worker queue that records reassessment jobs.
+    /// A worker queue that records reassessment jobs, optionally failing the
+    /// first N pushes to exercise the queue-retry path.
     #[derive(Clone)]
     struct MockWorker {
         reassessments: Arc<Mutex<Vec<ReassessCall>>>,
+        failures_left: Arc<Mutex<usize>>,
     }
 
     impl MockWorker {
         fn new() -> Self {
+            Self::failing_pushes(0)
+        }
+
+        fn failing_pushes(failures: usize) -> Self {
             Self {
                 reassessments: Arc::new(Mutex::new(Vec::new())),
+                failures_left: Arc::new(Mutex::new(failures)),
             }
         }
 
@@ -832,6 +859,13 @@ mod tests {
             num_candidates: usize,
             _priority: crate::worker::queue::JobPriority,
         ) -> anyhow::Result<JobId> {
+            {
+                let mut failures_left = self.failures_left.lock().expect("poisoned");
+                if *failures_left > 0 {
+                    *failures_left -= 1;
+                    anyhow::bail!("scripted queue failure");
+                }
+            }
             self.reassessments.lock().expect("poisoned").push((
                 indexing_request_id,
                 deployment_id,
@@ -862,30 +896,37 @@ mod tests {
         }
     }
 
-    async fn run_handle_record(
+    /// Drive `apply_target_with_retries` for the standard valid propose, with
+    /// no shutdown pending, returning its result and the captured events.
+    async fn run_apply(
         registry: &MockRegistry,
         worker: &MockWorker,
-        bytes: Option<&[u8]>,
-    ) -> (
-        Result<Disposition, crate::set_indexing_target::ApplyError>,
-        Vec<CapturedEvent>,
-    ) {
+        num_candidates: usize,
+    ) -> (bool, Vec<CapturedEvent>) {
         let events_capture = CapturingEventsProducer::new();
         let events: Arc<dyn SubgraphIndexingAgreementEventsProducer> =
             Arc::new(events_capture.clone());
+        let (_shutdown_tx, mut shutdown_rx) = watch::channel(false);
 
-        let result = handle_record(
+        let target = ProposedTarget {
+            event_id: "01912345-6789-7abc-def0-123456789abc".to_string(),
+            deployment_id: deployment_id!(QM_HASH),
+            deployment_chain_id: INDEXED_CHAIN_ID,
+            num_candidates,
+        };
+
+        let applied = apply_target_with_retries(
             registry,
             worker,
             &events,
             PROTOCOL_CHAIN_ID,
             requester(),
-            "eip155:42161",
-            bytes,
+            &target,
+            &mut shutdown_rx,
         )
         .await;
 
-        (result, events_capture.events())
+        (applied, events_capture.events())
     }
 
     #[tokio::test]
@@ -895,10 +936,9 @@ mod tests {
         });
         let worker = MockWorker::new();
 
-        let bytes = valid_propose_bytes();
-        let (result, events) = run_handle_record(&registry, &worker, Some(&bytes)).await;
+        let (applied, events) = run_apply(&registry, &worker, 3).await;
 
-        assert!(matches!(result, Ok(Disposition::Applied)), "{result:?}");
+        assert!(applied);
         assert_eq!(
             registry.calls(),
             vec![(requester(), deployment_id!(QM_HASH), INDEXED_CHAIN_ID, 3)]
@@ -935,10 +975,9 @@ mod tests {
         });
         let worker = MockWorker::new();
 
-        let bytes = valid_propose_bytes();
-        let (result, events) = run_handle_record(&registry, &worker, Some(&bytes)).await;
+        let (applied, events) = run_apply(&registry, &worker, 3).await;
 
-        assert!(matches!(result, Ok(Disposition::Applied)), "{result:?}");
+        assert!(applied);
         assert!(worker.reassessments().is_empty(), "no-op must not reassess");
         assert!(events.is_empty(), "no-op must not emit events");
     }
@@ -950,10 +989,9 @@ mod tests {
         });
         let worker = MockWorker::new();
 
-        let bytes = encode_propose(EVENT_TYPE_PROPOSE, "eip155:42161", QM_HASH, "eip155:1", 0);
-        let (result, events) = run_handle_record(&registry, &worker, Some(&bytes)).await;
+        let (applied, events) = run_apply(&registry, &worker, 0).await;
 
-        assert!(matches!(result, Ok(Disposition::Applied)), "{result:?}");
+        assert!(applied);
         assert_eq!(registry.calls()[0].3, 0, "the registry saw the 0 count");
 
         let reassessments = worker.reassessments();
@@ -968,33 +1006,87 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn an_unprocessable_record_is_skipped_without_touching_the_registry() {
-        let registry = MockRegistry::returning(SetTargetOutcome::NoOp {
-            id: IndexingRequestId::new(),
-        });
+    #[tokio::test(start_paused = true)]
+    async fn a_registry_failure_retries_the_whole_apply_until_it_succeeds() {
+        // 1st call errors (nothing committed), the retry lands the insert.
+        let registry = MockRegistry::scripted(vec![
+            None,
+            Some(SetTargetOutcome::Inserted {
+                id: IndexingRequestId::new(),
+            }),
+        ]);
         let worker = MockWorker::new();
 
-        let bytes = encode_propose(EVENT_TYPE_TERMINATE, "eip155:42161", QM_HASH, "eip155:1", 3);
-        let (result, events) = run_handle_record(&registry, &worker, Some(&bytes)).await;
+        let (applied, events) = run_apply(&registry, &worker, 3).await;
 
-        assert!(matches!(result, Ok(Disposition::Skipped(_))), "{result:?}");
-        assert!(registry.calls().is_empty());
-        assert!(worker.reassessments().is_empty());
-        assert!(events.is_empty());
+        assert!(applied);
+        assert_eq!(registry.calls().len(), 2, "the apply was retried once");
+        assert_eq!(worker.reassessments().len(), 1);
+        assert_eq!(events.len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_queue_failure_retries_only_the_push_never_the_registry() {
+        // If the retry re-ran the registry call, the outcome would be a no-op
+        // and the reassessment job would be silently lost.
+        let registry = MockRegistry::returning(SetTargetOutcome::Inserted {
+            id: IndexingRequestId::new(),
+        });
+        let worker = MockWorker::failing_pushes(2);
+
+        let (applied, events) = run_apply(&registry, &worker, 3).await;
+
+        assert!(applied);
+        assert_eq!(
+            registry.calls().len(),
+            1,
+            "the committed row change must not be re-applied"
+        );
+        assert_eq!(
+            worker.reassessments().len(),
+            1,
+            "the push eventually landed"
+        );
+        assert_eq!(
+            events.len(),
+            1,
+            "the lifecycle event is emitted exactly once"
+        );
     }
 
     #[tokio::test]
-    async fn a_registry_failure_is_a_retryable_error_not_a_skip() {
-        let registry = MockRegistry::erroring();
+    async fn a_pending_shutdown_stops_retrying_without_applying() {
+        // Every registry call fails, so only shutdown can end the retry loop.
+        let registry = MockRegistry::scripted(vec![]);
         let worker = MockWorker::new();
 
-        let bytes = valid_propose_bytes();
-        let (result, events) = run_handle_record(&registry, &worker, Some(&bytes)).await;
+        let events_capture = CapturingEventsProducer::new();
+        let events: Arc<dyn SubgraphIndexingAgreementEventsProducer> =
+            Arc::new(events_capture.clone());
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        shutdown_tx.send(true).expect("send shutdown");
 
-        assert!(result.is_err(), "a registry failure must surface for retry");
+        let target = ProposedTarget {
+            event_id: "e".to_string(),
+            deployment_id: deployment_id!(QM_HASH),
+            deployment_chain_id: INDEXED_CHAIN_ID,
+            num_candidates: 3,
+        };
+
+        let applied = apply_target_with_retries(
+            &registry,
+            &worker,
+            &events,
+            PROTOCOL_CHAIN_ID,
+            requester(),
+            &target,
+            &mut shutdown_rx,
+        )
+        .await;
+
+        assert!(!applied, "shutdown must win over the retry loop");
         assert!(worker.reassessments().is_empty());
-        assert!(events.is_empty());
+        assert!(events_capture.events().is_empty());
     }
 
     // -------- Redpanda-backed service test --------
