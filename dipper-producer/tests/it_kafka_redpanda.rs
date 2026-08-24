@@ -14,6 +14,11 @@ fn brokers() -> Option<Vec<String>> {
                 .map(|broker| broker.trim().to_string())
                 .collect(),
         ),
+        // REQUIRE_REDPANDA turns the silent skip into a failure, so CI cannot
+        // go green while accidentally testing nothing.
+        _ if std::env::var("REQUIRE_REDPANDA").is_ok() => {
+            panic!("REQUIRE_REDPANDA is set but REDPANDA_BROKERS is not")
+        }
         _ => {
             eprintln!("skipping Redpanda-backed test: REDPANDA_BROKERS is not set");
             None

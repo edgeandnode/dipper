@@ -111,6 +111,7 @@ jobs:
         env:
           SOPS_AGE_KEY: ${{ secrets.IT_TESTS_AGE_KEY }}
           REDPANDA_BROKERS: localhost:9092
+          REQUIRE_REDPANDA: '1'
         with:
           env_file: .env
           run: cargo nextest run --all-features -E 'test(~tests::it_)'
@@ -120,6 +121,7 @@ jobs:
         env:
           SOPS_AGE_KEY: ${{ secrets.IT_TESTS_AGE_KEY }}
           REDPANDA_BROKERS: localhost:9092
+          REQUIRE_REDPANDA: '1'
         with:
           env_file: .env
           run: cargo nextest run --all-features -E 'kind(test)'

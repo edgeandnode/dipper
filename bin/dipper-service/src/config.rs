@@ -1380,8 +1380,11 @@ pub fn default_event_queue_capacity() -> NonZeroUsize {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexingRequestConsumerConfig {
-    /// Whether the consumer is enabled (default: true when the section is present)
-    #[serde(default = "default_indexing_request_consumer_enabled")]
+    /// Whether the consumer is enabled (default: false). Leave off until
+    /// Studio's propose events carry `indexed_network_caip2id`: without the
+    /// field every consumed request is skipped and its offset committed, so
+    /// enabling early permanently discards real requests.
+    #[serde(default)]
     pub enabled: bool,
 
     /// Kafka connection settings and the topic Studio produces on. The topic
@@ -1404,10 +1407,6 @@ pub struct IndexingRequestConsumerConfig {
     pub fetch_max_bytes: i32,
 }
 
-fn default_indexing_request_consumer_enabled() -> bool {
-    true
-}
-
 fn default_indexing_request_consumer_max_wait() -> Duration {
     Duration::from_secs(5)
 }
@@ -1417,10 +1416,13 @@ fn default_indexing_request_consumer_fetch_max_bytes() -> i32 {
 }
 
 impl IndexingRequestConsumerConfig {
-    /// Reject a configuration the consumer cannot run with.
+    /// Reject a configuration the consumer cannot run with. Checked even when
+    /// disabled, so a broken value cannot lie dormant until the flag flips.
     pub fn validate(&self) -> Result<(), String> {
-        if !self.enabled {
-            return Ok(());
+        if self.kafka.brokers.is_empty() {
+            return Err(
+                "indexing_request_consumer.kafka.brokers must list at least 1 broker".to_string(),
+            );
         }
         // A zero requester is almost certainly an unset value, and it would
         // silently key every consumed request under the zero address.
@@ -1451,6 +1453,52 @@ impl IndexingRequestConsumerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn consumer_config(json: serde_json::Value) -> IndexingRequestConsumerConfig {
+        serde_json::from_value(json).expect("deserializes")
+    }
+
+    #[test]
+    fn indexing_request_consumer_config_defaults_and_validation() {
+        let config = consumer_config(serde_json::json!({
+            "kafka": { "brokers": ["localhost:9092"], "topic": "t" },
+            "requested_by": "0x8f8c426f956876325b1e037c6eae9b189952994c",
+        }));
+        assert!(
+            !config.enabled,
+            "the consumer must be off unless opted into"
+        );
+        assert_eq!(config.max_wait, Duration::from_secs(5));
+        assert_eq!(config.fetch_max_bytes, 1_048_576);
+        assert!(config.validate().is_ok());
+
+        // Validation runs even for a disabled section, so broken values are
+        // caught at startup rather than the day the flag flips.
+        let broken = consumer_config(serde_json::json!({
+            "enabled": false,
+            "kafka": { "brokers": ["localhost:9092"], "topic": "t" },
+            "requested_by": "0x0000000000000000000000000000000000000000",
+        }));
+        assert!(broken.validate().unwrap_err().contains("requested_by"));
+
+        let no_brokers = consumer_config(serde_json::json!({
+            "kafka": { "brokers": [], "topic": "t" },
+            "requested_by": "0x8f8c426f956876325b1e037c6eae9b189952994c",
+        }));
+        assert!(no_brokers.validate().unwrap_err().contains("brokers"));
+
+        let tiny_fetch = consumer_config(serde_json::json!({
+            "kafka": { "brokers": ["localhost:9092"], "topic": "t" },
+            "requested_by": "0x8f8c426f956876325b1e037c6eae9b189952994c",
+            "fetch_max_bytes": 512,
+        }));
+        assert!(
+            tiny_fetch
+                .validate()
+                .unwrap_err()
+                .contains("fetch_max_bytes")
+        );
+    }
 
     #[test]
     fn test_dips_agreement_config_deserialization() {

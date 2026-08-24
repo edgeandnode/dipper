@@ -40,6 +40,13 @@ const CONNECT_MAX_RETRIES: u32 = 5;
 /// Delay before retrying after a fetch or apply failure.
 const RETRY_BACKOFF: Duration = Duration::from_secs(5);
 
+/// Pause after a fetch below the high watermark that returned no usable
+/// records, so a run of dropped batches cannot spin the loop hot.
+const EMPTY_FETCH_PAUSE: Duration = Duration::from_secs(1);
+
+/// How often to re-read topic metadata to notice a partition count change.
+const PARTITION_METADATA_CHECK_INTERVAL: Duration = Duration::from_secs(300);
+
 /// Handle for controlling the indexing request consumer lifecycle
 #[derive(Clone)]
 pub struct Handle {
@@ -88,6 +95,10 @@ pub struct Ctx<R, W> {
     /// The protocol network chain id (signer chain id), for validating the
     /// envelope's network and stamping emitted lifecycle events
     pub protocol_chain_id: ChainId,
+    /// Ceiling on the indexer count a consumed request may ask for; larger
+    /// counts are clamped with a warning. Kafka records carry no signature,
+    /// so this door gets a cap the signed admin RPC does not need.
+    pub max_candidates: usize,
     /// Service configuration
     pub config: IndexingRequestConsumerConfig,
 }
@@ -128,6 +139,7 @@ where
                 ctx.worker_queue.clone(),
                 Arc::clone(&ctx.events),
                 ctx.protocol_chain_id,
+                ctx.max_candidates,
                 ctx.config.clone(),
                 shutdown_rx.clone(),
             ));
@@ -135,20 +147,39 @@ where
 
         // Partition loops only return on shutdown, so one finishing early means
         // it panicked or hit a bug; tear the service down so the process
-        // restarts instead of consuming a partial set of partitions.
-        let result = tokio::select! {
-            _ = rx_stop.recv() => Ok(()),
-            joined = tasks.join_next() => match joined {
-                Some(Ok(())) => Err(anyhow::anyhow!(
-                    "an indexing request consumer partition loop exited unexpectedly"
-                )),
-                Some(Err(err)) => Err(anyhow::anyhow!(
-                    "an indexing request consumer partition loop panicked: {err}"
-                )),
-                None => Err(anyhow::anyhow!(
-                    "the indexing request consumer had no partition loops to run"
-                )),
-            },
+        // restarts instead of consuming a partial set of partitions. The
+        // metadata timer notices a topic growing partitions: new partitions
+        // would otherwise be consumed by nobody, silently losing requests, so
+        // that also restarts the service to pick up the full layout.
+        let serving = tasks.len();
+        let mut metadata_check = tokio::time::interval(PARTITION_METADATA_CHECK_INTERVAL);
+        metadata_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let result = loop {
+            tokio::select! {
+                _ = rx_stop.recv() => break Ok(()),
+                joined = tasks.join_next() => break match joined {
+                    Some(Ok(())) => Err(anyhow::anyhow!(
+                        "an indexing request consumer partition loop exited unexpectedly"
+                    )),
+                    Some(Err(err)) => Err(anyhow::anyhow!(
+                        "an indexing request consumer partition loop panicked: {err}"
+                    )),
+                    None => Err(anyhow::anyhow!(
+                        "the indexing request consumer had no partition loops to run"
+                    )),
+                },
+                _ = metadata_check.tick() => match consumer.current_partition_count().await {
+                    Ok(count) if count != serving => break Err(anyhow::anyhow!(
+                        "topic '{}' now has {count} partitions but this consumer serves {serving}; \
+                         restarting to consume the full set",
+                        consumer.topic()
+                    )),
+                    Ok(_) => {}
+                    Err(err) => {
+                        tracing::warn!(error = %err, "failed to re-check topic partition metadata");
+                    }
+                },
+            }
         };
 
         let _ = shutdown_tx.send(true);
@@ -203,8 +234,11 @@ async fn connect_with_retries(
 }
 
 /// Consumes one partition sequentially: fetch from the persisted offset, apply
-/// each record, then persist the offset past it (at-least-once; redelivery is
-/// safe because an unchanged target count is a registry no-op).
+/// each record, then persist the offset past it. Delivery is at-least-once;
+/// redelivering an open request's count is a registry no-op, though a replay
+/// reaching back past a cancellation briefly re-opens it until the cancel
+/// replays too, which is why re-anchoring below never rewinds further than
+/// the broker forces it to.
 #[allow(clippy::too_many_arguments)]
 async fn partition_loop<R, W>(
     consumer: Arc<KafkaConsumer>,
@@ -213,6 +247,7 @@ async fn partition_loop<R, W>(
     worker_queue: W,
     events: Arc<dyn SubgraphIndexingAgreementEventsProducer>,
     protocol_chain_id: ChainId,
+    max_candidates: usize,
     config: IndexingRequestConsumerConfig,
     mut shutdown_rx: watch::Receiver<bool>,
 ) where
@@ -258,24 +293,46 @@ async fn partition_loop<R, W>(
             fetch = consumer.fetch(partition, next_offset, config.fetch_max_bytes, max_wait_ms) => fetch,
         };
 
-        let records = match fetch {
-            Ok((records, _high_watermark)) => records,
+        let (records, high_watermark) = match fetch {
+            Ok((records, high_watermark)) => (records, high_watermark),
             Err(err) if err.is_offset_out_of_range() => {
-                // Retention deleted records under the cursor; re-anchor to the
-                // earliest still-available record rather than spinning forever.
-                match consumer.offset(partition, OffsetAt::Earliest).await {
-                    Ok(earliest) => {
+                // The broker refuses a cursor outside its retained range: below
+                // the log start when retention deleted records, or above the
+                // log end when the topic was recreated or truncated. Clamp to
+                // the nearest live edge; always rewinding to earliest would
+                // replay the whole retained topic in the truncation case.
+                let range = match consumer.offset(partition, OffsetAt::Earliest).await {
+                    Ok(earliest) => match consumer.offset(partition, OffsetAt::Latest).await {
+                        Ok(latest) => Some((earliest, latest)),
+                        Err(err) => {
+                            tracing::error!(partition, error = %err, "failed to query latest offset");
+                            None
+                        }
+                    },
+                    Err(err) => {
+                        tracing::error!(partition, error = %err, "failed to query earliest offset");
+                        None
+                    }
+                };
+                match range {
+                    Some((earliest, latest)) => {
+                        let re_anchored = if next_offset < earliest {
+                            earliest
+                        } else {
+                            latest
+                        };
                         tracing::warn!(
                             partition,
                             stale_offset = next_offset,
                             earliest,
+                            latest,
+                            re_anchored,
                             "consumer offset fell outside the broker's retained range; re-anchoring"
                         );
-                        next_offset = earliest;
+                        next_offset = re_anchored;
                         persist_offset(&registry, &topic, partition, next_offset).await;
                     }
-                    Err(err) => {
-                        tracing::error!(partition, error = %err, "failed to query earliest offset");
+                    None => {
                         if sleep_or_shutdown(&mut shutdown_rx, RETRY_BACKOFF).await {
                             return;
                         }
@@ -292,6 +349,7 @@ async fn partition_loop<R, W>(
             }
         };
 
+        let records_was_empty = records.is_empty();
         for record_and_offset in records {
             let offset = record_and_offset.offset;
             match decode_propose(record_and_offset.record.value.as_deref(), &expected_network) {
@@ -319,7 +377,10 @@ async fn partition_loop<R, W>(
                         &events,
                         protocol_chain_id,
                         config.requested_by,
+                        max_candidates,
                         &target,
+                        partition,
+                        offset,
                         &mut shutdown_rx,
                     )
                     .await;
@@ -333,6 +394,21 @@ async fn partition_loop<R, W>(
 
             next_offset = offset + 1;
             persist_offset(&registry, &topic, partition, next_offset).await;
+        }
+
+        // An empty fetch below the high watermark (e.g. a batch of records the
+        // client filtered out) would otherwise loop again instantly: pause so
+        // a run of them cannot spin hot.
+        if records_was_empty && high_watermark > next_offset {
+            tracing::debug!(
+                partition,
+                next_offset,
+                high_watermark,
+                "fetch below the high watermark returned no records; pausing"
+            );
+            if sleep_or_shutdown(&mut shutdown_rx, EMPTY_FETCH_PAUSE).await {
+                return;
+            }
         }
     }
 }
@@ -373,19 +449,39 @@ async fn sleep_or_shutdown(shutdown_rx: &mut watch::Receiver<bool>, delay: Durat
 /// (nothing was committed); a queue failure retries only the job push, because
 /// the row change is already committed and re-running the apply would land on
 /// the registry's no-op path and silently drop the reassessment.
+#[allow(clippy::too_many_arguments)]
 async fn apply_target_with_retries<R, W>(
     registry: &R,
     worker_queue: &W,
     events: &Arc<dyn SubgraphIndexingAgreementEventsProducer>,
     protocol_chain_id: ChainId,
     requested_by: Address,
+    max_candidates: usize,
     target: &ProposedTarget,
+    partition: i32,
+    offset: i64,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> bool
 where
     R: IndexingRequestRegistry + Send + Sync,
     W: WorkerQueue + Send + Sync,
 {
+    // Cap the count from the wire: this door has no signature to vouch for the
+    // sender, so an absurd target must not reach indexer selection unclamped.
+    // 0 passes through untouched, since it is the cancellation shape.
+    let num_candidates = if target.num_candidates > max_candidates {
+        tracing::warn!(
+            partition,
+            offset,
+            requested = target.num_candidates,
+            max_candidates,
+            "clamping the requested indexer count to the configured maximum"
+        );
+        max_candidates
+    } else {
+        target.num_candidates
+    };
+
     let queue_retry_id = loop {
         let result = apply_set_indexing_target(
             registry,
@@ -396,7 +492,7 @@ where
                 requested_by,
                 deployment_id: target.deployment_id,
                 deployment_chain_id: target.deployment_chain_id,
-                num_candidates: target.num_candidates,
+                num_candidates,
                 // Interactive: a developer just asked for this in Studio.
                 priority: JobPriority::Interactive,
             },
@@ -405,7 +501,13 @@ where
 
         match result {
             Ok(_) => return true,
-            Err(ApplyError::Registry(_)) => {
+            Err(err @ ApplyError::Registry(_)) => {
+                tracing::error!(
+                    partition,
+                    offset,
+                    error = %err,
+                    "failed to apply indexing request, retrying"
+                );
                 if sleep_or_shutdown(shutdown_rx, RETRY_BACKOFF).await {
                     return false;
                 }
@@ -416,26 +518,45 @@ where
 
     loop {
         if sleep_or_shutdown(shutdown_rx, RETRY_BACKOFF).await {
-            return false;
+            // One last immediate attempt: the row change is already committed,
+            // so leaving without the job strands the request until the daily
+            // reassignment sweep next queues it.
+            return retry_reassess_push(worker_queue, queue_retry_id, num_candidates, target).await;
         }
-        match worker_queue
-            .reassess_indexing_request(
-                queue_retry_id,
-                target.deployment_id,
-                target.deployment_chain_id,
-                target.num_candidates,
-                JobPriority::Interactive,
-            )
-            .await
-        {
-            Ok(_) => return true,
-            Err(err) => {
-                tracing::error!(
-                    indexing_request_id = %queue_retry_id,
-                    error = ?err,
-                    "retrying the reassessment job push"
-                );
-            }
+        if retry_reassess_push(worker_queue, queue_retry_id, num_candidates, target).await {
+            return true;
+        }
+    }
+}
+
+/// One attempt at the reassessment push that failed inside the apply.
+async fn retry_reassess_push<W>(
+    worker_queue: &W,
+    id: dipper_core::ids::IndexingRequestId,
+    num_candidates: usize,
+    target: &ProposedTarget,
+) -> bool
+where
+    W: WorkerQueue + Send + Sync,
+{
+    match worker_queue
+        .reassess_indexing_request(
+            id,
+            target.deployment_id,
+            target.deployment_chain_id,
+            num_candidates,
+            JobPriority::Interactive,
+        )
+        .await
+    {
+        Ok(_) => true,
+        Err(err) => {
+            tracing::error!(
+                indexing_request_id = %id,
+                error = ?err,
+                "retrying the reassessment job push"
+            );
+            false
         }
     }
 }
@@ -534,6 +655,9 @@ mod tests {
     const INDEXED_CHAIN_ID: ChainId = 1;
 
     const QM_HASH: &str = "QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv";
+
+    /// Ceiling on requested indexer counts in these tests.
+    const TEST_MAX_CANDIDATES: usize = 10;
 
     fn requester() -> Address {
         "0x8f8c426f956876325b1e037c6eae9b189952994c"
@@ -921,7 +1045,10 @@ mod tests {
             &events,
             PROTOCOL_CHAIN_ID,
             requester(),
+            TEST_MAX_CANDIDATES,
             &target,
+            0,
+            0,
             &mut shutdown_rx,
         )
         .await;
@@ -1055,6 +1182,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_oversized_count_is_clamped_to_the_configured_maximum() {
+        let registry = MockRegistry::returning(SetTargetOutcome::Inserted {
+            id: IndexingRequestId::new(),
+        });
+        let worker = MockWorker::new();
+
+        let (applied, _) = run_apply(&registry, &worker, 5_000_000).await;
+
+        assert!(applied);
+        assert_eq!(
+            registry.calls()[0].3,
+            TEST_MAX_CANDIDATES,
+            "the registry must see the clamped count, not the wire value"
+        );
+        assert_eq!(worker.reassessments()[0].3, TEST_MAX_CANDIDATES);
+    }
+
+    #[tokio::test]
     async fn a_pending_shutdown_stops_retrying_without_applying() {
         // Every registry call fails, so only shutdown can end the retry loop.
         let registry = MockRegistry::scripted(vec![]);
@@ -1079,7 +1224,10 @@ mod tests {
             &events,
             PROTOCOL_CHAIN_ID,
             requester(),
+            TEST_MAX_CANDIDATES,
             &target,
+            0,
+            0,
             &mut shutdown_rx,
         )
         .await;
@@ -1106,6 +1254,11 @@ mod tests {
                     .map(|broker| broker.trim().to_string())
                     .collect(),
             ),
+            // REQUIRE_REDPANDA turns the silent skip into a failure, so CI
+            // cannot go green while accidentally testing nothing.
+            _ if std::env::var("REQUIRE_REDPANDA").is_ok() => {
+                panic!("REQUIRE_REDPANDA is set but REDPANDA_BROKERS is not")
+            }
             _ => {
                 eprintln!("skipping Redpanda-backed test: REDPANDA_BROKERS is not set");
                 None
@@ -1208,6 +1361,7 @@ mod tests {
                 sasl_password: None,
                 tls_enabled: false,
                 tls_ca_cert_path: None,
+                connect_timeout_secs: 60,
             },
             requested_by,
             max_wait: Duration::from_secs(1),
@@ -1222,6 +1376,7 @@ mod tests {
                 worker_queue: worker,
                 events,
                 protocol_chain_id: 42161,
+                max_candidates: 10,
                 config: consumer_config.clone(),
             });
             (handle, tokio::spawn(service))
