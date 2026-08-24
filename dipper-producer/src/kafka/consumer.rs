@@ -202,7 +202,10 @@ async fn discover_partitions(
     client: &Client,
     topic: &str,
 ) -> Result<std::collections::BTreeSet<i32>, ConsumerError> {
-    let topics = client.list_topics().await.map_err(ConsumerError::Metadata)?;
+    let topics = client
+        .list_topics()
+        .await
+        .map_err(ConsumerError::Metadata)?;
     topics
         .into_iter()
         .find(|t| t.name == topic)
