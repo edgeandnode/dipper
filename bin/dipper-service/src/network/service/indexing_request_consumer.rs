@@ -47,6 +47,10 @@ const EMPTY_FETCH_PAUSE: Duration = Duration::from_secs(1);
 /// How often to re-read topic metadata to notice a partition count change.
 const PARTITION_METADATA_CHECK_INTERVAL: Duration = Duration::from_secs(300);
 
+/// Bound on one metadata re-read. Deliberately shorter than the 5-second stop
+/// cap, since the stop channel is not polled while the read is in flight.
+const PARTITION_METADATA_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Handle for controlling the indexing request consumer lifecycle
 #[derive(Clone)]
 pub struct Handle {
@@ -168,15 +172,34 @@ where
                         "the indexing request consumer had no partition loops to run"
                     )),
                 },
-                _ = metadata_check.tick() => match consumer.current_partition_count().await {
-                    Ok(count) if count != serving => break Err(anyhow::anyhow!(
-                        "topic '{}' now has {count} partitions but this consumer serves {serving}; \
-                         restarting to consume the full set",
-                        consumer.topic()
-                    )),
-                    Ok(_) => {}
-                    Err(err) => {
-                        tracing::warn!(error = %err, "failed to re-check topic partition metadata");
+                _ = metadata_check.tick() => {
+                    let count = tokio::time::timeout(
+                        PARTITION_METADATA_CHECK_TIMEOUT,
+                        consumer.current_partition_count(),
+                    )
+                    .await;
+                    match count {
+                        Ok(Ok(count)) if count > serving => break Err(anyhow::anyhow!(
+                            "topic '{}' now has {count} partitions but this consumer serves \
+                             {serving}; restarting to consume the full set",
+                            consumer.topic()
+                        )),
+                        // Kafka partitions only ever grow, so a lower count is a
+                        // stale or partial metadata read, never a real change;
+                        // restarting the process over it would be a false alarm.
+                        Ok(Ok(count)) if count < serving => tracing::warn!(
+                            count,
+                            serving,
+                            "metadata reported fewer partitions than this consumer serves; \
+                             ignoring the stale read"
+                        ),
+                        Ok(Ok(_)) => {}
+                        Ok(Err(err)) => {
+                            tracing::warn!(error = %err, "failed to re-check topic partition metadata");
+                        }
+                        Err(_) => {
+                            tracing::warn!("topic partition metadata re-check timed out");
+                        }
                     }
                 },
             }

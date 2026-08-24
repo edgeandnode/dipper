@@ -1424,6 +1424,14 @@ impl IndexingRequestConsumerConfig {
                 "indexing_request_consumer.kafka.brokers must list at least 1 broker".to_string(),
             );
         }
+        // 0 makes every connect time out instantly, so startup would fail with
+        // a message blaming the broker instead of the config typo.
+        if self.kafka.connect_timeout_secs == 0 {
+            return Err(
+                "indexing_request_consumer.kafka.connect_timeout_secs must be at least 1"
+                    .to_string(),
+            );
+        }
         // A zero requester is almost certainly an unset value, and it would
         // silently key every consumed request under the zero address.
         if self.requested_by == Address::ZERO {
@@ -1486,6 +1494,17 @@ mod tests {
             "requested_by": "0x8f8c426f956876325b1e037c6eae9b189952994c",
         }));
         assert!(no_brokers.validate().unwrap_err().contains("brokers"));
+
+        let zero_connect_timeout = consumer_config(serde_json::json!({
+            "kafka": { "brokers": ["localhost:9092"], "topic": "t", "connect_timeout_secs": 0 },
+            "requested_by": "0x8f8c426f956876325b1e037c6eae9b189952994c",
+        }));
+        assert!(
+            zero_connect_timeout
+                .validate()
+                .unwrap_err()
+                .contains("connect_timeout_secs")
+        );
 
         let tiny_fetch = consumer_config(serde_json::json!({
             "kafka": { "brokers": ["localhost:9092"], "topic": "t" },
