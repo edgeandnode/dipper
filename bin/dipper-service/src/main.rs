@@ -25,6 +25,7 @@ mod health;
 mod indexer_rpc_client;
 mod network;
 mod registry;
+mod set_indexing_target;
 mod signing;
 mod supervisor;
 #[cfg(test)]
