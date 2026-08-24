@@ -996,4 +996,230 @@ mod tests {
         assert!(worker.reassessments().is_empty());
         assert!(events.is_empty());
     }
+
+    // -------- Redpanda-backed service test --------
+
+    use dipper_producer::{
+        events::SubgraphIndexingAgreementsEventsEmitter,
+        kafka::{KafkaConfig, KafkaConsumerConfig, KafkaProducer},
+    };
+
+    use crate::registry::RegistryProvider;
+
+    fn redpanda_brokers() -> Option<Vec<String>> {
+        match std::env::var("REDPANDA_BROKERS") {
+            Ok(value) if !value.trim().is_empty() => Some(
+                value
+                    .split(',')
+                    .map(|broker| broker.trim().to_string())
+                    .collect(),
+            ),
+            _ => {
+                eprintln!("skipping Redpanda-backed test: REDPANDA_BROKERS is not set");
+                None
+            }
+        }
+    }
+
+    fn unique_topic() -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before unix epoch")
+            .as_nanos();
+        format!("dipper.test.consumer.{}.{nanos}", std::process::id())
+    }
+
+    async fn create_topic(brokers: &[String], topic: &str) {
+        let client = rskafka::client::ClientBuilder::new(brokers.to_vec())
+            .build()
+            .await
+            .expect("connect to broker");
+        client
+            .controller_client()
+            .expect("controller client")
+            .create_topic(topic, 1, 1, 5_000)
+            .await
+            .expect("create topic");
+    }
+
+    fn propose_bytes(qm_hash: &str, count: i32) -> Vec<u8> {
+        studio::SubgraphIndexingRequestEvent {
+            event_id: "01912345-6789-7abc-def0-123456789abc".to_string(),
+            event_type: EVENT_TYPE_PROPOSE.to_string(),
+            event_version: "1.0".to_string(),
+            timestamp: "2026-08-24T10:30:00.123Z".to_string(),
+            subgraph_deployment_qm_hash: qm_hash.to_string(),
+            the_graph_network_caip2id: "eip155:42161".to_string(),
+            payload: Some(
+                studio::subgraph_indexing_request_event::Payload::SubgraphIndexingRequestPropose(
+                    studio::SubgraphIndexingRequestPropose {
+                        indexing_agreements_requested: count,
+                        indexed_network_caip2id: "eip155:1".to_string(),
+                    },
+                ),
+            ),
+        }
+        .encode_to_vec()
+    }
+
+    async fn wait_until(what: &str, mut check: impl AsyncFnMut() -> bool) {
+        for _ in 0..300 {
+            if check().await {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn it_consumer_resumes_from_persisted_offsets_across_restarts() {
+        let Some(brokers) = redpanda_brokers() else {
+            return;
+        };
+
+        let topic = unique_topic();
+        create_topic(&brokers, &topic).await;
+
+        let temp_db = pgtemp::PgTempDB::new();
+        let db = sqlx::Pool::connect(&temp_db.connection_uri())
+            .await
+            .expect("connect to temp db");
+        dipper_pgregistry::run_db_migrations(&db)
+            .await
+            .expect("run migrations");
+        let provider = RegistryProvider::new(db.clone());
+
+        let requested_by: Address = "0x8f8c426f956876325b1e037c6eae9b189952994c"
+            .parse()
+            .expect("valid address");
+        let deployment_a = deployment_id!("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv");
+        let deployment_b = deployment_id!("QmXbNL4EMkQ6DAPUcBjYSDXZJdpu1Kb1XkKvNvS8JdT7Hs");
+
+        let producer_config: KafkaConfig = serde_json::from_value(serde_json::json!({
+            "brokers": brokers,
+            "topic": topic,
+            "partitions": 1,
+        }))
+        .expect("valid producer config");
+        let producer = KafkaProducer::new(&producer_config)
+            .await
+            .expect("producer connects");
+
+        let consumer_config = IndexingRequestConsumerConfig {
+            enabled: true,
+            kafka: KafkaConsumerConfig {
+                brokers: brokers.clone(),
+                topic: topic.clone(),
+                sasl_mechanism: None,
+                sasl_username: None,
+                sasl_password: None,
+                tls_enabled: false,
+                tls_ca_cert_path: None,
+            },
+            requested_by,
+            max_wait: Duration::from_secs(1),
+            fetch_max_bytes: 1_048_576,
+        };
+
+        let run_service = |worker: MockWorker| {
+            let events: Arc<dyn SubgraphIndexingAgreementEventsProducer> =
+                Arc::new(SubgraphIndexingAgreementsEventsEmitter::disabled());
+            let (handle, service) = new(Ctx {
+                registry: provider.clone(),
+                worker_queue: worker,
+                events,
+                protocol_chain_id: 42161,
+                config: consumer_config.clone(),
+            });
+            (handle, tokio::spawn(service))
+        };
+
+        // A propose published before the consumer ever ran must still be
+        // picked up: a fresh partition starts from the earliest record.
+        producer
+            .send(
+                "eip155:42161/QmUzRg.../request",
+                &propose_bytes("QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv", 2),
+            )
+            .await
+            .expect("produce event A");
+
+        let worker_run_1 = MockWorker::new();
+        let (handle, task) = run_service(worker_run_1.clone());
+        wait_until("request A to be registered", async || {
+            !provider
+                .get_indexing_requests_by_deployment_id(&deployment_a)
+                .await
+                .expect("query requests")
+                .is_empty()
+        })
+        .await;
+        wait_until("offset 1 to be persisted", async || {
+            provider
+                .get_kafka_consumer_offset(&topic, 0)
+                .await
+                .expect("query offset")
+                == Some(1)
+        })
+        .await;
+        handle.stop().await;
+        task.await.expect("service task").expect("service result");
+
+        assert_eq!(
+            worker_run_1.reassessments().len(),
+            1,
+            "run 1 applied exactly the 1 produced event"
+        );
+
+        // Published while the consumer is down; run 2 must pick it up from the
+        // persisted offset without re-applying event A.
+        producer
+            .send(
+                "eip155:42161/QmXbNL.../request",
+                &propose_bytes("QmXbNL4EMkQ6DAPUcBjYSDXZJdpu1Kb1XkKvNvS8JdT7Hs", 3),
+            )
+            .await
+            .expect("produce event B");
+
+        let worker_run_2 = MockWorker::new();
+        let (handle, task) = run_service(worker_run_2.clone());
+        wait_until("request B to be registered", async || {
+            !provider
+                .get_indexing_requests_by_deployment_id(&deployment_b)
+                .await
+                .expect("query requests")
+                .is_empty()
+        })
+        .await;
+        handle.stop().await;
+        task.await.expect("service task").expect("service result");
+
+        let run_2_reassessments = worker_run_2.reassessments();
+        assert_eq!(
+            run_2_reassessments.len(),
+            1,
+            "run 2 resumed past event A and applied only event B: {run_2_reassessments:?}"
+        );
+        assert_eq!(run_2_reassessments[0].1, deployment_b);
+        assert_eq!(run_2_reassessments[0].3, 3);
+
+        assert_eq!(
+            provider
+                .get_kafka_consumer_offset(&topic, 0)
+                .await
+                .expect("query offset"),
+            Some(2),
+            "both records are committed"
+        );
+        assert_eq!(
+            provider
+                .get_indexing_requests_by_deployment_id(&deployment_a)
+                .await
+                .expect("query requests")
+                .len(),
+            1,
+            "event A was applied exactly once across both runs"
+        );
+    }
 }
