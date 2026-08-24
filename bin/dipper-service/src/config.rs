@@ -9,7 +9,7 @@ use std::{
 };
 
 use dipper_core::config::{Hidden, HiddenSecretKeyAsHexStr};
-use dipper_producer::kafka::KafkaConfig;
+use dipper_producer::kafka::{KafkaConfig, KafkaConsumerConfig};
 use serde_with::serde_as;
 use thegraph_core::alloy::{
     primitives::{Address, ChainId, U256},
@@ -86,6 +86,10 @@ pub struct Config {
     /// Events configuration for sending dipper events on the configured topic for streaming
     #[serde(default)]
     pub event_streaming_config: Option<EventStreamingConfig>,
+    /// The Studio indexing request consumer configuration (reads subgraph
+    /// indexing requests from a Redpanda topic; absent means off)
+    #[serde(default)]
+    pub indexing_request_consumer: Option<IndexingRequestConsumerConfig>,
     /// Number of concurrent worker loops draining the job queue (default: 8).
     /// Each loop can hold up to three pooled DB connections at once and shares
     /// the pool with the registry and background services; size accordingly.
@@ -1367,6 +1371,79 @@ impl EventStreamingConfig {
 
 pub fn default_event_queue_capacity() -> NonZeroUsize {
     NonZeroUsize::new(1024).expect("default event queue capacity is non-zero")
+}
+
+/// Configuration for the Studio indexing request consumer, which reads
+/// subgraph indexing request events from a Redpanda topic and applies them
+/// through the same path as the admin RPC.
+#[serde_as]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexingRequestConsumerConfig {
+    /// Whether the consumer is enabled (default: true when the section is present)
+    #[serde(default = "default_indexing_request_consumer_enabled")]
+    pub enabled: bool,
+
+    /// Kafka connection settings and the topic Studio produces on. The topic
+    /// is required with no default; a wrong or missing name fails at startup.
+    pub kafka: KafkaConsumerConfig,
+
+    /// The identity recorded as the requester on consumed requests, since
+    /// Kafka messages carry no signature to recover one from. Use the address
+    /// Studio signs the admin RPC with, so both doors share request rows.
+    pub requested_by: Address,
+
+    /// How long a fetch waits server-side for new records before returning
+    /// empty, in seconds (default: 5).
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    #[serde(default = "default_indexing_request_consumer_max_wait")]
+    pub max_wait: Duration,
+
+    /// Maximum bytes per fetch (default: 1,048,576).
+    #[serde(default = "default_indexing_request_consumer_fetch_max_bytes")]
+    pub fetch_max_bytes: i32,
+}
+
+fn default_indexing_request_consumer_enabled() -> bool {
+    true
+}
+
+fn default_indexing_request_consumer_max_wait() -> Duration {
+    Duration::from_secs(5)
+}
+
+fn default_indexing_request_consumer_fetch_max_bytes() -> i32 {
+    1_048_576
+}
+
+impl IndexingRequestConsumerConfig {
+    /// Reject a configuration the consumer cannot run with.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        // A zero requester is almost certainly an unset value, and it would
+        // silently key every consumed request under the zero address.
+        if self.requested_by == Address::ZERO {
+            return Err(
+                "indexing_request_consumer.requested_by must be a non-zero address".to_string(),
+            );
+        }
+        if self.fetch_max_bytes <= 0 {
+            return Err(format!(
+                "indexing_request_consumer.fetch_max_bytes ({}) must be positive",
+                self.fetch_max_bytes
+            ));
+        }
+        if self.max_wait.is_zero() || self.max_wait.as_millis() > i32::MAX as u128 {
+            return Err(format!(
+                "indexing_request_consumer.max_wait ({}s) must be between 1 second and {} seconds",
+                self.max_wait.as_secs(),
+                i32::MAX / 1_000
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

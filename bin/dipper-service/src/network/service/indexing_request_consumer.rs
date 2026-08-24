@@ -1,0 +1,999 @@
+//! Consumes the subgraph indexing request events Studio produces on Redpanda
+//! and applies each one as a set-indexing-target change, making the topic a
+//! second front door to the same path the admin RPC serves.
+
+use std::{future::Future, sync::Arc, time::Duration};
+
+use async_trait::async_trait;
+use dipper_producer::{
+    events::SubgraphIndexingAgreementEventsProducer,
+    kafka::{ConsumerError, KafkaConsumer, OffsetAt},
+    prost::Message as _,
+    proto::studio,
+};
+use thegraph_core::{
+    DeploymentId,
+    alloy::primitives::{Address, ChainId},
+};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinSet,
+};
+
+use crate::{
+    config::IndexingRequestConsumerConfig,
+    registry::IndexingRequestRegistry,
+    set_indexing_target::{SetIndexingTarget, apply_set_indexing_target},
+    worker::service::{JobPriority, WorkerQueue},
+};
+
+/// The propose event type Studio sends.
+const EVENT_TYPE_PROPOSE: &str = "subgraph.indexing.request.propose";
+
+/// Studio's producer also defines a terminate event, but nothing sends it:
+/// cancellation is a propose with a count of 0. Logged and skipped if seen.
+const EVENT_TYPE_TERMINATE: &str = "subgraph.indexing.agreements.terminate";
+
+/// Extra connection attempts after the first before startup fails visibly.
+const CONNECT_MAX_RETRIES: u32 = 5;
+
+/// Delay before retrying after a fetch or apply failure.
+const RETRY_BACKOFF: Duration = Duration::from_secs(5);
+
+/// Handle for controlling the indexing request consumer lifecycle
+#[derive(Clone)]
+pub struct Handle {
+    tx_stop: mpsc::Sender<()>,
+}
+
+impl Handle {
+    /// Stop the consumer gracefully
+    pub async fn stop(&self) {
+        if self.tx_stop.is_closed() {
+            return;
+        }
+
+        let _ = self.tx_stop.send(()).await;
+        self.tx_stop.closed().await;
+    }
+}
+
+/// Registry for persisting per-partition consumer progress.
+#[async_trait]
+pub trait KafkaConsumerOffsetRegistry {
+    /// Get the next offset to fetch for a topic partition, `None` on first run.
+    async fn get_kafka_consumer_offset(
+        &self,
+        topic: &str,
+        partition_id: i32,
+    ) -> Result<Option<i64>, crate::registry::Error>;
+
+    /// Record the next offset to fetch for a topic partition.
+    async fn set_kafka_consumer_offset(
+        &self,
+        topic: &str,
+        partition_id: i32,
+        next_offset: i64,
+    ) -> Result<(), crate::registry::Error>;
+}
+
+/// Context required by the indexing request consumer service
+pub struct Ctx<R, W> {
+    /// Registry for indexing requests and consumer offsets
+    pub registry: R,
+    /// Worker queue for the reassessment jobs that follow an applied request
+    pub worker_queue: W,
+    /// Lifecycle events emitter (request-received on newly inserted requests)
+    pub events: Arc<dyn SubgraphIndexingAgreementEventsProducer>,
+    /// The protocol network chain id (signer chain id), for validating the
+    /// envelope's network and stamping emitted lifecycle events
+    pub protocol_chain_id: ChainId,
+    /// Service configuration
+    pub config: IndexingRequestConsumerConfig,
+}
+
+/// Create a new indexing request consumer service: a control handle plus a
+/// future to spawn that reads Studio's propose events from Kafka, applies each
+/// as a set-indexing-target change, and records its progress per partition.
+pub fn new<R, W>(ctx: Ctx<R, W>) -> (Handle, impl Future<Output = anyhow::Result<()>>)
+where
+    R: IndexingRequestRegistry + KafkaConsumerOffsetRegistry + Clone + Send + Sync + 'static,
+    W: WorkerQueue + Clone + Send + Sync + 'static,
+{
+    let (tx_stop, mut rx_stop) = mpsc::channel(1);
+
+    let service = async move {
+        let consumer = match connect_with_retries(&ctx.config, &mut rx_stop).await {
+            Ok(Some(consumer)) => Arc::new(consumer),
+            // Stop was requested while still connecting; a clean exit.
+            Ok(None) => return Ok(()),
+            Err(err) => return Err(err),
+        };
+
+        let partitions = consumer.partitions();
+        tracing::info!(
+            topic = consumer.topic(),
+            partitions = partitions.len(),
+            requested_by = %ctx.config.requested_by,
+            "indexing request consumer started"
+        );
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let mut tasks: JoinSet<()> = JoinSet::new();
+        for partition in partitions {
+            tasks.spawn(partition_loop(
+                Arc::clone(&consumer),
+                partition,
+                ctx.registry.clone(),
+                ctx.worker_queue.clone(),
+                Arc::clone(&ctx.events),
+                ctx.protocol_chain_id,
+                ctx.config.clone(),
+                shutdown_rx.clone(),
+            ));
+        }
+
+        // Partition loops only return on shutdown, so one finishing early means
+        // it panicked or hit a bug; tear the service down so the process
+        // restarts instead of consuming a partial set of partitions.
+        let result = tokio::select! {
+            _ = rx_stop.recv() => Ok(()),
+            joined = tasks.join_next() => match joined {
+                Some(Ok(())) => Err(anyhow::anyhow!(
+                    "an indexing request consumer partition loop exited unexpectedly"
+                )),
+                Some(Err(err)) => Err(anyhow::anyhow!(
+                    "an indexing request consumer partition loop panicked: {err}"
+                )),
+                None => Err(anyhow::anyhow!(
+                    "the indexing request consumer had no partition loops to run"
+                )),
+            },
+        };
+
+        let _ = shutdown_tx.send(true);
+        while tasks.join_next().await.is_some() {}
+
+        tracing::info!("indexing request consumer stopped");
+        result
+    };
+
+    (Handle { tx_stop }, service)
+}
+
+/// Connects to the brokers, retrying transient failures a bounded number of
+/// times. A missing topic fails immediately: it is configuration, and reading
+/// from a wrong or absent topic must be loud, not an idle consumer.
+async fn connect_with_retries(
+    config: &IndexingRequestConsumerConfig,
+    rx_stop: &mut mpsc::Receiver<()>,
+) -> anyhow::Result<Option<KafkaConsumer>> {
+    let mut attempt: u32 = 0;
+    loop {
+        match KafkaConsumer::connect(&config.kafka).await {
+            Ok(consumer) => return Ok(Some(consumer)),
+            Err(err @ ConsumerError::TopicNotFound { .. }) => {
+                return Err(anyhow::anyhow!(
+                    "indexing request consumer startup failed: {err}; check the configured topic \
+                     name against the topic Studio produces on"
+                ));
+            }
+            Err(err) if attempt < CONNECT_MAX_RETRIES => {
+                attempt += 1;
+                let delay = Duration::from_secs(2u64.pow(attempt.min(5)));
+                tracing::warn!(
+                    attempt,
+                    delay_secs = delay.as_secs(),
+                    error = %err,
+                    "indexing request consumer connect failed, retrying"
+                );
+                tokio::select! {
+                    _ = rx_stop.recv() => return Ok(None),
+                    _ = tokio::time::sleep(delay) => {}
+                }
+            }
+            Err(err) => {
+                return Err(anyhow::anyhow!(
+                    "indexing request consumer failed to connect after {} attempts: {err}",
+                    CONNECT_MAX_RETRIES + 1
+                ));
+            }
+        }
+    }
+}
+
+/// Consumes one partition sequentially: fetch from the persisted offset, apply
+/// each record, then persist the offset past it (at-least-once; redelivery is
+/// safe because an unchanged target count is a registry no-op).
+#[allow(clippy::too_many_arguments)]
+async fn partition_loop<R, W>(
+    consumer: Arc<KafkaConsumer>,
+    partition: i32,
+    registry: R,
+    worker_queue: W,
+    events: Arc<dyn SubgraphIndexingAgreementEventsProducer>,
+    protocol_chain_id: ChainId,
+    config: IndexingRequestConsumerConfig,
+    mut shutdown_rx: watch::Receiver<bool>,
+) where
+    R: IndexingRequestRegistry + KafkaConsumerOffsetRegistry + Send + Sync,
+    W: WorkerQueue + Send + Sync,
+{
+    let topic = consumer.topic().to_string();
+    let expected_network = format!("eip155:{protocol_chain_id}");
+    let max_wait_ms = config.max_wait.as_millis().min(i32::MAX as u128) as i32;
+
+    // Resume from the persisted offset; a partition never seen before starts at
+    // the earliest available record so requests published before the consumer's
+    // first deploy are not lost.
+    let mut next_offset = loop {
+        let restored = match registry.get_kafka_consumer_offset(&topic, partition).await {
+            Ok(restored) => restored,
+            Err(err) => {
+                tracing::error!(partition, error = %err, "failed to load consumer offset, retrying");
+                if sleep_or_shutdown(&mut shutdown_rx, RETRY_BACKOFF).await {
+                    return;
+                }
+                continue;
+            }
+        };
+        match restored {
+            Some(offset) => break offset,
+            None => match consumer.offset(partition, OffsetAt::Earliest).await {
+                Ok(earliest) => break earliest,
+                Err(err) => {
+                    tracing::error!(partition, error = %err, "failed to query earliest offset, retrying");
+                    if sleep_or_shutdown(&mut shutdown_rx, RETRY_BACKOFF).await {
+                        return;
+                    }
+                }
+            },
+        }
+    };
+    tracing::debug!(partition, next_offset, "partition consumer resuming");
+
+    loop {
+        let fetch = tokio::select! {
+            _ = shutdown_rx.changed() => return,
+            fetch = consumer.fetch(partition, next_offset, config.fetch_max_bytes, max_wait_ms) => fetch,
+        };
+
+        let records = match fetch {
+            Ok((records, _high_watermark)) => records,
+            Err(err) if err.is_offset_out_of_range() => {
+                // Retention deleted records under the cursor; re-anchor to the
+                // earliest still-available record rather than spinning forever.
+                match consumer.offset(partition, OffsetAt::Earliest).await {
+                    Ok(earliest) => {
+                        tracing::warn!(
+                            partition,
+                            stale_offset = next_offset,
+                            earliest,
+                            "consumer offset fell outside the broker's retained range; re-anchoring"
+                        );
+                        next_offset = earliest;
+                        persist_offset(&registry, &topic, partition, next_offset).await;
+                    }
+                    Err(err) => {
+                        tracing::error!(partition, error = %err, "failed to query earliest offset");
+                        if sleep_or_shutdown(&mut shutdown_rx, RETRY_BACKOFF).await {
+                            return;
+                        }
+                    }
+                }
+                continue;
+            }
+            Err(err) => {
+                tracing::error!(partition, error = %err, "fetch failed, backing off");
+                if sleep_or_shutdown(&mut shutdown_rx, RETRY_BACKOFF).await {
+                    return;
+                }
+                continue;
+            }
+        };
+
+        for record_and_offset in records {
+            let offset = record_and_offset.offset;
+            // Apply failures (registry or queue down) retry the same record
+            // rather than skip it: a propose must eventually take effect.
+            loop {
+                let disposition = handle_record(
+                    &registry,
+                    &worker_queue,
+                    &events,
+                    protocol_chain_id,
+                    config.requested_by,
+                    &expected_network,
+                    record_and_offset.record.value.as_deref(),
+                )
+                .await;
+
+                match disposition {
+                    Ok(Disposition::Applied) => break,
+                    Ok(Disposition::Skipped(reason)) => {
+                        tracing::warn!(
+                            topic,
+                            partition,
+                            offset,
+                            reason,
+                            key = ?record_and_offset.record.key.as_deref().map(String::from_utf8_lossy),
+                            "skipping unprocessable indexing request record"
+                        );
+                        break;
+                    }
+                    Err(err) => {
+                        tracing::error!(partition, offset, error = %err, "failed to apply indexing request, retrying");
+                        if sleep_or_shutdown(&mut shutdown_rx, RETRY_BACKOFF).await {
+                            return;
+                        }
+                    }
+                }
+            }
+
+            next_offset = offset + 1;
+            persist_offset(&registry, &topic, partition, next_offset).await;
+        }
+    }
+}
+
+/// Persist consumer progress. Failure is logged but does not halt consumption:
+/// the in-memory cursor stays correct and a later write covers the gap, at the
+/// cost of some redelivery after a restart (which is safe).
+async fn persist_offset<R: KafkaConsumerOffsetRegistry>(
+    registry: &R,
+    topic: &str,
+    partition: i32,
+    next_offset: i64,
+) {
+    if let Err(err) = registry
+        .set_kafka_consumer_offset(topic, partition, next_offset)
+        .await
+    {
+        tracing::error!(
+            topic,
+            partition,
+            next_offset,
+            error = %err,
+            "failed to persist consumer offset; progress will be re-delivered after a restart"
+        );
+    }
+}
+
+/// Wait out a backoff, returning `true` when shutdown was requested instead.
+async fn sleep_or_shutdown(shutdown_rx: &mut watch::Receiver<bool>, delay: Duration) -> bool {
+    tokio::select! {
+        _ = shutdown_rx.changed() => true,
+        _ = tokio::time::sleep(delay) => false,
+    }
+}
+
+/// What became of one record.
+#[derive(Debug, PartialEq, Eq)]
+enum Disposition {
+    /// The propose was applied through the shared set-indexing-target path.
+    Applied,
+    /// The record cannot be processed and was deliberately skipped.
+    Skipped(&'static str),
+}
+
+/// Decode and apply a single record. `Err` means a transient processing
+/// failure the caller should retry; skips are a successful `Disposition`.
+async fn handle_record<R, W>(
+    registry: &R,
+    worker_queue: &W,
+    events: &Arc<dyn SubgraphIndexingAgreementEventsProducer>,
+    protocol_chain_id: ChainId,
+    requested_by: Address,
+    expected_network: &str,
+    value: Option<&[u8]>,
+) -> Result<Disposition, crate::set_indexing_target::ApplyError>
+where
+    R: IndexingRequestRegistry + Send + Sync,
+    W: WorkerQueue + Send + Sync,
+{
+    let target = match decode_propose(value, expected_network) {
+        Ok(target) => target,
+        Err(reason) => return Ok(Disposition::Skipped(reason)),
+    };
+
+    tracing::debug!(
+        event_id = %target.event_id,
+        deployment_id = %target.deployment_id,
+        deployment_chain_id = target.deployment_chain_id,
+        num_candidates = target.num_candidates,
+        "consumed indexing request propose event"
+    );
+
+    apply_set_indexing_target(
+        registry,
+        worker_queue,
+        events,
+        protocol_chain_id,
+        SetIndexingTarget {
+            requested_by,
+            deployment_id: target.deployment_id,
+            deployment_chain_id: target.deployment_chain_id,
+            num_candidates: target.num_candidates,
+            // Interactive: a developer just asked for this in Studio.
+            priority: JobPriority::Interactive,
+        },
+    )
+    .await?;
+
+    Ok(Disposition::Applied)
+}
+
+/// A validated propose event, reduced to what the registry call needs.
+#[derive(Debug, PartialEq, Eq)]
+struct ProposedTarget {
+    event_id: String,
+    deployment_id: DeploymentId,
+    deployment_chain_id: ChainId,
+    num_candidates: usize,
+}
+
+/// Decode a record value into a propose target, or the reason to skip it.
+/// Unknown event types are tolerated by design: Studio may add types before
+/// the dipper learns them, and they must not wedge the partition.
+fn decode_propose(
+    value: Option<&[u8]>,
+    expected_network: &str,
+) -> Result<ProposedTarget, &'static str> {
+    let Some(value) = value else {
+        return Err("empty record value");
+    };
+
+    let event = match studio::SubgraphIndexingRequestEvent::decode(value) {
+        Ok(event) => event,
+        Err(_) => return Err("undecodable protobuf"),
+    };
+
+    match event.event_type.as_str() {
+        EVENT_TYPE_PROPOSE => {}
+        EVENT_TYPE_TERMINATE => return Err("terminate event (cancellation is a propose with 0)"),
+        _ => return Err("unknown event type"),
+    }
+
+    if event.the_graph_network_caip2id != expected_network {
+        return Err("event is for a different protocol network");
+    }
+
+    let Some(studio::subgraph_indexing_request_event::Payload::SubgraphIndexingRequestPropose(
+        propose,
+    )) = event.payload
+    else {
+        return Err("propose event without a propose payload");
+    };
+
+    let Ok(deployment_id) = event.subgraph_deployment_qm_hash.parse::<DeploymentId>() else {
+        return Err("invalid subgraph deployment hash");
+    };
+
+    let Some(deployment_chain_id) = parse_eip155_caip2(&propose.indexed_network_caip2id) else {
+        // The field is the dipper's addition to Studio's schema; until Studio
+        // sends it, every message lands here and this warn is the signal.
+        return Err("missing or invalid indexed network caip2 id");
+    };
+
+    let Ok(num_candidates) = usize::try_from(propose.indexing_agreements_requested) else {
+        return Err("negative indexing agreements requested");
+    };
+
+    Ok(ProposedTarget {
+        event_id: event.event_id,
+        deployment_id,
+        deployment_chain_id,
+        num_candidates,
+    })
+}
+
+/// Parse an `eip155:{chain_id}` CAIP-2 identifier into its numeric chain id.
+fn parse_eip155_caip2(value: &str) -> Option<ChainId> {
+    value.strip_prefix("eip155:")?.parse::<ChainId>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use dipper_core::ids::{IndexingAgreementId, IndexingRequestId};
+    use thegraph_core::{DeploymentId, deployment_id};
+    use url::Url;
+
+    use super::*;
+    use crate::{
+        registry::{
+            IndexingRequest as IndexingRequestRecord, Result as RegistryResult, SetTargetOutcome,
+        },
+        test_support::{CapturedEvent, CapturingEventsProducer},
+        worker::queue::JobId,
+    };
+
+    /// The protocol (signer) chain id, distinct from the indexed chain below
+    /// so assertions can tell the 2 apart.
+    const PROTOCOL_CHAIN_ID: ChainId = 42161;
+
+    /// The chain the test deployment indexes.
+    const INDEXED_CHAIN_ID: ChainId = 1;
+
+    const QM_HASH: &str = "QmUzRg2HHMpbgf6Q4VHKNDbtBEJnyp5JWCh2gUX9AV6jXv";
+
+    fn requester() -> Address {
+        "0x8f8c426f956876325b1e037c6eae9b189952994c"
+            .parse()
+            .expect("valid address")
+    }
+
+    /// Encode a propose envelope the way Studio's producer does.
+    fn encode_propose(
+        event_type: &str,
+        network: &str,
+        qm_hash: &str,
+        indexed_network: &str,
+        count: i32,
+    ) -> Vec<u8> {
+        let event = studio::SubgraphIndexingRequestEvent {
+            event_id: "01912345-6789-7abc-def0-123456789abc".to_string(),
+            event_type: event_type.to_string(),
+            event_version: "1.0".to_string(),
+            timestamp: "2026-08-24T10:30:00.123Z".to_string(),
+            subgraph_deployment_qm_hash: qm_hash.to_string(),
+            the_graph_network_caip2id: network.to_string(),
+            payload: Some(
+                studio::subgraph_indexing_request_event::Payload::SubgraphIndexingRequestPropose(
+                    studio::SubgraphIndexingRequestPropose {
+                        indexing_agreements_requested: count,
+                        indexed_network_caip2id: indexed_network.to_string(),
+                    },
+                ),
+            ),
+        };
+        event.encode_to_vec()
+    }
+
+    fn valid_propose_bytes() -> Vec<u8> {
+        encode_propose(EVENT_TYPE_PROPOSE, "eip155:42161", QM_HASH, "eip155:1", 3)
+    }
+
+    // -------- decode_propose --------
+
+    #[test]
+    fn decodes_a_valid_propose_event() {
+        let bytes = valid_propose_bytes();
+        let target = decode_propose(Some(&bytes), "eip155:42161").expect("decodes");
+
+        assert_eq!(target.deployment_id, deployment_id!(QM_HASH));
+        assert_eq!(target.deployment_chain_id, INDEXED_CHAIN_ID);
+        assert_eq!(target.num_candidates, 3);
+        assert_eq!(target.event_id, "01912345-6789-7abc-def0-123456789abc");
+    }
+
+    #[test]
+    fn tolerates_unknown_fields_appended_to_the_envelope() {
+        // A future schema revision adds fields this consumer does not know:
+        // field 15, wire type 2 (length-delimited), 3 bytes of payload.
+        let mut bytes = valid_propose_bytes();
+        bytes.extend_from_slice(&[0x7A, 0x03, b'a', b'b', b'c']);
+
+        let target = decode_propose(Some(&bytes), "eip155:42161").expect("decodes");
+        assert_eq!(target.num_candidates, 3);
+    }
+
+    #[test]
+    fn skips_a_zero_count_as_a_valid_cancellation() {
+        // Count 0 is not a skip: it is the agreed cancellation shape.
+        let bytes = encode_propose(EVENT_TYPE_PROPOSE, "eip155:42161", QM_HASH, "eip155:1", 0);
+        let target = decode_propose(Some(&bytes), "eip155:42161").expect("decodes");
+        assert_eq!(target.num_candidates, 0);
+    }
+
+    #[test]
+    fn rejects_an_empty_record_value() {
+        assert_eq!(
+            decode_propose(None, "eip155:42161"),
+            Err("empty record value")
+        );
+    }
+
+    #[test]
+    fn rejects_undecodable_bytes() {
+        // 0xFF is a field-15 wire-type-7 tag; wire type 7 does not exist.
+        let garbage = [0xFF, 0xFF, 0xFF];
+        assert_eq!(
+            decode_propose(Some(&garbage), "eip155:42161"),
+            Err("undecodable protobuf")
+        );
+    }
+
+    #[test]
+    fn rejects_an_unknown_event_type() {
+        let bytes = encode_propose(
+            "subgraph.indexing.request.some_future_type",
+            "eip155:42161",
+            QM_HASH,
+            "eip155:1",
+            3,
+        );
+        assert_eq!(
+            decode_propose(Some(&bytes), "eip155:42161"),
+            Err("unknown event type")
+        );
+    }
+
+    #[test]
+    fn rejects_a_terminate_event() {
+        let bytes = encode_propose(EVENT_TYPE_TERMINATE, "eip155:42161", QM_HASH, "eip155:1", 3);
+        assert!(matches!(
+            decode_propose(Some(&bytes), "eip155:42161"),
+            Err(reason) if reason.contains("terminate")
+        ));
+    }
+
+    #[test]
+    fn rejects_an_event_for_another_protocol_network() {
+        let bytes = encode_propose(EVENT_TYPE_PROPOSE, "eip155:421614", QM_HASH, "eip155:1", 3);
+        assert_eq!(
+            decode_propose(Some(&bytes), "eip155:42161"),
+            Err("event is for a different protocol network")
+        );
+    }
+
+    #[test]
+    fn rejects_a_propose_without_a_payload() {
+        let event = studio::SubgraphIndexingRequestEvent {
+            event_id: "e".to_string(),
+            event_type: EVENT_TYPE_PROPOSE.to_string(),
+            event_version: "1.0".to_string(),
+            timestamp: "t".to_string(),
+            subgraph_deployment_qm_hash: QM_HASH.to_string(),
+            the_graph_network_caip2id: "eip155:42161".to_string(),
+            payload: None,
+        };
+        assert_eq!(
+            decode_propose(Some(&event.encode_to_vec()), "eip155:42161"),
+            Err("propose event without a propose payload")
+        );
+    }
+
+    #[test]
+    fn rejects_an_invalid_deployment_hash() {
+        let bytes = encode_propose(
+            EVENT_TYPE_PROPOSE,
+            "eip155:42161",
+            "not-a-deployment-hash",
+            "eip155:1",
+            3,
+        );
+        assert_eq!(
+            decode_propose(Some(&bytes), "eip155:42161"),
+            Err("invalid subgraph deployment hash")
+        );
+    }
+
+    #[test]
+    fn rejects_a_missing_indexed_network() {
+        // Studio has not added the field yet: it decodes as an empty string.
+        let bytes = encode_propose(EVENT_TYPE_PROPOSE, "eip155:42161", QM_HASH, "", 3);
+        assert_eq!(
+            decode_propose(Some(&bytes), "eip155:42161"),
+            Err("missing or invalid indexed network caip2 id")
+        );
+    }
+
+    #[test]
+    fn rejects_a_malformed_indexed_network() {
+        for indexed in ["cosmos:hub", "eip155:", "eip155:abc", "1"] {
+            let bytes = encode_propose(EVENT_TYPE_PROPOSE, "eip155:42161", QM_HASH, indexed, 3);
+            assert_eq!(
+                decode_propose(Some(&bytes), "eip155:42161"),
+                Err("missing or invalid indexed network caip2 id"),
+                "indexed network {indexed:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_a_negative_candidate_count() {
+        let bytes = encode_propose(EVENT_TYPE_PROPOSE, "eip155:42161", QM_HASH, "eip155:1", -1);
+        assert_eq!(
+            decode_propose(Some(&bytes), "eip155:42161"),
+            Err("negative indexing agreements requested")
+        );
+    }
+
+    #[test]
+    fn parses_eip155_caip2_ids() {
+        assert_eq!(parse_eip155_caip2("eip155:1"), Some(1));
+        assert_eq!(parse_eip155_caip2("eip155:42161"), Some(42161));
+        assert_eq!(parse_eip155_caip2("eip155:"), None);
+        assert_eq!(parse_eip155_caip2("eip155:1x"), None);
+        assert_eq!(parse_eip155_caip2("solana:1"), None);
+        assert_eq!(parse_eip155_caip2(""), None);
+    }
+
+    // -------- handle_record --------
+
+    type SetTargetCall = (Address, DeploymentId, ChainId, usize);
+    type ReassessCall = (IndexingRequestId, DeploymentId, ChainId, usize);
+
+    /// A registry whose `set_indexing_target_candidates` returns a configured
+    /// outcome (or errors) and records the arguments it was called with.
+    #[derive(Clone)]
+    struct MockRegistry {
+        outcome: Option<SetTargetOutcome>,
+        calls: Arc<Mutex<Vec<SetTargetCall>>>,
+    }
+
+    impl MockRegistry {
+        fn returning(outcome: SetTargetOutcome) -> Self {
+            Self {
+                outcome: Some(outcome),
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn erroring() -> Self {
+            Self {
+                outcome: None,
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn calls(&self) -> Vec<SetTargetCall> {
+            self.calls.lock().expect("poisoned").clone()
+        }
+    }
+
+    #[async_trait]
+    impl IndexingRequestRegistry for MockRegistry {
+        async fn set_indexing_target_candidates(
+            &self,
+            requested_by: Address,
+            deployment_id: DeploymentId,
+            deployment_chain_id: ChainId,
+            num_candidates: usize,
+        ) -> RegistryResult<SetTargetOutcome> {
+            self.calls.lock().expect("poisoned").push((
+                requested_by,
+                deployment_id,
+                deployment_chain_id,
+                num_candidates,
+            ));
+            match &self.outcome {
+                Some(outcome) => Ok(outcome.clone()),
+                None => Err(crate::registry::Error::NoRecordsUpdated),
+            }
+        }
+
+        async fn get_all_indexing_requests(&self) -> RegistryResult<Vec<IndexingRequestRecord>> {
+            unimplemented!()
+        }
+
+        async fn get_indexing_request_by_id(
+            &self,
+            _id: &IndexingRequestId,
+        ) -> RegistryResult<Option<IndexingRequestRecord>> {
+            unimplemented!()
+        }
+
+        async fn get_indexing_requests_by_deployment_id(
+            &self,
+            _deployment_id: &DeploymentId,
+        ) -> RegistryResult<Vec<IndexingRequestRecord>> {
+            unimplemented!()
+        }
+
+        async fn get_open_indexing_requests_for_reassessment(
+            &self,
+            _min_age_seconds: i64,
+            _batch_size: i64,
+        ) -> RegistryResult<Vec<IndexingRequestRecord>> {
+            unimplemented!()
+        }
+    }
+
+    /// A worker queue that records reassessment jobs.
+    #[derive(Clone)]
+    struct MockWorker {
+        reassessments: Arc<Mutex<Vec<ReassessCall>>>,
+    }
+
+    impl MockWorker {
+        fn new() -> Self {
+            Self {
+                reassessments: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn reassessments(&self) -> Vec<ReassessCall> {
+            self.reassessments.lock().expect("poisoned").clone()
+        }
+    }
+
+    #[async_trait]
+    impl WorkerQueue for MockWorker {
+        async fn send_indexing_agreement_proposal(
+            &self,
+            _candidate_url: Url,
+            _agreement_id: IndexingAgreementId,
+            _indexing_request_id: IndexingRequestId,
+            _deployment_id: DeploymentId,
+            _deployment_chain_id: ChainId,
+            _priority: crate::worker::queue::JobPriority,
+        ) -> anyhow::Result<JobId> {
+            unimplemented!()
+        }
+
+        async fn reassess_indexing_request(
+            &self,
+            indexing_request_id: IndexingRequestId,
+            deployment_id: DeploymentId,
+            deployment_chain_id: ChainId,
+            num_candidates: usize,
+            _priority: crate::worker::queue::JobPriority,
+        ) -> anyhow::Result<JobId> {
+            self.reassessments.lock().expect("poisoned").push((
+                indexing_request_id,
+                deployment_id,
+                deployment_chain_id,
+                num_candidates,
+            ));
+            Ok(JobId::default())
+        }
+
+        async fn cancel_rejected_agreement_on_chain(
+            &self,
+            _agreement_id: IndexingAgreementId,
+            _priority: crate::worker::queue::JobPriority,
+        ) -> anyhow::Result<JobId> {
+            unimplemented!()
+        }
+
+        async fn submit_offer(
+            &self,
+            _agreement_id: IndexingAgreementId,
+            _indexing_request_id: IndexingRequestId,
+            _indexer_url: Url,
+            _deployment_id: DeploymentId,
+            _deployment_chain_id: ChainId,
+            _priority: crate::worker::queue::JobPriority,
+        ) -> anyhow::Result<JobId> {
+            unimplemented!()
+        }
+    }
+
+    async fn run_handle_record(
+        registry: &MockRegistry,
+        worker: &MockWorker,
+        bytes: Option<&[u8]>,
+    ) -> (
+        Result<Disposition, crate::set_indexing_target::ApplyError>,
+        Vec<CapturedEvent>,
+    ) {
+        let events_capture = CapturingEventsProducer::new();
+        let events: Arc<dyn SubgraphIndexingAgreementEventsProducer> =
+            Arc::new(events_capture.clone());
+
+        let result = handle_record(
+            registry,
+            worker,
+            &events,
+            PROTOCOL_CHAIN_ID,
+            requester(),
+            "eip155:42161",
+            bytes,
+        )
+        .await;
+
+        (result, events_capture.events())
+    }
+
+    #[tokio::test]
+    async fn an_inserted_outcome_applies_emits_and_queues_reassessment() {
+        let registry = MockRegistry::returning(SetTargetOutcome::Inserted {
+            id: IndexingRequestId::new(),
+        });
+        let worker = MockWorker::new();
+
+        let bytes = valid_propose_bytes();
+        let (result, events) = run_handle_record(&registry, &worker, Some(&bytes)).await;
+
+        assert!(matches!(result, Ok(Disposition::Applied)), "{result:?}");
+        assert_eq!(
+            registry.calls(),
+            vec![(requester(), deployment_id!(QM_HASH), INDEXED_CHAIN_ID, 3)]
+        );
+
+        let reassessments = worker.reassessments();
+        assert_eq!(reassessments.len(), 1);
+        assert_eq!(reassessments[0].1, deployment_id!(QM_HASH));
+        assert_eq!(reassessments[0].2, INDEXED_CHAIN_ID);
+        assert_eq!(reassessments[0].3, 3);
+
+        assert_eq!(events.len(), 1, "expected 1 request-received event");
+        match &events[0] {
+            CapturedEvent::RequestReceived {
+                deployment,
+                chain_id,
+                event,
+            } => {
+                assert_eq!(*deployment, deployment_id!(QM_HASH));
+                assert_eq!(
+                    *chain_id, PROTOCOL_CHAIN_ID,
+                    "the event carries the protocol chain id, not the indexed chain"
+                );
+                assert_eq!(event.agreements_requested, 3);
+            }
+            other => panic!("expected RequestReceived, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_noop_outcome_applies_without_events_or_reassessment() {
+        let registry = MockRegistry::returning(SetTargetOutcome::NoOp {
+            id: IndexingRequestId::new(),
+        });
+        let worker = MockWorker::new();
+
+        let bytes = valid_propose_bytes();
+        let (result, events) = run_handle_record(&registry, &worker, Some(&bytes)).await;
+
+        assert!(matches!(result, Ok(Disposition::Applied)), "{result:?}");
+        assert!(worker.reassessments().is_empty(), "no-op must not reassess");
+        assert!(events.is_empty(), "no-op must not emit events");
+    }
+
+    #[tokio::test]
+    async fn a_zero_count_cancellation_reassesses_to_zero_without_events() {
+        let registry = MockRegistry::returning(SetTargetOutcome::Canceled {
+            id: IndexingRequestId::new(),
+        });
+        let worker = MockWorker::new();
+
+        let bytes = encode_propose(EVENT_TYPE_PROPOSE, "eip155:42161", QM_HASH, "eip155:1", 0);
+        let (result, events) = run_handle_record(&registry, &worker, Some(&bytes)).await;
+
+        assert!(matches!(result, Ok(Disposition::Applied)), "{result:?}");
+        assert_eq!(registry.calls()[0].3, 0, "the registry saw the 0 count");
+
+        let reassessments = worker.reassessments();
+        assert_eq!(reassessments.len(), 1);
+        assert_eq!(
+            reassessments[0].3, 0,
+            "reassessment with 0 drives the shrink that cancels agreements"
+        );
+        assert!(
+            events.is_empty(),
+            "cancellation must not emit request-received"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unprocessable_record_is_skipped_without_touching_the_registry() {
+        let registry = MockRegistry::returning(SetTargetOutcome::NoOp {
+            id: IndexingRequestId::new(),
+        });
+        let worker = MockWorker::new();
+
+        let bytes = encode_propose(EVENT_TYPE_TERMINATE, "eip155:42161", QM_HASH, "eip155:1", 3);
+        let (result, events) = run_handle_record(&registry, &worker, Some(&bytes)).await;
+
+        assert!(matches!(result, Ok(Disposition::Skipped(_))), "{result:?}");
+        assert!(registry.calls().is_empty());
+        assert!(worker.reassessments().is_empty());
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_registry_failure_is_a_retryable_error_not_a_skip() {
+        let registry = MockRegistry::erroring();
+        let worker = MockWorker::new();
+
+        let bytes = valid_propose_bytes();
+        let (result, events) = run_handle_record(&registry, &worker, Some(&bytes)).await;
+
+        assert!(result.is_err(), "a registry failure must surface for retry");
+        assert!(worker.reassessments().is_empty());
+        assert!(events.is_empty());
+    }
+}
