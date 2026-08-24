@@ -23,6 +23,10 @@ pub(crate) struct ConnectOptions<'a> {
 
 /// Connects a Kafka client with the given SASL/TLS settings.
 pub(crate) async fn connect(opts: ConnectOptions<'_>) -> Result<Client, ConnectionError> {
+    if opts.brokers.is_empty() {
+        return Err(ConnectionError::MissingBrokers);
+    }
+
     let mut builder = ClientBuilder::new(opts.brokers.to_vec());
 
     if let Some(mechanism_str) = opts.sasl_mechanism {
@@ -107,6 +111,10 @@ pub enum ConnectionError {
     /// Failed to connect to Kafka brokers
     #[error("failed to connect to Kafka brokers")]
     Connection(#[source] rskafka::client::error::Error),
+
+    /// The brokers list is empty
+    #[error("brokers must list at least 1 broker address")]
+    MissingBrokers,
 
     /// Unsupported SASL mechanism
     #[error("unsupported SASL mechanism '{0}', supported: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512")]

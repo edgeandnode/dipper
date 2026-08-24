@@ -5,7 +5,10 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
 use rskafka::{
-    client::partition::{OffsetAt, PartitionClient, UnknownTopicHandling},
+    client::{
+        Client,
+        partition::{OffsetAt, PartitionClient, UnknownTopicHandling},
+    },
     record::RecordAndOffset,
 };
 
@@ -35,6 +38,16 @@ pub struct KafkaConsumerConfig {
     /// Path to a PEM-encoded CA certificate file for TLS verification.
     #[serde(default)]
     pub tls_ca_cert_path: Option<PathBuf>,
+    /// Seconds allowed for the initial connect and topic discovery (default:
+    /// 60). Load-bearing: the underlying client retries an unreachable broker
+    /// forever, so without this bound `connect` would never return.
+    #[serde(default = "default_connect_timeout_secs")]
+    pub connect_timeout_secs: u64,
+}
+
+/// Default number of seconds allowed for connect and topic discovery.
+pub fn default_connect_timeout_secs() -> u64 {
+    60
 }
 
 // Manual impl instead of derive: the service logs the whole config with Debug
@@ -52,6 +65,7 @@ impl std::fmt::Debug for KafkaConsumerConfig {
             )
             .field("tls_enabled", &self.tls_enabled)
             .field("tls_ca_cert_path", &self.tls_ca_cert_path)
+            .field("connect_timeout_secs", &self.connect_timeout_secs)
             .finish()
     }
 }
@@ -59,6 +73,7 @@ impl std::fmt::Debug for KafkaConsumerConfig {
 /// Kafka consumer bound to a single topic, with a partition client per
 /// discovered partition. Thread-safe; share across tasks via `Arc`.
 pub struct KafkaConsumer {
+    client: Client,
     topic: String,
     partition_clients: BTreeMap<i32, Arc<PartitionClient>>,
 }
@@ -73,8 +88,19 @@ impl KafkaConsumer {
 
     /// Connects to the brokers and binds to the configured topic. Partitions
     /// are discovered from broker metadata, so there is no partition count to
-    /// configure; a topic the credentials cannot see is an error.
+    /// configure; a topic the credentials cannot see is an error. The whole
+    /// sequence is bounded by `connect_timeout_secs`, since the underlying
+    /// client would otherwise retry an unreachable broker forever.
     pub async fn connect(config: &KafkaConsumerConfig) -> Result<Self, ConsumerError> {
+        tokio::time::timeout(
+            Duration::from_secs(config.connect_timeout_secs),
+            Self::connect_inner(config),
+        )
+        .await
+        .map_err(|_| ConsumerError::Timeout)?
+    }
+
+    async fn connect_inner(config: &KafkaConsumerConfig) -> Result<Self, ConsumerError> {
         let client = connection::connect(ConnectOptions {
             brokers: &config.brokers,
             sasl_mechanism: config.sasl_mechanism.as_deref(),
@@ -85,19 +111,10 @@ impl KafkaConsumer {
         })
         .await?;
 
-        let topics = client
-            .list_topics()
-            .await
-            .map_err(ConsumerError::Metadata)?;
-        let topic = topics
-            .into_iter()
-            .find(|t| t.name == config.topic)
-            .ok_or_else(|| ConsumerError::TopicNotFound {
-                topic: config.topic.clone(),
-            })?;
+        let partitions = discover_partitions(&client, &config.topic).await?;
 
         let mut partition_clients = BTreeMap::new();
-        for partition in topic.partitions {
+        for partition in partitions {
             let partition_client = client
                 .partition_client(&config.topic, partition, UnknownTopicHandling::Error)
                 .await
@@ -106,6 +123,7 @@ impl KafkaConsumer {
         }
 
         Ok(Self {
+            client,
             topic: config.topic.clone(),
             partition_clients,
         })
@@ -121,6 +139,19 @@ impl KafkaConsumer {
         self.partition_clients.keys().copied().collect()
     }
 
+    /// Re-reads broker metadata and returns the topic's current partition
+    /// count, so callers can notice a topic growing partitions after connect
+    /// (this consumer keeps serving only the set discovered at connect).
+    pub async fn current_partition_count(&self) -> Result<usize, ConsumerError> {
+        tokio::time::timeout(
+            Self::OFFSET_TIMEOUT,
+            discover_partitions(&self.client, &self.topic),
+        )
+        .await
+        .map_err(|_| ConsumerError::Timeout)?
+        .map(|partitions| partitions.len())
+    }
+
     /// Fetches records from one partition starting at `offset`, waiting up to
     /// `max_wait_ms` for data to arrive. Returns the records (with their
     /// offsets) and the partition's current high watermark.
@@ -134,9 +165,11 @@ impl KafkaConsumer {
         let partition_client = self.partition_client(partition)?;
         let timeout = Duration::from_millis(max_wait_ms.max(0) as u64) + Self::FETCH_TIMEOUT_MARGIN;
 
+        // rskafka encodes the range's exclusive end minus 1 as the wire-level
+        // max_bytes, so widen by 1 to request the full `max_bytes` budget.
         tokio::time::timeout(
             timeout,
-            partition_client.fetch_records(offset, 1..max_bytes, max_wait_ms),
+            partition_client.fetch_records(offset, 1..max_bytes.saturating_add(1), max_wait_ms),
         )
         .await
         .map_err(|_| ConsumerError::Timeout)?
@@ -161,6 +194,22 @@ impl KafkaConsumer {
                 topic: self.topic.clone(),
             })
     }
+}
+
+/// Lists the topic's partitions from broker metadata; a topic the broker does
+/// not report (missing, or invisible to the credentials) is an error.
+async fn discover_partitions(
+    client: &Client,
+    topic: &str,
+) -> Result<std::collections::BTreeSet<i32>, ConsumerError> {
+    let topics = client.list_topics().await.map_err(ConsumerError::Metadata)?;
+    topics
+        .into_iter()
+        .find(|t| t.name == topic)
+        .map(|t| t.partitions)
+        .ok_or_else(|| ConsumerError::TopicNotFound {
+            topic: topic.to_string(),
+        })
 }
 
 /// Errors that can occur when working with the Kafka consumer.
@@ -233,6 +282,54 @@ mod tests {
         assert_eq!(config.sasl_password, None);
         assert!(!config.tls_enabled);
         assert_eq!(config.tls_ca_cert_path, None);
+        assert_eq!(config.connect_timeout_secs, 60);
+    }
+
+    #[tokio::test]
+    async fn connect_gives_up_after_the_configured_timeout() {
+        // Port 1 refuses connections, which the underlying client retries
+        // forever; the configured bound must turn that into an error.
+        let config = KafkaConsumerConfig {
+            brokers: vec!["127.0.0.1:1".to_string()],
+            topic: "test".to_string(),
+            sasl_mechanism: None,
+            sasl_username: None,
+            sasl_password: None,
+            tls_enabled: false,
+            tls_ca_cert_path: None,
+            connect_timeout_secs: 1,
+        };
+        let started = std::time::Instant::now();
+        let result = KafkaConsumer::connect(&config).await;
+        assert!(
+            matches!(result, Err(ConsumerError::Timeout)),
+            "expected a timeout, got {:?}",
+            result.err()
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "connect must give up promptly"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_an_empty_brokers_list() {
+        let config = KafkaConsumerConfig {
+            brokers: Vec::new(),
+            topic: "test".to_string(),
+            sasl_mechanism: None,
+            sasl_username: None,
+            sasl_password: None,
+            tls_enabled: false,
+            tls_ca_cert_path: None,
+            connect_timeout_secs: 60,
+        };
+        assert!(matches!(
+            KafkaConsumer::connect(&config).await,
+            Err(ConsumerError::Connection(
+                super::super::connection::ConnectionError::MissingBrokers
+            ))
+        ));
     }
 
     #[test]
@@ -273,6 +370,7 @@ mod tests {
             sasl_password: Some("hunter2".to_string()),
             tls_enabled: false,
             tls_ca_cert_path: None,
+            connect_timeout_secs: 60,
         };
         let rendered = format!("{config:?}");
         assert!(

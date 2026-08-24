@@ -38,6 +38,11 @@ pub struct KafkaConfig {
     /// Path to a PEM-encoded CA certificate file for TLS verification.
     #[serde(default)]
     pub tls_ca_cert_path: Option<PathBuf>,
+    /// Seconds allowed for the initial connect and partition binding (default:
+    /// 60). Load-bearing: the underlying client retries an unreachable broker
+    /// forever, so without this bound `new` would never return.
+    #[serde(default = "super::consumer::default_connect_timeout_secs")]
+    pub connect_timeout_secs: u64,
 }
 
 // Manual impl instead of derive: the service logs the whole config with Debug
@@ -56,6 +61,7 @@ impl std::fmt::Debug for KafkaConfig {
             )
             .field("tls_enabled", &self.tls_enabled)
             .field("tls_ca_cert_path", &self.tls_ca_cert_path)
+            .field("connect_timeout_secs", &self.connect_timeout_secs)
             .finish()
     }
 }
@@ -81,8 +87,19 @@ pub struct KafkaProducer {
 impl KafkaProducer {
     const PRODUCE_TIMEOUT: Duration = Duration::from_secs(30);
 
-    /// Creates a new Kafka producer with the given configuration.
+    /// Creates a new Kafka producer with the given configuration. Bounded by
+    /// `connect_timeout_secs`, since the underlying client retries an
+    /// unreachable broker forever.
     pub async fn new(config: &KafkaConfig) -> Result<Self, Error> {
+        tokio::time::timeout(
+            Duration::from_secs(config.connect_timeout_secs),
+            Self::new_inner(config),
+        )
+        .await
+        .map_err(|_| Error::Timeout)?
+    }
+
+    async fn new_inner(config: &KafkaConfig) -> Result<Self, Error> {
         if config.partitions == 0 {
             return Err(Error::InvalidPartitionCount);
         }
@@ -222,6 +239,7 @@ mod tests {
             sasl_password: sasl_pass,
             tls_enabled: false,
             tls_ca_cert_path: None,
+            connect_timeout_secs: 60,
         }
     }
 }
